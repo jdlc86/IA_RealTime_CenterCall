@@ -1,0 +1,19 @@
+{
+  "name": "@ia-realtime-centercall/control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "deploy:dry": "wrangler deploy --dry-run",
+    "types": "wrangler types",
+    "check": "wrangler deploy --dry-run"
+  },
+  "dependencies": {
+    "openai": "^7.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "wrangler": "^4.0.0"
+  }
+}
