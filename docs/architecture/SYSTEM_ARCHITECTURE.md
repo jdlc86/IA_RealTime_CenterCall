@@ -1,6 +1,6 @@
 # IA_RealTime_CenterCall — System Architecture
 
-> **Arquitectura oficial v2.0**  
+> **Arquitectura oficial v2.1**  
 > **Estado:** vigente  
 > **Fecha:** 2026-08-08  
 > **Carácter:** normativo
@@ -11,7 +11,7 @@ Este documento es la referencia canónica de arquitectura. Si otro documento con
 
 1. Media plane mínimo.
 2. Cloudflare no transporta audio.
-3. Core agnóstico al sector.
+3. Core/Conversation Platform agnóstico al sector.
 4. Multi-tenant desde el modelo de dominio.
 5. Configuración por negocio, no forks por cliente.
 6. Proveedores externos detrás de contratos/adaptadores.
@@ -19,6 +19,8 @@ Este documento es la referencia canónica de arquitectura. Si otro documento con
 8. Toda operación empresarial pasa por ToolGateway.
 9. GitHub es la fuente de verdad del software y documentación.
 10. Desarrollo/deploy normal cloud-first mediante Cloudflare Workers Builds.
+11. El carrier y la numeración no deben condicionar la lógica del Core.
+12. El destino de una llamada se decide en el Control Plane mediante un `CallOrchestrator`.
 
 ## 2. Arquitectura física
 
@@ -35,57 +37,65 @@ Este documento es la referencia canónica de arquitectura. Si otro documento con
                             └─────────┬──────────┘
                                       │
                                       ▼
-┌─────────────┐    PSTN/SIP    ┌────────────────────┐
-│   Cliente   │◄──────────────►│ Twilio / carrier   │
-└─────────────┘                 └─────────┬──────────┘
-                                         │ SIP/RTP
-                                         ▼
-                               ┌────────────────────┐
-                               │ OpenAI Realtime    │
-                               │ speech-to-speech   │
-                               └─────────┬──────────┘
-                                         │ control/tools
-                                         ▼
-                               ┌────────────────────┐
-                               │ Cloudflare Worker  │
-                               │ Control Plane      │
-                               └─────────┬──────────┘
-                                         │
-                 ┌───────────────────────┼──────────────────────┐
-                 ▼                       ▼                      ▼
-           Tenant config            ToolGateway          Observabilidad
-                                         │
-                                         ▼
-                                Business Modules
-                                         │
-                                         ▼
-                                Providers/Adapters
-                                         │
-                                         ▼
-                               Sistemas empresariales
+┌─────────────┐      PSTN       ┌──────────────────────┐
+│   Cliente   │◄───────────────►│ Telnyx               │
+└─────────────┘                  │ Number + Voice API   │
+                                 └──────────┬───────────┘
+                                            │ webhook de control
+                                            ▼
+                                 ┌──────────────────────┐
+                                 │ Cloudflare Worker    │
+                                 │ Conversation Platform│
+                                 │ + CallOrchestrator   │
+                                 └──────────┬───────────┘
+                                            │ decide routing
+                                            ▼
+                                 ┌──────────────────────┐
+                                 │ OpenAI Realtime      │
+                                 │ speech-to-speech     │
+                                 └──────────┬───────────┘
+                                            │
+                 ┌──────────────────────────┼──────────────────────┐
+                 ▼                          ▼                      ▼
+           Tenant config               ToolGateway          Observabilidad
+                                            │
+                                            ▼
+                                   Business Modules
+                                            │
+                                            ▼
+                                   Providers/Adapters
+                                            │
+                                            ▼
+                                  Sistemas empresariales
 ```
+
+Telnyx es el proveedor telefónico inicial de FASE 0. Twilio queda como alternativa futura compatible mediante `TelephonyProvider`.
 
 ## 3. Media plane
 
-Ruta oficial del audio:
+Objetivo arquitectónico del audio una vez establecida la llamada:
 
 ```text
-PSTN → TelephonyProvider/SIP → OpenAI Realtime → TelephonyProvider/SIP → PSTN
+PSTN → Telnyx/TelephonyProvider → RealtimeProvider → Telnyx/TelephonyProvider → PSTN
 ```
 
-Cloudflare, D1, MCP, ToolGateway, TenantResolver y los sistemas empresariales quedan fuera del transporte de audio.
+Cloudflare, D1, MCP, ToolGateway, TenantResolver y los sistemas empresariales quedan fuera del transporte continuo de audio.
+
+El Control Plane puede participar en señalización, bootstrap, routing y comandos de llamada sin convertirse en relay de audio.
 
 Cualquier cambio que añada un relay de audio requiere benchmark, justificación y ADR.
 
-## 4. Control plane
+## 4. Control plane y CallOrchestrator
 
 El Control Plane vive inicialmente en Cloudflare Workers y contiene progresivamente:
 
-- recepción/verificación de webhooks;
+- recepción/verificación de webhooks de Telnyx y OpenAI;
+- `CallOrchestrator`;
 - Call Bootstrap;
 - TenantResolver;
 - carga de TenantConfiguration;
 - construcción de RealtimeSessionConfiguration;
+- selección del destino realtime/humano;
 - ToolGateway;
 - autorización y políticas;
 - módulos de negocio;
@@ -94,12 +104,38 @@ El Control Plane vive inicialmente en Cloudflare Workers y contiene progresivame
 - persistencia futura;
 - handoff futuro.
 
-## 5. Flujo de establecimiento de llamada
+### CallOrchestrator
 
-Producción multi-tenant:
+Responsabilidad: decidir el destino y bootstrap de una llamada usando contexto confiable de telefonía y tenant.
 
 ```text
-incoming call
+Telnyx webhook
+    ↓
+CallOrchestrator
+    ↓
+TenantResolver
+    ↓
+TenantConfiguration
+    ↓
+RoutingDecision
+    ├── OpenAI Realtime
+    ├── otro RealtimeProvider
+    ├── HumanHandoff
+    └── fallback/terminate
+```
+
+El `CallOrchestrator` no contiene lógica específica de clínica/restaurante ni reglas empresariales de citas/reservas.
+
+## 5. Flujo de establecimiento de llamada
+
+Producción multi-tenant objetivo:
+
+```text
+incoming PSTN call
+    ↓
+Telnyx Voice API event
+    ↓
+Cloudflare / CallOrchestrator
     ↓
 called_number / route
     ↓
@@ -109,30 +145,26 @@ tenant_id
     ↓
 TenantConfiguration
     ↓
+RoutingDecision
+    ↓
 RealtimeSessionConfiguration
     ↓
-RealtimeProvider.accept/configure
+RealtimeProvider
     ↓
 ACTIVE
-    ↓
-conversación
 ```
+
+Para OpenAI Realtime vía SIP, el destino se expresa conceptualmente como:
+
+```text
+sip:<OPENAI_PROJECT_ID>@sip.api.openai.com;transport=tls
+```
+
+El Project ID se mantiene como configuración y no se hardcodea en documentación ni lógica del dominio.
 
 La IA no puede iniciar un saludo específico del negocio antes de completar el tenant binding.
 
-En FASE 0 se usa un tenant fijo de desarrollo, pero se conserva el binding conceptual:
-
-```text
-incoming call
-    ↓
-DEFAULT_TENANT_ID
-    ↓
-configuración F0
-    ↓
-RealtimeSessionConfiguration
-    ↓
-OpenAI accept/configure
-```
+En FASE 0 se usa un tenant fijo de desarrollo, pero se conserva el binding conceptual.
 
 ## 6. Multi-tenant y personalización
 
@@ -166,7 +198,17 @@ No se permiten condicionales de Core específicos de cliente como `if tenant ===
 
 ### TelephonyProvider
 
-Aísla Twilio u otros carriers/SIP providers.
+Aísla Telnyx, Twilio u otros carriers/Voice APIs/SIP providers. Debe encapsular, según capacidad disponible:
+
+- recepción de eventos de llamada;
+- identificación de número llamado;
+- comandos de routing/dial/transfer;
+- estado de llamada;
+- detalles específicos de la API del carrier.
+
+### NumberProvider
+
+Responsabilidad separada para adquisición/portabilidad/asociación de numeración. Puede coincidir físicamente con `TelephonyProvider`, pero el Core no asume que sean el mismo proveedor.
 
 ### RealtimeProvider
 
@@ -178,17 +220,7 @@ Convierte contexto de routing en `tenant_id`. Inicialmente la clave principal es
 
 ### RealtimeSessionConfiguration
 
-Contrato propio e independiente del proveedor realtime. Expresa, al menos:
-
-- instructions/persona;
-- voice;
-- language;
-- VAD;
-- tools permitidas;
-- políticas conversacionales;
-- metadata de `call_id`/`tenant_id`.
-
-El adaptador OpenAI traduce este contrato al payload concreto de OpenAI.
+Contrato propio e independiente del proveedor realtime. Expresa instructions/persona, voice, language, VAD, tools permitidas, políticas conversacionales y metadata de llamada/tenant.
 
 ### ToolGateway
 
@@ -208,8 +240,6 @@ Provider
 External System
 ```
 
-`AppointmentTool`, `ReservationTool`, etc. son implementaciones de `ToolExecutor`, no capas arquitectónicas independientes.
-
 ## 8. Módulos de negocio
 
 Módulos compartidos previstos:
@@ -222,29 +252,14 @@ Módulos compartidos previstos:
 
 Los módulos contienen reglas reutilizables y no SDKs de terceros.
 
-Ejemplo:
-
-```text
-AppointmentTool
-    ↓
-AppointmentModule
-    ↓
-AppointmentProvider
-    ↓
-Agenda externa
-```
-
-`AppointmentModule` usa conceptos genéricos como `service`, `resource`, `slot`, `customer` y `appointment`; no conceptos clínicos obligatorios como `doctor` o `patient`.
-
 ## 9. Estado de llamada
 
 Estados principales del dominio:
 
 ```text
-RECEIVED → BOOTSTRAPPING → ACCEPTING → ACTIVE → COMPLETED
-             │                 │           │
-             └──────────────► FAILED ◄─────┘
-                                         │
+RECEIVED → BOOTSTRAPPING → ROUTING → ACCEPTING → ACTIVE → COMPLETED
+             │               │           │           │
+             └──────────────► FAILED ◄────┴───────────┘
 ACTIVE → HANDOFF → COMPLETED / FAILED
 ```
 
@@ -308,25 +323,35 @@ F7 Concurrencia
 F8 Hardening producción
 ```
 
-Los detalles operativos viven en `docs/implementation/` y la evidencia de gates en `docs/tests/`.
-
 ## 13. Estado actual
 
 FASE 0 en curso.
 
-Validado:
+Validado/configurado:
 
 - GitHub → Cloudflare Workers Builds;
 - Worker desplegado automáticamente;
 - `/health` operativo;
-- nombre de Worker alineado con Cloudflare;
-- `workers_dev` y `preview_urls` declarados explícitamente.
+- OpenAI Project creado;
+- OpenAI API Key creada y almacenada como secret en Cloudflare;
+- webhook OpenAI `realtime.call.incoming` configurado;
+- `OPENAI_WEBHOOK_SECRET` almacenado como secret en Cloudflare;
+- Telnyx seleccionado como proveedor telefónico inicial;
+- Voice API Application `IA-RealTime-CenterCall-F0` creada/configurada;
+- configuración inbound iniciada;
+- Outbound Voice Profile para Europa creado y asociado a la aplicación.
+
+Descartado para F0:
+
+- Twilio como carrier inicial por indisponibilidad de numeración española adecuada en el flujo probado;
+- SIP Connection FQDN de Telnyx como ruta principal de esta implementación, tras evaluarla durante la configuración.
 
 Pendiente inmediato:
 
-- OPENAI_API_KEY como secreto;
-- webhook OpenAI;
-- OPENAI_WEBHOOK_SECRET;
-- SIP OpenAI ↔ Twilio;
+- finalizar configuración de la Voice API Application;
+- asociar un número +34;
+- implementar webhook Telnyx en el Worker;
+- ejecutar el comando/routing hacia OpenAI Realtime;
+- validar `realtime.call.incoming` + `/accept`;
 - primera llamada real;
 - Gate F0.
