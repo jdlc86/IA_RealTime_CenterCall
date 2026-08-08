@@ -1,9 +1,11 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "ia-realtime-centercall-dev",
+  "name": "ia-realtime-centercall",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-08",
   "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": true,
   "vars": {
     "ENVIRONMENT": "dev",
     "DEFAULT_TENANT_ID": "dev-clinic",
