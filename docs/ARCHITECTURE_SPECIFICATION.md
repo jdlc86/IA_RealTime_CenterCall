@@ -1,6 +1,6 @@
 # IA_RealTime_CenterCall — ARCHITECTURE SPECIFICATION
 
-> **Estado:** Especificación oficial — v1.5  
+> **Estado:** Especificación oficial — v1.6  
 > **Fecha base:** 2026-08-08  
 > **Repositorio:** `jdlc86/IA_RealTime_CenterCall`  
 > **Rama base:** `main`  
@@ -18,6 +18,7 @@
 | 1.3 | 2026-08-08 | Saneamiento: tenant de primera clase, `TenantConfiguration`/`BusinessProfile`, Module/Provider, `ToolGateway`/`ToolExecutor`, control mínimo en F0 y reordenación de fases. |
 | 1.4 | 2026-08-08 | Resolución explícita `called_number → tenant_id`, personalización por negocio sin forks y gate multi-negocio clínica/restaurante. |
 | 1.5 | 2026-08-08 | Cierre arquitectónico: bootstrap de llamada ligado a tenant, flujo correcto ToolGateway→Module→Provider, `TenantResolver` como contrato, `HumanHandoffModule` en estructura y ADR formalizados. |
+| 1.6 | 2026-08-08 | Precisión final: lifecycle de llamada sin ambigüedad, contrato `RealtimeSessionConfiguration`, `AppointmentTool` como `ToolExecutor` y tenant binding explícito también en F0. |
 
 ---
 
@@ -35,6 +36,7 @@
 10. Este documento se actualiza junto con las decisiones de código.
 11. El negocio se selecciona por routing/configuración, nunca mediante forks o ramas de código específicas por cliente.
 12. La sesión Realtime no puede iniciar comportamiento conversacional específico del negocio hasta completar el binding del tenant y cargar su configuración.
+13. FASE 0 también realiza tenant binding; únicamente sustituye la resolución multi-negocio por un tenant de desarrollo explícitamente configurado.
 
 Estados: `[ ]` no iniciado · `[~]` en curso · `[x]` validado · `[!]` bloqueado.
 
@@ -76,9 +78,9 @@ Proveedor telefónico / SIP
       │                              │      ↓
       │                              ├── TenantConfiguration
       │                              │      ↓
-      │                              └── Realtime session config
-      │                                  prompt / voz / idioma /
-      │                                  políticas / tools permitidas
+      │                              └── RealtimeSessionConfiguration
+      │                                  instructions / voz / idioma /
+      │                                  VAD / políticas / tools
       │
       │ SIP / RTP
       ▼
@@ -118,6 +120,7 @@ Cloudflare alojará progresivamente:
 - bootstrap y binding de tenant;
 - `TenantResolver`;
 - configuración por tenant;
+- construcción de `RealtimeSessionConfiguration`;
 - ToolGateway;
 - autorización y políticas;
 - módulos de negocio;
@@ -197,7 +200,7 @@ Modelo
   ↓
 ToolGateway
   ↓
-AppointmentTool / ToolExecutor
+AppointmentTool : ToolExecutor
   ↓
 AppointmentModule
   ↓
@@ -206,7 +209,7 @@ AppointmentProvider
 Agenda externa
 ```
 
-`ToolGateway` es la frontera pública para herramientas. `ToolExecutor` ejecuta una operación ya validada/autorizada. Los módulos contienen reglas de negocio reutilizables y los providers encapsulan sistemas externos.
+`ToolGateway` es la frontera pública para herramientas. `ToolExecutor` es el contrato interno que ejecuta una operación ya validada/autorizada. `AppointmentTool`, `ReservationTool`, `OrderTool` y equivalentes son **implementaciones de `ToolExecutor`**, no capas arquitectónicas adicionales. Los módulos contienen reglas de negocio reutilizables y los providers encapsulan sistemas externos.
 
 ## DD-005 — Twilio inicial, migrable
 
@@ -259,7 +262,7 @@ No contiene `doctor`, `patient` ni otros conceptos clínicos. Los conceptos sect
 ```text
 ToolGateway
     ↓
-AppointmentTool
+AppointmentTool : ToolExecutor
     ↓
 AppointmentModule
     ↓
@@ -291,7 +294,7 @@ Reglas:
 3. El mapping `called_number → tenant_id` pertenece a configuración/routing.
 4. Ninguna herramienta empresarial se ejecuta sin tenant.
 5. No se comparten implícitamente datos, credenciales, prompts ni permisos entre tenants.
-6. FASE 0 puede usar un tenant de desarrollo fijo.
+6. FASE 0 puede usar un tenant de desarrollo fijo, pero sigue realizando binding explícito de ese tenant a la llamada.
 
 ## DD-008 — Personalización por negocio mediante configuración
 
@@ -320,7 +323,7 @@ No se permiten condicionales específicos de cliente en el Core. Un nuevo negoci
 
 Toda llamada debe completar un bootstrap antes de iniciar comportamiento conversacional específico del negocio.
 
-Flujo obligatorio:
+Flujo productivo obligatorio:
 
 ```text
 incoming call
@@ -334,14 +337,24 @@ tenant_id
 load TenantConfiguration
     ↓
 build RealtimeSessionConfiguration
-    ├── prompt/persona
-    ├── voz
-    ├── idioma
-    ├── VAD
-    ├── políticas
-    └── tools permitidas
     ↓
-accept/configure Realtime session
+RealtimeProvider.accept/configure(...)
+    ↓
+begin conversation
+```
+
+En FASE 0 el flujo se simplifica, pero **no elimina el binding**:
+
+```text
+incoming call
+    ↓
+DEFAULT_TENANT_ID de desarrollo
+    ↓
+load TenantConfiguration dev
+    ↓
+build RealtimeSessionConfiguration
+    ↓
+RealtimeProvider.accept/configure(...)
     ↓
 begin conversation
 ```
@@ -353,6 +366,31 @@ Reglas:
 3. La configuración usada en la sesión debe quedar asociada al `call_id` y `tenant_id`.
 4. El bootstrap pertenece al control plane y no transporta audio.
 5. La implementación concreta de aceptación/configuración se encapsula mediante `RealtimeProvider`.
+6. F0 no puede hardcodear el prompt directamente dentro del adaptador OpenAI como sustituto de `TenantConfiguration`/`RealtimeSessionConfiguration`.
+
+## DD-010 — RealtimeSessionConfiguration independiente del proveedor
+
+`RealtimeSessionConfiguration` es un contrato propio del sistema y no un tipo de OpenAI.
+
+Debe expresar capacidades necesarias por la aplicación, por ejemplo:
+
+```text
+RealtimeSessionConfiguration
+  ├── instructions
+  ├── voice
+  ├── language
+  ├── vad
+  ├── allowedTools
+  ├── conversationPolicies
+  └── metadata { call_id, tenant_id }
+```
+
+Reglas:
+
+1. No contiene nombres de campos que solo existan por conveniencia de un SDK concreto salvo que representen un concepto real del dominio.
+2. `RealtimeProvider` traduce este contrato al formato del proveedor activo.
+3. La lógica que construye `RealtimeSessionConfiguration` no importa SDKs de OpenAI.
+4. Migrar a otro proveedor realtime debe preservar este contrato o evolucionarlo mediante ADR.
 
 ---
 
@@ -375,6 +413,7 @@ Reglas:
 - **RA-015** — el tenant se resuelve desde routing de entrada; inicialmente `called_number → tenant_id`.
 - **RA-016** — la personalización se realiza mediante `TenantConfiguration`, módulos y providers; nunca mediante forks o condicionales específicos en el Core.
 - **RA-017** — ninguna conversación específica de negocio comienza antes de completar Call Bootstrap + Tenant Binding.
+- **RA-018** — `RealtimeSessionConfiguration` es proveedor-agnóstico y solo `RealtimeProvider` puede traducirlo a tipos específicos del proveedor.
 
 Una PR que viole una RA se considera defecto arquitectónico salvo ADR que modifique expresamente la especificación.
 
@@ -399,6 +438,7 @@ Una PR que viole una RA se considera defecto arquitectónico salvo ADR que modif
 - **RF-015 Number routing:** resolver inicialmente el negocio mediante mapping `called_number → tenant_id`.
 - **RF-016 Customización:** incorporar un negocio nuevo sin modificar ni redesplegar una variante específica del Core.
 - **RF-017 Bootstrap:** cargar y aplicar la configuración del tenant antes de iniciar conversación específica del negocio.
+- **RF-018 Realtime config:** construir una `RealtimeSessionConfiguration` independiente del proveedor antes de configurar la sesión realtime.
 
 ---
 
@@ -475,7 +515,19 @@ No se implementan todavía CRM, MCP, agenda, D1, dashboard, ToolGateway ni trans
 
 FASE 0 puede incluir **código mínimo de control** para recibir el evento de llamada, aceptar/configurar OpenAI Realtime, establecer prompt/voz/VAD y finalizar sesión. Ese código pertenece al control plane, nunca transporta audio y no contiene lógica empresarial.
 
-FASE 0 puede utilizar un único tenant de desarrollo preconfigurado; el `TenantResolver` multi-negocio se formaliza en F1.
+FASE 0 utiliza un único tenant de desarrollo preconfigurado. No implementa todavía resolución multi-negocio por número, pero sí ejecuta el mismo pipeline conceptual de binding:
+
+```text
+DEFAULT_TENANT_ID
+    ↓
+TenantConfiguration dev
+    ↓
+RealtimeSessionConfiguration
+    ↓
+RealtimeProvider
+```
+
+El `TenantResolver` multi-negocio se formaliza en F1.
 
 ## 8.2 Ruta
 
@@ -506,8 +558,11 @@ Cuelgue
 ### Control mínimo
 - [ ] Verificar mecanismo actual necesario para incoming call.
 - [ ] Implementar webhook/endpoint mínimo si es necesario.
-- [ ] Aceptar/configurar/finalizar sesión.
-- [ ] Asociar configuración de desarrollo antes del saludo.
+- [ ] Definir `DEFAULT_TENANT_ID` de desarrollo.
+- [ ] Cargar `TenantConfiguration` de desarrollo.
+- [ ] Construir `RealtimeSessionConfiguration` proveedor-agnóstica.
+- [ ] Aceptar/configurar/finalizar sesión mediante `RealtimeProvider`.
+- [ ] Confirmar que la configuración se aplica antes del saludo.
 - [ ] Confirmar que Cloudflare no transporta audio.
 
 ### Realtime
@@ -544,6 +599,7 @@ Cuelgue
 - **F0-T05:** silencio 5–10 s.
 - **F0-T06:** cuelgue del cliente.
 - **F0-T07:** 20 llamadas consecutivas.
+- **F0-T08:** verificar que el saludo/configuración proviene del tenant dev y no de valores hardcodeados en el adaptador OpenAI.
 
 ## 8.5 Gate F0
 
@@ -557,7 +613,8 @@ PASS únicamente si:
 6. llamada de 5 minutos estable;
 7. cuelgue limpia la sesión;
 8. ≥19/20 llamadas completan setup/conversación básica;
-9. baseline inicial de latencia y setup documentado.
+9. baseline inicial de latencia y setup documentado;
+10. `TenantConfiguration dev → RealtimeSessionConfiguration → RealtimeProvider` está demostrado antes del saludo.
 
 Hasta superar F0 no se inicia integración empresarial.
 
@@ -600,11 +657,12 @@ F8 Hardening producción
 - [ ] contrato `TenantResolver`;
 - [ ] mapping `called_number → tenant_id`;
 - [ ] carga de `TenantConfiguration`;
+- [ ] contrato `RealtimeSessionConfiguration`;
 - [ ] construcción de `RealtimeSessionConfiguration`;
 - [ ] tenant binding antes del saludo;
 - [ ] lifecycle/timestamps/modelo/voz.
 
-**Gate F1:** build/deploy reproducible, `/health` estable y toda llamada correlacionada con `call_id` + `called_number` + `tenant_id`; la sesión Realtime queda configurada con el tenant correcto antes de comenzar conversación específica.
+**Gate F1:** build/deploy reproducible, `/health` estable y toda llamada correlacionada con `call_id` + `called_number` + `tenant_id`; la sesión Realtime queda configurada mediante `RealtimeSessionConfiguration` con el tenant correcto antes de comenzar conversación específica.
 
 ## FASE 2 — Latencia y barge-in
 
@@ -621,7 +679,8 @@ F8 Hardening producción
 
 - [ ] frontera `ToolGateway`;
 - [ ] contrato interno `ToolExecutor`;
-- [ ] primera tool READ;
+- [ ] primera implementación de `ToolExecutor`;
+- [ ] verificar que `AppointmentTool`/equivalentes implementan `ToolExecutor` y no crean una capa nueva;
 - [ ] flujo `ToolGateway → ToolExecutor → Module → Provider`;
 - [ ] schema validation;
 - [ ] authorization;
@@ -714,11 +773,24 @@ No avanzar si p95 degrada >20%, error rate >1%, aparecen sesiones huérfanas o e
 
 # 10. Estado de llamada
 
+Estados de dominio:
+
 ```text
-CREATED → BOOTSTRAPPING → RINGING/ACCEPTING → ACTIVE → COMPLETED
-                                      └────→ FAILED
-ACTIVE ─────→ HANDOFF → COMPLETED
+RECEIVED
+   ↓
+BOOTSTRAPPING
+   ↓
+ACCEPTING
+   ↓
+ACTIVE
+   ├────→ HANDOFF → COMPLETED
+   └────→ COMPLETED
+
+RECEIVED / BOOTSTRAPPING / ACCEPTING / ACTIVE / HANDOFF
+   └────→ FAILED
 ```
+
+`RINGING` puede existir como estado/evento específico del proveedor telefónico, pero no se mezcla con `ACCEPTING` en el lifecycle de dominio.
 
 Cada instancia pertenece a una `CallSession(call_id, tenant_id, called_number, ...)`.
 
@@ -762,9 +834,9 @@ External System
 Ejemplos:
 
 ```text
-AppointmentTool → AppointmentModule → AppointmentProvider → agenda
-ReservationTool → ReservationModule → ReservationProvider → reservas
-OrderTool       → OrderModule       → OrderProvider       → pedidos
+AppointmentTool : ToolExecutor → AppointmentModule → AppointmentProvider → agenda
+ReservationTool : ToolExecutor → ReservationModule → ReservationProvider → reservas
+OrderTool       : ToolExecutor → OrderModule       → OrderProvider       → pedidos
 ```
 
 Toda ejecución recibe `tenant_id`; la selección de provider/credenciales/configuración se realiza desde `TenantConfiguration`, no desde decisiones libres del modelo.
@@ -778,6 +850,7 @@ Por llamada:
 - `call_id`;
 - `tenant_id`;
 - `called_number`;
+- estado de dominio (`RECEIVED`, `BOOTSTRAPPING`, `ACCEPTING`, `ACTIVE`, etc.);
 - resultado de tenant resolution;
 - bootstrap/setup latency;
 - versión/config efectiva de sesión;
@@ -799,13 +872,13 @@ Métricas: p50/p95/p99 y coste por llamada resuelta.
 # 13. Estrategia de pruebas
 
 ## Unit
-Estado, políticas, parsers, idempotencia, módulos y `TenantResolver`.
+Estado, políticas, parsers, idempotencia, módulos, `TenantResolver` y construcción de `RealtimeSessionConfiguration`.
 
 ## Integration
-Control plane ↔ OpenAI; control plane ↔ telefonía; routing ↔ tenant; ToolGateway ↔ modules/providers.
+Control plane ↔ OpenAI; control plane ↔ telefonía; routing ↔ tenant; `RealtimeSessionConfiguration` ↔ `RealtimeProvider`; ToolGateway ↔ modules/providers.
 
 ## Bootstrap
-Pruebas explícitas de tenant correcto, tenant inexistente, configuración inválida y fallback controlado.
+Pruebas explícitas de tenant correcto, tenant inexistente, configuración inválida, fallback controlado y configuración realtime correcta antes de `ACTIVE`.
 
 ## E2E
 Siempre debe existir prueba con llamada telefónica real.
@@ -917,10 +990,26 @@ Plantilla obligatoria: **Estado · Problema · Decisión · Motivación · Conse
 ## ADR-011 — Call Bootstrap + Tenant Binding
 - **Estado:** Accepted.
 - **Problema:** la sesión Realtime podría comenzar antes de tener la configuración correcta del negocio.
-- **Decisión:** resolver tenant, cargar `TenantConfiguration` y construir configuración Realtime antes del saludo/comportamiento específico.
+- **Decisión:** resolver/bindear tenant, cargar `TenantConfiguration` y construir configuración Realtime antes del saludo/comportamiento específico; F0 usa un tenant dev fijo pero conserva el binding.
 - **Motivación:** evitar mezcla cross-tenant y garantizar customización determinista.
 - **Consecuencias:** aparece estado `BOOTSTRAPPING`, métrica de setup y fallback explícito.
-- **Alternativas descartadas:** iniciar conversación con configuración global y cambiarla después.
+- **Alternativas descartadas:** iniciar conversación con configuración global/hardcodeada y cambiarla después.
+
+## ADR-012 — RealtimeSessionConfiguration proveedor-agnóstica
+- **Estado:** Accepted.
+- **Problema:** construir sesiones directamente con tipos de OpenAI introduciría acoplamiento en control/dominio.
+- **Decisión:** definir `RealtimeSessionConfiguration` como contrato propio y traducirlo únicamente dentro de `RealtimeProvider`.
+- **Motivación:** preservar migrabilidad del proveedor realtime y testabilidad.
+- **Consecuencias:** prompt, voz, idioma, VAD, tools y políticas se expresan primero en el contrato interno.
+- **Alternativas descartadas:** propagar objetos del SDK de OpenAI por el Core/control plane.
+
+## ADR-013 — Lifecycle de llamada del dominio
+- **Estado:** Accepted.
+- **Problema:** `RINGING/ACCEPTING` mezclaba un estado de proveedor con una transición del dominio.
+- **Decisión:** utilizar `RECEIVED → BOOTSTRAPPING → ACCEPTING → ACTIVE`, con `HANDOFF`, `COMPLETED` y `FAILED` según corresponda.
+- **Motivación:** lifecycle determinista e independiente del proveedor telefónico.
+- **Consecuencias:** eventos como `RINGING` pueden registrarse como metadata del provider sin contaminar el estado principal.
+- **Alternativas descartadas:** conservar `RINGING/ACCEPTING` como un único estado.
 
 ---
 
@@ -947,6 +1036,7 @@ Plantilla obligatoria: **Estado · Problema · Decisión · Motivación · Conse
 | R-017 | Número resuelve tenant incorrecto | Crítico | `TenantResolver` + E2E |
 | R-018 | Customización deriva en forks | Alto | RA-016 + gate multi-negocio |
 | R-019 | IA inicia con configuración de tenant incorrecta | Crítico | DD-009 + RA-017 + bootstrap tests |
+| R-020 | Control plane acoplado a tipos OpenAI | Alto | DD-010 + RA-018 + ADR-012 |
 
 ---
 
@@ -1029,13 +1119,15 @@ En entornos multi-negocio, `DEFAULT_TENANT_ID` no sustituye resolución por rout
 3. configurar SIP
 4. verificar mecanismo actual de incoming call en OpenAI Realtime
 5. implementar control mínimo si es necesario
-6. aplicar configuración de desarrollo antes del saludo
-7. conectar SIP ↔ Realtime
-8. llamar
-9. conversar / interrumpir / colgar
-10. repetir 20 veces
-11. medir baseline de setup y conversación
-12. cerrar Gate F0
+6. definir DEFAULT_TENANT_ID + TenantConfiguration dev
+7. construir RealtimeSessionConfiguration
+8. aceptar/configurar sesión mediante RealtimeProvider
+9. conectar SIP ↔ Realtime
+10. llamar
+11. conversar / interrumpir / colgar
+12. repetir 20 veces
+13. medir baseline de setup y conversación
+14. cerrar Gate F0
 ```
 
 No comenzar todavía D1, MCP, CRM, dashboard, handoff ni load testing.
@@ -1050,5 +1142,5 @@ La resolución multi-negocio se formaliza en F1 y se valida E2E con dos negocios
 **Telefonía inicial:** Twilio detrás de `TelephonyProvider`.  
 **Producto:** Core multi-tenant y agnóstico al negocio; routing selecciona `tenant_id` y configuración.  
 **FASE activa:** FASE 0.  
-**Código permitido en F0:** control mínimo de llamada; ningún relay de audio ni lógica empresarial.  
-**Gate inmediato:** llamada real, conversación bidireccional estable, barge-in, configuración aplicada antes del saludo y cierre correcto.
+**Código permitido en F0:** control mínimo de llamada + tenant/config binding; ningún relay de audio ni lógica empresarial.  
+**Gate inmediato:** llamada real, conversación bidireccional estable, barge-in, `TenantConfiguration dev → RealtimeSessionConfiguration → RealtimeProvider` antes del saludo y cierre correcto.
