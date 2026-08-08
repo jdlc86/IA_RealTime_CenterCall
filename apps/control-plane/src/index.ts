@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import Telnyx from "telnyx";
 
 type RealtimeIncomingCallEvent = {
   id: string;
@@ -7,6 +8,27 @@ type RealtimeIncomingCallEvent = {
   data: {
     call_id: string;
     sip_headers?: Array<{ name: string; value: string }>;
+  };
+};
+
+type TelnyxVoiceEvent = {
+  data?: {
+    id?: string;
+    event_type?: string;
+    occurred_at?: string;
+    payload?: {
+      call_control_id?: string;
+      call_leg_id?: string;
+      call_session_id?: string;
+      connection_id?: string;
+      direction?: string;
+      state?: string;
+      from?: string;
+      to?: string;
+    };
+  };
+  meta?: {
+    attempt?: number;
   };
 };
 
@@ -41,10 +63,16 @@ function json(body: unknown, status = 200): Response {
   return Response.json(body, { status });
 }
 
+function log(level: "info" | "error", event: string, details: Record<string, unknown> = {}): void {
+  const entry = JSON.stringify({ level, event, ...details });
+  if (level === "error") {
+    console.error(entry);
+  } else {
+    console.log(entry);
+  }
+}
+
 function buildRealtimeSessionConfiguration(env: Env): RealtimeSessionConfiguration {
-  // FASE 0 still performs tenant binding. The tenant is fixed for development,
-  // but its effective Realtime configuration is built here rather than being
-  // hard-coded inside the OpenAI HTTP adapter.
   const instructions = [
     "Eres el asistente telefónico de pruebas de IA_RealTime_CenterCall.",
     "Habla siempre en español, de forma amable, natural, breve y profesional.",
@@ -82,6 +110,144 @@ function buildRealtimeSessionConfiguration(env: Env): RealtimeSessionConfigurati
     tools: [],
     tool_choice: "none",
   };
+}
+
+function buildOpenAISipUri(env: Env): string {
+  return `sip:${env.OPENAI_PROJECT_ID}@sip.api.openai.com;transport=tls`;
+}
+
+async function transferTelnyxCallToOpenAI(
+  callControlId: string,
+  eventId: string,
+  env: Env,
+): Promise<void> {
+  const target = buildOpenAISipUri(env);
+  const startedAt = Date.now();
+
+  const response = await fetch(
+    `https://api.telnyx.com/v2/calls/${encodeURIComponent(callControlId)}/actions/transfer`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.TELNYX_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        to: target,
+        sip_transport_protocol: "TLS",
+        timeout_secs: 30,
+        command_id: eventId,
+      }),
+    },
+  );
+
+  const body = await response.text();
+  const elapsedMs = Date.now() - startedAt;
+
+  if (!response.ok) {
+    log("error", "telnyx_transfer_failed", {
+      call_control_id: callControlId,
+      status: response.status,
+      elapsed_ms: elapsedMs,
+      response: body.slice(0, 2_000),
+    });
+    throw new Error(`Telnyx transfer failed with HTTP ${response.status}`);
+  }
+
+  log("info", "telnyx_transfer_requested", {
+    call_control_id: callControlId,
+    tenant_id: env.DEFAULT_TENANT_ID,
+    target_host: "sip.api.openai.com",
+    elapsed_ms: elapsedMs,
+  });
+}
+
+function verifyAndParseTelnyxWebhook(rawBody: string, request: Request, env: Env): TelnyxVoiceEvent {
+  const signature = request.headers.get("telnyx-signature-ed25519");
+  const timestamp = request.headers.get("telnyx-timestamp");
+
+  if (!signature || !timestamp) {
+    throw new Error("Missing Telnyx signature headers");
+  }
+
+  const timestampSeconds = Number(timestamp);
+  if (!Number.isFinite(timestampSeconds)) {
+    throw new Error("Invalid Telnyx timestamp");
+  }
+
+  const ageSeconds = Math.abs(Math.floor(Date.now() / 1000) - timestampSeconds);
+  if (ageSeconds > 300) {
+    throw new Error("Telnyx webhook timestamp outside 5 minute tolerance");
+  }
+
+  const telnyx = new Telnyx({ apiKey: env.TELNYX_API_KEY });
+  return telnyx.webhooks.constructEvent(
+    rawBody,
+    signature,
+    timestamp,
+    env.TELNYX_PUBLIC_KEY,
+  ) as TelnyxVoiceEvent;
+}
+
+async function handleTelnyxWebhook(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const rawBody = await request.text();
+
+  let event: TelnyxVoiceEvent;
+  try {
+    event = verifyAndParseTelnyxWebhook(rawBody, request, env);
+  } catch (error) {
+    log("error", "invalid_telnyx_webhook", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return json({ ok: false, error: "invalid_webhook_signature" }, 403);
+  }
+
+  const eventType = event.data?.event_type ?? "unknown";
+  const eventId = event.data?.id ?? crypto.randomUUID();
+  const payload = event.data?.payload;
+
+  log("info", "telnyx_webhook_received", {
+    event_type: eventType,
+    event_id: eventId,
+    attempt: event.meta?.attempt,
+    call_control_id: payload?.call_control_id,
+    call_session_id: payload?.call_session_id,
+    direction: payload?.direction,
+    state: payload?.state,
+  });
+
+  // Only the initial inbound parked leg is routed by F0 CallOrchestrator.
+  // Webhooks for the transferred/outbound leg are acknowledged but ignored.
+  if (eventType === "call.initiated" && payload?.direction === "incoming") {
+    const callControlId = payload.call_control_id;
+    if (!callControlId) {
+      return json({ ok: false, error: "missing_call_control_id" }, 400);
+    }
+
+    ctx.waitUntil(
+      transferTelnyxCallToOpenAI(callControlId, eventId, env).catch((error) => {
+        log("error", "call_orchestrator_failed", {
+          call_control_id: callControlId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }),
+    );
+
+    // Telnyx recommends acknowledging webhooks quickly. The transfer continues
+    // asynchronously via waitUntil(), while Cloudflare remains outside media.
+    return json({
+      ok: true,
+      accepted: true,
+      action: "transfer_to_realtime",
+      tenant_id: env.DEFAULT_TENANT_ID,
+    });
+  }
+
+  return json({ ok: true, ignored: true, event_type: eventType });
 }
 
 async function acceptRealtimeCall(
@@ -123,25 +289,15 @@ async function handleOpenAIWebhook(request: Request, env: Env): Promise<Response
   try {
     event = client.webhooks.unwrap(rawBody, request.headers);
   } catch (error) {
-    console.error(
-      JSON.stringify({
-        level: "error",
-        event: "invalid_openai_webhook",
-        error: error instanceof Error ? error.message : String(error),
-      }),
-    );
+    log("error", "invalid_openai_webhook", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return json({ ok: false, error: "invalid_webhook_signature" }, 400);
   }
 
   const typedEvent = event as { type?: string };
   if (typedEvent.type !== "realtime.call.incoming") {
-    console.log(
-      JSON.stringify({
-        level: "info",
-        event: "ignored_openai_webhook",
-        type: typedEvent.type ?? "unknown",
-      }),
-    );
+    log("info", "ignored_openai_webhook", { type: typedEvent.type ?? "unknown" });
     return json({ ok: true, ignored: true });
   }
 
@@ -155,30 +311,22 @@ async function handleOpenAIWebhook(request: Request, env: Env): Promise<Response
   const startedAt = Date.now();
   const configuration = buildRealtimeSessionConfiguration(env);
 
-  console.log(
-    JSON.stringify({
-      level: "info",
-      event: "realtime_call_incoming",
-      call_id: callId,
-      tenant_id: env.DEFAULT_TENANT_ID,
-      sip_header_names: incoming.data.sip_headers?.map((header) => header.name) ?? [],
-    }),
-  );
+  log("info", "realtime_call_incoming", {
+    call_id: callId,
+    tenant_id: env.DEFAULT_TENANT_ID,
+    sip_header_names: incoming.data.sip_headers?.map((header) => header.name) ?? [],
+  });
 
   let openAIResponse: Response;
 
   try {
     openAIResponse = await acceptRealtimeCall(callId, configuration, env);
   } catch (error) {
-    console.error(
-      JSON.stringify({
-        level: "error",
-        event: "realtime_accept_exception",
-        call_id: callId,
-        tenant_id: env.DEFAULT_TENANT_ID,
-        error: error instanceof Error ? error.message : String(error),
-      }),
-    );
+    log("error", "realtime_accept_exception", {
+      call_id: callId,
+      tenant_id: env.DEFAULT_TENANT_ID,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return json({ ok: false, error: "accept_exception" }, 502);
   }
 
@@ -186,17 +334,13 @@ async function handleOpenAIWebhook(request: Request, env: Env): Promise<Response
   const setupMs = Date.now() - startedAt;
 
   if (!openAIResponse.ok) {
-    console.error(
-      JSON.stringify({
-        level: "error",
-        event: "realtime_accept_failed",
-        call_id: callId,
-        tenant_id: env.DEFAULT_TENANT_ID,
-        status: openAIResponse.status,
-        setup_ms: setupMs,
-        openai_response: responseBody.slice(0, 2_000),
-      }),
-    );
+    log("error", "realtime_accept_failed", {
+      call_id: callId,
+      tenant_id: env.DEFAULT_TENANT_ID,
+      status: openAIResponse.status,
+      setup_ms: setupMs,
+      openai_response: responseBody.slice(0, 2_000),
+    });
     return json(
       {
         ok: false,
@@ -207,15 +351,11 @@ async function handleOpenAIWebhook(request: Request, env: Env): Promise<Response
     );
   }
 
-  console.log(
-    JSON.stringify({
-      level: "info",
-      event: "realtime_call_accepted",
-      call_id: callId,
-      tenant_id: env.DEFAULT_TENANT_ID,
-      setup_ms: setupMs,
-    }),
-  );
+  log("info", "realtime_call_accepted", {
+    call_id: callId,
+    tenant_id: env.DEFAULT_TENANT_ID,
+    setup_ms: setupMs,
+  });
 
   return json({
     ok: true,
@@ -226,7 +366,7 @@ async function handleOpenAIWebhook(request: Request, env: Env): Promise<Response
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/health") {
@@ -236,7 +376,13 @@ export default {
         phase: "F0",
         environment: env.ENVIRONMENT,
         tenant_id: env.DEFAULT_TENANT_ID,
+        telephony_provider: "telnyx",
+        call_orchestrator: true,
       });
+    }
+
+    if (request.method === "POST" && url.pathname === "/webhooks/telnyx") {
+      return handleTelnyxWebhook(request, env, ctx);
     }
 
     if (request.method === "POST" && url.pathname === "/webhooks/openai") {
