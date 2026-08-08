@@ -1,6 +1,6 @@
 # IA_RealTime_CenterCall — ARCHITECTURE SPECIFICATION
 
-> **Estado:** Especificación de arquitectura oficial — v1.1  
+> **Estado:** Especificación de arquitectura oficial — v1.2  
 > **Fecha base:** 2026-08-08  
 > **Repositorio:** `jdlc86/IA_RealTime_CenterCall`  
 > **Rama base:** `main`  
@@ -14,6 +14,7 @@
 |---|---|---|
 | 1.0 | 2026-08-08 | Consolidación de arquitectura oficial, FASE 0 de voz E2E, independencia de proveedores, reglas no negociables y Twilio como proveedor inicial. |
 | 1.1 | 2026-08-08 | Agrupación explícita de fases de integración, gates completos y normalización del registro ADR. |
+| 1.2 | 2026-08-08 | Core agnóstico al tipo de negocio, BusinessProfile/TenantConfiguration, módulos verticales y clínica como primer vertical de validación. |
 
 ---
 
@@ -224,6 +225,51 @@ El modelo puede decidir **solicitar** una herramienta. El sistema decide si pued
 
 **Objetivo de portabilidad:** debe ser posible migrar posteriormente a Telnyx u otro carrier SIP competitivo implementando otro `TelephonyProvider` y cambiando configuración, sin reescribir el núcleo.
 
+## DD-006 — Core agnóstico al tipo de negocio y módulos verticales
+
+**Decisión:** el núcleo de la centralita será independiente del sector empresarial. Clínica, restaurante, hotel, taller, comercio u otros negocios serán configuraciones y módulos verticales sobre el mismo Core, no variantes del Core.
+
+**Motivación:** el producto debe poder reutilizarse entre distintos tipos de negocio sin forks, reescrituras ni lógica sectorial embebida en telefonía, conversación realtime, seguridad, observabilidad o Tool Gateway.
+
+**Primer vertical de validación:** clínica. La primera integración empresarial real se orientará a una clínica, donde el agente podrá:
+- informar sobre el negocio;
+- consultar horarios, ubicación, servicios, políticas y otra información autorizada;
+- consultar disponibilidad de agenda;
+- crear, consultar, reprogramar y cancelar citas;
+- transferir a una persona cuando corresponda.
+
+La clínica es el primer caso de uso, no una restricción arquitectónica del producto.
+
+**Configuración común por negocio:** cada tenant dispondrá de un `BusinessProfile` o `TenantConfiguration` que definirá, como mínimo:
+- identidad y nombre comercial;
+- tipo de negocio;
+- idioma y tono;
+- horarios;
+- ubicaciones;
+- servicios/productos;
+- políticas y preguntas frecuentes;
+- fuentes de conocimiento autorizadas;
+- módulos habilitados;
+- herramientas disponibles;
+- reglas de escalamiento a humano;
+- configuración de telefonía y comportamiento conversacional permitido.
+
+**Módulos verticales previstos:**
+- `BusinessInformationModule`: información general de cualquier negocio;
+- `AppointmentModule`: citas para clínica, dentista, peluquería, taller u otros negocios con agenda;
+- `ReservationModule`: reservas para restaurante, hotel u otros negocios;
+- `OrderModule`: pedidos cuando el negocio lo requiera;
+- `HumanHandoffModule`: transferencia a operador humano;
+- futuros módulos específicos sin modificar el Core.
+
+**Reglas de implementación:**
+1. El Core no contendrá condicionales de negocio del tipo `if clinic`, `if restaurant` o equivalentes.
+2. Las diferencias entre sectores se resolverán mediante configuración, capacidades habilitadas, módulos y adaptadores.
+3. Añadir un nuevo vertical no debe requerir un fork del repositorio ni cambios en el media plane.
+4. La información empresarial no se codificará rígidamente en prompts salvo instrucciones mínimas; debe provenir de configuración o fuentes de conocimiento controladas.
+5. Disponibilidad, reservas, citas, pedidos y otras operaciones dinámicas deben consultarse en su sistema fuente mediante `ToolGateway`; el modelo no puede inventarlas.
+6. Las reglas del dominio específicas de un vertical vivirán en módulos separados del Core compartido.
+
 ---
 
 # 4. Reglas Arquitectónicas No Negociables
@@ -238,6 +284,8 @@ El modelo puede decidir **solicitar** una herramienta. El sistema decide si pued
 - **RA-008 — Sustitución de proveedor preservada.** Nuevas features no pueden acoplar el dominio a Twilio u OpenAI.
 - **RA-009 — Secretos fuera del código.** Ningún secreto o credencial se almacena en Git.
 - **RA-010 — Permisos fuera del modelo.** El modelo nunca es autoridad de autorización para una acción empresarial.
+- **RA-011 — Core agnóstico al negocio.** El Core no puede contener lógica específica de clínica, restaurante, taller, hotel u otro vertical.
+- **RA-012 — Datos dinámicos desde fuente de verdad.** Disponibilidad, citas, reservas, pedidos y otra información operativa no pueden ser inventados por el modelo; deben obtenerse mediante `ToolGateway` desde una fuente autorizada.
 
 Las RA se revisan en cada Pull Request que afecte arquitectura, proveedores, media plane o herramientas.
 
@@ -375,6 +423,33 @@ El sistema podrá transferir una llamada activa a un destino telefónico/SIP.
 ## RF-009 Trazabilidad
 
 Cada llamada tendrá un `call_id` y métricas correlacionadas.
+
+## RF-010 Información del negocio
+
+El agente debe poder responder preguntas administrativas y comerciales del negocio a partir de información autorizada y actualizable, por ejemplo:
+- horarios;
+- ubicación y cómo llegar;
+- servicios;
+- precios publicados cuando aplique;
+- políticas;
+- profesionales o recursos disponibles cuando corresponda;
+- documentación necesaria;
+- preguntas frecuentes.
+
+La información del negocio debe proceder de `BusinessProfile`, configuración o una fuente de conocimiento autorizada; no debe depender de datos rígidos embebidos en el Core.
+
+## RF-011 Capacidades configurables por tenant
+
+Cada negocio debe poder habilitar únicamente los módulos y herramientas que necesita, sin modificar el Core.
+
+Ejemplos:
+- clínica: información + citas + handoff;
+- restaurante: información + reservas + menú/pedidos + handoff;
+- taller: información + citas + órdenes de trabajo + handoff.
+
+## RF-012 Portabilidad entre verticales
+
+Añadir un nuevo tipo de negocio debe requerir principalmente configuración, módulos y adaptadores, no reescritura del media plane ni del dominio compartido.
 
 ---
 
@@ -693,7 +768,7 @@ FASE 4 — Persistencia y post-call
 FASE 5 — Transferencia humana
       │
       ▼
-FASE 6 — Integraciones MCP / negocio
+FASE 6 — Integraciones de negocio y módulos verticales
       │
       ▼
 FASE 7 — Concurrencia
@@ -803,18 +878,47 @@ Objetivo: permitir escalamiento controlado a una persona mediante mecanismos SIP
 
 ---
 
-# 16. FASE 6 — Integraciones MCP / negocio
+# 16. FASE 6 — Integraciones de negocio y módulos verticales
 
-Objetivo: conectar capacidades empresariales reales exclusivamente a través de `ToolGateway` y adaptadores autorizados.
+Objetivo: demostrar que el Core puede atender un negocio real sin introducir lógica sectorial en el núcleo.
 
-- [ ] definir MCP realmente necesario
-- [ ] conectar CRM/ERP/pedidos/etc.
+## 16.1 Primer vertical — Clínica
+
+La clínica será el primer vertical de validación empresarial.
+
+Capacidades objetivo:
+- [ ] `BusinessProfile` / `TenantConfiguration`
+- [ ] `BusinessInformationModule`
+- [ ] horarios, ubicación, servicios y políticas
+- [ ] `AppointmentModule`
+- [ ] consultar disponibilidad de agenda
+- [ ] crear cita
+- [ ] consultar cita
+- [ ] reprogramar cita
+- [ ] cancelar cita
 - [ ] permisos por herramienta
-- [ ] política de riesgos
-- [ ] idempotencia para escritura
+- [ ] idempotencia para escrituras
 - [ ] circuit breakers
+- [ ] integración MCP solo donde aporte valor real
 
-**Gate F6:** herramientas empresariales seguras, auditables y sin bloquear indefinidamente conversación.
+## 16.2 Validación de independencia del vertical
+
+Antes de cerrar FASE 6 debe demostrarse que la arquitectura permite modelar un segundo vertical —por ejemplo restaurante— sin modificar el Core de telefonía/realtime ni duplicar el proyecto.
+
+Ejemplo conceptual:
+
+```text
+Core común
+  ├── BusinessProfile
+  ├── ToolGateway
+  ├── BusinessInformationModule
+  └── módulos habilitados
+        ├── Clínica      → AppointmentModule
+        ├── Restaurante → ReservationModule / OrderModule
+        └── Taller      → AppointmentModule / módulos futuros
+```
+
+**Gate F6:** clínica operativa con información de negocio y gestión de citas mediante herramientas seguras y auditables, y revisión arquitectónica que confirme que un segundo vertical puede incorporarse sin fork ni lógica sectorial en el Core.
 
 ---
 
@@ -1128,6 +1232,22 @@ Plantilla obligatoria para nuevos ADR:
 
 ---
 
+## ADR-008 — Core agnóstico al negocio
+
+**Estado:** Accepted
+
+**Problema:** el primer caso de uso real será una clínica, pero acoplar el núcleo a conceptos clínicos limitaría la reutilización del producto y obligaría a reescrituras para restaurantes, talleres, hoteles u otros negocios.
+
+**Decisión:** mantener un Core sector-agnostic y representar cada negocio mediante `BusinessProfile`/`TenantConfiguration`, módulos verticales y herramientas autorizadas.
+
+**Motivación:** maximizar reutilización, reducir forks, mantener independencia del media plane y permitir evolución comercial hacia múltiples sectores.
+
+**Consecuencias:** la primera integración clínica debe implementarse como vertical sobre el Core. Los módulos sectoriales tendrán contratos definidos y no podrán contaminar telefonía, realtime ni dominio compartido.
+
+**Alternativas descartadas:** construir primero una centralita específica para clínica y generalizar después. Se descarta porque suele introducir dependencias difíciles de eliminar y sesga el modelo de dominio desde el inicio.
+
+---
+
 # 26. Riesgos principales
 
 | ID | Riesgo | Impacto | Mitigación |
@@ -1143,6 +1263,9 @@ Plantilla obligatoria para nuevos ADR:
 | R-009 | PII en logs | Alto | redaction |
 | R-010 | Sesiones huérfanas | Alto | lifecycle + cleanup |
 | R-011 | Vendor lock-in | Medio | `TelephonyProvider` + `RealtimeProvider` + `ToolGateway` + adaptadores |
+| R-012 | Acoplamiento del Core al primer vertical (clínica) | Alto | `BusinessProfile`, módulos verticales y RA-011 |
+| R-013 | Información empresarial desactualizada | Alto | fuente de verdad configurable, ownership y actualización controlada |
+| R-014 | El modelo inventa disponibilidad/citas/reservas | Crítico | RA-012 + `ToolGateway` + sistemas fuente |
 
 ---
 
@@ -1185,6 +1308,13 @@ IA_RealTime_CenterCall/
 │   ├── telephony/
 │   ├── realtime/
 │   ├── tools/
+│   ├── business-profile/
+│   ├── modules/
+│   │   ├── business-information/
+│   │   ├── appointments/
+│   │   ├── reservations/
+│   │   ├── orders/
+│   │   └── human-handoff/
 │   └── observability/
 ├── tests/
 │   ├── unit/
@@ -1263,6 +1393,7 @@ No comenzar todavía:
 
 **Arquitectura:** Direct SIP → OpenAI Realtime + Cloudflare como control plane.  
 **Proveedor telefónico inicial:** Twilio, encapsulado mediante `TelephonyProvider`.  
+**Modelo de producto:** Core agnóstico al negocio; clínica como primer vertical de validación.  
 **FASE activa:** FASE 0 — Prueba end-to-end del canal de audio.  
 **Código:** todavía no requerido para dar por iniciada F0.  
 **Gate inmediato:** conseguir una llamada telefónica real, conversación bidireccional estable y cierre correcto.
