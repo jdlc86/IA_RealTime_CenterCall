@@ -1,0 +1,48 @@
+# IA_RealTime_CenterCall — Documentación oficial v2.0
+
+Este directorio es la puerta de entrada a la documentación del proyecto. GitHub es la fuente de verdad del código y de la documentación.
+
+## Lectura recomendada
+
+1. [`SYSTEM_OVERVIEW.md`](./SYSTEM_OVERVIEW.md) — qué es el producto y cómo funciona a alto nivel.
+2. [`architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — arquitectura canónica del sistema.
+3. [`architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — reglas no negociables de implementación.
+4. [`implementation/PHASE_0_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_0_IMPLEMENTATION_GUIDE.md) — guía operativa de la FASE 0.
+5. [`tests/PHASE0.md`](./tests/PHASE0.md) — plan y evidencia del Gate F0.
+6. [`DEVELOPMENT_LOG.md`](./DEVELOPMENT_LOG.md) — bitácora cronológica.
+
+## Estructura
+
+```text
+docs/
+├── README.md
+├── SYSTEM_OVERVIEW.md
+├── DEVELOPMENT_LOG.md
+├── architecture/
+│   ├── SYSTEM_ARCHITECTURE.md
+│   ├── DESIGN_RULES.md
+│   └── GLOSSARY.md
+├── implementation/
+│   └── PHASE_0_IMPLEMENTATION_GUIDE.md
+├── adr/
+│   └── README.md
+├── runbooks/
+│   ├── Cloudflare.md
+│   ├── OpenAI.md
+│   ├── Twilio.md
+│   ├── Deployment.md
+│   └── Troubleshooting.md
+└── tests/
+    └── PHASE0.md
+```
+
+## Fuente de verdad
+
+- **Arquitectura vigente:** `architecture/SYSTEM_ARCHITECTURE.md`.
+- **Reglas arquitectónicas:** `architecture/DESIGN_RULES.md`.
+- **Implementación activa:** documentos de `implementation/`.
+- **Operación:** `runbooks/`.
+- **Evidencia de gates:** `tests/`.
+- **Historial de decisiones:** `adr/`.
+
+Los documentos v1.x se consideran históricos una vez migrados a `docs/legacy/` y no deben usarse como especificación vigente.
