@@ -45,4 +45,4 @@ docs/
 - **Evidencia de gates:** `tests/`.
 - **Historial de decisiones:** `adr/`.
 
-Los documentos v1.x se consideran históricos una vez migrados a `docs/legacy/` y no deben usarse como especificación vigente.
+Los antiguos paths `ARCHITECTURE_SPECIFICATION.md` y `PHASE_0_IMPLEMENTATION_GUIDE.md` se conservan únicamente como redirecciones de compatibilidad hacia la documentación v2.0. Las versiones v1.x completas siguen disponibles en el historial Git y no son fuente de verdad para nuevas implementaciones.
