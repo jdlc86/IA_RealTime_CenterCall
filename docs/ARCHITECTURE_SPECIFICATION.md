@@ -1,496 +1,371 @@
 # IA_RealTime_CenterCall — ARCHITECTURE SPECIFICATION
 
-> **Estado:** Especificación de arquitectura oficial — v1.2  
+> **Estado:** Especificación oficial — v1.3  
 > **Fecha base:** 2026-08-08  
 > **Repositorio:** `jdlc86/IA_RealTime_CenterCall`  
 > **Rama base:** `main`  
-> **Objetivo:** Diseñar y construir una centralita telefónica con IA de voz en tiempo real, alto rendimiento, alta disponibilidad y latencia conversacional mínima.
+> **Objetivo:** construir una centralita telefónica con IA de voz en tiempo real, ultra baja latencia, alta disponibilidad y capacidad de adaptación a múltiples tipos de negocio.
 
-> **Carácter normativo:** Este documento constituye la **especificación oficial de arquitectura** del proyecto. Las decisiones de diseño, restricciones, fases, gates y criterios de aceptación definidos aquí son obligatorios para la implementación salvo modificación explícita y versionada de esta especificación.
+> **Carácter normativo:** este documento es la fuente de verdad de arquitectura, fases, gates y restricciones de implementación. Una decisión marcada como obligatoria solo puede cambiar mediante actualización explícita de esta especificación y su ADR correspondiente.
 
-## Historial de versiones
+## Historial
 
 | Versión | Fecha | Cambio |
 |---|---|---|
-| 1.0 | 2026-08-08 | Consolidación de arquitectura oficial, FASE 0 de voz E2E, independencia de proveedores, reglas no negociables y Twilio como proveedor inicial. |
-| 1.1 | 2026-08-08 | Agrupación explícita de fases de integración, gates completos y normalización del registro ADR. |
-| 1.2 | 2026-08-08 | Core agnóstico al tipo de negocio, BusinessProfile/TenantConfiguration, módulos verticales y clínica como primer vertical de validación. |
+| 1.0 | 2026-08-08 | Arquitectura oficial, FASE 0 voz E2E, independencia de proveedores y Twilio inicial. |
+| 1.1 | 2026-08-08 | Fases de integración y ADR normalizados. |
+| 1.2 | 2026-08-08 | Core agnóstico al negocio y clínica como primer vertical. |
+| 1.3 | 2026-08-08 | Saneamiento: tenant de primera clase, `TenantConfiguration`/`BusinessProfile`, Module/Provider, `ToolGateway`/`ToolExecutor`, control mínimo en F0 y reordenación de fases. |
 
 ---
 
-# 0. Cómo usar este documento
+# 0. Reglas de uso
 
-Este archivo es la **fuente de verdad técnica del proyecto**. Toda decisión relevante de arquitectura, requisito, métrica, prueba, dependencia externa y criterio de aceptación debe quedar registrada aquí.
+1. Ninguna fase termina sin superar su gate.
+2. La latencia se mide con datos reproducibles; no por percepción.
+3. El audio utiliza la ruta mínima posible.
+4. Cloudflare no transporta audio en la arquitectura oficial.
+5. El dominio no depende de SDKs ni tipos de proveedores.
+6. Ninguna operación empresarial se confirma sin respuesta válida de su fuente de verdad.
+7. Toda optimización debe registrar baseline y resultado.
+8. Toda llamada y operación empresarial pertenece a un `tenant_id`.
+9. Toda feature debe cumplir las Reglas Arquitectónicas No Negociables.
+10. Este documento se actualiza junto con las decisiones de código.
 
-Reglas:
-
-1. Ninguna fase termina sin superar su gate de aceptación.
-2. Las decisiones arquitectónicas importantes se registran como ADR.
-3. La latencia se mide; no se estima por percepción subjetiva.
-4. El camino crítico de audio debe tener el mínimo número posible de saltos.
-5. Se prioriza primero una llamada impecable; después herramientas; después concurrencia y escalado.
-6. No añadir infraestructura al media path salvo necesidad demostrada.
-7. Toda optimización relevante debe registrar medida antes/después.
-8. Este documento se actualiza junto con el código.
-9. Ninguna implementación puede violar una regla arquitectónica no negociable sin modificar previamente esta especificación mediante una decisión explícita.
-10. Las dependencias de proveedores externos deben permanecer fuera del dominio.
-
-Estados:
-
-- `[ ]` No iniciado
-- `[~]` En curso
-- `[x]` Completado y validado
-- `[!]` Bloqueado
+Estados: `[ ]` no iniciado · `[~]` en curso · `[x]` validado · `[!]` bloqueado.
 
 ---
 
-# 1. Visión del producto
+# 1. Visión de producto
 
-Construir una centralita telefónica inteligente capaz de:
+La plataforma recibe llamadas de la red telefónica, conversa de forma natural mediante IA realtime, responde información autorizada del negocio, ejecuta operaciones empresariales mediante herramientas controladas y puede transferir la llamada a una persona.
 
-- recibir llamadas desde la red telefónica pública;
-- responder automáticamente con una IA de voz;
-- mantener conversación natural en español;
-- operar con latencia conversacional mínima;
-- permitir interrupciones naturales (*barge-in*);
-- utilizar herramientas empresariales cuando sea necesario;
-- transferir a un agente humano;
-- registrar métricas y trazabilidad;
-- escalar posteriormente a múltiples llamadas simultáneas.
+El producto es **agnóstico al sector**. La clínica es el primer vertical de validación, pero el Core debe poder reutilizarse para restaurante, hotel, taller, peluquería, comercio u otros negocios sin forks ni reescritura de telefonía/realtime.
 
-El producto no se considera inicialmente una suite completa de contact center. El núcleo es el **motor de llamada IA realtime**.
+Ejemplos de capacidades:
+
+- información del negocio;
+- citas;
+- reservas;
+- pedidos;
+- transferencia a humano;
+- herramientas futuras habilitadas por tenant.
+
+La IA **conversa y solicita acciones**; los sistemas empresariales son la fuente de verdad.
 
 ---
 
 # 2. Arquitectura oficial
 
-## 2.1 Decisión
-
-La arquitectura oficial del proyecto es:
-
 ```text
 Cliente / PSTN
       │
       ▼
-Número telefónico / proveedor SIP
-      │
+Proveedor telefónico / SIP
       │ SIP / RTP
       ▼
 OpenAI Realtime
       │
-      │ speech-to-speech nativo
-      │ VAD / barge-in / conversación
+      │ speech-to-speech · VAD · barge-in
       │
-      ├──────────► Tool calling / MCP
-      │                 │
-      │                 ▼
-      │           Cloudflare Control Plane
-      │             ├── Worker
-      │             ├── autenticación
-      │             ├── herramientas
-      │             ├── CRM / ERP
-      │             ├── persistencia
-      │             ├── auditoría
-      │             └── observabilidad
+      └──── tool calls ────► Cloudflare Control Plane
+                                  │
+                                  ├── ToolGateway
+                                  ├── TenantConfiguration
+                                  ├── políticas / seguridad
+                                  ├── providers empresariales
+                                  ├── persistencia
+                                  └── observabilidad
       │
       ▼
 Cliente / PSTN
 ```
 
-## 2.2 Principio fundamental
+## 2.1 Media plane
 
-**Cloudflare NO transportará el audio de la llamada en la arquitectura principal.**
+Ruta oficial:
 
-El audio debe viajar por la ruta más directa posible entre telefonía/SIP y OpenAI Realtime.
+```text
+PSTN → proveedor SIP → OpenAI Realtime → proveedor SIP → PSTN
+```
 
-Cloudflare se utiliza como **control plane**, no como media bridge.
+Cloudflare, bases de datos, MCP, CRM y ToolGateway quedan fuera del transporte de audio.
 
-## 2.3 Motivo
+## 2.2 Control plane
 
-La prioridad del proyecto es ultra baja latencia. Añadir un relay WebSocket propio para el audio implicaría:
+Cloudflare alojará progresivamente:
 
-- un salto adicional de red;
-- más buffering;
-- más copias de memoria;
-- más posibilidades de jitter;
-- más complejidad operacional;
-- más superficie de fallo.
+- webhook/control de llamadas;
+- configuración por tenant;
+- ToolGateway;
+- autorización y políticas;
+- providers/adaptadores;
+- persistencia;
+- observabilidad;
+- administración futura.
 
-No desarrollaremos dos arquitecturas en paralelo.
+## 2.3 Proveedores iniciales
+
+- Telefonía: **Twilio**.
+- IA realtime: **OpenAI Realtime**.
+- Infraestructura/control: **Cloudflare**.
+
+Son implementaciones iniciales, no dependencias del dominio.
 
 ---
 
 # 3. Decisiones de Diseño Obligatorias
 
-Estas decisiones no son recomendaciones. Son restricciones de diseño que deben guiar la implementación y la revisión de código.
-
 ## DD-001 — Independencia de proveedores
 
-**Decisión:** el núcleo del sistema no dependerá directamente de proveedores concretos de telefonía, IA realtime ni sistemas empresariales.
+Fronteras arquitectónicas:
 
-**Motivación:** precios, capacidades, disponibilidad, regulación y calidad de los proveedores pueden cambiar. La plataforma debe poder migrar de proveedor sin reescribir la lógica de negocio.
+- `TelephonyProvider`
+- `RealtimeProvider`
+- `ToolGateway`
 
-**Interfaces arquitectónicas obligatorias:**
+Las particularidades de Twilio, OpenAI, MCP, CRM, agendas u otros proveedores se encapsulan en infraestructura/adaptadores.
 
-- `TelephonyProvider`: contrato del núcleo para capacidades telefónicas necesarias por la aplicación. La implementación inicial utilizará Twilio, pero el dominio no conocerá Twilio.
-- `RealtimeProvider`: contrato del núcleo para conversación realtime. La implementación inicial utilizará OpenAI Realtime, pero el dominio no conocerá el SDK ni tipos específicos de OpenAI.
-- `ToolGateway`: única frontera autorizada entre el modelo y sistemas empresariales como CRM, ERP, pedidos, facturación o servidores MCP.
+**Regla:** sustituir un proveedor debe requerir principalmente un nuevo adaptador y configuración, no cambios en reglas del Core.
 
-**Reglas de implementación:**
+Las interfaces se materializan cuando existe su capacidad correspondiente. FASE 0 no necesita `ToolGateway`.
 
-1. `domain` no importará SDKs, tipos ni clientes de Twilio, OpenAI, Cloudflare ni futuros proveedores.
-2. Las particularidades de un proveedor se traducen dentro de su adaptador.
-3. Los contratos del núcleo expresan capacidades del sistema, no nombres ni estructuras del proveedor.
-4. Sustituir un proveedor debe requerir principalmente un nuevo adaptador y configuración, no cambios en reglas de negocio.
-5. Una Pull Request que introduzca dependencia directa del dominio hacia un proveedor se considera defecto arquitectónico salvo ADR explícito que modifique esta decisión.
+## DD-002 — Dominio / Infraestructura
 
-## DD-002 — Separación Dominio / Infraestructura
+El dominio contiene:
 
-**Decisión:** el sistema separará explícitamente lógica de dominio e infraestructura.
-
-**Dominio:**
-
-- lifecycle y estado lógico de llamada;
+- lifecycle de llamada;
+- contratos;
 - políticas;
-- contratos de telefonía/realtime/herramientas;
-- reglas de negocio;
-- decisiones de handoff;
-- semántica de errores del sistema.
+- reglas compartidas;
+- estado lógico;
+- semántica de errores.
 
-**Infraestructura:**
+Infraestructura contiene:
 
-- SDKs de proveedores;
+- SDKs;
 - HTTP/SIP/webhooks;
-- Cloudflare Workers;
+- Workers;
 - D1/R2;
+- serialización de proveedor;
 - credenciales;
-- serialización específica;
-- adaptadores Twilio/OpenAI/MCP/CRM.
+- adaptadores.
 
-**Regla:** la infraestructura puede depender del dominio; el dominio no puede depender de infraestructura.
+**Dependencia permitida:** infraestructura → dominio.  
+**Dependencia prohibida:** dominio → infraestructura.
 
 ## DD-003 — Audio Path Mínimo
 
-**Decisión:** el media plane debe contener únicamente los elementos imprescindibles para transportar y procesar audio.
+No se añade un componente al media plane sin:
 
-La ruta objetivo es:
-
-```text
-PSTN / teléfono
-      │
-      ▼
-Proveedor telefónico / SIP
-      │
-      ▼
-OpenAI Realtime
-      │
-      ▼
-PSTN / teléfono
-```
-
-Cloudflare, bases de datos, MCP, CRM, observabilidad y Tool Gateway no forman parte del transporte de audio.
-
-Cualquier propuesta para introducir un componente nuevo en esta ruta requiere:
-
-1. necesidad funcional demostrada;
-2. estimación del impacto;
+1. necesidad demostrada;
+2. estimación de impacto;
 3. benchmark antes/después;
 4. ADR aprobado.
 
-## DD-004 — Tool Gateway obligatorio
+## DD-004 — ToolGateway obligatorio
 
-**Decisión:** el modelo no accederá directamente a sistemas empresariales.
+El modelo no accede directamente a APIs empresariales.
 
-Toda herramienta de negocio deberá atravesar `ToolGateway`, que será responsable de:
+```text
+Modelo
+  │
+  ▼
+ToolGateway
+  ├── schema validation
+  ├── policy / authorization
+  ├── timeout
+  ├── idempotency
+  ├── audit
+  └── ToolExecutor
+        └── Provider / Adapter
+              └── sistema externo
+```
 
-- validación de esquema;
-- autenticación y autorización;
-- allowlist;
-- timeouts;
-- idempotencia;
-- clasificación de riesgo;
-- auditoría;
-- normalización de errores;
-- adaptación a CRM/ERP/MCP u otros sistemas.
+`ToolGateway` es la frontera pública para herramientas. `ToolExecutor` es un contrato interno para ejecutar una operación ya validada/autorizada.
 
-El modelo puede decidir **solicitar** una herramienta. El sistema decide si puede ejecutarse.
+## DD-005 — Twilio inicial, migrable
 
-## DD-005 — Proveedor telefónico inicial
+Twilio es el carrier inicial para reducir riesgo de FASE 0.
 
-**Decisión:** Twilio es el proveedor telefónico inicial seleccionado para desarrollo y FASE 0.
+La migración futura a Telnyx u otro SIP carrier debe poder realizarse implementando otro `TelephonyProvider`.
 
-**Motivación:** priorizar madurez, documentación, soporte de telefonía/SIP y reducción del riesgo de integración durante el arranque.
+## DD-006 — Core agnóstico al negocio
 
-**Implicación:** Twilio es una elección de implementación inicial, no una dependencia del dominio.
+La clínica es un vertical, no el Core.
 
-**Objetivo de portabilidad:** debe ser posible migrar posteriormente a Telnyx u otro carrier SIP competitivo implementando otro `TelephonyProvider` y cambiando configuración, sin reescribir el núcleo.
+```text
+TenantConfiguration
+  ├── tenant_id
+  ├── BusinessProfile
+  ├── módulos habilitados
+  ├── políticas / permisos
+  ├── telefonía
+  ├── realtime
+  └── configuración de providers
+```
 
-## DD-006 — Core agnóstico al tipo de negocio y módulos verticales
+`TenantConfiguration` y `BusinessProfile` no son sinónimos:
 
-**Decisión:** el núcleo de la centralita será independiente del sector empresarial. Clínica, restaurante, hotel, taller, comercio u otros negocios serán configuraciones y módulos verticales sobre el mismo Core, no variantes del Core.
+- `TenantConfiguration`: configuración operativa completa de un negocio.
+- `BusinessProfile`: información descriptiva y relativamente estable comunicable al usuario.
 
-**Motivación:** el producto debe poder reutilizarse entre distintos tipos de negocio sin forks, reescrituras ni lógica sectorial embebida en telefonía, conversación realtime, seguridad, observabilidad o Tool Gateway.
+Información relativamente estable:
 
-**Primer vertical de validación:** clínica. La primera integración empresarial real se orientará a una clínica, donde el agente podrá:
-- informar sobre el negocio;
-- consultar horarios, ubicación, servicios, políticas y otra información autorizada;
-- consultar disponibilidad de agenda;
-- crear, consultar, reprogramar y cancelar citas;
-- transferir a una persona cuando corresponda.
+- identidad;
+- dirección;
+- horarios publicados;
+- servicios;
+- políticas;
+- FAQs.
 
-La clínica es el primer caso de uso, no una restricción arquitectónica del producto.
+Información dinámica u operacional:
 
-**Configuración común por negocio:** cada tenant dispondrá de un `BusinessProfile` o `TenantConfiguration` que definirá, como mínimo:
-- identidad y nombre comercial;
-- tipo de negocio;
-- idioma y tono;
-- horarios;
-- ubicaciones;
-- servicios/productos;
-- políticas y preguntas frecuentes;
-- fuentes de conocimiento autorizadas;
-- módulos habilitados;
-- herramientas disponibles;
-- reglas de escalamiento a humano;
-- configuración de telefonía y comportamiento conversacional permitido.
+- disponibilidad actual;
+- citas;
+- reservas;
+- pedidos;
+- precios dinámicos;
+- estado de una operación.
 
-**Módulos verticales previstos:**
-- `BusinessInformationModule`: información general de cualquier negocio;
-- `AppointmentModule`: citas para clínica, dentista, peluquería, taller u otros negocios con agenda;
-- `ReservationModule`: reservas para restaurante, hotel u otros negocios;
-- `OrderModule`: pedidos cuando el negocio lo requiera;
-- `HumanHandoffModule`: transferencia a operador humano;
-- futuros módulos específicos sin modificar el Core.
+Los datos dinámicos se consultan mediante `ToolGateway`.
 
-**Reglas de implementación:**
-1. El Core no contendrá condicionales de negocio del tipo `if clinic`, `if restaurant` o equivalentes.
-2. Las diferencias entre sectores se resolverán mediante configuración, capacidades habilitadas, módulos y adaptadores.
-3. Añadir un nuevo vertical no debe requerir un fork del repositorio ni cambios en el media plane.
-4. La información empresarial no se codificará rígidamente en prompts salvo instrucciones mínimas; debe provenir de configuración o fuentes de conocimiento controladas.
-5. Disponibilidad, reservas, citas, pedidos y otras operaciones dinámicas deben consultarse en su sistema fuente mediante `ToolGateway`; el modelo no puede inventarlas.
-6. Las reglas del dominio específicas de un vertical vivirán en módulos separados del Core compartido.
+### Módulos compartidos
+
+- `BusinessInformationModule`
+- `AppointmentModule`
+- `ReservationModule`
+- `OrderModule`
+- `HumanHandoffModule`
+
+`AppointmentModule` utiliza conceptos genéricos:
+
+```text
+service · resource · slot · customer · appointment
+```
+
+No contiene `doctor`, `patient` ni otros conceptos clínicos. Los conceptos sectoriales viven en un módulo vertical cuando realmente sean necesarios.
+
+### Module / Provider
+
+```text
+AppointmentModule
+      │
+      ▼
+ToolGateway
+      │
+      ▼
+AppointmentProvider
+      │
+      └── agenda externa
+```
+
+El mismo patrón aplica a `ReservationProvider`, `OrderProvider`, etc.
+
+## DD-007 — Tenant de primera clase
+
+Cada llamada y operación empresarial pertenece a un `tenant_id`.
+
+```text
+CallSession
+  ├── call_id
+  ├── tenant_id
+  ├── telephony_provider_call_id
+  ├── realtime_session_id
+  └── status
+```
+
+Reglas:
+
+1. El tenant se resuelve en el borde de entrada, normalmente a partir del número/route.
+2. Ninguna herramienta empresarial se ejecuta sin tenant.
+3. No se comparten implícitamente datos, credenciales, prompts ni permisos entre tenants.
+4. FASE 0 puede usar un tenant de desarrollo fijo.
 
 ---
 
 # 4. Reglas Arquitectónicas No Negociables
 
-- **RA-001 — Dominio libre de SDKs externos.** `domain` no puede importar Twilio, OpenAI, Cloudflare, MCP SDKs ni clientes de proveedores.
-- **RA-002 — Adaptador obligatorio.** Toda integración externa debe quedar detrás de una interfaz/puerto del núcleo.
-- **RA-003 — Cloudflare fuera del audio path.** Cloudflare no transporta audio en la arquitectura oficial.
-- **RA-004 — Tool Gateway único.** Ninguna API empresarial se expone directamente al modelo.
-- **RA-005 — Audio path mínimo.** No se añade ningún salto al media plane sin benchmark y ADR.
-- **RA-006 — Métricas antes que optimización.** No se aceptan optimizaciones de rendimiento sin baseline reproducible.
-- **RA-007 — Gate obligatorio.** Una fase no puede cerrarse sin demostrar sus criterios de aceptación.
-- **RA-008 — Sustitución de proveedor preservada.** Nuevas features no pueden acoplar el dominio a Twilio u OpenAI.
-- **RA-009 — Secretos fuera del código.** Ningún secreto o credencial se almacena en Git.
-- **RA-010 — Permisos fuera del modelo.** El modelo nunca es autoridad de autorización para una acción empresarial.
-- **RA-011 — Core agnóstico al negocio.** El Core no puede contener lógica específica de clínica, restaurante, taller, hotel u otro vertical.
-- **RA-012 — Datos dinámicos desde fuente de verdad.** Disponibilidad, citas, reservas, pedidos y otra información operativa no pueden ser inventados por el modelo; deben obtenerse mediante `ToolGateway` desde una fuente autorizada.
+- **RA-001** — `domain` no importa SDKs externos.
+- **RA-002** — toda integración externa tiene interfaz/provider/adaptador.
+- **RA-003** — Cloudflare queda fuera del audio path.
+- **RA-004** — toda herramienta empresarial pasa por `ToolGateway`.
+- **RA-005** — no se amplía el media plane sin benchmark + ADR.
+- **RA-006** — no se optimiza sin baseline.
+- **RA-007** — ningún gate se cierra sin evidencia.
+- **RA-008** — nuevas features preservan sustituibilidad de Twilio/OpenAI.
+- **RA-009** — ningún secreto se almacena en Git.
+- **RA-010** — el modelo nunca es autoridad de permisos.
+- **RA-011** — el Core no contiene lógica específica de clínica/restaurante/etc.
+- **RA-012** — el modelo no inventa disponibilidad ni confirma operaciones sin fuente de verdad.
+- **RA-013** — toda sesión/operación empresarial tiene `tenant_id`.
+- **RA-014** — módulos de negocio no dependen de SDKs/modelos de datos de sistemas externos.
 
-Las RA se revisan en cada Pull Request que afecte arquitectura, proveedores, media plane o herramientas.
-
----
-
-# 5. Principios arquitectónicos
-
-## P1. El audio manda
-
-Todo componente no imprescindible queda fuera del camino crítico de voz.
-
-## P2. Speech-to-speech nativo
-
-La conversación principal utiliza un modelo realtime audio-audio. No se impondrá un pipeline secuencial obligatorio:
-
-`STT → LLM → TTS`
-
-## P3. Una llamada = una sesión aislada
-
-Cada llamada mantiene su propio identificador, contexto, estado, métricas y lifecycle.
-
-## P4. Media plane y control plane separados
-
-**Media plane:** telefonía + audio realtime.  
-**Control plane:** configuración, políticas, herramientas, persistencia, observabilidad, seguridad y administración.
-
-## P5. Proveedor telefónico encapsulado
-
-El número/SIP debe poder cambiar sin reescribir lógica de negocio.
-
-## P6. Cancelación prioritaria
-
-Cuando el usuario interrumpe a la IA, la generación obsoleta debe cancelarse rápidamente.
-
-## P7. Métricas por percentiles
-
-Se utilizarán p50, p95 y p99.
-
-## P8. No optimizar antes de medir
-
-Toda afirmación de rendimiento debe estar respaldada por pruebas reproducibles.
+Una PR que viole una RA se considera defecto arquitectónico salvo ADR que modifique expresamente la especificación.
 
 ---
 
-# 6. Stack inicial
+# 5. Requisitos funcionales
 
-## 6.1 Telefonía
-
-Proveedor telefónico con capacidad de:
-
-- número público;
-- recepción de llamadas;
-- trunk o routing SIP;
-- encaminamiento hacia OpenAI Realtime.
-
-**Proveedor inicial seleccionado: Twilio.**
-
-Twilio se utilizará para FASE 0 y las primeras integraciones por madurez y reducción del riesgo técnico. Su uso deberá permanecer encapsulado detrás de `TelephonyProvider` para permitir migración futura a Telnyx u otro carrier SIP sin modificar el dominio.
-
-## 6.2 Modelo de voz
-
-- OpenAI Realtime API;
-- speech-to-speech nativo;
-- SIP para llamadas telefónicas;
-- VAD;
-- barge-in;
-- tool calling;
-- voz y modelo configurables.
-
-## 6.3 Cloudflare
-
-Cloudflare alojará progresivamente:
-
-- control API;
-- webhooks;
-- Tool Gateway;
-- autenticación/autorización;
-- estado empresarial cuando sea necesario;
-- integración MCP;
-- observabilidad;
-- panel de administración futuro.
-
-## 6.4 Datos
-
-Cuando se incorporen:
-
-- D1 u otra SQL para metadatos transaccionales;
-- R2 para objetos grandes si se almacenan grabaciones;
-- sistema de métricas/analytics para telemetría.
-
-No guardar audio crudo en SQL.
+- **RF-001 Recepción:** aceptar llamadas de un número público.
+- **RF-002 Sesión IA:** una sesión realtime independiente por llamada.
+- **RF-003 Saludo:** saludo configurable.
+- **RF-004 Conversación:** audio bidireccional natural.
+- **RF-005 Barge-in:** el usuario puede interrumpir a la IA.
+- **RF-006 Finalización:** cliente, IA, timeout, error o handoff.
+- **RF-007 Tools:** invocación de herramientas autorizadas.
+- **RF-008 Handoff:** transferencia a destino SIP/telefónico.
+- **RF-009 Trazabilidad:** `call_id` y métricas correlacionadas.
+- **RF-010 Business info:** responder información autorizada del negocio.
+- **RF-011 Capacidades:** módulos habilitables por tenant.
+- **RF-012 Confirmación:** una escritura externa se comunica como éxito solo tras confirmación.
+- **RF-013 Tenant:** resolver `tenant_id` antes de lógica empresarial.
+- **RF-014 Fuente:** distinguir información estable de datos dinámicos/fuente de verdad.
 
 ---
 
-# 7. Requisitos funcionales globales
-
-## RF-001 Recepción de llamada
-
-Aceptar una llamada entrante a un número público configurado.
-
-## RF-002 Sesión IA
-
-Cada llamada debe iniciar una sesión realtime independiente.
-
-## RF-003 Saludo
-
-La IA debe poder emitir un saludo inicial configurable.
-
-## RF-004 Conversación bidireccional
-
-Cliente e IA deben mantener diálogo natural de voz en ambos sentidos.
-
-## RF-005 Barge-in
-
-El usuario debe poder interrumpir a la IA sin esperar a que termine de hablar.
-
-## RF-006 Fin de llamada
-
-La llamada debe poder finalizar limpiamente por:
-
-- cuelgue del cliente;
-- acción de la IA;
-- timeout;
-- error controlado;
-- futura transferencia a humano.
-
-## RF-007 Tool calling
-
-La IA podrá invocar herramientas aprobadas en fases posteriores.
-
-## RF-008 Transferencia humana
-
-El sistema podrá transferir una llamada activa a un destino telefónico/SIP.
-
-## RF-009 Trazabilidad
-
-Cada llamada tendrá un `call_id` y métricas correlacionadas.
-
-## RF-010 Información del negocio
-
-El agente debe poder responder preguntas administrativas y comerciales del negocio a partir de información autorizada y actualizable, por ejemplo:
-- horarios;
-- ubicación y cómo llegar;
-- servicios;
-- precios publicados cuando aplique;
-- políticas;
-- profesionales o recursos disponibles cuando corresponda;
-- documentación necesaria;
-- preguntas frecuentes.
-
-La información del negocio debe proceder de `BusinessProfile`, configuración o una fuente de conocimiento autorizada; no debe depender de datos rígidos embebidos en el Core.
-
-## RF-011 Capacidades configurables por tenant
-
-Cada negocio debe poder habilitar únicamente los módulos y herramientas que necesita, sin modificar el Core.
-
-Ejemplos:
-- clínica: información + citas + handoff;
-- restaurante: información + reservas + menú/pedidos + handoff;
-- taller: información + citas + órdenes de trabajo + handoff.
-
-## RF-012 Portabilidad entre verticales
-
-Añadir un nuevo tipo de negocio debe requerir principalmente configuración, módulos y adaptadores, no reescritura del media plane ni del dominio compartido.
-
----
-
-# 8. Requisitos no funcionales
+# 6. Requisitos no funcionales
 
 ## RNF-001 Latencia
 
-Objetivos iniciales de ingeniería:
+Objetivos iniciales:
 
-| Métrica | Objetivo inicial |
+| Métrica | Objetivo |
 |---|---:|
 | Fin de turno → primer audio IA p50 | < 700 ms |
 | Fin de turno → primer audio IA p95 | < 1.2 s |
-| Barge-in perceptible | natural, sin cola larga de audio |
-| Setup de llamada | estable y reproducible |
+| Barge-in | natural, sin cola larga |
+| Setup | estable y reproducible |
 
-Estos valores se recalibrarán con pruebas reales.
+Se recalibrarán con pruebas reales.
 
-## RNF-002 Calidad de audio
+## RNF-002 Calidad
 
-La conversación debe ser inteligible, sin cortes frecuentes, eco anormal ni degradaciones introducidas por nuestra arquitectura.
+Audio inteligible, sin cortes frecuentes, eco anormal o degradación introducida por nuestra arquitectura.
 
 ## RNF-003 Aislamiento
 
-Una llamada no debe compartir estado accidentalmente con otra.
+- una llamada no comparte estado accidentalmente con otra;
+- datos, herramientas, credenciales y configuración quedan aislados por `tenant_id`.
 
 ## RNF-004 Seguridad
 
 - secretos fuera de Git;
 - mínimo privilegio;
-- webhooks validados;
+- validación de webhooks;
 - logs sin secretos;
-- herramientas bajo allowlist.
+- allowlist de tools;
+- permisos/credenciales aislados por tenant;
+- protección frente a prompt injection por voz;
+- el modelo nunca decide permisos.
 
 ## RNF-005 Observabilidad
 
-Toda llamada debe poder reconstruirse mediante eventos y timestamps cuando el control plane esté incorporado.
+Toda llamada debe poder reconstruirse mediante eventos/timestamps cuando exista el control plane persistente.
 
 ---
 
-# 9. Presupuesto conceptual de latencia
+# 7. Presupuesto conceptual de latencia
 
 ```text
 T_total =
@@ -502,498 +377,260 @@ T_total =
 + T_telco_playout
 ```
 
-En la arquitectura oficial no existe un `T_cloudflare_audio_relay` porque Cloudflare queda fuera del media path.
+No existe `T_cloudflare_audio_relay` en la arquitectura oficial.
 
 ---
 
-# 10. FASE 0 — PRUEBA END-TO-END DEL CANAL DE AUDIO
+# 8. FASE 0 — Voz E2E
 
-## 10.1 Propósito
+## 8.1 Objetivo
 
-Esta fase existe exclusivamente para demostrar el **camino completo de audio real**.
+Responder únicamente:
 
-No se desarrollará todavía una centralita empresarial. No habrá CRM, MCP, base de datos, dashboard, herramientas ni transferencia humana.
+> **¿Puedo llamar desde un teléfono real, ser atendido por la IA, conversar, interrumpirla y colgar correctamente?**
 
-La pregunta que FASE 0 debe responder es únicamente:
+No se implementan todavía CRM, MCP, agenda, D1, dashboard, ToolGateway ni transferencia humana.
 
-> **¿Puedo llamar desde un teléfono real a un número, ser atendido por OpenAI Realtime, mantener una conversación natural y colgar correctamente?**
+FASE 0 sí puede incluir **código mínimo de control** para recibir el evento de llamada, aceptar/configurar OpenAI Realtime, establecer prompt/voz/VAD y finalizar sesión. Ese código:
 
-Si la respuesta no es demostrablemente sí, el proyecto no avanza.
+- pertenece al control plane;
+- nunca transporta audio;
+- no contiene lógica empresarial.
 
----
-
-## 10.2 Alcance exacto
+## 8.2 Ruta
 
 ```text
-Teléfono del usuario
-      │
-      ▼
-Número telefónico de prueba
-      │
-      ▼
-Proveedor SIP
-      │
-      ▼
+Teléfono
+  ↓
+Número Twilio de prueba
+  ↓
+SIP
+  ↓
 OpenAI Realtime
-      │
-      ▼
-Conversación de voz
-      │
-      ▼
-Cuelgue / fin de sesión
+  ↓
+Conversación
+  ↓
+Cuelgue
 ```
 
-### Incluido
-
-- adquirir/configurar número de prueba;
-- configurar routing SIP;
-- conectar llamada con OpenAI Realtime;
-- configurar modelo realtime;
-- configurar voz;
-- configurar idioma español;
-- definir prompt mínimo;
-- recibir saludo de la IA;
-- hablar con la IA;
-- escuchar respuestas;
-- mantener varios turnos;
-- probar interrupción básica;
-- colgar desde el teléfono;
-- comprobar cierre de la llamada;
-- medir manual/técnicamente la latencia inicial.
-
-### Excluido explícitamente
-
-- CRM;
-- MCP;
-- D1;
-- R2;
-- Tool Gateway;
-- dashboard;
-- autenticación de clientes;
-- tickets;
-- pedidos;
-- facturación;
-- transferencia a operador humano;
-- grabación persistente;
-- campañas;
-- escalado masivo;
-- optimización prematura.
-
----
-
-## 10.3 Prompt mínimo de FASE 0
-
-La IA debe tener comportamiento simple y determinista:
-
-```text
-Eres un asistente de voz de pruebas para una centralita telefónica.
-Habla en español.
-Responde de forma natural, breve y clara.
-Mantén una conversación general con el usuario.
-No inventes capacidades empresariales.
-Si el usuario se despide, despídete brevemente.
-```
-
-No incluir lógica de negocio.
-
----
-
-## 10.4 Checklist de implementación FASE 0
+## 8.3 Checklist
 
 ### Telefonía
+- [x] Twilio seleccionado.
+- [ ] Crear/configurar cuenta.
+- [ ] Obtener número de prueba.
+- [ ] Verificar recepción.
+- [ ] Configurar SIP/routing.
+- [ ] Confirmar llegada del INVITE.
 
-- [x] Seleccionar proveedor SIP inicial: **Twilio**
-- [ ] Obtener número telefónico de prueba
-- [ ] Verificar que el número puede recibir llamadas
-- [ ] Configurar routing/trunk SIP
-- [ ] Confirmar que el INVITE llega al destino realtime
+### Control mínimo
+- [ ] Verificar mecanismo actual necesario para incoming call.
+- [ ] Implementar webhook/endpoint mínimo si es necesario.
+- [ ] Aceptar/configurar/finalizar sesión.
+- [ ] Confirmar que Cloudflare no transporta audio.
 
-### OpenAI Realtime
-
-- [ ] Configurar credenciales fuera del repositorio
-- [ ] Configurar sesión realtime para SIP
-- [ ] Seleccionar modelo inicial
-- [ ] Seleccionar voz inicial
-- [ ] Configurar idioma/prompt
-- [ ] Configurar VAD inicial
-- [ ] Verificar audio de entrada
-- [ ] Verificar audio de salida
+### Realtime
+- [ ] Credenciales fuera del repositorio.
+- [ ] Modelo inicial.
+- [ ] Voz inicial.
+- [ ] Prompt español.
+- [ ] VAD inicial.
+- [ ] Audio inbound/outbound.
 
 ### Conversación
-
-- [ ] La IA atiende la llamada
-- [ ] La IA emite saludo
-- [ ] Usuario puede hablar
-- [ ] IA entiende y responde
-- [ ] Realizar al menos 10 turnos consecutivos
-- [ ] Probar interrupción mientras la IA habla
-- [ ] Probar silencio de varios segundos
-- [ ] Probar despedida
-
-### Cierre
-
-- [ ] Cuelgue iniciado por usuario funciona
-- [ ] Sesión realtime termina
-- [ ] No queda llamada activa huérfana
-- [ ] Repetir una nueva llamada inmediatamente
+- [ ] Saludo.
+- [ ] ≥10 turnos.
+- [ ] Barge-in.
+- [ ] Silencio 5–10 s.
+- [ ] Despedida.
+- [ ] Cuelgue limpio.
+- [ ] Nueva llamada inmediata.
 
 ### Medición
+- [ ] Latencia fin-de-frase → primer audio.
+- [ ] Cortes/jitter.
+- [ ] Fallos de setup.
+- [ ] Duración.
+- [ ] Modelo/voz/VAD usados.
 
-- [ ] Medir tiempo desde fin de frase hasta inicio de respuesta
-- [ ] Registrar percepción de cortes/jitter
-- [ ] Registrar fallos de setup
-- [ ] Registrar duración de llamada
-- [ ] Registrar modelo/voz/configuración usados
+## 8.4 Casos de prueba
 
----
+- **F0-T01:** setup y saludo.
+- **F0-T02:** conversación ≥5 preguntas.
+- **F0-T03:** llamada ≥5 minutos.
+- **F0-T04:** interrupción mientras habla la IA.
+- **F0-T05:** silencio 5–10 s.
+- **F0-T06:** cuelgue del cliente.
+- **F0-T07:** 20 llamadas consecutivas.
 
-## 10.5 Casos de prueba FASE 0
+## 8.5 Gate F0
 
-### F0-T01 — Setup básico
+PASS únicamente si:
 
-1. Marcar número.
-2. Esperar respuesta.
-3. Confirmar saludo audible.
+1. llamada PSTN real entra;
+2. IA atiende automáticamente;
+3. audio funciona en ambos sentidos;
+4. conversación multi-turno coherente;
+5. barge-in razonable;
+6. llamada de 5 minutos estable;
+7. cuelgue limpia la sesión;
+8. ≥19/20 llamadas completan setup/conversación básica;
+9. baseline inicial de latencia documentado.
 
-**PASS:** la llamada conecta y la IA habla.
-
-### F0-T02 — Conversación mínima
-
-1. Usuario: «Hola, ¿cómo estás?»
-2. IA responde.
-3. Usuario realiza al menos 5 preguntas generales.
-
-**PASS:** diálogo coherente en ambos sentidos.
-
-### F0-T03 — Conversación prolongada
-
-Mantener una llamada de al menos 5 minutos.
-
-**PASS:** no hay desconexión inesperada ni degradación progresiva evidente.
-
-### F0-T04 — Barge-in
-
-1. Esperar a que la IA esté hablando.
-2. Interrumpir con una nueva pregunta.
-
-**PASS:** la IA deja de insistir con la respuesta anterior y atiende el nuevo turno de forma natural.
-
-### F0-T05 — Silencio
-
-Guardar silencio durante 5-10 segundos.
-
-**PASS:** la llamada no entra en un estado roto.
-
-### F0-T06 — Cuelgue del cliente
-
-Colgar durante conversación normal.
-
-**PASS:** la llamada termina y no queda una sesión activa indefinidamente.
-
-### F0-T07 — Repetibilidad
-
-Realizar 20 llamadas consecutivas de prueba.
-
-**PASS:** al menos 19/20 completan setup y conversación básica sin fallo atribuible a nuestra configuración.
+Hasta superar F0 no se inicia integración empresarial.
 
 ---
 
-## 10.6 Métricas mínimas FASE 0
-
-Por cada llamada registrar:
+# 9. Fases de Integración
 
 ```text
-run_id
-fecha_hora
-numero_origen_anonimizado
-proveedor_telefonia
-modelo
-voz
-vad_config
-duracion_segundos
-setup_ok
-conversation_ok
-barge_in_ok
-hangup_ok
-latencia_aprox_p50
-fallos
-notas
+F0 Voz E2E
+  ↓
+F1 Baseline técnico + observabilidad
+  ↓
+F2 Latencia + barge-in
+  ↓
+F3 ToolGateway
+  ↓
+F4 Primer vertical: clínica
+  ↓
+F5 Persistencia + post-call
+  ↓
+F6 Transferencia humana
+  ↓
+F7 Concurrencia
+  ↓
+F8 Hardening producción
 ```
 
-En esta fase se acepta medición manual asistida para establecer baseline, siempre que quede documentada.
+Ninguna fase puede introducir un nuevo elemento en el media plane sin modificar DD-003 mediante ADR.
 
----
+## FASE 1 — Baseline técnico y observabilidad
 
-## 10.7 Gate F0 — criterio obligatorio para avanzar
+- [ ] estructura TypeScript/Cloudflare;
+- [ ] `package.json`, `tsconfig`, Wrangler;
+- [ ] `.gitignore`, `.env.example`;
+- [ ] `/health`;
+- [ ] CI;
+- [ ] formalizar endpoint mínimo de F0;
+- [ ] `CallSession`;
+- [ ] `call_id`;
+- [ ] `tenant_id` de desarrollo;
+- [ ] resolución tenant desde routing/config;
+- [ ] lifecycle/timestamps/modelo/voz.
 
-FASE 0 se marca `[x]` únicamente si se demuestra todo lo siguiente:
+**Gate F1:** build/deploy reproducible, `/health` estable y toda llamada correlacionada con `call_id` + `tenant_id`.
 
-1. una llamada real entra desde PSTN;
-2. la IA atiende automáticamente;
-3. el usuario escucha a la IA correctamente;
-4. la IA escucha y entiende al usuario;
-5. existe conversación de varios turnos;
-6. el usuario puede interrumpir razonablemente a la IA;
-7. una llamada de 5 minutos permanece estable;
-8. el cuelgue termina correctamente la sesión;
-9. se completan al menos 20 llamadas de prueba con ≥95 % de setup correcto;
-10. existe un baseline inicial de latencia documentado.
+## FASE 2 — Latencia y barge-in
 
-**Hasta superar Gate F0 no se implementan CRM, MCP, persistencia empresarial ni dashboard.**
+- [ ] first-audio p50/p95/p99;
+- [ ] tuning VAD;
+- [ ] escenarios de silencio;
+- [ ] validación repetida de barge-in;
+- [ ] configuración ganadora documentada.
 
----
+**Gate F2:** conversación estable dentro del SLO acordado.
 
-## Bloque B — Fases de Integración
+## FASE 3 — ToolGateway
 
-Las fases siguientes comienzan **únicamente después de superar Gate F0**. Su objetivo es transformar el canal de voz validado en una plataforma empresarial, incorporando capacidades de forma incremental sin degradar el media plane.
+- [ ] frontera `ToolGateway`;
+- [ ] contrato interno `ToolExecutor`;
+- [ ] primera tool READ;
+- [ ] schema validation;
+- [ ] authorization;
+- [ ] timeout;
+- [ ] idempotencia;
+- [ ] auditoría;
+- [ ] manejo de error.
 
-Orden obligatorio:
+**Gate F3:** herramienta real/simulada funciona y ante fallo la IA no inventa resultado.
 
-```text
-FASE 0 — Voz E2E validada
-      │
-      ▼
-FASE 1 — Baseline técnico y observabilidad
-      │
-      ▼
-FASE 2 — Latencia y barge-in
-      │
-      ▼
-FASE 3 — Tool Gateway
-      │
-      ▼
-FASE 4 — Persistencia y post-call
-      │
-      ▼
-FASE 5 — Transferencia humana
-      │
-      ▼
-FASE 6 — Integraciones de negocio y módulos verticales
-      │
-      ▼
-FASE 7 — Concurrencia
-      │
-      ▼
-FASE 8 — Hardening producción
-```
+## FASE 4 — Primer vertical: clínica
 
-**Regla:** ninguna fase de integración puede introducir un componente en el media path salvo modificación explícita de DD-003 y ADR aprobado.
+- [ ] `TenantConfiguration`;
+- [ ] `BusinessProfile`;
+- [ ] `BusinessInformationModule`;
+- [ ] `AppointmentModule` genérico;
+- [ ] `AppointmentProvider`;
+- [ ] conectar agenda real o sandbox;
+- [ ] consultar disponibilidad;
+- [ ] crear cita;
+- [ ] consultar cita;
+- [ ] reprogramar;
+- [ ] cancelar;
+- [ ] datos dinámicos desde fuente de verdad;
+- [ ] comprobar ausencia de conceptos clínicos en Core.
 
----
+**Gate F4:** una llamada del tenant clínica responde información autorizada y crea/consulta/reprograma/cancela citas mediante ToolGateway sin acoplar el Core al software de agenda ni al dominio clínico.
 
-# 11. FASE 1 — Baseline técnico y observabilidad mínima
+## FASE 5 — Persistencia y post-call
 
-Objetivo: convertir la prueba funcional de F0 en una integración reproducible y medible.
+- [ ] registros con `call_id` + `tenant_id`;
+- [ ] eventos;
+- [ ] métricas;
+- [ ] transcripción opcional;
+- [ ] resumen post-call;
+- [ ] retención;
+- [ ] aislamiento cross-tenant.
 
-- [ ] Crear estructura TypeScript/Cloudflare
-- [ ] Crear `package.json`
-- [ ] Crear `tsconfig.json`
-- [ ] Configurar Wrangler
-- [ ] Crear `.gitignore`
-- [ ] Crear `.env.example`
-- [ ] Crear endpoint `/health`
-- [ ] Añadir CI básica
-- [ ] Crear endpoint/webhook de control necesario
-- [ ] Crear `call_id`
-- [ ] Registrar lifecycle de llamada
-- [ ] Registrar configuración modelo/voz
-- [ ] Registrar timestamps disponibles
+**Gate F5:** llamada reconstruible cronológicamente y datos aislados por tenant.
 
-**Gate F1:** build reproducible, deploy correcto, `/health` estable y cada llamada de prueba puede correlacionarse con un `call_id`.
+## FASE 6 — Handoff humano
 
----
+- [ ] destino por tenant;
+- [ ] trigger explícito;
+- [ ] transferencia SIP;
+- [ ] contexto;
+- [ ] éxito/fallo;
+- [ ] fallback.
 
-# 12. FASE 2 — Latencia y barge-in
+**Gate F6:** transferencia normal/error preservando tenant y contexto.
 
-Objetivo: optimizar la experiencia conversacional después de tener una baseline real.
+## FASE 7 — Concurrencia
 
-- [ ] medir first-audio latency
-- [ ] medir p50/p95/p99
-- [ ] ajustar VAD
-- [ ] probar diferentes condiciones de silencio
-- [ ] evaluar voz rápida/lenta
-- [ ] validar barge-in repetidamente
-- [ ] documentar configuración ganadora
-
-**Gate F2:** configuración de conversación estable y latencia dentro del SLO acordado.
-
----
-
-# 13. FASE 3 — Tool Gateway
-
-Objetivo: primera capacidad empresarial sin degradar el audio path.
-
-```text
-OpenAI Realtime
-      │
-      ▼
-Cloudflare Tool Gateway
-      │
-      ├── validación
-      ├── autorización
-      ├── timeout
-      ├── auditoría
-      └── adapters
-```
-
-- [ ] definir interfaz ToolExecutor
-- [ ] implementar primera herramienta READ
-- [ ] schema validation
-- [ ] timeout
-- [ ] manejo de errores
-- [ ] auditoría
-- [ ] resultado al modelo
-
-**Gate F3:** herramienta real/simulada responde correctamente y ante fallo la IA no inventa resultados.
-
----
-
-# 14. FASE 4 — Persistencia y post-call
-
-Objetivo: persistir trazabilidad y resultados de llamadas fuera del camino crítico de audio.
-
-- [ ] registro de llamadas
-- [ ] eventos
-- [ ] métricas
-- [ ] transcripción opcional
-- [ ] resumen post-call
-- [ ] política de retención
-
-**Gate F4:** cada llamada puede reconstruirse cronológicamente.
-
----
-
-# 15. FASE 5 — Transferencia humana
-
-Objetivo: permitir escalamiento controlado a una persona mediante mecanismos SIP sin romper el contexto operativo.
-
-- [ ] destino configurable
-- [ ] trigger explícito
-- [ ] transferencia SIP
-- [ ] contexto de handoff
-- [ ] éxito/fallo
-- [ ] fallback
-
-**Gate F5:** transferencia validada en caso normal y error.
-
----
-
-# 16. FASE 6 — Integraciones de negocio y módulos verticales
-
-Objetivo: demostrar que el Core puede atender un negocio real sin introducir lógica sectorial en el núcleo.
-
-## 16.1 Primer vertical — Clínica
-
-La clínica será el primer vertical de validación empresarial.
-
-Capacidades objetivo:
-- [ ] `BusinessProfile` / `TenantConfiguration`
-- [ ] `BusinessInformationModule`
-- [ ] horarios, ubicación, servicios y políticas
-- [ ] `AppointmentModule`
-- [ ] consultar disponibilidad de agenda
-- [ ] crear cita
-- [ ] consultar cita
-- [ ] reprogramar cita
-- [ ] cancelar cita
-- [ ] permisos por herramienta
-- [ ] idempotencia para escrituras
-- [ ] circuit breakers
-- [ ] integración MCP solo donde aporte valor real
-
-## 16.2 Validación de independencia del vertical
-
-Antes de cerrar FASE 6 debe demostrarse que la arquitectura permite modelar un segundo vertical —por ejemplo restaurante— sin modificar el Core de telefonía/realtime ni duplicar el proyecto.
-
-Ejemplo conceptual:
-
-```text
-Core común
-  ├── BusinessProfile
-  ├── ToolGateway
-  ├── BusinessInformationModule
-  └── módulos habilitados
-        ├── Clínica      → AppointmentModule
-        ├── Restaurante → ReservationModule / OrderModule
-        └── Taller      → AppointmentModule / módulos futuros
-```
-
-**Gate F6:** clínica operativa con información de negocio y gestión de citas mediante herramientas seguras y auditables, y revisión arquitectónica que confirme que un segundo vertical puede incorporarse sin fork ni lógica sectorial en el Core.
-
----
-
-# 17. FASE 7 — Concurrencia
-
-Objetivo: demostrar escalabilidad progresiva manteniendo SLO, aislamiento y coste controlado.
-
-Escalado progresivo:
-
-- [ ] 10 llamadas
-- [ ] 50 llamadas
-- [ ] 100 llamadas
-- [ ] 500 llamadas
-- [ ] 1.000+ cuando el negocio lo justifique
+Escalado: 10 → 50 → 100 → 500 → 1.000+.
 
 No avanzar si:
 
-- p95 degrada >20 %;
-- error rate >1 %;
+- p95 degrada >20%;
+- error rate >1%;
 - aparecen sesiones huérfanas;
 - el coste se desvía inesperadamente.
 
-**Gate F7:** alcanzar la concurrencia objetivo acordada sin violar SLO de latencia, error budget, aislamiento ni presupuesto de coste.
+**Gate F7:** concurrencia objetivo sin violar SLO, aislamiento o presupuesto.
+
+## FASE 8 — Hardening
+
+- rate limits;
+- auditoría de secretos;
+- alertas;
+- runbooks;
+- pruebas de fallo;
+- retención/eliminación;
+- revisión de seguridad;
+- contingencia telefonía/modelo.
+
+**Gate F8:** riesgos críticos mitigados y runbooks principales validados.
 
 ---
 
-# 18. FASE 8 — Hardening producción
-
-Objetivo: preparar la plataforma para operación real mediante seguridad, resiliencia, runbooks y controles operacionales.
-
-- [ ] rate limits
-- [ ] secretos auditados
-- [ ] alertas
-- [ ] runbooks
-- [ ] pruebas de fallo
-- [ ] retención/eliminación
-- [ ] revisión de seguridad
-- [ ] plan de contingencia de telefonía
-- [ ] plan de contingencia del modelo realtime
-
-**Gate F8:** checklist de producción completado, riesgos críticos mitigados y runbooks de fallos principales validados.
-
----
-
-# 19. Estado de llamada
+# 10. Estado de llamada
 
 ```text
-CREATED
-   │
-   ▼
-RINGING
-   │
-   ▼
-ACTIVE
-   │
-   ├────► HANDOFF ───► COMPLETED
-   │
-   └────► COMPLETED
-
-Any state ───► FAILED
+CREATED → RINGING → ACTIVE ──► COMPLETED
+                       └─────► HANDOFF → COMPLETED
+Any state ───────────────────► FAILED
 ```
 
-Durante `ACTIVE` pueden existir estados derivados:
+Cada instancia pertenece a una `CallSession(call_id, tenant_id, ...)`.
 
-- LISTENING
-- THINKING
-- SPEAKING
-- TOOL_WAIT
-- INTERRUPTED
+Estados derivados durante ACTIVE:
+
+`LISTENING · THINKING · SPEAKING · TOOL_WAIT · INTERRUPTED`
 
 ---
 
-# 20. Tool Gateway
-
-El modelo no accede directamente a APIs internas de forma arbitraria.
+# 11. ToolGateway y herramientas
 
 Cada herramienta declara:
 
@@ -1006,270 +643,142 @@ Cada herramienta declara:
 }
 ```
 
-Clasificación:
+Categorías:
 
-- READ: consultas sin efectos secundarios;
-- WRITE LOW-RISK: tickets, notificaciones;
-- WRITE HIGH-RISK: pagos, cancelaciones, cambios críticos.
+- READ;
+- WRITE LOW-RISK;
+- WRITE HIGH-RISK.
 
-Las operaciones de alto riesgo requieren políticas adicionales.
+Las operaciones high-risk requieren política adicional.
 
----
+Integraciones:
 
-# 21. Seguridad
-
-Nunca commitear:
-
-- `OPENAI_API_KEY`
-- credenciales del proveedor de telefonía
-- tokens CRM
-- secretos MCP
-- secretos de webhook
-
-Reglas:
-
-- validar webhooks;
-- mínimo privilegio;
-- allowlist de herramientas;
-- no confiar en metadata del caller;
-- no guardar PII innecesaria;
-- proteger frente a prompt injection por voz;
-- el modelo nunca decide permisos.
+```text
+AppointmentModule → ToolGateway → AppointmentProvider → agenda
+ReservationModule → ToolGateway → ReservationProvider → reservas
+OrderModule       → ToolGateway → OrderProvider       → pedidos
+```
 
 ---
 
-# 22. Observabilidad
+# 12. Observabilidad
 
-Métricas principales:
+Por llamada:
 
-### Telefonía
-
-- llamadas entrantes;
-- aceptadas;
-- fallidas;
+- `call_id`;
+- `tenant_id`;
+- proveedor;
+- modelo/voz/VAD;
+- setup;
 - duración;
-- transferencias.
+- first-audio;
+- turnos;
+- interrupciones;
+- errores;
+- tool latency/result;
+- transferencia;
+- coste estimado.
 
-### Conversación
-
-- first-audio latency;
-- interruptions/call;
-- silence time;
-- turns/call;
-- barge-in behavior.
-
-### Herramientas
-
-- success rate;
-- timeout rate;
-- p50/p95/p99.
-
-### Coste
-
-- telecom cost/call;
-- model cost/call;
-- model cost/minute;
-- total cost/resolved call.
+Métricas: p50/p95/p99 y coste por llamada resuelta.
 
 ---
 
-# 23. Estrategia de pruebas
+# 13. Estrategia de pruebas
 
 ## Unit
-
-- estado de llamada;
-- políticas;
-- parsers;
-- idempotencia;
-- herramientas.
+Estado, políticas, parsers, idempotencia, módulos.
 
 ## Integration
-
-- control plane ↔ OpenAI;
-- control plane ↔ proveedor telefónico;
-- Tool Gateway ↔ backend.
+Control plane ↔ OpenAI; control plane ↔ telefonía; ToolGateway ↔ providers.
 
 ## E2E
+Siempre debe existir prueba con llamada telefónica real.
 
-Siempre debe existir una prueba con llamada telefónica real.
+## Cross-tenant
+Pruebas explícitas que intenten acceder a datos/configuración de otro tenant y deban fallar.
 
 ## Load
-
-Escalar progresivamente; no comenzar con cargas masivas.
+Carga gradual, no masiva desde el inicio.
 
 ## Soak
-
-Detectar sesiones huérfanas, degradación p99 y costes anómalos.
+Sesiones huérfanas, degradación p99, leaks y costes anómalos.
 
 ---
 
-# 24. Definition of Done
+# 14. Definition of Done
 
-Una feature no está terminada hasta tener:
+Una feature requiere:
 
 1. implementación;
-2. prueba apropiada;
+2. prueba;
 3. manejo de error;
 4. timeout cuando aplique;
 5. métricas/logs;
 6. secretos externalizados;
-7. documentación actualizada;
+7. documentación;
 8. criterio de aceptación demostrado;
-9. cumplimiento verificado de todas las Reglas Arquitectónicas No Negociables aplicables.
+9. cumplimiento de RA aplicables;
+10. aislamiento por tenant cuando toque datos/configuración empresarial.
 
 ---
 
-# 25. ADR / Decision Log
+# 15. ADR / Decision Log
 
-Los ADR registran **por qué** se tomó una decisión arquitectónica. Las DD definen reglas vigentes de diseño; los ADR conservan la justificación y consecuencias de las decisiones que llevaron a esas reglas.
-
-Plantilla obligatoria para nuevos ADR:
-
-- **Estado**
-- **Problema**
-- **Decisión**
-- **Motivación**
-- **Consecuencias**
-- **Alternativas descartadas**
+Plantilla: **Estado · Problema · Decisión · Motivación · Consecuencias · Alternativas descartadas**.
 
 ## ADR-001 — Speech-to-speech nativo
+**Accepted.** Realtime audio-audio como ruta principal inicial; pipeline STT→LLM→TTS queda fuera del camino principal salvo revisión futura.
 
-**Estado:** Accepted
+## ADR-002 — Direct SIP
+**Accepted.** SIP conecta telefonía con OpenAI Realtime; no se construye media bridge Cloudflare paralelo.
 
-**Problema:** un pipeline externo secuencial `STT → LLM → TTS` introduce más etapas, coordinación y potencial latencia en una conversación telefónica realtime.
+## ADR-003 — Cloudflare Control Plane
+**Accepted.** Cloudflare aloja control/herramientas/datos/observabilidad, no audio.
 
-**Decisión:** utilizar OpenAI Realtime speech-to-speech como implementación principal inicial de conversación.
+## ADR-004 — MCP fuera del audio path
+**Accepted.** MCP solo donde aporte interoperabilidad y siempre detrás de ToolGateway.
 
-**Motivación:** minimizar etapas en el camino conversacional y aprovechar VAD, audio nativo y barge-in de una sesión realtime.
-
-**Consecuencias:** `RealtimeProvider` debe mantener aislado al dominio de detalles específicos de OpenAI.
-
-**Alternativas descartadas:** pipeline STT/LLM/TTS separado como arquitectura principal. Puede evaluarse en el futuro solo mediante ADR y métricas.
-
-## ADR-002 — Direct SIP como media plane oficial
-
-**Estado:** Accepted
-
-**Problema:** interponer un media bridge propio añade un salto de red, buffering, jitter potencial y superficie operacional.
-
-**Decisión:** telefonía/SIP conecta directamente con OpenAI Realtime. No se desarrollará un media bridge Cloudflare como arquitectura paralela.
-
-**Motivación:** reducir saltos, buffering, jitter, complejidad y superficie de fallo.
-
-**Consecuencias:** Cloudflare queda fuera del transporte de audio y se concentra en el control plane.
-
-**Alternativas descartadas:** Twilio Media Streams/WebSocket → Cloudflare → Realtime como ruta principal.
-
-## ADR-003 — Cloudflare como control plane
-
-**Estado:** Accepted
-
-**Problema:** la plataforma necesita lógica empresarial, herramientas, seguridad, persistencia y observabilidad sin penalizar el media plane.
-
-**Decisión:** Cloudflare alojará progresivamente control API, webhooks, Tool Gateway, políticas, persistencia, observabilidad y administración, pero no transportará audio en la ruta principal.
-
-**Motivación:** separar responsabilidades y preservar el camino de audio mínimo.
-
-**Consecuencias:** cualquier servicio Cloudflare relacionado con una llamada debe diseñarse para que su degradación no añada innecesariamente latencia al audio.
-
-**Alternativas descartadas:** usar Cloudflare como relay obligatorio de audio.
-
-## ADR-004 — MCP fuera del camino crítico de audio
-
-**Estado:** Accepted
-
-**Problema:** MCP puede aportar interoperabilidad, pero convertirlo en requisito del audio aumentaría dependencias y puntos de fallo.
-
-**Decisión:** MCP se utilizará para integraciones empresariales cuando aporte valor, siempre detrás de `ToolGateway`, y nunca como requisito para que el audio fluya.
-
-**Motivación:** desacoplar interoperabilidad empresarial del media plane.
-
-**Consecuencias:** una caída de MCP no debe cortar una conversación activa; la IA debe manejar el fallo sin inventar resultados.
-
-**Alternativas descartadas:** hacer que cada turno de conversación dependa obligatoriamente de un servidor MCP.
-
-## ADR-005 — FASE 0 es audio E2E
-
-**Estado:** Accepted
-
-**Problema:** desarrollar infraestructura empresarial antes de demostrar la llamada real podría invertir esfuerzo alrededor de un núcleo de voz todavía no validado.
-
-**Decisión:** el primer milestone del proyecto es demostrar una llamada PSTN real, conversación IA bidireccional, barge-in básico y cierre correcto.
-
-**Motivación:** el mayor riesgo técnico inicial es el canal de voz realtime.
-
-**Consecuencias:** CRM, MCP, persistencia empresarial, dashboard y concurrencia quedan bloqueados hasta superar Gate F0.
-
-**Alternativas descartadas:** comenzar por estructura Cloudflare, base de datos o dashboard.
+## ADR-005 — FASE 0 voz E2E
+**Accepted.** Validar primero llamada real antes de capas empresariales.
 
 ## ADR-006 — Independencia de proveedores
+**Accepted.** TelephonyProvider, RealtimeProvider y ToolGateway/adaptadores preservan sustituibilidad.
 
-**Estado:** Accepted
-
-**Problema:** acoplar el dominio a Twilio, OpenAI u otro proveedor elevaría el coste y riesgo de futuras migraciones.
-
-**Decisión:** las integraciones externas se implementarán mediante `TelephonyProvider`, `RealtimeProvider`, `ToolGateway` y adaptadores de infraestructura.
-
-**Motivación:** preservar sustituibilidad, capacidad de prueba y evolución tecnológica/comercial.
-
-**Consecuencias:** se acepta una pequeña capa adicional de abstracción desde el inicio a cambio de reducir vendor lock-in.
-
-**Alternativas descartadas:** utilizar SDKs de Twilio/OpenAI directamente desde el dominio por rapidez inicial.
-
-## ADR-007 — Twilio como proveedor telefónico inicial
-
-**Estado:** Accepted
-
-**Problema:** FASE 0 necesita un carrier inicial estable sin convertir esa elección en dependencia permanente.
-
-**Decisión:** utilizar Twilio como primer proveedor de número/routing SIP, encapsulado detrás de `TelephonyProvider`.
-
-**Motivación:** reducir riesgo de integración inicial mediante un proveedor maduro y ampliamente documentado.
-
-**Consecuencias:** la configuración inicial y el adaptador serán Twilio-specific, pero las capacidades expuestas al dominio deben permanecer genéricas.
-
-**Alternativas descartadas:** empezar optimizando exclusivamente coste/minuto con un carrier menos consolidado. La migración a Telnyx u otro SIP carrier queda deliberadamente habilitada por diseño.
-
----
+## ADR-007 — Twilio inicial
+**Accepted.** Twilio prioriza madurez; migración futura queda habilitada por diseño.
 
 ## ADR-008 — Core agnóstico al negocio
+**Accepted.** Clínica es vertical inicial; el Core permanece sector-agnostic.
 
-**Estado:** Accepted
-
-**Problema:** el primer caso de uso real será una clínica, pero acoplar el núcleo a conceptos clínicos limitaría la reutilización del producto y obligaría a reescrituras para restaurantes, talleres, hoteles u otros negocios.
-
-**Decisión:** mantener un Core sector-agnostic y representar cada negocio mediante `BusinessProfile`/`TenantConfiguration`, módulos verticales y herramientas autorizadas.
-
-**Motivación:** maximizar reutilización, reducir forks, mantener independencia del media plane y permitir evolución comercial hacia múltiples sectores.
-
-**Consecuencias:** la primera integración clínica debe implementarse como vertical sobre el Core. Los módulos sectoriales tendrán contratos definidos y no podrán contaminar telefonía, realtime ni dominio compartido.
-
-**Alternativas descartadas:** construir primero una centralita específica para clínica y generalizar después. Se descarta porque suele introducir dependencias difíciles de eliminar y sesga el modelo de dominio desde el inicio.
+## ADR-009 — Tenant + Module/Provider
+**Accepted.** `tenant_id` es contexto de primera clase; `TenantConfiguration` contiene `BusinessProfile`; módulos acceden a sistemas externos mediante providers/adaptadores.
 
 ---
 
-# 26. Riesgos principales
+# 16. Riesgos
 
 | ID | Riesgo | Impacto | Mitigación |
 |---|---|---|---|
-| R-001 | Latencia variable del modelo | Alto | medir p50/p95/p99 |
-| R-002 | Problemas de routing SIP | Crítico F0 | prueba E2E primero |
-| R-003 | Barge-in deficiente | Alto | ajuste VAD + pruebas |
-| R-004 | Calidad telefónica limitada | Alto | validar con llamadas reales |
-| R-005 | Tool backend lento | Alto | timeout/circuit breaker |
-| R-006 | Hallucination empresarial | Crítico | tools como fuente de verdad |
-| R-007 | Acciones sensibles incorrectas | Crítico | policy gateway |
-| R-008 | Coste/minuto elevado | Alto | medir coste por llamada resuelta |
+| R-001 | Latencia variable | Alto | p50/p95/p99 |
+| R-002 | Routing SIP | Crítico F0 | E2E primero |
+| R-003 | Barge-in deficiente | Alto | tuning + tests |
+| R-004 | Calidad telefónica | Alto | llamadas reales |
+| R-005 | Backend lento | Alto | timeout/circuit breaker |
+| R-006 | Hallucination empresarial | Crítico | fuente de verdad |
+| R-007 | Acción sensible incorrecta | Crítico | policy gateway |
+| R-008 | Coste/min alto | Alto | coste/resolved-call |
 | R-009 | PII en logs | Alto | redaction |
-| R-010 | Sesiones huérfanas | Alto | lifecycle + cleanup |
-| R-011 | Vendor lock-in | Medio | `TelephonyProvider` + `RealtimeProvider` + `ToolGateway` + adaptadores |
-| R-012 | Acoplamiento del Core al primer vertical (clínica) | Alto | `BusinessProfile`, módulos verticales y RA-011 |
-| R-013 | Información empresarial desactualizada | Alto | fuente de verdad configurable, ownership y actualización controlada |
-| R-014 | El modelo inventa disponibilidad/citas/reservas | Crítico | RA-012 + `ToolGateway` + sistemas fuente |
+| R-010 | Sesiones huérfanas | Alto | lifecycle/cleanup |
+| R-011 | Vendor lock-in | Medio | providers/adapters |
+| R-012 | Core acoplado a clínica | Alto | RA-011 |
+| R-013 | Business info desactualizada | Alto | ownership/fuente autorizada |
+| R-014 | IA inventa disponibilidad | Crítico | RA-012 |
+| R-015 | Fuga entre tenants | Crítico | RA-013 + cross-tenant tests |
+| R-016 | Módulo acoplado a agenda | Alto | RA-014 |
 
 ---
 
-# 27. Modelo de coste
+# 17. Modelo de coste
 
 ```text
 Cost_per_call =
@@ -1281,7 +790,7 @@ Cost_per_call =
 + infrastructure
 ```
 
-KPI preferente:
+KPI principal:
 
 ```text
 Cost_per_resolved_call =
@@ -1290,11 +799,10 @@ Cost_per_resolved_call =
 
 ---
 
-# 28. Estructura prevista del repositorio
+# 18. Estructura prevista
 
 ```text
 IA_RealTime_CenterCall/
-├── README.md
 ├── docs/
 │   ├── ARCHITECTURE_SPECIFICATION.md
 │   ├── adr/
@@ -1302,19 +810,20 @@ IA_RealTime_CenterCall/
 │   └── runbooks/
 ├── apps/
 │   ├── control-plane/
-│   └── admin-web/        # futuro
+│   └── admin-web/
 ├── packages/
 │   ├── domain/
 │   ├── telephony/
 │   ├── realtime/
 │   ├── tools/
+│   ├── tenant/
 │   ├── business-profile/
 │   ├── modules/
 │   │   ├── business-information/
 │   │   ├── appointments/
 │   │   ├── reservations/
-│   │   ├── orders/
-│   │   └── human-handoff/
+│   │   └── orders/
+│   ├── business-providers/
 │   └── observability/
 ├── tests/
 │   ├── unit/
@@ -1327,11 +836,9 @@ IA_RealTime_CenterCall/
 └── tsconfig.json
 ```
 
-FASE 0 puede requerir muy poco o ningún código propio si la configuración SIP → Realtime puede validarse directamente. **Eso es aceptable y deseable.** No escribir código solo para aparentar progreso.
-
 ---
 
-# 29. Configuración conceptual
+# 19. Configuración conceptual
 
 ```text
 ENVIRONMENT=dev
@@ -1340,6 +847,8 @@ REALTIME_PROVIDER=openai
 REALTIME_MODEL=<configurable>
 REALTIME_VOICE=<configurable>
 DEFAULT_LANGUAGE=es
+DEFAULT_TENANT_ID=<dev-tenant>
+TENANT_CONFIG_SOURCE=<configurable>
 CALL_MAX_DURATION_SECONDS=1800
 LOG_LEVEL=info
 ```
@@ -1348,52 +857,31 @@ Secretos fuera de Git.
 
 ---
 
-# 30. Fuentes técnicas a verificar antes de implementar
-
-Las APIs pueden cambiar. Antes de cada fase se debe verificar documentación oficial actual de:
-
-- OpenAI Realtime API;
-- OpenAI Realtime SIP/calls;
-- proveedor SIP seleccionado;
-- Cloudflare Workers/Agents cuando se incorpore control plane.
-
-No asumir nombres de modelos, precios, límites o firmas API sin verificación actual.
-
----
-
-# 31. Próximo trabajo — únicamente FASE 0
-
-El siguiente trabajo del proyecto es exclusivamente:
+# 20. Próximo trabajo — solo FASE 0
 
 ```text
-1. crear/configurar cuenta Twilio y obtener número de prueba
-2. configurar SIP
-3. conectar a OpenAI Realtime
-4. realizar primera llamada
-5. conversar
-6. colgar
-7. repetir
-8. medir baseline
-9. cerrar Gate F0
+1. crear/configurar Twilio
+2. obtener número de prueba
+3. configurar SIP
+4. verificar mecanismo actual de incoming call en OpenAI Realtime
+5. implementar control mínimo si es necesario
+6. conectar SIP ↔ Realtime
+7. llamar
+8. conversar / interrumpir / colgar
+9. repetir 20 veces
+10. medir baseline
+11. cerrar Gate F0
 ```
 
-No comenzar todavía:
-
-- estructura compleja de Cloudflare;
-- D1;
-- MCP;
-- CRM;
-- dashboard;
-- transferencia humana;
-- load testing.
+No comenzar todavía D1, MCP, CRM, dashboard, handoff ni load testing.
 
 ---
 
-# 32. Estado actual
+# 21. Estado actual
 
-**Arquitectura:** Direct SIP → OpenAI Realtime + Cloudflare como control plane.  
-**Proveedor telefónico inicial:** Twilio, encapsulado mediante `TelephonyProvider`.  
-**Modelo de producto:** Core agnóstico al negocio; clínica como primer vertical de validación.  
-**FASE activa:** FASE 0 — Prueba end-to-end del canal de audio.  
-**Código:** todavía no requerido para dar por iniciada F0.  
-**Gate inmediato:** conseguir una llamada telefónica real, conversación bidireccional estable y cierre correcto.
+**Arquitectura:** Direct SIP → OpenAI Realtime + Cloudflare Control Plane.  
+**Telefonía inicial:** Twilio detrás de `TelephonyProvider`.  
+**Producto:** Core agnóstico al negocio; clínica como primer vertical.  
+**FASE activa:** FASE 0.  
+**Código permitido en F0:** control mínimo de llamada; ningún relay de audio ni lógica empresarial.  
+**Gate inmediato:** llamada real, conversación bidireccional estable, barge-in y cierre correcto.
