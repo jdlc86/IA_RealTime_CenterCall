@@ -1,6 +1,6 @@
 # IA_RealTime_CenterCall — ARCHITECTURE SPECIFICATION
 
-> **Estado:** Especificación oficial — v1.4  
+> **Estado:** Especificación oficial — v1.5  
 > **Fecha base:** 2026-08-08  
 > **Repositorio:** `jdlc86/IA_RealTime_CenterCall`  
 > **Rama base:** `main`  
@@ -17,6 +17,7 @@
 | 1.2 | 2026-08-08 | Core agnóstico al negocio y clínica como primer vertical. |
 | 1.3 | 2026-08-08 | Saneamiento: tenant de primera clase, `TenantConfiguration`/`BusinessProfile`, Module/Provider, `ToolGateway`/`ToolExecutor`, control mínimo en F0 y reordenación de fases. |
 | 1.4 | 2026-08-08 | Resolución explícita `called_number → tenant_id`, personalización por negocio sin forks y gate multi-negocio clínica/restaurante. |
+| 1.5 | 2026-08-08 | Cierre arquitectónico: bootstrap de llamada ligado a tenant, flujo correcto ToolGateway→Module→Provider, `TenantResolver` como contrato, `HumanHandoffModule` en estructura y ADR formalizados. |
 
 ---
 
@@ -33,6 +34,7 @@
 9. Toda feature debe cumplir las Reglas Arquitectónicas No Negociables.
 10. Este documento se actualiza junto con las decisiones de código.
 11. El negocio se selecciona por routing/configuración, nunca mediante forks o ramas de código específicas por cliente.
+12. La sesión Realtime no puede iniciar comportamiento conversacional específico del negocio hasta completar el binding del tenant y cargar su configuración.
 
 Estados: `[ ]` no iniciado · `[~]` en curso · `[x]` validado · `[!]` bloqueado.
 
@@ -42,7 +44,7 @@ Estados: `[ ]` no iniciado · `[~]` en curso · `[x]` validado · `[!]` bloquead
 
 La plataforma recibe llamadas de la red telefónica, conversa de forma natural mediante IA realtime, responde información autorizada del negocio, ejecuta operaciones empresariales mediante herramientas controladas y puede transferir la llamada a una persona.
 
-El producto es **agnóstico al sector y multi-tenant**. Un mismo despliegue del Core debe poder atender simultáneamente números asociados a negocios distintos. Por ejemplo:
+El producto es **agnóstico al sector y multi-tenant**. Un mismo despliegue del Core debe poder atender simultáneamente números asociados a negocios distintos:
 
 ```text
 Llamada a número A → tenant clínica → perfil/módulos/providers de clínica
@@ -50,15 +52,6 @@ Llamada a número B → tenant restaurante → perfil/módulos/providers de rest
 ```
 
 La clínica es el primer vertical de validación, pero el Core debe poder reutilizarse para restaurante, hotel, taller, peluquería, comercio u otros negocios sin forks ni reescritura de telefonía/realtime.
-
-Ejemplos de capacidades:
-
-- información del negocio;
-- citas;
-- reservas;
-- pedidos;
-- transferencia a humano;
-- herramientas futuras habilitadas por tenant.
 
 La IA **conversa y solicita acciones**; los sistemas empresariales son la fuente de verdad.
 
@@ -75,13 +68,17 @@ Número telefónico llamado
       ▼
 Proveedor telefónico / SIP
       │
-      ├──── metadata/routing ───► TenantResolver
+      ├──── metadata/routing ───► Call Bootstrap / Control Plane
       │                              │
-      │                              ▼
-      │                           tenant_id
-      │                              │
-      │                              ▼
-      │                      TenantConfiguration
+      │                              ├── TenantResolver
+      │                              │      ↓
+      │                              │   tenant_id
+      │                              │      ↓
+      │                              ├── TenantConfiguration
+      │                              │      ↓
+      │                              └── Realtime session config
+      │                                  prompt / voz / idioma /
+      │                                  políticas / tools permitidas
       │
       │ SIP / RTP
       ▼
@@ -94,6 +91,7 @@ OpenAI Realtime
                                   ├── ToolGateway
                                   ├── TenantConfiguration
                                   ├── políticas / seguridad
+                                  ├── módulos de negocio
                                   ├── providers empresariales
                                   ├── persistencia
                                   └── observabilidad
@@ -117,10 +115,12 @@ Cloudflare, bases de datos, MCP, CRM, `TenantResolver` y ToolGateway quedan fuer
 Cloudflare alojará progresivamente:
 
 - webhook/control de llamadas;
+- bootstrap y binding de tenant;
 - `TenantResolver`;
 - configuración por tenant;
 - ToolGateway;
 - autorización y políticas;
+- módulos de negocio;
 - providers/adaptadores;
 - persistencia;
 - observabilidad;
@@ -144,6 +144,7 @@ Fronteras arquitectónicas:
 
 - `TelephonyProvider`
 - `RealtimeProvider`
+- `TenantResolver`
 - `ToolGateway`
 
 Las particularidades de Twilio, OpenAI, MCP, CRM, agendas u otros proveedores se encapsulan en infraestructura/adaptadores.
@@ -154,45 +155,26 @@ Las interfaces se materializan cuando existe su capacidad correspondiente. FASE 
 
 ## DD-002 — Dominio / Infraestructura
 
-El dominio contiene:
+El dominio contiene lifecycle de llamada, contratos, políticas, reglas compartidas, estado lógico y semántica de errores.
 
-- lifecycle de llamada;
-- contratos;
-- políticas;
-- reglas compartidas;
-- estado lógico;
-- semántica de errores.
-
-Infraestructura contiene:
-
-- SDKs;
-- HTTP/SIP/webhooks;
-- Workers;
-- D1/R2;
-- serialización de proveedor;
-- credenciales;
-- adaptadores.
+Infraestructura contiene SDKs, HTTP/SIP/webhooks, Workers, D1/R2, serialización de proveedor, credenciales y adaptadores.
 
 **Dependencia permitida:** infraestructura → dominio.  
 **Dependencia prohibida:** dominio → infraestructura.
 
 ## DD-003 — Audio Path Mínimo
 
-No se añade un componente al media plane sin:
-
-1. necesidad demostrada;
-2. estimación de impacto;
-3. benchmark antes/después;
-4. ADR aprobado.
+No se añade un componente al media plane sin necesidad demostrada, estimación de impacto, benchmark antes/después y ADR aprobado.
 
 ## DD-004 — ToolGateway obligatorio
 
 El modelo no accede directamente a APIs empresariales.
 
+Flujo normativo:
+
 ```text
 Modelo
-  │
-  ▼
+  ↓
 ToolGateway
   ├── schema validation
   ├── policy / authorization
@@ -200,17 +182,35 @@ ToolGateway
   ├── idempotency
   ├── audit
   └── ToolExecutor
-        └── Provider / Adapter
-              └── sistema externo
+        ↓
+Business Module
+        ↓
+Provider / Adapter
+        ↓
+Sistema externo
 ```
 
-`ToolGateway` es la frontera pública para herramientas. `ToolExecutor` es un contrato interno para ejecutar una operación ya validada/autorizada.
+Ejemplo:
+
+```text
+Modelo
+  ↓
+ToolGateway
+  ↓
+AppointmentTool / ToolExecutor
+  ↓
+AppointmentModule
+  ↓
+AppointmentProvider
+  ↓
+Agenda externa
+```
+
+`ToolGateway` es la frontera pública para herramientas. `ToolExecutor` ejecuta una operación ya validada/autorizada. Los módulos contienen reglas de negocio reutilizables y los providers encapsulan sistemas externos.
 
 ## DD-005 — Twilio inicial, migrable
 
-Twilio es el carrier inicial para reducir riesgo de FASE 0.
-
-La migración futura a Telnyx u otro SIP carrier debe poder realizarse implementando otro `TelephonyProvider`.
+Twilio es el carrier inicial para reducir riesgo de FASE 0. La migración futura a Telnyx u otro SIP carrier debe poder realizarse implementando otro `TelephonyProvider`.
 
 ## DD-006 — Core agnóstico al negocio
 
@@ -220,11 +220,13 @@ La clínica es un vertical, no el Core.
 TenantConfiguration
   ├── tenant_id
   ├── BusinessProfile
+  ├── prompt / persona / políticas
+  ├── idioma / voz / realtime
   ├── módulos habilitados
-  ├── políticas / permisos
+  ├── permisos de tools
   ├── telefonía
-  ├── realtime
-  └── configuración de providers
+  ├── providers empresariales
+  └── handoff
 ```
 
 `TenantConfiguration` y `BusinessProfile` no son sinónimos:
@@ -232,25 +234,9 @@ TenantConfiguration
 - `TenantConfiguration`: configuración operativa completa de un negocio.
 - `BusinessProfile`: información descriptiva y relativamente estable comunicable al usuario.
 
-Información relativamente estable:
+Información relativamente estable: identidad, dirección, horarios publicados, servicios, políticas y FAQs.
 
-- identidad;
-- dirección;
-- horarios publicados;
-- servicios;
-- políticas;
-- FAQs.
-
-Información dinámica u operacional:
-
-- disponibilidad actual;
-- citas;
-- reservas;
-- pedidos;
-- precios dinámicos;
-- estado de una operación.
-
-Los datos dinámicos se consultan mediante `ToolGateway`.
+Información dinámica: disponibilidad actual, citas, reservas, pedidos, precios dinámicos y estado de operaciones. Los datos dinámicos se consultan mediante `ToolGateway`.
 
 ### Módulos compartidos
 
@@ -271,18 +257,18 @@ No contiene `doctor`, `patient` ni otros conceptos clínicos. Los conceptos sect
 ### Module / Provider
 
 ```text
-AppointmentModule
-      │
-      ▼
 ToolGateway
-      │
-      ▼
+    ↓
+AppointmentTool
+    ↓
+AppointmentModule
+    ↓
 AppointmentProvider
-      │
-      └── agenda externa
+    ↓
+Agenda externa
 ```
 
-El mismo patrón aplica a `ReservationProvider`, `OrderProvider`, etc.
+El mismo patrón aplica a reservas, pedidos y futuras capacidades.
 
 ## DD-007 — Tenant de primera clase
 
@@ -302,7 +288,7 @@ Reglas:
 
 1. El tenant se resuelve en el borde de entrada.
 2. El número telefónico llamado (`called_number`) es la clave primaria de resolución en el modelo inicial.
-3. El mapping `called_number → tenant_id` pertenece a configuración/routing y no al Core de negocio.
+3. El mapping `called_number → tenant_id` pertenece a configuración/routing.
 4. Ninguna herramienta empresarial se ejecuta sin tenant.
 5. No se comparten implícitamente datos, credenciales, prompts ni permisos entre tenants.
 6. FASE 0 puede usar un tenant de desarrollo fijo.
@@ -310,8 +296,6 @@ Reglas:
 ## DD-008 — Personalización por negocio mediante configuración
 
 Añadir o modificar un negocio no debe requerir una variante del programa.
-
-El flujo normativo es:
 
 ```text
 called_number
@@ -330,26 +314,45 @@ TenantConfiguration
     └── destino de handoff
 ```
 
-Ejemplo:
+No se permiten condicionales específicos de cliente en el Core. Un nuevo negocio se incorpora registrando routing, configuración, datos y módulos/providers existentes.
+
+## DD-009 — Call Bootstrap y Tenant Binding
+
+Toda llamada debe completar un bootstrap antes de iniciar comportamiento conversacional específico del negocio.
+
+Flujo obligatorio:
 
 ```text
-+34 ... A
-  → clinica_madrid
-  → BusinessInformation + Appointment + HumanHandoff
-  → AppointmentProvider = agenda clínica
-
-+34 ... B
-  → restaurante_centro
-  → BusinessInformation + Reservation + Order + HumanHandoff
-  → ReservationProvider = sistema de reservas
+incoming call
+    ↓
+called_number / route
+    ↓
+TenantResolver
+    ↓
+tenant_id
+    ↓
+load TenantConfiguration
+    ↓
+build RealtimeSessionConfiguration
+    ├── prompt/persona
+    ├── voz
+    ├── idioma
+    ├── VAD
+    ├── políticas
+    └── tools permitidas
+    ↓
+accept/configure Realtime session
+    ↓
+begin conversation
 ```
 
-**Reglas:**
+Reglas:
 
-- no se permiten `if (tenant === "clinica_madrid")` ni equivalentes en el Core;
-- un nuevo negocio se incorpora registrando routing, configuración, datos y módulos/providers existentes;
-- si necesita una capacidad realmente nueva, se crea un módulo reusable con contrato genérico;
-- no se despliega una copia diferente del Core por cada negocio salvo una decisión operacional futura documentada por ADR.
+1. La IA no inicia saludo específico de negocio antes de completar el tenant binding.
+2. Si el tenant no puede resolverse, la llamada debe usar un fallback explícito o fallar de forma controlada; nunca usar datos de otro tenant.
+3. La configuración usada en la sesión debe quedar asociada al `call_id` y `tenant_id`.
+4. El bootstrap pertenece al control plane y no transporta audio.
+5. La implementación concreta de aceptación/configuración se encapsula mediante `RealtimeProvider`.
 
 ---
 
@@ -358,7 +361,7 @@ Ejemplo:
 - **RA-001** — `domain` no importa SDKs externos.
 - **RA-002** — toda integración externa tiene interfaz/provider/adaptador.
 - **RA-003** — Cloudflare queda fuera del audio path.
-- **RA-004** — toda herramienta empresarial pasa por `ToolGateway`.
+- **RA-004** — toda herramienta empresarial entra por `ToolGateway` antes de llegar a módulos/providers.
 - **RA-005** — no se amplía el media plane sin benchmark + ADR.
 - **RA-006** — no se optimiza sin baseline.
 - **RA-007** — ningún gate se cierra sin evidencia.
@@ -369,8 +372,9 @@ Ejemplo:
 - **RA-012** — el modelo no inventa disponibilidad ni confirma operaciones sin fuente de verdad.
 - **RA-013** — toda sesión/operación empresarial tiene `tenant_id`.
 - **RA-014** — módulos de negocio no dependen de SDKs/modelos de datos de sistemas externos.
-- **RA-015** — el tenant se resuelve desde el routing de entrada; inicialmente `called_number → tenant_id`.
-- **RA-016** — la personalización de un cliente/negocio se realiza mediante `TenantConfiguration`, módulos y providers; nunca mediante forks o condicionales específicos en el Core.
+- **RA-015** — el tenant se resuelve desde routing de entrada; inicialmente `called_number → tenant_id`.
+- **RA-016** — la personalización se realiza mediante `TenantConfiguration`, módulos y providers; nunca mediante forks o condicionales específicos en el Core.
+- **RA-017** — ninguna conversación específica de negocio comienza antes de completar Call Bootstrap + Tenant Binding.
 
 Una PR que viole una RA se considera defecto arquitectónico salvo ADR que modifique expresamente la especificación.
 
@@ -380,7 +384,7 @@ Una PR que viole una RA se considera defecto arquitectónico salvo ADR que modif
 
 - **RF-001 Recepción:** aceptar llamadas de un número público.
 - **RF-002 Sesión IA:** una sesión realtime independiente por llamada.
-- **RF-003 Saludo:** saludo configurable por tenant.
+- **RF-003 Saludo:** saludo configurable por tenant y emitido solo tras tenant binding.
 - **RF-004 Conversación:** audio bidireccional natural.
 - **RF-005 Barge-in:** el usuario puede interrumpir a la IA.
 - **RF-006 Finalización:** cliente, IA, timeout, error o handoff.
@@ -394,14 +398,13 @@ Una PR que viole una RA se considera defecto arquitectónico salvo ADR que modif
 - **RF-014 Fuente:** distinguir información estable de datos dinámicos/fuente de verdad.
 - **RF-015 Number routing:** resolver inicialmente el negocio mediante mapping `called_number → tenant_id`.
 - **RF-016 Customización:** incorporar un negocio nuevo sin modificar ni redesplegar una variante específica del Core.
+- **RF-017 Bootstrap:** cargar y aplicar la configuración del tenant antes de iniciar conversación específica del negocio.
 
 ---
 
 # 6. Requisitos no funcionales
 
 ## RNF-001 Latencia
-
-Objetivos iniciales:
 
 | Métrica | Objetivo |
 |---|---:|
@@ -432,7 +435,7 @@ Audio inteligible, sin cortes frecuentes, eco anormal o degradación introducida
 - permisos/credenciales aislados por tenant;
 - protección frente a prompt injection por voz;
 - el modelo nunca decide permisos;
-- el `tenant_id` no se acepta como dato confiable aportado libremente por el caller/modelo: se deriva de routing autenticado/configurado.
+- el `tenant_id` se deriva de routing autenticado/configurado, no de información aportada libremente por caller/modelo.
 
 ## RNF-005 Observabilidad
 
@@ -456,7 +459,7 @@ T_total =
 + T_telco_playout
 ```
 
-No existe `T_cloudflare_audio_relay` en la arquitectura oficial.
+El tiempo de Call Bootstrap debe medirse como parte del setup, pero no introduce relay de audio.
 
 ---
 
@@ -470,11 +473,9 @@ Responder únicamente:
 
 No se implementan todavía CRM, MCP, agenda, D1, dashboard, ToolGateway ni transferencia humana.
 
-FASE 0 sí puede incluir **código mínimo de control** para recibir el evento de llamada, aceptar/configurar OpenAI Realtime, establecer prompt/voz/VAD y finalizar sesión. Ese código:
+FASE 0 puede incluir **código mínimo de control** para recibir el evento de llamada, aceptar/configurar OpenAI Realtime, establecer prompt/voz/VAD y finalizar sesión. Ese código pertenece al control plane, nunca transporta audio y no contiene lógica empresarial.
 
-- pertenece al control plane;
-- nunca transporta audio;
-- no contiene lógica empresarial.
+FASE 0 puede utilizar un único tenant de desarrollo preconfigurado; el `TenantResolver` multi-negocio se formaliza en F1.
 
 ## 8.2 Ruta
 
@@ -506,6 +507,7 @@ Cuelgue
 - [ ] Verificar mecanismo actual necesario para incoming call.
 - [ ] Implementar webhook/endpoint mínimo si es necesario.
 - [ ] Aceptar/configurar/finalizar sesión.
+- [ ] Asociar configuración de desarrollo antes del saludo.
 - [ ] Confirmar que Cloudflare no transporta audio.
 
 ### Realtime
@@ -527,6 +529,7 @@ Cuelgue
 
 ### Medición
 - [ ] Latencia fin-de-frase → primer audio.
+- [ ] Setup/bootstrap time.
 - [ ] Cortes/jitter.
 - [ ] Fallos de setup.
 - [ ] Duración.
@@ -554,7 +557,7 @@ PASS únicamente si:
 6. llamada de 5 minutos estable;
 7. cuelgue limpia la sesión;
 8. ≥19/20 llamadas completan setup/conversación básica;
-9. baseline inicial de latencia documentado.
+9. baseline inicial de latencia y setup documentado.
 
 Hasta superar F0 no se inicia integración empresarial.
 
@@ -565,7 +568,7 @@ Hasta superar F0 no se inicia integración empresarial.
 ```text
 F0 Voz E2E
   ↓
-F1 Baseline técnico + observabilidad
+F1 Baseline técnico + observabilidad + TenantResolver
   ↓
 F2 Latencia + barge-in
   ↓
@@ -582,9 +585,7 @@ F7 Concurrencia
 F8 Hardening producción
 ```
 
-Ninguna fase puede introducir un nuevo elemento en el media plane sin modificar DD-003 mediante ADR.
-
-## FASE 1 — Baseline técnico y observabilidad
+## FASE 1 — Baseline técnico, observabilidad y tenant routing
 
 - [ ] estructura TypeScript/Cloudflare;
 - [ ] `package.json`, `tsconfig`, Wrangler;
@@ -594,17 +595,21 @@ Ninguna fase puede introducir un nuevo elemento en el media plane sin modificar 
 - [ ] formalizar endpoint mínimo de F0;
 - [ ] `CallSession`;
 - [ ] `call_id`;
-- [ ] `tenant_id` de desarrollo;
-- [ ] `called_number` en contexto de llamada;
-- [ ] `TenantResolver`;
+- [ ] `tenant_id`;
+- [ ] `called_number`;
+- [ ] contrato `TenantResolver`;
 - [ ] mapping `called_number → tenant_id`;
+- [ ] carga de `TenantConfiguration`;
+- [ ] construcción de `RealtimeSessionConfiguration`;
+- [ ] tenant binding antes del saludo;
 - [ ] lifecycle/timestamps/modelo/voz.
 
-**Gate F1:** build/deploy reproducible, `/health` estable y toda llamada correlacionada con `call_id` + `called_number` + `tenant_id`.
+**Gate F1:** build/deploy reproducible, `/health` estable y toda llamada correlacionada con `call_id` + `called_number` + `tenant_id`; la sesión Realtime queda configurada con el tenant correcto antes de comenzar conversación específica.
 
 ## FASE 2 — Latencia y barge-in
 
 - [ ] first-audio p50/p95/p99;
+- [ ] bootstrap/setup p50/p95/p99;
 - [ ] tuning VAD;
 - [ ] escenarios de silencio;
 - [ ] validación repetida de barge-in;
@@ -617,6 +622,7 @@ Ninguna fase puede introducir un nuevo elemento en el media plane sin modificar 
 - [ ] frontera `ToolGateway`;
 - [ ] contrato interno `ToolExecutor`;
 - [ ] primera tool READ;
+- [ ] flujo `ToolGateway → ToolExecutor → Module → Provider`;
 - [ ] schema validation;
 - [ ] authorization;
 - [ ] timeout;
@@ -642,27 +648,26 @@ Ninguna fase puede introducir un nuevo elemento en el media plane sin modificar 
 
 ### Tenant B — restaurante de validación
 
-No es necesario implementar todo el producto restaurante. Su objetivo es demostrar que la customización funciona.
-
 - [ ] segundo número/routing de prueba;
 - [ ] segundo `tenant_id`;
 - [ ] `BusinessProfile` diferente;
 - [ ] saludo/prompt/políticas diferentes;
-- [ ] módulos distintos (al menos `BusinessInformationModule`; `ReservationModule` si está disponible);
+- [ ] módulos distintos;
 - [ ] confirmar que no se modifica el Core para darlo de alta.
 
 ### Prueba obligatoria
 
 ```text
-Llamar número A → la IA se identifica y opera como clínica.
-Llamar número B → la misma plataforma se identifica y opera como restaurante.
+Llamar número A → bootstrap → tenant clínica → IA opera como clínica.
+Llamar número B → bootstrap → tenant restaurante → IA opera como restaurante.
 ```
 
-**Gate F4:** ambos números resuelven tenants distintos y cargan correctamente perfil, prompt/políticas, módulos y providers sin fork, condicional específico por cliente ni variante del Core. La clínica además gestiona citas mediante ToolGateway/fuente de verdad.
+**Gate F4:** ambos números resuelven tenants distintos y cargan correctamente perfil, prompt/políticas, módulos y providers sin fork ni variante del Core. La clínica además gestiona citas mediante ToolGateway/fuente de verdad.
 
 ## FASE 5 — Persistencia y post-call
 
 - [ ] registros con `call_id` + `tenant_id` + `called_number`;
+- [ ] configuración efectiva usada en sesión;
 - [ ] eventos;
 - [ ] métricas;
 - [ ] transcripción opcional;
@@ -674,6 +679,7 @@ Llamar número B → la misma plataforma se identifica y opera como restaurante.
 
 ## FASE 6 — Handoff humano
 
+- [ ] `HumanHandoffModule`;
 - [ ] destino por tenant;
 - [ ] trigger explícito;
 - [ ] transferencia SIP;
@@ -687,12 +693,7 @@ Llamar número B → la misma plataforma se identifica y opera como restaurante.
 
 Escalado: 10 → 50 → 100 → 500 → 1.000+.
 
-No avanzar si:
-
-- p95 degrada >20%;
-- error rate >1%;
-- aparecen sesiones huérfanas;
-- el coste se desvía inesperadamente.
+No avanzar si p95 degrada >20%, error rate >1%, aparecen sesiones huérfanas o el coste se desvía inesperadamente.
 
 **Gate F7:** concurrencia objetivo sin violar SLO, aislamiento o presupuesto.
 
@@ -714,9 +715,9 @@ No avanzar si:
 # 10. Estado de llamada
 
 ```text
-CREATED → RINGING → ACTIVE ──► COMPLETED
-                       └─────► HANDOFF → COMPLETED
-Any state ───────────────────► FAILED
+CREATED → BOOTSTRAPPING → RINGING/ACCEPTING → ACTIVE → COMPLETED
+                                      └────→ FAILED
+ACTIVE ─────→ HANDOFF → COMPLETED
 ```
 
 Cada instancia pertenece a una `CallSession(call_id, tenant_id, called_number, ...)`.
@@ -740,20 +741,30 @@ Cada herramienta declara:
 }
 ```
 
-Categorías:
+Categorías: READ, WRITE LOW-RISK y WRITE HIGH-RISK.
 
-- READ;
-- WRITE LOW-RISK;
-- WRITE HIGH-RISK.
-
-Las operaciones high-risk requieren política adicional.
-
-Integraciones:
+Flujo obligatorio:
 
 ```text
-AppointmentModule → ToolGateway → AppointmentProvider → agenda
-ReservationModule → ToolGateway → ReservationProvider → reservas
-OrderModule       → ToolGateway → OrderProvider       → pedidos
+Model tool call
+   ↓
+ToolGateway
+   ↓
+ToolExecutor
+   ↓
+Business Module
+   ↓
+Provider
+   ↓
+External System
+```
+
+Ejemplos:
+
+```text
+AppointmentTool → AppointmentModule → AppointmentProvider → agenda
+ReservationTool → ReservationModule → ReservationProvider → reservas
+OrderTool       → OrderModule       → OrderProvider       → pedidos
 ```
 
 Toda ejecución recibe `tenant_id`; la selección de provider/credenciales/configuración se realiza desde `TenantConfiguration`, no desde decisiones libres del modelo.
@@ -767,9 +778,11 @@ Por llamada:
 - `call_id`;
 - `tenant_id`;
 - `called_number`;
+- resultado de tenant resolution;
+- bootstrap/setup latency;
+- versión/config efectiva de sesión;
 - proveedor;
 - modelo/voz/VAD;
-- setup;
 - duración;
 - first-audio;
 - turnos;
@@ -789,7 +802,10 @@ Métricas: p50/p95/p99 y coste por llamada resuelta.
 Estado, políticas, parsers, idempotencia, módulos y `TenantResolver`.
 
 ## Integration
-Control plane ↔ OpenAI; control plane ↔ telefonía; routing ↔ tenant; ToolGateway ↔ providers.
+Control plane ↔ OpenAI; control plane ↔ telefonía; routing ↔ tenant; ToolGateway ↔ modules/providers.
+
+## Bootstrap
+Pruebas explícitas de tenant correcto, tenant inexistente, configuración inválida y fallback controlado.
 
 ## E2E
 Siempre debe existir prueba con llamada telefónica real.
@@ -798,7 +814,7 @@ Siempre debe existir prueba con llamada telefónica real.
 Debe existir prueba E2E con al menos dos números/tenants con configuraciones distintas y el mismo Core.
 
 ## Cross-tenant
-Pruebas explícitas que intenten acceder a datos/configuración de otro tenant y deban fallar.
+Pruebas que intenten acceder a datos/configuración de otro tenant y deban fallar.
 
 ## Load
 Carga gradual, no masiva desde el inicio.
@@ -810,55 +826,101 @@ Sesiones huérfanas, degradación p99, leaks y costes anómalos.
 
 # 14. Definition of Done
 
-Una feature requiere:
-
-1. implementación;
-2. prueba;
-3. manejo de error;
-4. timeout cuando aplique;
-5. métricas/logs;
-6. secretos externalizados;
-7. documentación;
-8. criterio de aceptación demostrado;
-9. cumplimiento de RA aplicables;
-10. aislamiento por tenant cuando toque datos/configuración empresarial;
-11. ausencia de lógica específica por cliente en el Core cuando la capacidad sea configurable.
+Una feature requiere implementación, prueba, manejo de error, timeout cuando aplique, métricas/logs, secretos externalizados, documentación, criterio de aceptación demostrado, cumplimiento de RA, aislamiento por tenant y ausencia de lógica específica por cliente en el Core cuando la capacidad sea configurable.
 
 ---
 
 # 15. ADR / Decision Log
 
-Plantilla: **Estado · Problema · Decisión · Motivación · Consecuencias · Alternativas descartadas**.
+Plantilla obligatoria: **Estado · Problema · Decisión · Motivación · Consecuencias · Alternativas descartadas**.
 
 ## ADR-001 — Speech-to-speech nativo
-**Accepted.** Realtime audio-audio como ruta principal inicial; pipeline STT→LLM→TTS queda fuera del camino principal salvo revisión futura.
+- **Estado:** Accepted.
+- **Problema:** un pipeline STT→LLM→TTS añade etapas y latencia.
+- **Decisión:** utilizar realtime audio-audio como ruta principal.
+- **Motivación:** minimizar etapas y mejorar interacción/barge-in.
+- **Consecuencias:** `RealtimeProvider` debe aislar al dominio del proveedor concreto.
+- **Alternativas descartadas:** pipeline secuencial como arquitectura principal.
 
 ## ADR-002 — Direct SIP
-**Accepted.** SIP conecta telefonía con OpenAI Realtime; no se construye media bridge Cloudflare paralelo.
+- **Estado:** Accepted.
+- **Problema:** un media bridge propio añade salto, buffering y jitter.
+- **Decisión:** SIP conecta telefonía directamente con OpenAI Realtime.
+- **Motivación:** minimizar latencia y superficie de fallo.
+- **Consecuencias:** Cloudflare queda fuera del transporte de audio.
+- **Alternativas descartadas:** relay WebSocket propio como ruta principal.
 
 ## ADR-003 — Cloudflare Control Plane
-**Accepted.** Cloudflare aloja control/herramientas/datos/observabilidad, no audio.
+- **Estado:** Accepted.
+- **Problema:** se necesita lógica empresarial y observabilidad sin penalizar audio.
+- **Decisión:** Cloudflare aloja control, herramientas, datos y observabilidad.
+- **Motivación:** separar media plane y control plane.
+- **Consecuencias:** fallos de control no deben introducir relay de audio.
+- **Alternativas descartadas:** Cloudflare como media bridge obligatorio.
 
 ## ADR-004 — MCP fuera del audio path
-**Accepted.** MCP solo donde aporte interoperabilidad y siempre detrás de ToolGateway.
+- **Estado:** Accepted.
+- **Problema:** convertir MCP en requisito del audio añade dependencia crítica.
+- **Decisión:** MCP solo detrás de ToolGateway cuando aporte valor.
+- **Motivación:** desacoplar interoperabilidad empresarial de voz.
+- **Consecuencias:** una caída MCP no debe cortar audio.
+- **Alternativas descartadas:** MCP obligatorio en cada turno.
 
 ## ADR-005 — FASE 0 voz E2E
-**Accepted.** Validar primero llamada real antes de capas empresariales.
+- **Estado:** Accepted.
+- **Problema:** construir capas empresariales antes de validar la llamada aumenta riesgo.
+- **Decisión:** validar primero llamada real, conversación, barge-in y cierre.
+- **Motivación:** atacar primero el mayor riesgo técnico.
+- **Consecuencias:** integraciones empresariales esperan a Gate F0.
+- **Alternativas descartadas:** comenzar por CRM, DB o dashboard.
 
 ## ADR-006 — Independencia de proveedores
-**Accepted.** TelephonyProvider, RealtimeProvider y ToolGateway/adaptadores preservan sustituibilidad.
+- **Estado:** Accepted.
+- **Problema:** acoplamiento directo aumenta vendor lock-in.
+- **Decisión:** usar providers, resolvers, gateways y adaptadores.
+- **Motivación:** preservar sustituibilidad y testabilidad.
+- **Consecuencias:** existe una capa de abstracción deliberada.
+- **Alternativas descartadas:** SDKs externos dentro del dominio.
 
 ## ADR-007 — Twilio inicial
-**Accepted.** Twilio prioriza madurez; migración futura queda habilitada por diseño.
+- **Estado:** Accepted.
+- **Problema:** F0 necesita un carrier inicial estable.
+- **Decisión:** Twilio como primer proveedor, detrás de `TelephonyProvider`.
+- **Motivación:** madurez y menor riesgo inicial.
+- **Consecuencias:** configuración inicial Twilio-specific fuera del dominio.
+- **Alternativas descartadas:** priorizar coste mínimo desde F0.
 
 ## ADR-008 — Core agnóstico al negocio
-**Accepted.** Clínica es vertical inicial; el Core permanece sector-agnostic.
+- **Estado:** Accepted.
+- **Problema:** acoplarse a clínica impediría reutilización.
+- **Decisión:** Core sector-agnostic con módulos/configuración.
+- **Motivación:** soportar múltiples verticales sin forks.
+- **Consecuencias:** clínica se implementa como vertical.
+- **Alternativas descartadas:** construir una centralita clínica específica y generalizar después.
 
 ## ADR-009 — Tenant + Module/Provider
-**Accepted.** `tenant_id` es contexto de primera clase; `TenantConfiguration` contiene `BusinessProfile`; módulos acceden a sistemas externos mediante providers/adaptadores.
+- **Estado:** Accepted.
+- **Problema:** multi-negocio requiere aislamiento y portabilidad de sistemas externos.
+- **Decisión:** `tenant_id` de primera clase; `TenantConfiguration` contiene `BusinessProfile`; módulos dependen de providers genéricos.
+- **Motivación:** aislamiento y bajo acoplamiento.
+- **Consecuencias:** pruebas cross-tenant y contratos provider obligatorios.
+- **Alternativas descartadas:** configuración global única y SDKs de agenda dentro de módulos.
 
 ## ADR-010 — Número llamado como resolución inicial de tenant
-**Accepted.** El `called_number` se resuelve en el borde mediante `TenantResolver` y mapping configurado hacia `tenant_id`. La personalización se carga desde `TenantConfiguration`; no se crean forks ni condicionales por cliente en el Core. La resolución podrá evolucionar a rutas SIP/DIDs/aliases más complejos sin cambiar el contrato `TenantResolver`.
+- **Estado:** Accepted.
+- **Problema:** cada número debe cargar el negocio correcto.
+- **Decisión:** `called_number` se resuelve mediante `TenantResolver` hacia `tenant_id`.
+- **Motivación:** customización determinista por routing.
+- **Consecuencias:** `called_number` forma parte de `CallSession` y observabilidad.
+- **Alternativas descartadas:** identificación del negocio por prompt o input libre del caller.
+
+## ADR-011 — Call Bootstrap + Tenant Binding
+- **Estado:** Accepted.
+- **Problema:** la sesión Realtime podría comenzar antes de tener la configuración correcta del negocio.
+- **Decisión:** resolver tenant, cargar `TenantConfiguration` y construir configuración Realtime antes del saludo/comportamiento específico.
+- **Motivación:** evitar mezcla cross-tenant y garantizar customización determinista.
+- **Consecuencias:** aparece estado `BOOTSTRAPPING`, métrica de setup y fallback explícito.
+- **Alternativas descartadas:** iniciar conversación con configuración global y cambiarla después.
 
 ---
 
@@ -882,28 +944,17 @@ Plantilla: **Estado · Problema · Decisión · Motivación · Consecuencias · 
 | R-014 | IA inventa disponibilidad | Crítico | RA-012 |
 | R-015 | Fuga entre tenants | Crítico | RA-013 + cross-tenant tests |
 | R-016 | Módulo acoplado a agenda | Alto | RA-014 |
-| R-017 | Número resuelve tenant incorrecto | Crítico | `TenantResolver`, mapping validado y tests E2E |
-| R-018 | Customización deriva en forks por cliente | Alto | RA-016 + gate multi-negocio |
+| R-017 | Número resuelve tenant incorrecto | Crítico | `TenantResolver` + E2E |
+| R-018 | Customización deriva en forks | Alto | RA-016 + gate multi-negocio |
+| R-019 | IA inicia con configuración de tenant incorrecta | Crítico | DD-009 + RA-017 + bootstrap tests |
 
 ---
 
 # 17. Modelo de coste
 
 ```text
-Cost_per_call =
-  telecom
-+ realtime_model
-+ tools
-+ storage
-+ observability
-+ infrastructure
-```
-
-KPI principal:
-
-```text
-Cost_per_resolved_call =
-  total_cost / successfully_resolved_calls
+Cost_per_call = telecom + realtime_model + tools + storage + observability + infrastructure
+Cost_per_resolved_call = total_cost / successfully_resolved_calls
 ```
 
 ---
@@ -933,7 +984,8 @@ IA_RealTime_CenterCall/
 │   │   ├── business-information/
 │   │   ├── appointments/
 │   │   ├── reservations/
-│   │   └── orders/
+│   │   ├── orders/
+│   │   └── human-handoff/
 │   ├── business-providers/
 │   └── observability/
 ├── tests/
@@ -965,9 +1017,7 @@ CALL_MAX_DURATION_SECONDS=1800
 LOG_LEVEL=info
 ```
 
-En entornos multi-negocio, `DEFAULT_TENANT_ID` no sustituye la resolución por routing; queda limitado a desarrollo/pruebas controladas.
-
-Secretos fuera de Git.
+En entornos multi-negocio, `DEFAULT_TENANT_ID` no sustituye resolución por routing; queda limitado a desarrollo/pruebas controladas.
 
 ---
 
@@ -979,12 +1029,13 @@ Secretos fuera de Git.
 3. configurar SIP
 4. verificar mecanismo actual de incoming call en OpenAI Realtime
 5. implementar control mínimo si es necesario
-6. conectar SIP ↔ Realtime
-7. llamar
-8. conversar / interrumpir / colgar
-9. repetir 20 veces
-10. medir baseline
-11. cerrar Gate F0
+6. aplicar configuración de desarrollo antes del saludo
+7. conectar SIP ↔ Realtime
+8. llamar
+9. conversar / interrumpir / colgar
+10. repetir 20 veces
+11. medir baseline de setup y conversación
+12. cerrar Gate F0
 ```
 
 No comenzar todavía D1, MCP, CRM, dashboard, handoff ni load testing.
@@ -997,7 +1048,7 @@ La resolución multi-negocio se formaliza en F1 y se valida E2E con dos negocios
 
 **Arquitectura:** Direct SIP → OpenAI Realtime + Cloudflare Control Plane.  
 **Telefonía inicial:** Twilio detrás de `TelephonyProvider`.  
-**Producto:** Core multi-tenant y agnóstico al negocio; número/routing selecciona `tenant_id` y configuración.  
+**Producto:** Core multi-tenant y agnóstico al negocio; routing selecciona `tenant_id` y configuración.  
 **FASE activa:** FASE 0.  
 **Código permitido en F0:** control mínimo de llamada; ningún relay de audio ni lógica empresarial.  
-**Gate inmediato:** llamada real, conversación bidireccional estable, barge-in y cierre correcto.
+**Gate inmediato:** llamada real, conversación bidireccional estable, barge-in, configuración aplicada antes del saludo y cierre correcto.
