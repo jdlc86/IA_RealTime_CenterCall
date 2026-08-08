@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ia-realtime-centercall-dev",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "ENVIRONMENT": "dev",
+    "DEFAULT_TENANT_ID": "dev-clinic",
+    "REALTIME_MODEL": "gpt-realtime",
+    "REALTIME_VOICE": "marin"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}
