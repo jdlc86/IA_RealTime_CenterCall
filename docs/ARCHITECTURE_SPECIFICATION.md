@@ -1,6 +1,6 @@
 # IA_RealTime_CenterCall — ARCHITECTURE SPECIFICATION
 
-> **Estado:** Especificación de arquitectura oficial — v1.0  
+> **Estado:** Especificación de arquitectura oficial — v1.1  
 > **Fecha base:** 2026-08-08  
 > **Repositorio:** `jdlc86/IA_RealTime_CenterCall`  
 > **Rama base:** `main`  
@@ -13,6 +13,7 @@
 | Versión | Fecha | Cambio |
 |---|---|---|
 | 1.0 | 2026-08-08 | Consolidación de arquitectura oficial, FASE 0 de voz E2E, independencia de proveedores, reglas no negociables y Twilio como proveedor inicial. |
+| 1.1 | 2026-08-08 | Agrupación explícita de fases de integración, gates completos y normalización del registro ADR. |
 
 ---
 
@@ -667,6 +668,44 @@ FASE 0 se marca `[x]` únicamente si se demuestra todo lo siguiente:
 
 ---
 
+## Bloque B — Fases de Integración
+
+Las fases siguientes comienzan **únicamente después de superar Gate F0**. Su objetivo es transformar el canal de voz validado en una plataforma empresarial, incorporando capacidades de forma incremental sin degradar el media plane.
+
+Orden obligatorio:
+
+```text
+FASE 0 — Voz E2E validada
+      │
+      ▼
+FASE 1 — Baseline técnico y observabilidad
+      │
+      ▼
+FASE 2 — Latencia y barge-in
+      │
+      ▼
+FASE 3 — Tool Gateway
+      │
+      ▼
+FASE 4 — Persistencia y post-call
+      │
+      ▼
+FASE 5 — Transferencia humana
+      │
+      ▼
+FASE 6 — Integraciones MCP / negocio
+      │
+      ▼
+FASE 7 — Concurrencia
+      │
+      ▼
+FASE 8 — Hardening producción
+```
+
+**Regla:** ninguna fase de integración puede introducir un componente en el media path salvo modificación explícita de DD-003 y ADR aprobado.
+
+---
+
 # 11. FASE 1 — Baseline técnico y observabilidad mínima
 
 Objetivo: convertir la prueba funcional de F0 en una integración reproducible y medible.
@@ -736,6 +775,8 @@ Cloudflare Tool Gateway
 
 # 14. FASE 4 — Persistencia y post-call
 
+Objetivo: persistir trazabilidad y resultados de llamadas fuera del camino crítico de audio.
+
 - [ ] registro de llamadas
 - [ ] eventos
 - [ ] métricas
@@ -748,6 +789,8 @@ Cloudflare Tool Gateway
 ---
 
 # 15. FASE 5 — Transferencia humana
+
+Objetivo: permitir escalamiento controlado a una persona mediante mecanismos SIP sin romper el contexto operativo.
 
 - [ ] destino configurable
 - [ ] trigger explícito
@@ -762,6 +805,8 @@ Cloudflare Tool Gateway
 
 # 16. FASE 6 — Integraciones MCP / negocio
 
+Objetivo: conectar capacidades empresariales reales exclusivamente a través de `ToolGateway` y adaptadores autorizados.
+
 - [ ] definir MCP realmente necesario
 - [ ] conectar CRM/ERP/pedidos/etc.
 - [ ] permisos por herramienta
@@ -774,6 +819,8 @@ Cloudflare Tool Gateway
 ---
 
 # 17. FASE 7 — Concurrencia
+
+Objetivo: demostrar escalabilidad progresiva manteniendo SLO, aislamiento y coste controlado.
 
 Escalado progresivo:
 
@@ -790,9 +837,13 @@ No avanzar si:
 - aparecen sesiones huérfanas;
 - el coste se desvía inesperadamente.
 
+**Gate F7:** alcanzar la concurrencia objetivo acordada sin violar SLO de latencia, error budget, aislamiento ni presupuesto de coste.
+
 ---
 
 # 18. FASE 8 — Hardening producción
+
+Objetivo: preparar la plataforma para operación real mediante seguridad, resiliencia, runbooks y controles operacionales.
 
 - [ ] rate limits
 - [ ] secretos auditados
@@ -803,6 +854,8 @@ No avanzar si:
 - [ ] revisión de seguridad
 - [ ] plan de contingencia de telefonía
 - [ ] plan de contingencia del modelo realtime
+
+**Gate F8:** checklist de producción completado, riesgos críticos mitigados y runbooks de fallos principales validados.
 
 ---
 
@@ -964,34 +1017,86 @@ Una feature no está terminada hasta tener:
 
 # 25. ADR / Decision Log
 
+Los ADR registran **por qué** se tomó una decisión arquitectónica. Las DD definen reglas vigentes de diseño; los ADR conservan la justificación y consecuencias de las decisiones que llevaron a esas reglas.
+
+Plantilla obligatoria para nuevos ADR:
+
+- **Estado**
+- **Problema**
+- **Decisión**
+- **Motivación**
+- **Consecuencias**
+- **Alternativas descartadas**
+
 ## ADR-001 — Speech-to-speech nativo
 
-**Estado:** Accepted  
-**Decisión:** utilizar OpenAI Realtime speech-to-speech como ruta principal.
+**Estado:** Accepted
+
+**Problema:** un pipeline externo secuencial `STT → LLM → TTS` introduce más etapas, coordinación y potencial latencia en una conversación telefónica realtime.
+
+**Decisión:** utilizar OpenAI Realtime speech-to-speech como implementación principal inicial de conversación.
+
+**Motivación:** minimizar etapas en el camino conversacional y aprovechar VAD, audio nativo y barge-in de una sesión realtime.
+
+**Consecuencias:** `RealtimeProvider` debe mantener aislado al dominio de detalles específicos de OpenAI.
+
+**Alternativas descartadas:** pipeline STT/LLM/TTS separado como arquitectura principal. Puede evaluarse en el futuro solo mediante ADR y métricas.
 
 ## ADR-002 — Direct SIP como media plane oficial
 
-**Estado:** Accepted  
+**Estado:** Accepted
+
+**Problema:** interponer un media bridge propio añade un salto de red, buffering, jitter potencial y superficie operacional.
+
 **Decisión:** telefonía/SIP conecta directamente con OpenAI Realtime. No se desarrollará un media bridge Cloudflare como arquitectura paralela.
 
-**Razón:** reducir saltos, buffering, jitter, complejidad y superficie de fallo.
+**Motivación:** reducir saltos, buffering, jitter, complejidad y superficie de fallo.
+
+**Consecuencias:** Cloudflare queda fuera del transporte de audio y se concentra en el control plane.
+
+**Alternativas descartadas:** Twilio Media Streams/WebSocket → Cloudflare → Realtime como ruta principal.
 
 ## ADR-003 — Cloudflare como control plane
 
-**Estado:** Accepted  
-**Decisión:** Cloudflare aloja progresivamente herramientas, políticas, persistencia, webhooks y administración, pero no transporta audio en la ruta principal.
+**Estado:** Accepted
+
+**Problema:** la plataforma necesita lógica empresarial, herramientas, seguridad, persistencia y observabilidad sin penalizar el media plane.
+
+**Decisión:** Cloudflare alojará progresivamente control API, webhooks, Tool Gateway, políticas, persistencia, observabilidad y administración, pero no transportará audio en la ruta principal.
+
+**Motivación:** separar responsabilidades y preservar el camino de audio mínimo.
+
+**Consecuencias:** cualquier servicio Cloudflare relacionado con una llamada debe diseñarse para que su degradación no añada innecesariamente latencia al audio.
+
+**Alternativas descartadas:** usar Cloudflare como relay obligatorio de audio.
 
 ## ADR-004 — MCP fuera del camino crítico de audio
 
-**Estado:** Accepted  
-**Decisión:** MCP se usa para interoperabilidad empresarial cuando aporte valor; nunca como requisito para que el audio fluya.
+**Estado:** Accepted
+
+**Problema:** MCP puede aportar interoperabilidad, pero convertirlo en requisito del audio aumentaría dependencias y puntos de fallo.
+
+**Decisión:** MCP se utilizará para integraciones empresariales cuando aporte valor, siempre detrás de `ToolGateway`, y nunca como requisito para que el audio fluya.
+
+**Motivación:** desacoplar interoperabilidad empresarial del media plane.
+
+**Consecuencias:** una caída de MCP no debe cortar una conversación activa; la IA debe manejar el fallo sin inventar resultados.
+
+**Alternativas descartadas:** hacer que cada turno de conversación dependa obligatoriamente de un servidor MCP.
 
 ## ADR-005 — FASE 0 es audio E2E
 
-**Estado:** Accepted  
-**Decisión:** el primer milestone del proyecto no es infraestructura web sino demostrar una llamada telefónica real, conversación IA bidireccional y cierre correcto.
+**Estado:** Accepted
 
-**Razón:** el mayor riesgo técnico del producto es el canal de voz realtime. Debe validarse antes de desarrollar capas periféricas.
+**Problema:** desarrollar infraestructura empresarial antes de demostrar la llamada real podría invertir esfuerzo alrededor de un núcleo de voz todavía no validado.
+
+**Decisión:** el primer milestone del proyecto es demostrar una llamada PSTN real, conversación IA bidireccional, barge-in básico y cierre correcto.
+
+**Motivación:** el mayor riesgo técnico inicial es el canal de voz realtime.
+
+**Consecuencias:** CRM, MCP, persistencia empresarial, dashboard y concurrencia quedan bloqueados hasta superar Gate F0.
+
+**Alternativas descartadas:** comenzar por estructura Cloudflare, base de datos o dashboard.
 
 ## ADR-006 — Independencia de proveedores
 
@@ -1006,6 +1111,20 @@ Una feature no está terminada hasta tener:
 **Consecuencias:** se acepta una pequeña capa adicional de abstracción desde el inicio a cambio de reducir vendor lock-in.
 
 **Alternativas descartadas:** utilizar SDKs de Twilio/OpenAI directamente desde el dominio por rapidez inicial.
+
+## ADR-007 — Twilio como proveedor telefónico inicial
+
+**Estado:** Accepted
+
+**Problema:** FASE 0 necesita un carrier inicial estable sin convertir esa elección en dependencia permanente.
+
+**Decisión:** utilizar Twilio como primer proveedor de número/routing SIP, encapsulado detrás de `TelephonyProvider`.
+
+**Motivación:** reducir riesgo de integración inicial mediante un proveedor maduro y ampliamente documentado.
+
+**Consecuencias:** la configuración inicial y el adaptador serán Twilio-specific, pero las capacidades expuestas al dominio deben permanecer genéricas.
+
+**Alternativas descartadas:** empezar optimizando exclusivamente coste/minuto con un carrier menos consolidado. La migración a Telnyx u otro SIP carrier queda deliberadamente habilitada por diseño.
 
 ---
 
