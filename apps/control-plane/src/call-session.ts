@@ -4,6 +4,9 @@ type CallSessionEnv = {
   OPENAI_API_KEY: string;
 };
 
+type SemanticIntent = "CONTINUE" | "END_AMBIGUOUS" | "END_CLEAR";
+type ClosingState = "active" | "ambiguous" | "closing";
+
 type RealtimeSidebandEvent = {
   type?: string;
   response_id?: string;
@@ -15,11 +18,8 @@ type RealtimeSidebandEvent = {
   error?: { type?: string; code?: string; message?: string };
 };
 
-type ClosingState = "active" | "confirming" | "closing";
-
 const IDLE_TIMEOUT_MS = 10_000;
-const CONFIRMATION_TTL_MS = 30_000;
-const USER_END_SIGNAL_TTL_MS = 30_000;
+const AMBIGUOUS_LIMIT = 3;
 const FINAL_FAREWELL_WATCHDOG_MS = 7_000;
 const HANGUP_RETRY_DELAY_MS = 300;
 const HANGUP_MAX_ATTEMPTS = 2;
@@ -45,162 +45,7 @@ function normalizeText(value: string): string {
     .trim();
 }
 
-function hasContextualFarewellMention(text: string): boolean {
-  return [
-    /\b(me|nos|le|les) dijo (adios|hasta luego)\b/,
-    /\b(dijo|dijeron) (adios|hasta luego)\b/,
-    /\b(decir|diga|dice|dices|dijo) adios\b/,
-    /\b(palabra|expresion) adios\b/,
-    /\b(significa|significado de) adios\b/,
-    /\bcomo se dice adios\b/,
-    /\bcuando alguien dice (adios|hasta luego)\b/,
-  ].some((pattern) => pattern.test(text));
-}
-
-function isDirectHangupRequest(raw: string): boolean {
-  const text = normalizeText(raw);
-  return [
-    /\bpuedes colgar\b/,
-    /\bpuede colgar\b/,
-    /\bcuelga(?: la llamada)?\b/,
-    /\bcuelgue(?: la llamada)?\b/,
-    /\bfinaliza la llamada\b/,
-    /\bfinalice la llamada\b/,
-    /\btermina la llamada\b/,
-    /\btermine la llamada\b/,
-  ].some((pattern) => pattern.test(text));
-}
-
-function isUserEndSignal(raw: string): boolean {
-  const text = normalizeText(raw);
-  if (!text || hasContextualFarewellMention(text)) return false;
-  return [
-    /\badios\b/,
-    /\bhasta luego\b/,
-    /\bhasta pronto\b/,
-    /\bnos vemos\b/,
-    /\bchao\b/,
-    /\bciao\b/,
-    /\beso es todo\b/,
-    /\beso seria todo\b/,
-    /\bseria todo\b/,
-    /\bnada mas\b/,
-    /\ben nada mas\b/,
-    /\bno necesito(?: ya)? nada\b/,
-    /\bno necesito nada mas\b/,
-    /\bno quiero nada mas\b/,
-    /\bno necesito mas ayuda\b/,
-    /\bno quiero seguir\b/,
-    /\bno quiero hablar mas\b/,
-    /\bya no quiero hablar\b/,
-    /\bya no necesito nada\b/,
-    /\bya no tengo mas preguntas\b/,
-    /\bno tengo mas preguntas\b/,
-    /\bno tengo nada mas que consultar\b/,
-    /\bya termine\b/,
-    /\bya he terminado\b/,
-    /\bhe terminado\b/,
-    /\btermine la consulta\b/,
-    /\bya termine la consulta\b/,
-    /\bya he terminado la consulta\b/,
-    /\bconsulta terminada\b/,
-    /\bhemos terminado\b/,
-    /\bya hemos terminado\b/,
-    /\bme despido\b/,
-    /\blo dejamos aqui\b/,
-    /\bdejamos esto aqui\b/,
-    /\bme tengo que ir\b/,
-    /\bcon eso es suficiente\b/,
-    /\bcon esto termino\b/,
-    /\bpor mi parte nada mas\b/,
-    /\bde momento nada mas\b/,
-    /\bcreo que ya esta\b/,
-    /\bcreo que es todo\b/,
-  ].some((pattern) => pattern.test(text));
-}
-
-function classifyConfirmationReply(raw: string): "close" | "continue" | "unknown" {
-  const text = normalizeText(raw);
-  if (!text) return "unknown";
-
-  if (
-    [
-      /^no$/,
-      /^no no$/,
-      /^nada$/,
-      /^nada mas$/,
-      /^en nada$/,
-      /^en nada mas$/,
-      /^ya esta$/,
-      /^ya termine$/,
-      /^ya he terminado$/,
-      /^termine$/,
-      /^adios$/,
-      /^hasta luego$/,
-      /^hasta pronto$/,
-    ].some((pattern) => pattern.test(text))
-  ) {
-    return "close";
-  }
-
-  if (
-    /\bno\b/.test(text) &&
-    (/\bnada\b/.test(text) || /\bmas\b/.test(text) || /\bseguir\b/.test(text) || /\bayuda\b/.test(text) || /\bconsulta\b/.test(text))
-  ) {
-    return "close";
-  }
-
-  if (isUserEndSignal(text)) return "close";
-
-  if (
-    [
-      /^si$/,
-      /^si gracias$/,
-      /^si necesito\b/,
-      /^espera\b/,
-      /^un momento\b/,
-      /^tengo otra pregunta\b/,
-      /^otra cosa\b/,
-      /^ademas\b/,
-      /^quiero continuar\b/,
-      /^no he terminado\b/,
-      /^aun no\b/,
-      /^todavia no\b/,
-    ].some((pattern) => pattern.test(text))
-  ) {
-    return "continue";
-  }
-
-  return "unknown";
-}
-
-function isAssistantFarewell(raw: string): boolean {
-  const text = normalizeText(raw);
-  return [
-    /\badios\b/,
-    /\bhasta luego\b/,
-    /\bhasta pronto\b/,
-    /\bnos vemos\b/,
-    /\bque tengas un buen dia\b/,
-    /\bque tenga un buen dia\b/,
-    /\bha sido un placer\b/,
-    /\bgracias por llamar\b/,
-  ].some((pattern) => pattern.test(text));
-}
-
-function isAssistantCloseAcknowledgement(raw: string): boolean {
-  const text = normalizeText(raw);
-  return [
-    /\bentiendo que (?:ya )?has terminado\b/,
-    /\bentiendo que (?:ya )?ha terminado\b/,
-    /\bentiendo que (?:ya )?terminaste\b/,
-    /\bveo que (?:ya )?has terminado\b/,
-    /\bparece que (?:ya )?has terminado\b/,
-    /\bsi no necesitas nada mas\b/,
-    /\bsi no necesita nada mas\b/,
-  ].some((pattern) => pattern.test(text));
-}
-
+// Safety guard only. User intent is NOT detected here; it is classified semantically by the Realtime model.
 function isAssistantHangupCommitment(raw: string): boolean {
   const text = normalizeText(raw);
   return [
@@ -224,13 +69,28 @@ function readWebSocketText(data: unknown): string | null {
   return null;
 }
 
+function parseSemanticIntent(argumentsJson: string | undefined): { intent: SemanticIntent; reason: string } | null {
+  if (!argumentsJson) return null;
+  try {
+    const parsed = JSON.parse(argumentsJson) as { intent?: unknown; reason?: unknown };
+    if (parsed.intent !== "CONTINUE" && parsed.intent !== "END_AMBIGUOUS" && parsed.intent !== "END_CLEAR") {
+      return null;
+    }
+    const reason = typeof parsed.reason === "string" && parsed.reason.trim()
+      ? parsed.reason.trim().slice(0, 300)
+      : "semantic_intent_classifier";
+    return { intent: parsed.intent, reason };
+  } catch {
+    return null;
+  }
+}
+
 export class CallSession extends DurableObject<CallSessionEnv> {
   private socket: WebSocket | null = null;
   private connectPromise: Promise<void> | null = null;
   private callId: string | null = null;
   private state: ClosingState = "active";
-  private confirmationPendingAt = 0;
-  private lastUserEndSignalAt = 0;
+  private ambiguousCount = 0;
   private closingReason = "user_requested_end";
   private hangupStarted = false;
   private closingResponseId: string | null = null;
@@ -258,7 +118,14 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         await this.connectPromise;
       }
 
-      return Response.json({ ok: true, call_id: callId, state: this.state, sideband: "durable_object" });
+      return Response.json({
+        ok: true,
+        call_id: callId,
+        state: this.state,
+        ambiguous_count: this.ambiguousCount,
+        sideband: "durable_object",
+        intent_policy: "semantic_v9",
+      });
     }
 
     if (request.method === "GET" && url.pathname === "/status") {
@@ -266,6 +133,8 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         ok: true,
         call_id: this.callId,
         state: this.state,
+        ambiguous_count: this.ambiguousCount,
+        ambiguous_limit: AMBIGUOUS_LIMIT,
         websocket_connected: this.socket !== null,
         hangup_started: this.hangupStarted,
       });
@@ -300,6 +169,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       call_id: callId,
       elapsed_ms: Date.now() - startedAt,
       lifecycle: "durable_object_outbound_websocket",
+      intent_policy: "semantic_v9",
     });
 
     socket.addEventListener("message", (event) => {
@@ -312,12 +182,17 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       log("info", "realtime_sideband_closed", {
         call_id: this.callId,
         state: this.state,
+        ambiguous_count: this.ambiguousCount,
         hangup_started: this.hangupStarted,
       });
     });
 
     socket.addEventListener("error", () => {
-      log("error", "realtime_sideband_socket_error", { call_id: this.callId, state: this.state });
+      log("error", "realtime_sideband_socket_error", {
+        call_id: this.callId,
+        state: this.state,
+        ambiguous_count: this.ambiguousCount,
+      });
     });
   }
 
@@ -331,18 +206,6 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.send({ type: "response.cancel" });
   }
 
-  private confirmationIsPending(): boolean {
-    return (
-      this.state === "confirming" &&
-      this.confirmationPendingAt > 0 &&
-      Date.now() - this.confirmationPendingAt <= CONFIRMATION_TTL_MS
-    );
-  }
-
-  private userEndSignalRecent(): boolean {
-    return this.lastUserEndSignalAt > 0 && Date.now() - this.lastUserEndSignalAt <= USER_END_SIGNAL_TTL_MS;
-  }
-
   private clearFinalFarewellWatchdog(): void {
     if (this.finalFarewellWatchdog !== null) {
       clearTimeout(this.finalFarewellWatchdog);
@@ -350,31 +213,103 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     }
   }
 
-  private requestConfirmation(reason: string, source: string): void {
-    if (this.state === "closing" || this.hangupStarted) return;
-    if (this.confirmationIsPending()) {
-      log("info", "end_call_confirmation_duplicate_suppressed", { call_id: this.callId, source });
-      return;
-    }
-
-    this.state = "confirming";
-    this.confirmationPendingAt = Date.now();
-    this.closingReason = reason;
-    log("info", "end_call_confirmation_started", {
-      call_id: this.callId,
-      source,
-      reason,
-      idle_timeout_ms: IDLE_TIMEOUT_MS,
+  private sendToolResult(callId: string | undefined, payload: Record<string, unknown>): void {
+    if (!callId) return;
+    this.send({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(payload),
+      },
     });
+  }
 
-    this.sendBestEffortCancel();
+  private createSpokenResponse(instructions: string): void {
     this.send({
       type: "response.create",
       response: {
-        instructions:
-          "Confirma una sola vez y de forma breve que has entendido que el usuario quiere terminar. Pregunta exactamente: ¿Quieres que cierre la llamada? Después espera su respuesta y no repitas la pregunta.",
+        tool_choice: "none",
+        instructions,
       },
     });
+  }
+
+  private continueConversation(reason: string, toolCallId?: string): void {
+    const previousAmbiguousCount = this.ambiguousCount;
+    this.state = "active";
+    this.ambiguousCount = 0;
+
+    this.sendToolResult(toolCallId, {
+      ok: true,
+      action: "continue",
+      ambiguous_count: 0,
+    });
+
+    log("info", "call_intent_continue", {
+      call_id: this.callId,
+      reason,
+      ambiguous_count_before_reset: previousAmbiguousCount,
+      ambiguous_count: 0,
+    });
+
+    if (previousAmbiguousCount > 0) {
+      log("info", "call_intent_ambiguity_reset", {
+        call_id: this.callId,
+        reason: "user_returned_to_normal_conversation",
+        previous_ambiguous_count: previousAmbiguousCount,
+      });
+    }
+
+    this.createSpokenResponse(
+      "Continúa la conversación normalmente. Responde de forma breve, natural y útil a la última intervención real del usuario. No menciones la clasificación de intención ni el contador interno.",
+    );
+  }
+
+  private handleAmbiguousIntent(reason: string, toolCallId?: string): void {
+    if (this.state === "closing" || this.hangupStarted) return;
+
+    this.ambiguousCount += 1;
+    this.state = "ambiguous";
+
+    this.sendToolResult(toolCallId, {
+      ok: true,
+      action: this.ambiguousCount >= AMBIGUOUS_LIMIT ? "close" : "ask_if_more_help",
+      ambiguous_count: this.ambiguousCount,
+      ambiguous_limit: AMBIGUOUS_LIMIT,
+    });
+
+    log("info", "call_intent_ambiguous", {
+      call_id: this.callId,
+      reason,
+      ambiguous_count: this.ambiguousCount,
+      ambiguous_limit: AMBIGUOUS_LIMIT,
+    });
+
+    if (this.ambiguousCount >= AMBIGUOUS_LIMIT) {
+      this.beginClosing("ambiguous_limit_reached", "semantic_intent");
+      return;
+    }
+
+    this.createSpokenResponse(
+      "La intención de terminar es ambigua. Pregunta una sola vez y de forma natural si puedes ayudar en algo más. Usa una frase breve como: ¿Puedo ayudarte en algo más? Después espera la respuesta del usuario. No te despidas todavía y no menciones que existe ambigüedad.",
+    );
+  }
+
+  private handleClearEndIntent(reason: string, toolCallId?: string): void {
+    this.sendToolResult(toolCallId, {
+      ok: true,
+      action: "close",
+      ambiguous_count: this.ambiguousCount,
+    });
+
+    log("info", "call_intent_end_clear", {
+      call_id: this.callId,
+      reason,
+      ambiguous_count: this.ambiguousCount,
+    });
+
+    this.beginClosing("semantic_end_clear", "semantic_intent");
   }
 
   private beginClosing(reason: string, source: string): void {
@@ -382,18 +317,18 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
     this.state = "closing";
     this.closingReason = reason;
-    this.confirmationPendingAt = 0;
     this.closingResponseId = null;
-    log("info", "end_call_closing_started", { call_id: this.callId, source, reason });
+    log("info", "end_call_closing_started", {
+      call_id: this.callId,
+      source,
+      reason,
+      ambiguous_count: this.ambiguousCount,
+    });
 
     this.sendBestEffortCancel();
-    this.send({
-      type: "response.create",
-      response: {
-        instructions:
-          "Despídete ahora con una sola frase muy breve, natural y amable en español. No preguntes nada más, no repitas que la consulta ha terminado y no ofrezcas ayuda adicional.",
-      },
-    });
+    this.createSpokenResponse(
+      "Despídete ahora con una sola frase muy breve, natural y amable en español. No preguntes nada más, no ofrezcas más ayuda y no menciones procesos internos. Esta es la despedida final antes de cerrar la llamada.",
+    );
     log("info", "end_call_final_farewell_requested", { call_id: this.callId, source });
 
     this.clearFinalFarewellWatchdog();
@@ -406,13 +341,17 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     if (this.state === "closing" || this.hangupStarted) return;
     this.state = "closing";
     this.closingReason = reason;
-    this.confirmationPendingAt = 0;
     this.closingResponseId = null;
-    log("info", "end_call_closing_armed_current_audio", { call_id: this.callId, source, reason });
+    log("info", "end_call_closing_armed_current_audio", {
+      call_id: this.callId,
+      source,
+      reason,
+      ambiguous_count: this.ambiguousCount,
+    });
 
     this.clearFinalFarewellWatchdog();
     this.finalFarewellWatchdog = setTimeout(() => {
-      void this.performHangup("current_audio_watchdog");
+      void this.performHangup("assistant_commitment_watchdog");
     }, FINAL_FAREWELL_WATCHDOG_MS);
   }
 
@@ -425,6 +364,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       call_id: this.callId,
       trigger,
       state: this.state,
+      ambiguous_count: this.ambiguousCount,
       closing_response_id: this.closingResponseId,
     });
 
@@ -447,10 +387,10 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       }
     }
 
+    // Safety invariant: a failed hangup must never leave a connected but mute call in CLOSING.
     this.hangupStarted = false;
     this.state = "active";
-    this.confirmationPendingAt = 0;
-    this.lastUserEndSignalAt = 0;
+    this.ambiguousCount = 0;
     log("error", "end_call_hangup_abandoned_session_reactivated", {
       call_id: this.callId,
       trigger,
@@ -458,13 +398,9 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     });
 
     if (this.socket) {
-      this.send({
-        type: "response.create",
-        response: {
-          instructions:
-            "No se pudo cerrar automáticamente la llamada. Indica brevemente al usuario que la llamada sigue activa y que puede continuar hablando o colgar manualmente.",
-        },
-      });
+      this.createSpokenResponse(
+        "No se pudo cerrar automáticamente la llamada. Indica brevemente que la llamada sigue activa y continúa atendiendo al usuario con normalidad.",
+      );
     }
   }
 
@@ -512,6 +448,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       log("error", "realtime_sideband_error_event", {
         call_id: this.callId,
         state: this.state,
+        ambiguous_count: this.ambiguousCount,
         error_type: event.error?.type,
         error_code: event.error?.code,
         error_message: event.error?.message,
@@ -519,135 +456,79 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       return;
     }
 
-    if (event.type === "response.function_call_arguments.done" && event.name === "end_call") {
-      let reason = "model_detected_end_intent";
-      if (event.arguments) {
-        try {
-          const parsed = JSON.parse(event.arguments) as { reason?: unknown };
-          if (typeof parsed.reason === "string" && parsed.reason.trim()) reason = parsed.reason.trim().slice(0, 300);
-        } catch {
-          // Keep safe default.
-        }
+    if (event.type === "response.function_call_arguments.done" && event.name === "conversation_intent") {
+      if (this.state === "closing" || this.hangupStarted) {
+        this.sendToolResult(event.call_id, { ok: true, action: "closing_already_in_progress" });
+        return;
       }
 
-      if (event.call_id) {
-        this.send({
-          type: "conversation.item.create",
-          item: {
-            type: "function_call_output",
-            call_id: event.call_id,
-            output: JSON.stringify({ ok: true, action: "confirmation_managed_by_core" }),
-          },
+      const classification = parseSemanticIntent(event.arguments);
+      if (!classification) {
+        log("error", "call_intent_invalid_arguments", {
+          call_id: this.callId,
+          arguments_chars: event.arguments?.length ?? 0,
         });
+        this.sendToolResult(event.call_id, { ok: false, error: "invalid_intent_arguments" });
+        this.continueConversation("invalid_classifier_output");
+        return;
       }
 
-      this.lastUserEndSignalAt = Date.now();
-      this.requestConfirmation(reason, "model_tool");
+      log("info", "call_intent_classified", {
+        call_id: this.callId,
+        intent: classification.intent,
+        reason: classification.reason,
+        state_before: this.state,
+        ambiguous_count_before: this.ambiguousCount,
+      });
+
+      if (classification.intent === "CONTINUE") {
+        this.continueConversation(classification.reason, event.call_id);
+        return;
+      }
+
+      if (classification.intent === "END_CLEAR") {
+        this.handleClearEndIntent(classification.reason, event.call_id);
+        return;
+      }
+
+      this.handleAmbiguousIntent(classification.reason, event.call_id);
       return;
     }
 
+    // Transcription is retained only for observability. It is deliberately not used as a phrase-list intent detector.
     if (event.type === "conversation.item.input_audio_transcription.completed" && event.transcript) {
-      if (this.hangupStarted) return;
-
-      if (this.state === "closing") {
-        log("info", "end_call_user_audio_during_closing", {
-          call_id: this.callId,
-          transcript_chars: event.transcript.length,
-        });
-        return;
-      }
-
-      if (this.state === "confirming") {
-        const answer = classifyConfirmationReply(event.transcript);
-        log("info", "end_call_confirmation_reply", {
-          call_id: this.callId,
-          result: answer,
-          transcript_chars: event.transcript.length,
-        });
-
-        if (answer === "close") {
-          this.beginClosing("user_confirmed_end", "confirmation_reply");
-          return;
-        }
-
-        if (answer === "continue") {
-          this.state = "active";
-          this.confirmationPendingAt = 0;
-          this.lastUserEndSignalAt = 0;
-          log("info", "end_call_confirmation_cancelled", {
-            call_id: this.callId,
-            reason: "user_wants_to_continue",
-          });
-          return;
-        }
-
-        return;
-      }
-
-      if (isDirectHangupRequest(event.transcript)) {
-        this.lastUserEndSignalAt = Date.now();
-        this.beginClosing("explicit_hangup_request", "transcript_detector");
-        return;
-      }
-
-      if (isUserEndSignal(event.transcript)) {
-        this.lastUserEndSignalAt = Date.now();
-        log("info", "end_call_user_signal_detected", {
-          call_id: this.callId,
-          transcript_chars: event.transcript.length,
-        });
-        this.requestConfirmation("user_end_intent", "transcript_detector");
-      }
+      log("info", "call_user_transcription_observed", {
+        call_id: this.callId,
+        state: this.state,
+        ambiguous_count: this.ambiguousCount,
+        transcript_chars: event.transcript.length,
+      });
       return;
     }
 
     if (event.type === "input_audio_buffer.timeout_triggered") {
-      if (this.state === "confirming") {
-        log("info", "end_call_confirmation_silence_timeout", {
+      if (this.state === "ambiguous") {
+        log("info", "call_intent_ambiguous_silence_timeout", {
           call_id: this.callId,
-          pending_ms: Date.now() - this.confirmationPendingAt,
+          ambiguous_count: this.ambiguousCount,
+          idle_timeout_ms: IDLE_TIMEOUT_MS,
         });
-        this.beginClosing("confirmation_silence_timeout", "idle_timeout");
+        this.beginClosing("ambiguous_silence_timeout", "idle_timeout");
       }
       return;
     }
 
+    // Safety guard: if the assistant verbally commits to hanging up without the semantic controller
+    // already being in CLOSING, convert that commitment into a technical close.
     if (event.type === "response.output_audio_transcript.done" && event.transcript) {
-      if (this.state === "closing") return;
-
-      if (isAssistantHangupCommitment(event.transcript)) {
+      if (this.state !== "closing" && isAssistantHangupCommitment(event.transcript)) {
         log("error", "end_call_assistant_commitment_without_core_close", {
           call_id: this.callId,
           state: this.state,
+          ambiguous_count: this.ambiguousCount,
           transcript_chars: event.transcript.length,
         });
         this.armHangupAfterCurrentAudio("assistant_announced_hangup", "assistant_commitment_guard");
-        return;
-      }
-
-      const farewell = isAssistantFarewell(event.transcript);
-      const acknowledgement = isAssistantCloseAcknowledgement(event.transcript);
-
-      if (this.state === "confirming") {
-        if (farewell) {
-          this.armHangupAfterCurrentAudio("assistant_farewell_during_confirmation", "assistant_output_guard");
-        }
-        return;
-      }
-
-      if (this.state === "active" && this.userEndSignalRecent()) {
-        if (farewell) {
-          this.armHangupAfterCurrentAudio("assistant_farewell_after_user_end_signal", "assistant_output_guard");
-          return;
-        }
-        if (acknowledgement) {
-          this.state = "confirming";
-          this.confirmationPendingAt = Date.now();
-          log("info", "end_call_confirmation_inferred_from_assistant", {
-            call_id: this.callId,
-            transcript_chars: event.transcript.length,
-          });
-        }
       }
       return;
     }
