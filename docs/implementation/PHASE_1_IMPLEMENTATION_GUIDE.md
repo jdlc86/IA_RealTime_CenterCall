@@ -40,7 +40,7 @@ No se añade todavía lógica específica de clínica, restaurante, citas o rese
 
 ## 3. Bloques de trabajo
 
-### F1-A — TenantResolver
+### F1-A — TenantResolver — IMPLEMENTADO
 
 Contrato de dominio independiente del carrier:
 
@@ -60,37 +60,70 @@ Configuración inicial de desarrollo:
 +34910789057 → dev-clinic
 ```
 
-`DEFAULT_TENANT_ID` puede conservarse temporalmente para compatibilidad/diagnóstico, pero no debe ser la fuente de routing una vez integrado F1-A.
+`DEFAULT_TENANT_ID` se conserva temporalmente únicamente por compatibilidad histórica, pero ya no es fuente de routing del CallOrchestrator.
 
-### F1-B — Integración con CallOrchestrator
+### F1-B — Integración con CallOrchestrator — IMPLEMENTADO, E2E PENDIENTE
 
 En `call.initiated` inbound:
 
-1. obtener `payload.to` como número llamado confiable;
-2. resolver tenant mediante `TenantResolver`;
-3. si no existe ruta, no iniciar conversación específica del negocio;
-4. registrar resolución y decisión;
-5. transferir a Realtime únicamente con tenant binding conocido;
-6. propagar `tenant_id` al bootstrap de la sesión.
+1. se obtiene `payload.to` como número llamado confiable;
+2. se ejecuta `TenantResolver`;
+3. se registran `tenant_resolution_started` y resultado;
+4. si existe ruta, el CallOrchestrator selecciona OpenAI Realtime con tenant binding conocido;
+5. si no existe ruta, no se aplica tenant por defecto y la llamada se rechaza mediante Telnyx `CALL_REJECTED`;
+6. el webhook se responde con HTTP 200 tras aceptar la decisión, evitando reintentos innecesarios de entrega;
+7. `DEFAULT_TENANT_ID` no participa en la decisión operativa.
 
-No se permite:
+Flujo vigente:
 
 ```text
-incoming call → env.DEFAULT_TENANT_ID → routing
+Telnyx call.initiated
+        ↓
+payload.to
+        ↓
+StaticTenantResolver
+        ↓
+     ¿ruta?
+     /    \
+   no      sí
+   ↓       ↓
+reject   tenant_id
+            ↓
+       RoutingDecision
+            ↓
+     OpenAI Realtime SIP
 ```
 
-como diseño final de F1.
+### F1-C — Tenant binding hacia OpenAI / CallSession — PARCIAL
 
-### F1-C — Tenant binding hacia OpenAI / CallSession
+Para conservar el binding durante el salto Telnyx → OpenAI, el comando `transfer` añade headers SIP internos:
 
-El `tenant_id` resuelto debe quedar asociado a la llamada y disponible para:
+```text
+X-IA-Tenant-ID
+X-IA-Called-Number
+X-IA-Routing-Source
+```
 
-- construcción futura de `TenantConfiguration`;
-- `RealtimeSessionConfiguration`;
-- logs y métricas;
-- autorización de tools en fases posteriores.
+OpenAI expone los headers del INVITE en `realtime.call.incoming`; el webhook valida la presencia de los tres antes de `/accept`.
 
-OpenAI o el texto del caller nunca son autoridad para elegir tenant.
+```text
+TenantResolver
+   ↓
+Telnyx transfer custom_headers
+   ↓
+SIP INVITE OpenAI
+   ↓
+realtime.call.incoming.sip_headers
+   ↓
+Call Bootstrap tenant binding
+```
+
+Si falta el binding esperado, el bootstrap falla cerrado con `tenant_binding_missing`; no se sustituye silenciosamente por `DEFAULT_TENANT_ID`.
+
+Pendiente de F1-C:
+
+- persistir/propagar `tenant_id` dentro de `CallSession` Durable Object;
+- usar posteriormente ese binding para construir `TenantConfiguration` y `RealtimeSessionConfiguration` específicas.
 
 ### F1-D — Baseline
 
@@ -108,9 +141,9 @@ Para cada métrica agregable se documentarán muestras y, cuando haya volumen su
 
 FASE 0 aceptó latencia perceptual; F1 debe crear baseline cuantitativo sin inventar valores retrospectivos.
 
-### F1-E — Observabilidad
+### F1-E — Observabilidad — PARCIAL
 
-Logs estructurados deben incluir cuando aplique:
+Logs estructurados incluyen cuando aplica:
 
 ```text
 call_id
@@ -125,7 +158,7 @@ result/status
 
 No se registran secretos ni contenido sensible innecesario.
 
-Eventos mínimos nuevos:
+Eventos F1 implementados:
 
 ```text
 tenant_resolution_started
@@ -133,6 +166,7 @@ tenant_resolution_succeeded
 tenant_resolution_failed
 call_bootstrap_started
 call_bootstrap_ready
+call_bootstrap_tenant_binding_missing
 ```
 
 Los eventos existentes de Telnyx/OpenAI/CallSession continúan siendo parte del trazado.
@@ -144,15 +178,25 @@ Los eventos existentes de Telnyx/OpenAI/CallSession continúan siendo parte del 
 ```text
 called_number sin ruta
 → tenant_resolution_failed
-→ no seleccionar tenant por defecto silenciosamente
-→ fallback/terminate controlado
+→ no seleccionar tenant por defecto
+→ Telnyx reject CALL_REJECTED
 ```
 
-En entorno dev se podrá mantener un fallback explícito y observable únicamente si está documentado y marcado como tal. Producción debe fallar cerrado.
+FASE 1 adopta fail-closed para routing desconocido. Ya no existe fallback silencioso a `dev-clinic`.
+
+### Binding SIP ausente
+
+```text
+realtime.call.incoming sin X-IA-Tenant-ID / X-IA-Called-Number / routing source
+→ call_bootstrap_tenant_binding_missing
+→ no /accept
+```
 
 ### Configuración inválida
 
-`TENANT_ROUTES_JSON` inválido o con números duplicados debe producir error de configuración visible; no se debe elegir un tenant arbitrario.
+`TENANT_ROUTES_JSON` inválido o con números duplicados produce error visible; no se elige un tenant arbitrario.
+
+`/health` publica únicamente estado de validez y número de rutas; no expone secretos.
 
 ## 5. Pruebas F1
 
@@ -170,7 +214,7 @@ El mismo E.164 con caracteres de presentación tolerados debe resolver al mismo 
 
 ### F1-T03 — número desconocido
 
-Esperado: `null`/ruta no encontrada y fallback controlado; nunca tenant incorrecto.
+Esperado: ruta no encontrada, `tenant_resolution_failed` y rechazo controlado; nunca tenant incorrecto.
 
 ### F1-T04 — duplicados de configuración
 
@@ -184,44 +228,76 @@ Llamada real al número configurado:
 Telnyx call.initiated
 → TenantResolver
 → tenant_resolution_succeeded tenant_id=dev-clinic
-→ transfer OpenAI
+→ transfer OpenAI con headers de binding
 → realtime.call.incoming
+→ call_bootstrap_started tenant_id=dev-clinic
+→ /accept
 → CallSession
+→ call_bootstrap_ready
 ```
 
 ### F1-T06 — aislamiento básico
 
 Cuando exista un segundo número de prueba, confirmar que cada número produce su tenant correspondiente y que no hay fallback cruzado.
 
-## 6. Gate F1
+## 6. Health esperado tras despliegue F1-B
+
+```json
+{
+  "phase": "F1",
+  "tenant_resolver": "StaticTenantResolver",
+  "tenant_routing_source": "called_number",
+  "tenant_routes_valid": true,
+  "tenant_routes_count": 1,
+  "default_tenant_used_for_routing": false,
+  "tenant_binding_transport": "sip_custom_headers",
+  "tracing": "f1-tenant-routing-v1"
+}
+```
+
+## 7. Gate F1
 
 FASE 1 se puede cerrar cuando:
 
-- [ ] `TenantResolver` está implementado como contrato independiente.
-- [ ] routing inbound usa `called_number → tenant_id`.
-- [ ] una ruta desconocida no termina asignada silenciosamente a otro tenant.
-- [ ] `tenant_id` queda unido al bootstrap/sesión.
-- [ ] logs de tenant resolution y bootstrap están disponibles.
+- [x] `TenantResolver` está implementado como contrato independiente.
+- [x] routing inbound usa `called_number → tenant_id` en código.
+- [x] una ruta desconocida no termina asignada silenciosamente a otro tenant en código.
+- [ ] `tenant_id` queda unido al `CallSession` Durable Object.
+- [x] logs de tenant resolution y bootstrap están implementados.
 - [ ] baseline cuantitativo inicial de setup está documentado.
 - [ ] pruebas unitarias/contractuales aplicables están implementadas o existe evidencia equivalente.
 - [ ] prueba E2E real confirma tenant binding.
-- [ ] documentación y arquitectura están reconciliadas.
+- [ ] documentación y arquitectura están reconciliadas al cierre.
 
-## 7. Estado inicial
+## 8. Estado actual
 
-Completado al abrir F1:
+Completado:
 
 - [x] FASE 0 cerrada PASS.
 - [x] creado `apps/control-plane/src/tenant-resolver.ts`;
 - [x] definidos `TenantResolver`, `TenantRoutingContext` y `TenantResolution`;
 - [x] creada implementación inicial `StaticTenantResolver` sin SDK externo;
 - [x] parser de `TENANT_ROUTES_JSON` con validación y detección de duplicados;
-- [x] ruta de desarrollo declarada en Wrangler: `+34910789057 → dev-clinic`.
+- [x] ruta de desarrollo declarada en Wrangler: `+34910789057 → dev-clinic`;
+- [x] `CallOrchestrator` usa `payload.to → TenantResolver`;
+- [x] eliminado `DEFAULT_TENANT_ID` como fuente de routing;
+- [x] routing desconocido falla cerrado mediante rechazo Telnyx;
+- [x] tenant binding propagado Telnyx → OpenAI mediante headers SIP internos;
+- [x] webhook OpenAI valida el binding antes de aceptar la llamada;
+- [x] `/health` actualizado a F1 y expone estado de TenantResolver sin datos sensibles.
+
+Commit principal de integración F1-B:
+
+```text
+e90576f60f4e9aeb98a435a285658d93d577b911
+```
 
 Siguiente tarea inmediata:
 
 ```text
-Integrar TenantResolver en CallOrchestrator
-→ sustituir DEFAULT_TENANT_ID como fuente de routing
-→ emitir logs de tenant resolution
+Despliegue automático Cloudflare
+→ comprobar /health f1-tenant-routing-v1
+→ llamada E2E F1-T05
+→ confirmar headers/binding
+→ propagar tenant_id al CallSession Durable Object
 ```
