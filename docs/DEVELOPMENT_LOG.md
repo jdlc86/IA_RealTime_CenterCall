@@ -231,10 +231,49 @@ end_call_hangup_start
 end_call_hangup_result
 ```
 
+### F0-014-D — confirmación explícita + silencio como confirmación implícita (v6)
+
+Nueva observación real: ante la pregunta «¿Hay algo más en lo que te puedo ayudar?», el usuario respondió «no, no, en nada más» y la llamada quedó en silencio sin cerrarse. Esto demuestra que existen muchas formas naturales de expresar fin de consulta y que no conviene depender de una lista cerrada ni cerrar siempre de inmediato.
+
+La v6 cambia el diseño a una máquina de estados:
+
+```text
+CONVERSANDO
+  → intención de terminar detectada
+CONFIRMACION_PENDIENTE
+  → respuesta de cierre → despedida → hangup
+  → respuesta de continuación → volver a CONVERSANDO
+  → silencio hasta idle_timeout → despedida → hangup
+```
+
+Cambios aplicados:
+
+- [x] Frases claras y probables de fin de consulta pasan normalmente por una confirmación breve.
+- [x] La pregunta de confirmación es: «Entiendo que ya has terminado. ¿Necesitas algo más antes de que cierre la llamada?».
+- [x] Se amplió la comprensión determinista para variantes como «no, no, en nada más», «en nada más», «ya terminé la consulta», «no tengo más preguntas», «no quiero seguir hablando» y equivalentes.
+- [x] Si el usuario responde que no necesita nada más, se inicia cierre.
+- [x] Si responde que quiere continuar, el estado de cierre se cancela.
+- [x] Si no responde, `input_audio_buffer.timeout_triggered` durante `CONFIRMACION_PENDIENTE` se interpreta como confirmación implícita y se inicia despedida + `/hangup`.
+- [x] El silencio ordinario fuera de `CONFIRMACION_PENDIENTE` continúa sin colgar la llamada.
+- [x] Una orden explícita como «cuelga» o «finaliza la llamada» puede pasar directamente a cierre.
+- [x] Un tool-call `end_call` del modelo también pasa por confirmación, salvo que el cierre ya haya quedado inequívocamente resuelto por otra ruta.
+- [x] Se mantiene la guarda v5 que convierte una promesa verbal de la IA («voy a colgar») en una acción técnica real.
+- [x] Trazado actualizado a `f0-e2e-v6`.
+
+Nuevos eventos clave:
+
+```text
+end_call_confirmation_requested
+end_call_confirmation_classified
+end_call_confirmation_inferred_close
+end_call_confirmation_cleared
+end_call_confirmation_timeout
+```
+
 ### Estado del Gate F0
 
-La voz E2E y el cuelgue manual están validados. El cierre automático por intención funciona en múltiples casos, pero **F0-T08 no se considera todavía estable** hasta repetir pruebas con la v5 y confirmar que desaparece el caso «la IA dice que cuelga pero la llamada sigue activa» sin introducir falsos positivos.
+La voz E2E y el cuelgue manual están validados. El cierre automático por intención sigue marcado como **pendiente de estabilización** hasta repetir F0-T08 con la v6 y confirmar tres rutas: cierre tras respuesta explícita, cierre tras silencio de confirmación y continuación correcta cuando el usuario dice que aún necesita algo.
 
 ### Próximo hito
 
-Desplegar `f0-e2e-v5`, repetir pruebas de despedida clara, despedida ambigua, mención contextual y el caso de silencio posterior a una despedida. Después reevaluar F0-T08.
+Desplegar `f0-e2e-v6` y ejecutar F0-T08 con esas tres rutas, además de una prueba negativa de silencio ordinario sin intención previa de cierre.
