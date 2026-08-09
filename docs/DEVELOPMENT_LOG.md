@@ -62,7 +62,8 @@
 - [x] Cloudflare reconectado al repositorio canónico `jdlc86/IA_RealTime_CenterCall`.
 - [x] Root directory corregido a `apps/control-plane`.
 - [x] Deploy automático GitHub → Cloudflare validado.
-- [x] `TELNYX_API_KEY` y `TELNYX_PUBLIC_KEY` configurados como Secrets.
+- [x] Los cuatro valores sensibles (`OPENAI_API_KEY`, `OPENAI_WEBHOOK_SECRET`, `TELNYX_API_KEY`, `TELNYX_PUBLIC_KEY`) configurados como Secrets del runtime de Cloudflare.
+- [x] `/health` confirmó los cinco parámetros runtime requeridos, incluido `OPENAI_PROJECT_ID`.
 - [x] Primera llamada real al número Telnyx alcanzó `/webhooks/telnyx`.
 
 ### Incidencia F0-013-A — verificación webhook Telnyx
@@ -85,12 +86,70 @@ Corrección aplicada:
 - [x] Eliminada la dependencia `telnyx` de `package.json`.
 - [x] `/health` expone `telnyx_webhook_verification=webcrypto-ed25519` para comprobar la versión activa.
 
+### Incidencia F0-013-B — Secrets presentes en Dashboard pero no en runtime
+
+La instrumentación de `/health` mostró inicialmente `false` para los cuatro secretos. En Cloudflare existían como variables `Plaintext`, pero no estaban disponibles como Secrets en el runtime desplegado.
+
+Corrección aplicada:
+
+- [x] Recreados/configurados como tipo **Secret**.
+- [x] Despliegue aplicado.
+- [x] `/health.runtime_config` confirmó `true` para todos los parámetros requeridos.
+- [x] La ruta `/health` expone únicamente booleanos de presencia; nunca valores secretos.
+
+### Incidencia F0-013-C — webhook OpenAI interpretado como `unknown`
+
+Durante la primera prueba SIP completa, la evidencia mostró:
+
+```text
+Telnyx call.bridged → OpenAI SIP
+OpenAI POST /webhooks/openai → HTTP 200
+openai_event.type → unknown
+```
+
+El webhook estaba firmado y llegaba correctamente, pero el resultado de `client.webhooks.unwrap(...)` no se estaba esperando antes de inspeccionar `event.type`. Por ello no se ejecutaba la rama `realtime.call.incoming` ni el `/accept` de la llamada.
+
+Corrección aplicada:
+
+- [x] `await client.webhooks.unwrap(rawBody, request.headers)`.
+- [x] Añadido `raw_event_type` al trazado para comparar el JSON recibido con el evento verificado.
+- [x] Trazado actualizado a `f0-e2e-v2`.
+
+### Primera llamada E2E con voz — ÉXITO
+
+Tras desplegar la corrección anterior se realizó una nueva llamada PSTN real y la IA respondió por voz al llamante.
+
+Cadena validada en esta prueba:
+
+```text
+Teléfono real
+  → PSTN / número +34 Telnyx
+  → Telnyx Voice API
+  → webhook firmado /webhooks/telnyx
+  → CallOrchestrator
+  → Telnyx Call Control transfer
+  → SIP/TLS OpenAI Realtime
+  → realtime.call.incoming
+  → webhook firmado /webhooks/openai
+  → POST /v1/realtime/calls/{call_id}/accept
+  → OpenAI Realtime
+  → audio de respuesta hacia el llamante
+```
+
+Evidencia observada antes de la corrección final y útil para aislar el problema:
+
+- [x] Ambos legs llegaron a `call.bridged`.
+- [x] El leg destino fue `sip:<OPENAI_PROJECT_ID>@sip.api.openai.com;transport=tls`.
+- [x] OpenAI envió el webhook al Worker.
+- [x] Telnyx cerró la llamada de prueba con eventos `call.hangup`.
+- [x] Después del fix de `unwrap()`, la IA respondió por voz.
+
+**Conclusión:** el objetivo técnico mínimo de F0 — llamada PSTN real con respuesta de voz de OpenAI Realtime a través de Telnyx y Cloudflare — queda demostrado.
+
+### Estado del Gate F0
+
+La primera conversación con voz **no implica todavía PASS completo de F0**. Quedan por ejecutar y registrar las pruebas de estabilidad, multi-turno, barge-in, silencio, duración ≥5 min y 20 llamadas consecutivas definidas en `docs/tests/PHASE0.md`.
+
 ### Próximo hito
 
-Repetir la llamada y confirmar, en orden:
-
-1. `telnyx_webhook_received` (`call.initiated`, incoming);
-2. `telnyx_transfer_requested`;
-3. `realtime_call_incoming`;
-4. `realtime_call_accepted`;
-5. audio bidireccional y conversación.
+Completar el Gate F0 y obtener baseline de latencia/setup. Después, avanzar al routing de tenant por número llamado sin introducir todavía lógica productiva de citas/CRM en F0.
