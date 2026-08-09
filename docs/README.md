@@ -1,4 +1,4 @@
-# IA_RealTime_CenterCall — Documentación oficial v2.4
+# IA_RealTime_CenterCall — Documentación oficial v2.5
 
 Este directorio es la puerta de entrada a la documentación del proyecto. GitHub es la fuente de verdad del código y de la documentación.
 
@@ -34,15 +34,16 @@ tests/ + runbooks/ + DEVELOPMENT_LOG.md
 ## Lectura recomendada
 
 1. [`MASTER_PROJECT_GUIDE.md`](./MASTER_PROJECT_GUIDE.md) — entrada permanente al proyecto.
-2. [`PROJECT_STATUS.md`](./PROJECT_STATUS.md) — qué fase está cerrada y cuál sigue.
+2. [`PROJECT_STATUS.md`](./PROJECT_STATUS.md) — qué fase está cerrada y cuál está activa.
 3. [`SYSTEM_OVERVIEW.md`](./SYSTEM_OVERVIEW.md) — producto a alto nivel.
 4. [`architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — arquitectura y roadmap canónicos.
 5. [`architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — reglas arquitectónicas.
-6. [`implementation/PHASE_1_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_1_IMPLEMENTATION_GUIDE.md) — implementación/evidencia de F1.
-7. [`implementation/PHASE_0_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_0_IMPLEMENTATION_GUIDE.md) — F0 cerrada.
-8. [`implementation/END_CALL_INTENT_V9.md`](./implementation/END_CALL_INTENT_V9.md) — cierre por intención semántica.
-9. [`tests/PHASE0.md`](./tests/PHASE0.md) y [`tests/PHASE1.md`](./tests/PHASE1.md) — evidencia de gates.
-10. [`DEVELOPMENT_LOG.md`](./DEVELOPMENT_LOG.md) — bitácora cronológica.
+6. [`implementation/PHASE_3_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_3_IMPLEMENTATION_GUIDE.md) — **implementación activa: F3 ToolGateway**.
+7. [`implementation/PHASE_1_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_1_IMPLEMENTATION_GUIDE.md) — F1 cerrada.
+8. [`implementation/PHASE_0_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_0_IMPLEMENTATION_GUIDE.md) — F0 cerrada.
+9. [`implementation/END_CALL_INTENT_V9.md`](./implementation/END_CALL_INTENT_V9.md) — cierre por intención semántica.
+10. [`tests/PHASE0.md`](./tests/PHASE0.md) y [`tests/PHASE1.md`](./tests/PHASE1.md) — evidencia de gates anteriores.
+11. [`DEVELOPMENT_LOG.md`](./DEVELOPMENT_LOG.md) — bitácora cronológica.
 
 ## Roadmap vigente
 
@@ -86,6 +87,7 @@ docs/
 ├── implementation/
 │   ├── PHASE_0_IMPLEMENTATION_GUIDE.md
 │   ├── PHASE_1_IMPLEMENTATION_GUIDE.md
+│   ├── PHASE_3_IMPLEMENTATION_GUIDE.md
 │   └── END_CALL_INTENT_V9.md
 ├── adr/
 ├── runbooks/
