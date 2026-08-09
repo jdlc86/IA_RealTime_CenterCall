@@ -77,6 +77,7 @@ type RealtimeSidebandEvent = {
   name?: string;
   arguments?: string;
   transcript?: string;
+  response?: { id?: string };
   error?: {
     type?: string;
     code?: string;
@@ -85,15 +86,13 @@ type RealtimeSidebandEvent = {
 };
 
 type EndCallIntentLevel = "clear" | "probable" | "none";
-
-type EndCallIntent = {
-  level: EndCallIntentLevel;
-  rule: string;
-};
+type EndCallIntent = { level: EndCallIntentLevel; rule: string };
 
 const activeSidebands = new Map<string, WebSocket>();
 const END_CONFIRMATION_TTL_MS = 30_000;
 const ASSISTANT_FAREWELL_TTL_MS = 30_000;
+const FAREWELL_FALLBACK_MS = 8_000;
+const ASSISTANT_COMMITMENT_GRACE_MS = 1_200;
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, { status });
@@ -125,7 +124,6 @@ function normalizeIntentText(value: string): string {
 function classifyEndCallIntent(rawTranscript: string, assistantFarewellRecent: boolean): EndCallIntent {
   const text = normalizeIntentText(rawTranscript);
   if (!text) return { level: "none", rule: "empty" };
-
   const words = text.split(" ").filter(Boolean);
 
   const contextualMention = [
@@ -137,10 +135,7 @@ function classifyEndCallIntent(rawTranscript: string, assistantFarewellRecent: b
     /\bcomo se dice adios\b/,
     /\bcuando alguien dice (adios|hasta luego)\b/,
   ].some((pattern) => pattern.test(text));
-
-  if (contextualMention) {
-    return { level: "none", rule: "contextual_farewell_mention" };
-  }
+  if (contextualMention) return { level: "none", rule: "contextual_farewell_mention" };
 
   const explicitTermination = [
     /\beso es todo\b/,
@@ -164,23 +159,23 @@ function classifyEndCallIntent(rawTranscript: string, assistantFarewellRecent: b
     /\bme despido\b/,
     /\bya esta gracias\b/,
     /\bcon eso es suficiente\b/,
-  ].find((pattern) => pattern.test(text));
+    /\blo dejamos aqui\b/,
+    /\bdejamos esto aqui\b/,
+    /\bme tengo que ir\b/,
+    /\bya no necesito nada\b/,
+  ].some((pattern) => pattern.test(text));
+  if (explicitTermination) return { level: "clear", rule: "explicit_termination" };
 
-  if (explicitTermination) {
-    return { level: "clear", rule: "explicit_termination" };
-  }
-
-  const shortFarewell = /^(?:(?:vale|bueno|ok|okay|perfecto|muy bien|gracias|muchas gracias) )*(?:adios|hasta luego|hasta pronto|nos vemos)(?: gracias| muchas gracias)?$/;
+  const shortFarewell = /^(?:(?:vale|bueno|ok|okay|perfecto|muy bien|gracias|muchas gracias) )*(?:adios|hasta luego|hasta pronto|nos vemos|chao|ciao)(?: gracias| muchas gracias)?$/;
   if (words.length <= 10 && shortFarewell.test(text)) {
     return { level: "clear", rule: "short_farewell" };
   }
 
   const shortThanks = /^(?:vale |bueno |ok |okay |perfecto |muy bien )?(?:gracias|muchas gracias|mil gracias)$/;
   if (words.length <= 6 && shortThanks.test(text)) {
-    if (assistantFarewellRecent) {
-      return { level: "clear", rule: "thanks_after_assistant_farewell" };
-    }
-    return { level: "probable", rule: "thanks_only" };
+    return assistantFarewellRecent
+      ? { level: "clear", rule: "thanks_after_assistant_farewell" }
+      : { level: "probable", rule: "thanks_only" };
   }
 
   const softClosing = [
@@ -190,9 +185,11 @@ function classifyEndCallIntent(rawTranscript: string, assistantFarewellRecent: b
     /\bya no tengo mas preguntas\b/,
     /\bcreo que es todo\b/,
   ].some((pattern) => pattern.test(text));
-
   if (softClosing) {
-    return { level: assistantFarewellRecent ? "clear" : "probable", rule: "soft_closing" };
+    return {
+      level: assistantFarewellRecent ? "clear" : "probable",
+      rule: "soft_closing",
+    };
   }
 
   return { level: "none", rule: "no_closing_signal" };
@@ -244,6 +241,21 @@ function isAssistantFarewell(rawTranscript: string): boolean {
   ].some((pattern) => pattern.test(text));
 }
 
+function isAssistantHangupCommitment(rawTranscript: string): boolean {
+  const text = normalizeIntentText(rawTranscript);
+  if (!text) return false;
+  return [
+    /\bvoy a colgar(?: la llamada)?(?: ahora)?\b/,
+    /\bvoy a finalizar(?: la llamada)?(?: ahora)?\b/,
+    /\bvoy a terminar(?: la llamada)?(?: ahora)?\b/,
+    /\bprocedo a colgar(?: la llamada)?\b/,
+    /\bprocedo a finalizar(?: la llamada)?\b/,
+    /\bterminare la llamada(?: ahora)?\b/,
+    /\bfinalizare la llamada(?: ahora)?\b/,
+    /\bcolgare(?: la llamada)?(?: ahora)?\b/,
+  ].some((pattern) => pattern.test(text));
+}
+
 function decodeBase64(value: string): Uint8Array {
   const normalized = value.replace(/\s+/g, "");
   const binary = atob(normalized);
@@ -262,8 +274,7 @@ function decodeTelnyxPublicKey(value: string): { format: "raw" | "spki"; bytes: 
     return { format: "spki", bytes: decodeBase64(base64) };
   }
   const bytes = decodeBase64(trimmed);
-  if (bytes.byteLength === 32) return { format: "raw", bytes };
-  return { format: "spki", bytes };
+  return bytes.byteLength === 32 ? { format: "raw", bytes } : { format: "spki", bytes };
 }
 
 async function verifyTelnyxSignature(
@@ -281,8 +292,12 @@ async function verifyTelnyxSignature(
     ["verify"],
   );
   const signedPayload = new TextEncoder().encode(`${timestamp}|${rawBody}`);
-  const signature = decodeBase64(signatureBase64);
-  return crypto.subtle.verify("Ed25519", key, signature, signedPayload);
+  return crypto.subtle.verify(
+    "Ed25519",
+    key,
+    decodeBase64(signatureBase64),
+    signedPayload,
+  );
 }
 
 function buildRealtimeSessionConfiguration(env: Env): RealtimeSessionConfiguration {
@@ -301,6 +316,7 @@ function buildRealtimeSessionConfiguration(env: Env): RealtimeSessionConfigurati
     "Si ya te has despedido y el usuario responde con otra despedida o con un agradecimiento final, usa end_call.",
     "No uses end_call por silencio, pausas, falta de audio ni porque el usuario tarde en responder.",
     "No uses end_call si adiós, hasta luego u otra despedida aparece citada dentro de una historia, una pregunta o un contexto que no implique terminar esta llamada.",
+    "REGLA CRÍTICA: nunca digas que vas a colgar, finalizar o terminar la llamada si no has invocado end_call. Si decides que corresponde terminar, invoca end_call en lugar de limitarte a anunciarlo verbalmente.",
     "Cuando la intención sea clara, llama a end_call. El sistema gestionará una despedida final breve y después cerrará la llamada.",
   ].join("\n");
 
@@ -312,10 +328,7 @@ function buildRealtimeSessionConfiguration(env: Env): RealtimeSessionConfigurati
     audio: {
       input: {
         format: { type: "audio/pcmu" },
-        transcription: {
-          model: "gpt-4o-mini-transcribe",
-          language: "es",
-        },
+        transcription: { model: "gpt-4o-mini-transcribe", language: "es" },
         turn_detection: {
           type: "server_vad",
           create_response: true,
@@ -333,7 +346,7 @@ function buildRealtimeSessionConfiguration(env: Env): RealtimeSessionConfigurati
         type: "function",
         name: "end_call",
         description:
-          "Solicita finalizar la llamada telefónica actual cuando el usuario haya expresado una intención clara de terminarla. No usar por silencio, pausas ni menciones contextuales de despedidas.",
+          "Solicita finalizar la llamada actual cuando el usuario haya expresado una intención clara de terminarla. Debe invocarse también antes de afirmar verbalmente que se va a colgar. No usar por silencio ni menciones contextuales.",
         parameters: {
           type: "object",
           properties: {
@@ -355,11 +368,13 @@ function buildOpenAISipUri(env: Env): string {
   return `sip:${env.OPENAI_PROJECT_ID}@sip.api.openai.com;transport=tls`;
 }
 
-async function transferTelnyxCallToOpenAI(callControlId: string, eventId: string, env: Env): Promise<void> {
+async function transferTelnyxCallToOpenAI(
+  callControlId: string,
+  eventId: string,
+  env: Env,
+): Promise<void> {
   const apiKey = requireEnvString(env.TELNYX_API_KEY, "TELNYX_API_KEY");
-  const target = buildOpenAISipUri(env);
   const startedAt = Date.now();
-
   log("info", "telnyx_transfer_start", {
     call_control_id: callControlId,
     command_id: eventId,
@@ -372,7 +387,7 @@ async function transferTelnyxCallToOpenAI(callControlId: string, eventId: string
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        to: target,
+        to: buildOpenAISipUri(env),
         sip_transport_protocol: "TLS",
         timeout_secs: 30,
         command_id: eventId,
@@ -381,15 +396,12 @@ async function transferTelnyxCallToOpenAI(callControlId: string, eventId: string
   );
 
   const body = await response.text();
-  const elapsedMs = Date.now() - startedAt;
-
   log(response.ok ? "info" : "error", "telnyx_transfer_response", {
     call_control_id: callControlId,
     status: response.status,
-    elapsed_ms: elapsedMs,
+    elapsed_ms: Date.now() - startedAt,
     response: body.slice(0, 2_000),
   });
-
   if (!response.ok) throw new Error(`Telnyx transfer failed with HTTP ${response.status}`);
 }
 
@@ -402,13 +414,18 @@ async function verifyAndParseTelnyxWebhook(
   const timestamp = request.headers.get("telnyx-timestamp");
   if (!signature || !timestamp) throw new Error("Missing Telnyx signature headers");
 
-  const publicKey = requireEnvString(env.TELNYX_PUBLIC_KEY, "TELNYX_PUBLIC_KEY");
   const timestampSeconds = Number(timestamp);
   if (!Number.isFinite(timestampSeconds)) throw new Error("Invalid Telnyx timestamp");
-  const ageSeconds = Math.abs(Math.floor(Date.now() / 1000) - timestampSeconds);
-  if (ageSeconds > 300) throw new Error("Telnyx webhook timestamp outside 5 minute tolerance");
+  if (Math.abs(Math.floor(Date.now() / 1000) - timestampSeconds) > 300) {
+    throw new Error("Telnyx webhook timestamp outside 5 minute tolerance");
+  }
 
-  const valid = await verifyTelnyxSignature(rawBody, signature, timestamp, publicKey);
+  const valid = await verifyTelnyxSignature(
+    rawBody,
+    signature,
+    timestamp,
+    requireEnvString(env.TELNYX_PUBLIC_KEY, "TELNYX_PUBLIC_KEY"),
+  );
   if (!valid) throw new Error("Telnyx Ed25519 signature verification failed");
   return JSON.parse(rawBody) as TelnyxVoiceEvent;
 }
@@ -420,7 +437,6 @@ async function handleTelnyxWebhook(
 ): Promise<Response> {
   const rawBody = await request.text();
   let event: TelnyxVoiceEvent;
-
   try {
     event = await verifyAndParseTelnyxWebhook(rawBody, request, env);
   } catch (error) {
@@ -433,7 +449,6 @@ async function handleTelnyxWebhook(
   const eventType = event.data?.event_type ?? "unknown";
   const eventId = event.data?.id ?? crypto.randomUUID();
   const payload = event.data?.payload;
-
   log("info", "telnyx_event", {
     event_type: eventType,
     event_id: eventId,
@@ -459,7 +474,6 @@ async function handleTelnyxWebhook(
       tenant_id: env.DEFAULT_TENANT_ID,
       route: "openai_realtime_sip",
     });
-
     ctx.waitUntil(
       transferTelnyxCallToOpenAI(callControlId, eventId, env).catch((error) => {
         log("error", "call_orchestrator_failed", {
@@ -468,7 +482,6 @@ async function handleTelnyxWebhook(
         });
       }),
     );
-
     return json({
       ok: true,
       accepted: true,
@@ -488,7 +501,6 @@ async function acceptRealtimeCall(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8_000);
   const startedAt = Date.now();
-
   log("info", "openai_accept_start", {
     call_id: callId,
     model: configuration.model,
@@ -511,13 +523,11 @@ async function acceptRealtimeCall(
         signal: controller.signal,
       },
     );
-
     log(response.ok ? "info" : "error", "openai_accept_http", {
       call_id: callId,
       status: response.status,
       elapsed_ms: Date.now() - startedAt,
     });
-
     return response;
   } finally {
     clearTimeout(timeout);
@@ -526,11 +536,7 @@ async function acceptRealtimeCall(
 
 async function hangupOpenAICall(callId: string, reason: string, env: Env): Promise<void> {
   const startedAt = Date.now();
-  log("info", "end_call_hangup_start", {
-    call_id: callId,
-    reason,
-  });
-
+  log("info", "end_call_hangup_start", { call_id: callId, reason });
   const response = await fetch(
     `https://api.openai.com/v1/realtime/calls/${encodeURIComponent(callId)}/hangup`,
     {
@@ -540,7 +546,6 @@ async function hangupOpenAICall(callId: string, reason: string, env: Env): Promi
       },
     },
   );
-
   const body = await response.text();
   log(response.ok ? "info" : "error", "end_call_hangup_result", {
     call_id: callId,
@@ -548,10 +553,7 @@ async function hangupOpenAICall(callId: string, reason: string, env: Env): Promi
     elapsed_ms: Date.now() - startedAt,
     body: body.slice(0, 1_000),
   });
-
-  if (!response.ok) {
-    throw new Error(`OpenAI hangup failed with HTTP ${response.status}`);
-  }
+  if (!response.ok) throw new Error(`OpenAI hangup failed with HTTP ${response.status}`);
 }
 
 function readWebSocketText(data: unknown): string | null {
@@ -571,7 +573,6 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
 
   const startedAt = Date.now();
   log("info", "realtime_sideband_connect_start", { call_id: callId });
-
   const response = await fetch(
     `https://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}`,
     {
@@ -593,7 +594,6 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
 
   socket.accept();
   activeSidebands.set(callId, socket);
-
   log("info", "realtime_sideband_connected", {
     call_id: callId,
     elapsed_ms: Date.now() - startedAt,
@@ -613,10 +613,8 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
       fallbackTimer = null;
     }
   };
-
   const confirmationIsPending = () =>
     confirmationPendingAt > 0 && Date.now() - confirmationPendingAt <= END_CONFIRMATION_TTL_MS;
-
   const assistantFarewellIsRecent = () =>
     assistantFarewellAt > 0 && Date.now() - assistantFarewellAt <= ASSISTANT_FAREWELL_TTL_MS;
 
@@ -624,13 +622,11 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
     if (hangupStarted) return;
     hangupStarted = true;
     clearFallback();
-
     log("info", "end_call_hangup_triggered", {
       call_id: callId,
       trigger,
       closing_response_id: closingResponseId,
     });
-
     try {
       await hangupOpenAICall(callId, endCallReason, env);
     } catch (error) {
@@ -656,7 +652,6 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
     endCallPending = true;
     endCallReason = reason.slice(0, 300);
     confirmationPendingAt = 0;
-
     log("info", "end_call_intent_detected", {
       call_id: callId,
       source,
@@ -676,7 +671,6 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
         }),
       );
     } else {
-      // A server-VAD response may already be starting. Cancel it so the final farewell is the only output.
       socket.send(JSON.stringify({ type: "response.cancel" }));
     }
 
@@ -689,27 +683,20 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
         },
       }),
     );
-
     log("info", "end_call_farewell_requested", {
       call_id: callId,
       source,
       tool_call_id: toolCallId,
     });
-
     fallbackTimer = setTimeout(() => {
       void performHangup("farewell_timeout");
-    }, 8_000);
+    }, FAREWELL_FALLBACK_MS);
   };
 
   const requestEndConfirmation = (rule: string) => {
     if (endCallPending || hangupStarted || confirmationIsPending()) return;
-
     confirmationPendingAt = Date.now();
-    log("info", "end_call_confirmation_requested", {
-      call_id: callId,
-      rule,
-    });
-
+    log("info", "end_call_confirmation_requested", { call_id: callId, rule });
     socket.send(JSON.stringify({ type: "response.cancel" }));
     socket.send(
       JSON.stringify({
@@ -720,6 +707,24 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
         },
       }),
     );
+  };
+
+  const commitAssistantAnnouncedHangup = (transcript: string) => {
+    if (endCallPending || hangupStarted) return;
+    endCallPending = true;
+    endCallReason = "assistant_announced_hangup_without_tool";
+    confirmationPendingAt = 0;
+    log("error", "end_call_assistant_commitment_without_tool", {
+      call_id: callId,
+      transcript_chars: transcript.length,
+    });
+    log("info", "end_call_hangup_guard_armed", {
+      call_id: callId,
+      grace_ms: ASSISTANT_COMMITMENT_GRACE_MS,
+    });
+    fallbackTimer = setTimeout(() => {
+      void performHangup("assistant_hangup_commitment_guard");
+    }, ASSISTANT_COMMITMENT_GRACE_MS);
   };
 
   socket.addEventListener("message", (message) => {
@@ -753,7 +758,7 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
             reason = parsed.reason.trim();
           }
         } catch {
-          // Keep safe default reason.
+          // Safe default remains.
         }
       }
       startClosingFlow(reason, "model_tool", event.call_id);
@@ -770,12 +775,10 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
           result: confirmation,
           transcript_chars: event.transcript.length,
         });
-
         if (confirmation === "close") {
           startClosingFlow("confirmed_no_more_help", "confirmation_reply");
           return;
         }
-
         if (confirmation === "continue") {
           confirmationPendingAt = 0;
           log("info", "end_call_confirmation_cleared", {
@@ -795,7 +798,6 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
         assistant_farewell_recent: assistantFarewellIsRecent(),
         confirmation_pending: confirmationIsPending(),
       });
-
       if (intent.level === "clear") {
         startClosingFlow(`deterministic:${intent.rule}`, "transcript_detector");
       } else if (intent.level === "probable") {
@@ -805,6 +807,10 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
     }
 
     if (event.type === "response.output_audio_transcript.done" && event.transcript) {
+      if (isAssistantHangupCommitment(event.transcript)) {
+        commitAssistantAnnouncedHangup(event.transcript);
+        return;
+      }
       if (isAssistantFarewell(event.transcript)) {
         assistantFarewellAt = Date.now();
         log("info", "end_call_assistant_farewell_observed", {
@@ -815,20 +821,19 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
       return;
     }
 
-    if (endCallPending && event.type === "response.created" && !closingResponseId && event.response_id) {
-      closingResponseId = event.response_id;
-      log("info", "end_call_farewell_response_created", {
-        call_id: callId,
-        response_id: closingResponseId,
-      });
+    if (endCallPending && event.type === "response.created" && !closingResponseId) {
+      const responseId = event.response_id ?? event.response?.id;
+      if (responseId) {
+        closingResponseId = responseId;
+        log("info", "end_call_farewell_response_created", {
+          call_id: callId,
+          response_id: closingResponseId,
+        });
+      }
       return;
     }
 
-    if (
-      endCallPending &&
-      event.type === "output_audio_buffer.stopped" &&
-      (!closingResponseId || event.response_id === closingResponseId)
-    ) {
+    if (endCallPending && event.type === "output_audio_buffer.stopped") {
       void performHangup("farewell_audio_stopped");
     }
   });
@@ -857,8 +862,7 @@ async function handleOpenAIWebhook(
   const rawBody = await request.text();
   let rawEventType = "unknown";
   try {
-    const rawEvent = JSON.parse(rawBody) as { type?: string };
-    rawEventType = rawEvent.type ?? "unknown";
+    rawEventType = (JSON.parse(rawBody) as { type?: string }).type ?? "unknown";
   } catch {
     rawEventType = "invalid_json";
   }
@@ -889,7 +893,6 @@ async function handleOpenAIWebhook(
     type: typedEvent.type ?? "unknown",
     raw_event_type: rawEventType,
   });
-
   if (typedEvent.type !== "realtime.call.incoming") {
     return json({ ok: true, ignored: true, event_type: typedEvent.type ?? "unknown" });
   }
@@ -922,7 +925,6 @@ async function handleOpenAIWebhook(
     status: openAIResponse.status,
     body: responseBody.slice(0, 2_000),
   });
-
   if (!openAIResponse.ok) {
     return json({ ok: false, error: "openai_accept_failed", status: openAIResponse.status }, 502);
   }
@@ -941,7 +943,7 @@ async function handleOpenAIWebhook(
     call_id: callId,
     tenant_id: env.DEFAULT_TENANT_ID,
     intent_hangup: true,
-    intent_hangup_mode: "hybrid",
+    intent_hangup_mode: "hybrid_v5",
   });
 }
 
@@ -959,9 +961,10 @@ export default {
         telephony_provider: "telnyx",
         call_orchestrator: true,
         telnyx_webhook_verification: "webcrypto-ed25519",
-        tracing: "f0-e2e-v4",
+        tracing: "f0-e2e-v5",
         intent_hangup: true,
-        intent_hangup_mode: "hybrid",
+        intent_hangup_mode: "hybrid_v5",
+        assistant_hangup_commitment_guard: true,
         input_transcription: "gpt-4o-mini-transcribe",
         runtime_config: {
           openai_api_key: typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.length > 0,
@@ -979,11 +982,9 @@ export default {
     if (request.method === "POST" && url.pathname === "/webhooks/telnyx") {
       return handleTelnyxWebhook(request, env, ctx);
     }
-
     if (request.method === "POST" && url.pathname === "/webhooks/openai") {
       return handleOpenAIWebhook(request, env, ctx);
     }
-
     return json({ ok: false, error: "not_found" }, 404);
   },
 } satisfies ExportedHandler<Env>;
