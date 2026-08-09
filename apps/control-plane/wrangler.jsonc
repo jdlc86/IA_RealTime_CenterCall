@@ -8,12 +8,18 @@
   "preview_urls": true,
   "vars": {
     "ENVIRONMENT": "dev",
+    "TENANT_CONFIG_SOURCE": "static",
     "DEFAULT_TENANT_ID": "clinica-estetica-madrid",
     "TENANT_ROUTES_JSON": "[{\"called_number\":\"+34910789057\",\"tenant_id\":\"clinica-estetica-madrid\"}]",
     "REALTIME_MODEL": "gpt-realtime",
     "REALTIME_VOICE": "marin",
     "OPENAI_PROJECT_ID": "proj_sRULdPh5pWmKIg59z6J01QI9"
   },
+  "kv_namespaces": [
+    {
+      "binding": "TENANT_CONFIG"
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {
