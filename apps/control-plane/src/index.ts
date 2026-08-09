@@ -76,10 +76,11 @@ type RealtimeSessionConfiguration = {
     };
   };
   tools: RealtimeFunctionTool[];
-  tool_choice: "auto";
+  tool_choice: "required";
 };
 
 const IDLE_TIMEOUT_MS = 10_000;
+const AMBIGUOUS_LIMIT = 3;
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, { status });
@@ -276,10 +277,14 @@ function buildRealtimeSessionConfiguration(env: WorkerEnv): RealtimeSessionConfi
     "No inventes información sobre ningún negocio.",
     "Si el usuario te interrumpe, deja de hablar y escúchalo.",
     "Si no entiendes algo, pide que lo repita.",
-    "Si percibes que el usuario quiere terminar la consulta o ya no desea continuar, invoca end_call en vez de repetir preguntas de cortesía.",
-    "Después de una señal de cierre no repitas varias veces que entiendes que ha terminado.",
-    "No uses end_call por silencio aislado ni por una mención contextual de una despedida.",
-    "Nunca anuncies que vas a colgar sin invocar end_call. CallSession controla la confirmación, despedida y hangup.",
+    "Antes de responder a CADA turno real del usuario debes invocar exactamente una vez la herramienta conversation_intent.",
+    "Clasifica semánticamente la intención usando el significado de la intervención actual y todo el contexto conversacional; no hagas coincidencia de palabras aisladas.",
+    "Usa CONTINUE cuando el usuario quiere seguir conversando, formula una nueva consulta, pide más ayuda o no existe señal razonable de cierre.",
+    "Usa END_CLEAR cuando el contexto hace clara la intención de finalizar la conversación o la llamada. Una intención clara no necesita una pregunta de confirmación adicional.",
+    "Usa END_AMBIGUOUS cuando parece que el usuario podría estar terminando pero el contexto no permite afirmarlo con suficiente seguridad.",
+    "Una mención narrativa o contextual de una despedida no implica END_CLEAR si el usuario no pretende terminar la conversación actual.",
+    "No anuncies que vas a colgar por tu cuenta. CallSession decide la política, genera la despedida final y ejecuta el hangup.",
+    "Después de invocar conversation_intent espera el resultado de la herramienta; CallSession generará la respuesta hablada apropiada.",
   ].join("\n");
 
   return {
@@ -309,23 +314,29 @@ function buildRealtimeSessionConfiguration(env: WorkerEnv): RealtimeSessionConfi
     tools: [
       {
         type: "function",
-        name: "end_call",
+        name: "conversation_intent",
         description:
-          "Indica que el usuario parece haber terminado la consulta o desea finalizar la llamada. CallSession confirmará la intención y realizará el cierre técnico.",
+          "Clasifica semánticamente la intención conversacional del usuario en CONTINUE, END_AMBIGUOUS o END_CLEAR usando el contexto completo de la conversación. Debe invocarse una vez antes de responder a cada turno real del usuario.",
         parameters: {
           type: "object",
           properties: {
+            intent: {
+              type: "string",
+              enum: ["CONTINUE", "END_AMBIGUOUS", "END_CLEAR"],
+              description:
+                "CONTINUE: desea seguir o hace una consulta. END_AMBIGUOUS: podría estar terminando pero no es seguro. END_CLEAR: intención clara de terminar.",
+            },
             reason: {
               type: "string",
-              description: "Motivo breve que indica intención de terminar.",
+              description: "Explicación breve basada en el contexto conversacional, sin datos sensibles innecesarios.",
             },
           },
-          required: ["reason"],
+          required: ["intent", "reason"],
           additionalProperties: false,
         },
       },
     ],
-    tool_choice: "auto",
+    tool_choice: "required",
   };
 }
 
@@ -342,6 +353,7 @@ async function acceptRealtimeCall(
     model: configuration.model,
     voice: configuration.audio.output.voice,
     tools: configuration.tools.map((tool) => tool.name),
+    tool_choice: configuration.tool_choice,
     input_transcription: configuration.audio.input.transcription.model,
   });
 
@@ -379,6 +391,7 @@ async function startCallSession(callId: string, env: WorkerEnv): Promise<void> {
   log("info", "call_session_start_requested", {
     call_id: callId,
     persistence: "durable_object",
+    intent_policy: "semantic_v9",
   });
 
   const response = await stub.fetch("https://call-session.internal/start", {
@@ -487,7 +500,7 @@ async function handleOpenAIWebhook(request: Request, env: WorkerEnv): Promise<Re
     call_id: callId,
     tenant_id: env.DEFAULT_TENANT_ID,
     intent_hangup: true,
-    intent_hangup_mode: "durable_object_state_machine_v8",
+    intent_hangup_mode: "semantic_intent_v9",
     call_session_started: callSessionStarted,
   });
 }
@@ -506,15 +519,19 @@ export default {
         telephony_provider: "telnyx",
         call_orchestrator: true,
         telnyx_webhook_verification: "webcrypto-ed25519",
-        tracing: "f0-e2e-v8",
+        tracing: "f0-e2e-v9",
         realtime_sideband_lifecycle: "durable_object",
         call_session_class: "CallSession",
         intent_hangup: true,
-        intent_hangup_mode: "durable_object_state_machine_v8",
-        confirmation_silence_auto_hangup: true,
-        confirmation_idle_timeout_ms: IDLE_TIMEOUT_MS,
+        intent_hangup_mode: "semantic_intent_v9",
+        intent_classifier: "realtime_model_required_tool",
+        intent_values: ["CONTINUE", "END_AMBIGUOUS", "END_CLEAR"],
+        ambiguous_limit: AMBIGUOUS_LIMIT,
+        ambiguity_reset_on_continue: true,
+        ambiguous_silence_auto_hangup: true,
+        ambiguous_idle_timeout_ms: IDLE_TIMEOUT_MS,
         hangup_retry: true,
-        input_transcription: "gpt-4o-mini-transcribe",
+        input_transcription: "gpt-4o-mini-transcribe_observability_only",
         runtime_config: {
           openai_api_key: typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.length > 0,
           openai_webhook_secret:
