@@ -13,6 +13,20 @@
     "REALTIME_VOICE": "marin",
     "OPENAI_PROJECT_ID": "proj_sRULdPh5pWmKIg59z6J01QI9"
   },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CALL_SESSIONS",
+        "class_name": "CallSession"
+      }
+    ]
+  },
+  "exports": {
+    "CallSession": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
