@@ -26,6 +26,7 @@ function tenantConfig(tenantId, displayName, assistantName) {
       name: assistantName,
       greeting: `Hola, soy ${assistantName}`,
       language: "es-ES",
+      systemPrompt: `Eres la asistente virtual de ${displayName}. Responde solo dentro del ámbito autorizado del negocio.`,
     },
     realtime: { voice: "marin", vad: { threshold: 0.5 } },
     tools: { allowed: ["get_business_information"] },
@@ -64,8 +65,11 @@ test("F4-KV04 two businesses remain isolated", async () => {
   const restaurant = await repo.getTenantConfiguration("restaurante-centro");
   assert.equal(clinic?.business.displayName, "Clínica Estética Madrid");
   assert.equal(clinic?.assistant.name, "Carolina");
+  assert.match(clinic?.assistant.systemPrompt ?? "", /Clínica Estética Madrid/);
   assert.equal(restaurant?.business.displayName, "Restaurante Centro");
   assert.equal(restaurant?.assistant.name, "Lucía");
+  assert.match(restaurant?.assistant.systemPrompt ?? "", /Restaurante Centro/);
+  assert.notEqual(clinic?.assistant.systemPrompt, restaurant?.assistant.systemPrompt);
 });
 
 test("F4-KV05 tenant payload cannot impersonate another tenant", () => {
@@ -83,4 +87,13 @@ test("F4-KV07 duplicate allowed tools are rejected", () => {
   const value = JSON.parse(tenantConfig("tenant-a", "A", "Bot A"));
   value.tools.allowed = ["x", "x"];
   assert.throws(() => parseTenantConfigurationV1(JSON.stringify(value), "tenant-a"), /duplicate/);
+});
+
+test("F4-KV08 legacy assistant.instructions is accepted only as migration alias", () => {
+  const value = JSON.parse(tenantConfig("tenant-a", "A", "Bot A"));
+  delete value.assistant.systemPrompt;
+  value.assistant.instructions = "Prompt legacy temporal";
+  const parsed = parseTenantConfigurationV1(JSON.stringify(value), "tenant-a");
+  assert.equal(parsed.assistant.systemPrompt, "Prompt legacy temporal");
+  assert.equal(parsed.assistant.instructions, "Prompt legacy temporal");
 });
