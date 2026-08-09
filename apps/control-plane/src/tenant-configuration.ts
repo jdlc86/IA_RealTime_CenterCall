@@ -2,6 +2,7 @@ export type TenantConfiguration = {
   tenantId: string;
   business: {
     displayName: string;
+    yearsInOperation: number;
   };
   assistant: {
     name: string;
@@ -17,6 +18,7 @@ const TENANTS: Record<string, TenantConfiguration> = {
     tenantId: "clinica-estetica-madrid",
     business: {
       displayName: "Clínica Estética Madrid",
+      yearsInOperation: 20,
     },
     assistant: {
       name: "Carolina",
