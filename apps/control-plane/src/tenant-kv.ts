@@ -17,6 +17,9 @@ export type TenantConfigurationV1 = {
     name: string;
     greeting: string;
     language: string;
+    /** Canonical tenant-specific behavior/context/limitations prompt stored in KV. */
+    systemPrompt?: string;
+    /** @deprecated Transitional alias. New tenant payloads must use systemPrompt. */
     instructions?: string;
   };
   realtime: {
@@ -126,6 +129,14 @@ export function parseTenantConfigurationV1(raw: string, expectedTenantId?: strin
     facts[key] = value;
   }
 
+  let systemPrompt: string | undefined;
+  if (assistant.systemPrompt !== undefined) {
+    systemPrompt = requireNonEmptyString(assistant.systemPrompt, "assistant.systemPrompt");
+  } else if (assistant.instructions !== undefined) {
+    // Backward-compatible migration path. New KV payloads should use assistant.systemPrompt.
+    systemPrompt = requireNonEmptyString(assistant.instructions, "assistant.instructions");
+  }
+
   let vad: TenantConfigurationV1["realtime"]["vad"];
   if (realtime.vad !== undefined) {
     const vadRecord = requireRecord(realtime.vad, "realtime.vad");
@@ -158,9 +169,7 @@ export function parseTenantConfigurationV1(raw: string, expectedTenantId?: strin
       name: requireNonEmptyString(assistant.name, "assistant.name"),
       greeting: requireNonEmptyString(assistant.greeting, "assistant.greeting"),
       language: requireNonEmptyString(assistant.language, "assistant.language"),
-      ...(assistant.instructions === undefined
-        ? {}
-        : { instructions: requireNonEmptyString(assistant.instructions, "assistant.instructions") }),
+      ...(systemPrompt === undefined ? {} : { systemPrompt, instructions: systemPrompt }),
     },
     realtime: {
       ...(realtime.voice === undefined ? {} : { voice: requireNonEmptyString(realtime.voice, "realtime.voice") }),
