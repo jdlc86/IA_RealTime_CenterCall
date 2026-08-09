@@ -1,17 +1,13 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "ia-realtime-centercall",
-  "main": "src/worker.ts",
+  "main": "src/index.ts",
   "compatibility_date": "2026-08-08",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": true,
   "vars": {
     "ENVIRONMENT": "dev",
-    "TENANT_CONFIG_SOURCE": "kv",
-    "TENANT_KV_VALIDATED": "true",
-    "DEFAULT_TENANT_ID": "clinica-estetica-madrid",
-    "TENANT_ROUTES_JSON": "[{\"called_number\":\"+34910789057\",\"tenant_id\":\"clinica-estetica-madrid\"}]",
     "REALTIME_MODEL": "gpt-realtime",
     "REALTIME_VOICE": "marin",
     "OPENAI_PROJECT_ID": "proj_sRULdPh5pWmKIg59z6J01QI9"
