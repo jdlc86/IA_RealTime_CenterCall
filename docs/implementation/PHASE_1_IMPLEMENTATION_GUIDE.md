@@ -156,15 +156,15 @@ Procedimiento realizado:
 - la IA inició automáticamente el saludo personalizado sin requerir que el llamante hablara primero;
 - se escuchó correctamente el nombre de la asistente, Carolina;
 - se escuchó correctamente el nombre comercial, Clínica Estética Madrid;
-- el usuario confirmó explícitamente: «Carolina me saluda y todo bien».
+- el operador confirmó que el saludo y el funcionamiento posterior fueron correctos.
 
 Resultado audible confirmado:
 
 ```text
 Business = Clínica Estética Madrid
 Assistant = Carolina
-Initial greeting = OK
-Conversation after greeting = OK
+Initial greeting = PASS
+Conversation after greeting = PASS
 ```
 
 Saludo esperado y validado funcionalmente:
@@ -261,7 +261,25 @@ No se inventan valores retrospectivos. p50/p95 se calcularán cuando haya sufici
 - [ ] pruebas contractuales/unitarias o evidencia equivalente.
 - [ ] documentación y arquitectura reconciliadas al cierre.
 
-## 12. Commits de esta iteración
+## 12. Registro de evidencia — 2026-08-09
+
+Se registra formalmente la validación manual de F1-T05:
+
+```text
+Número marcado: +34910789057
+Tenant esperado: clinica-estetica-madrid
+Negocio esperado: Clínica Estética Madrid
+Asistente esperada: Carolina
+Saludo automático: PASS
+Nombre de clínica correcto: PASS
+Nombre de asistente correcto: PASS
+Continuidad de la llamada tras el saludo: PASS
+Resultado global F1-T05: PASS
+```
+
+Esta validación constituye evidencia funcional E2E del camino positivo de Tenant Binding para el tenant configurado. No se interpreta como evidencia de aislamiento entre dos tenants; F1-T06 requerirá un segundo número/tenant o una prueba contractual equivalente.
+
+## 13. Commits de esta iteración
 
 ```text
 59a8c960985c4e6cb69d775df7630b0fdcb0d664  TenantConfiguration Estética Madrid
