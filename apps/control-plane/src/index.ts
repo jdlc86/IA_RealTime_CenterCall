@@ -1,5 +1,4 @@
 import OpenAI from "openai";
-import Telnyx from "telnyx";
 
 type RealtimeIncomingCallEvent = {
   id: string;
@@ -70,6 +69,59 @@ function log(level: "info" | "error", event: string, details: Record<string, unk
   } else {
     console.log(entry);
   }
+}
+
+function decodeBase64(value: string): Uint8Array {
+  const normalized = value.replace(/\s+/g, "");
+  const binary = atob(normalized);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function decodeTelnyxPublicKey(value: string): { format: "raw" | "spki"; bytes: Uint8Array } {
+  const trimmed = value.trim();
+
+  if (trimmed.includes("BEGIN PUBLIC KEY")) {
+    const base64 = trimmed
+      .replace(/-----BEGIN PUBLIC KEY-----/g, "")
+      .replace(/-----END PUBLIC KEY-----/g, "")
+      .replace(/\s+/g, "");
+    return { format: "spki", bytes: decodeBase64(base64) };
+  }
+
+  const bytes = decodeBase64(trimmed);
+
+  // Telnyx commonly exposes the Ed25519 public key as the raw 32-byte key.
+  // Accept SPKI as well so the Worker remains robust if the portal representation changes.
+  if (bytes.byteLength === 32) {
+    return { format: "raw", bytes };
+  }
+
+  return { format: "spki", bytes };
+}
+
+async function verifyTelnyxSignature(
+  rawBody: string,
+  signatureBase64: string,
+  timestamp: string,
+  publicKeyValue: string,
+): Promise<boolean> {
+  const decodedKey = decodeTelnyxPublicKey(publicKeyValue);
+  const key = await crypto.subtle.importKey(
+    decodedKey.format,
+    decodedKey.bytes,
+    { name: "Ed25519" },
+    false,
+    ["verify"],
+  );
+
+  const signedPayload = new TextEncoder().encode(`${timestamp}|${rawBody}`);
+  const signature = decodeBase64(signatureBase64);
+
+  return crypto.subtle.verify("Ed25519", key, signature, signedPayload);
 }
 
 function buildRealtimeSessionConfiguration(env: Env): RealtimeSessionConfiguration {
@@ -162,7 +214,11 @@ async function transferTelnyxCallToOpenAI(
   });
 }
 
-function verifyAndParseTelnyxWebhook(rawBody: string, request: Request, env: Env): TelnyxVoiceEvent {
+async function verifyAndParseTelnyxWebhook(
+  rawBody: string,
+  request: Request,
+  env: Env,
+): Promise<TelnyxVoiceEvent> {
   const signature = request.headers.get("telnyx-signature-ed25519");
   const timestamp = request.headers.get("telnyx-timestamp");
 
@@ -180,13 +236,18 @@ function verifyAndParseTelnyxWebhook(rawBody: string, request: Request, env: Env
     throw new Error("Telnyx webhook timestamp outside 5 minute tolerance");
   }
 
-  const telnyx = new Telnyx({ apiKey: env.TELNYX_API_KEY });
-  return telnyx.webhooks.constructEvent(
+  const valid = await verifyTelnyxSignature(
     rawBody,
     signature,
     timestamp,
     env.TELNYX_PUBLIC_KEY,
-  ) as TelnyxVoiceEvent;
+  );
+
+  if (!valid) {
+    throw new Error("Telnyx Ed25519 signature verification failed");
+  }
+
+  return JSON.parse(rawBody) as TelnyxVoiceEvent;
 }
 
 async function handleTelnyxWebhook(
@@ -198,7 +259,7 @@ async function handleTelnyxWebhook(
 
   let event: TelnyxVoiceEvent;
   try {
-    event = verifyAndParseTelnyxWebhook(rawBody, request, env);
+    event = await verifyAndParseTelnyxWebhook(rawBody, request, env);
   } catch (error) {
     log("error", "invalid_telnyx_webhook", {
       error: error instanceof Error ? error.message : String(error),
@@ -237,8 +298,6 @@ async function handleTelnyxWebhook(
       }),
     );
 
-    // Telnyx recommends acknowledging webhooks quickly. The transfer continues
-    // asynchronously via waitUntil(), while Cloudflare remains outside media.
     return json({
       ok: true,
       accepted: true,
@@ -378,6 +437,7 @@ export default {
         tenant_id: env.DEFAULT_TENANT_ID,
         telephony_provider: "telnyx",
         call_orchestrator: true,
+        telnyx_webhook_verification: "webcrypto-ed25519",
       });
     }
 
