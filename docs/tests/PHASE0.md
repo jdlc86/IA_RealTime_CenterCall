@@ -13,7 +13,7 @@ PASS solo si:
 5. barge-in razonable;
 6. llamada ≥5 minutos estable;
 7. cuelgue manual limpia la sesión;
-8. cuelgue automático por intención clara de despedida funciona sin falsos positivos obvios;
+8. cuelgue automático por intención clara de despedida funciona de forma consistente y sin falsos positivos obvios;
 9. ≥19/20 llamadas consecutivas completan setup/conversación básica;
 10. baseline de setup y latencia documentado.
 
@@ -39,20 +39,109 @@ PASS solo si:
 | F0-T05 | [x] | | sí | | 5–10 s de silencio | llamada permanece activa | La IA indica que no ha escuchado, espera y permite reanudar la conversación normalmente. |
 | F0-T06 | [x] | | sí | | | `normal_clearing` | Al colgar el llamante, Telnyx registra terminación normal. |
 | F0-T07 | [ ] | | | | | | |
-| F0-T08 | [ ] | | | | | pendiente | Implementado `end_call`; validar despedida final + cierre automático y ausencia de falsos positivos simples. |
+| F0-T08 | [ ] | | | | | pendiente | Versión híbrida v4 implementada; validar intención clara, confirmación ambigua y falsos positivos. |
 
 `F0-T01` se marca **parcial** porque el setup y la respuesta de voz están demostrados, pero todavía falta medir el baseline de tiempo de establecimiento/saludo.
 
-## F0-T08 — procedimiento
+## F0-T08 — procedimiento híbrido v4
 
-1. Iniciar una llamada normal y mantener al menos dos turnos de conversación.
-2. Decir una intención clara de terminar, por ejemplo: «gracias, eso es todo, hasta luego».
-3. Esperar una despedida breve de la IA.
-4. No colgar manualmente.
-5. Confirmar que la llamada termina automáticamente pocos segundos después.
-6. En logs, buscar en orden aproximado:
+La detección usa dos capas:
 
 ```text
+transcripción de entrada
+  → detector determinista conservador
+  → CLEAR      → despedida + hangup
+  → PROBABLE   → confirmar «¿Necesitas algo más?»
+  → NONE       → continuar
+
+modelo Realtime
+  → semántica general
+  → tool end_call cuando detecta intención clara
+```
+
+La transcripción se usa como señal auxiliar de control. El modelo Realtime continúa procesando el audio nativamente.
+
+### A. Intenciones claras — deben cerrar
+
+Realizar llamadas separadas y probar al menos:
+
+```text
+«Adiós»
+«Hasta luego»
+«Eso es todo»
+«No necesito nada más»
+«Gracias, eso es todo»
+«Puedes colgar»
+«Hemos terminado»
+```
+
+Esperado:
+
+1. se detecta intención clara;
+2. IA emite una despedida final breve;
+3. usuario no cuelga manualmente;
+4. llamada termina automáticamente.
+
+### B. Intenciones probables — deben confirmar
+
+Probar:
+
+```text
+«Gracias»
+«Muchas gracias»
+«Perfecto, gracias»
+```
+
+Esperado: la IA pregunta aproximadamente «¿Necesitas algo más?» en vez de cerrar inmediatamente.
+
+Si el usuario responde:
+
+```text
+«No»
+«No, gracias»
+«Nada más»
+```
+
+la llamada debe cerrar tras la despedida.
+
+Si responde:
+
+```text
+«Sí»
+«Sí, necesito otra cosa»
+«Tengo otra pregunta»
+```
+
+la conversación debe continuar y el estado de cierre debe cancelarse.
+
+### C. Doble despedida — debe elevar confianza
+
+1. Conseguir que la IA ya se haya despedido.
+2. Responder «gracias», «hasta luego» o equivalente final.
+3. La segunda señal debe forzar el cierre sin volver a preguntar si necesita algo más.
+
+### D. Pruebas negativas — no deben cerrar
+
+```text
+silencio 10 s
+«Mi amigo se despidió diciendo adiós»
+«¿Qué significa adiós?»
+«¿Cómo se dice adiós en inglés?»
+«Cuando alguien dice hasta luego, ¿qué quiere decir?»
+```
+
+Esperado: la llamada continúa.
+
+### E. Logs esperados
+
+Según el camino pueden aparecer:
+
+```text
+end_call_intent_classified
+end_call_confirmation_requested
+end_call_confirmation_classified
+end_call_confirmation_cleared
+end_call_assistant_farewell_observed
 end_call_intent_detected
 end_call_farewell_requested
 end_call_farewell_response_created
@@ -62,11 +151,7 @@ realtime_sideband_closed
 Telnyx call.hangup
 ```
 
-Pruebas negativas mínimas para evitar falsos positivos:
-
-- permanecer en silencio 10 s → **no debe colgar**;
-- decir «mi amigo se despidió diciendo adiós» → **no debe colgar**;
-- frase ambigua como «bueno...» → la IA debe continuar o confirmar, no cerrar automáticamente.
+Para privacidad, el trazado no guarda el texto completo de la transcripción: registra clasificación, regla y longitud.
 
 ## Evidencia técnica de la primera llamada E2E
 
