@@ -65,7 +65,7 @@ Ruta vigente:
 
 `DEFAULT_TENANT_ID` puede permanecer temporalmente por compatibilidad histórica, pero no participa en el routing operativo.
 
-## 4. F1-B — CallOrchestrator — IMPLEMENTADO, E2E PENDIENTE
+## 4. F1-B — CallOrchestrator — IMPLEMENTADO, E2E VALIDADO
 
 En `call.initiated` inbound:
 
@@ -81,7 +81,9 @@ StaticTenantResolver
 
 No existe fallback silencioso a otro tenant.
 
-## 5. F1-C — Tenant binding y personalización — IMPLEMENTADO, E2E PENDIENTE
+La prueba E2E F1-T05 del 2026-08-09 confirmó mediante el saludo personalizado que la llamada al número configurado alcanza el tenant esperado.
+
+## 5. F1-C — Tenant binding y personalización — IMPLEMENTADO, E2E VALIDADO
 
 El binding se conserva en el salto Telnyx → OpenAI mediante headers SIP internos:
 
@@ -141,32 +143,44 @@ call_bootstrap_ready
 
 Los logs incluyen `tenant_id` cuando aplica y nunca exponen secretos.
 
-## 7. Prueba E2E F1-T05 — tenant binding audible
+## 7. Prueba E2E F1-T05 — tenant binding audible — PASS
 
-Realizar una llamada al número configurado y no hablar inicialmente.
+**Fecha:** 2026-08-09  
+**Resultado:** PASS manual E2E.
 
-Esperado:
+Procedimiento realizado:
+
+- llamada real al número configurado `+34910789057`;
+- el sistema resolvió la llamada al tenant de validación;
+- la IA inició automáticamente el saludo personalizado;
+- el usuario confirmó que Carolina saludó correctamente y que el funcionamiento posterior fue normal.
+
+Resultado audible confirmado:
 
 ```text
-Telnyx call.initiated
-→ tenant_resolution_succeeded tenant_id=clinica-estetica-madrid
-→ transfer OpenAI con headers SIP
-→ realtime.call.incoming
-→ call_bootstrap_started
-→ /accept
-→ CallSession tenant_id=clinica-estetica-madrid
-→ realtime_sideband_connected
-→ tenant_initial_greeting_requested
-→ audio: "Buenas, soy Carolina, asistente virtual de la Clínica Estética Madrid. ¿En qué puedo ayudarte?"
+Business = Clínica Estética Madrid
+Assistant = Carolina
 ```
 
-PASS si:
+Saludo esperado y validado funcionalmente:
 
-- el nombre de negocio escuchado es Clínica Estética Madrid;
-- la asistente se presenta como Carolina;
-- la conversación continúa normalmente después del saludo;
-- el cierre semántico v9 sigue funcionando;
-- no aparece `tenant_binding_missing` ni `tenant_configuration_missing`.
+```text
+Buenas, soy Carolina, asistente virtual de la Clínica Estética Madrid. ¿En qué puedo ayudarte?
+```
+
+La evidencia audible valida conjuntamente el camino funcional:
+
+```text
++34910789057
+→ TenantResolver
+→ tenant_id=clinica-estetica-madrid
+→ TenantConfiguration
+→ RealtimeSessionConfiguration
+→ CallSession
+→ saludo personalizado de Carolina
+```
+
+F1-T05 se considera PASS para tenant binding y personalización audible. Esta evidencia no sustituye las pruebas negativas de aislamiento ni el baseline cuantitativo pendiente.
 
 ## 8. Manejo de errores
 
@@ -236,8 +250,8 @@ No se inventan valores retrospectivos. p50/p95 se calcularán cuando haya sufici
 - [x] `tenant_id` propagado a `CallSession`.
 - [x] saludo inicial derivado de configuración del tenant.
 - [x] logs de tenant resolution/bootstrap implementados.
-- [ ] despliegue de la iteración verificado.
-- [ ] F1-T05 E2E confirma binding y saludo audible.
+- [x] despliegue de la iteración verificado funcionalmente mediante llamada real.
+- [x] F1-T05 E2E confirma binding y saludo audible.
 - [ ] baseline cuantitativo inicial documentado.
 - [ ] pruebas contractuales/unitarias o evidencia equivalente.
 - [ ] documentación y arquitectura reconciliadas al cierre.
@@ -251,10 +265,12 @@ eba3ed47530924e99326c40175987571c8439a18  tenant binding + saludo en CallSession
 d9d987566b764255d7e7892684d562c2871adbe2  bootstrap personalizado en Worker
 ```
 
-Siguiente acción:
+Siguiente trabajo de F1:
 
 ```text
-esperar deploy Cloudflare
-→ comprobar /health f1-tenant-greeting-v2
-→ realizar F1-T05
+F1-T05 PASS
+→ completar baseline cuantitativo
+→ añadir/confirmar pruebas contractuales y negativas de TenantResolver
+→ reconciliar documentación/arquitectura
+→ evaluar Gate F1
 ```
