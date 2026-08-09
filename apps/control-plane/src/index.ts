@@ -1,12 +1,17 @@
 import OpenAI from "openai";
-import { StaticTenantResolver, parseTenantRoutesJson, type TenantResolution } from "./tenant-resolver";
-import { getTenantConfiguration, type TenantConfiguration } from "./tenant-configuration";
+import {
+  KvTenantRepository,
+  type TenantConfigurationV1,
+  type TenantKvNamespace,
+  type TenantResolutionV1,
+} from "./tenant-kv";
 export { CallSession } from "./call-session";
 
 type WorkerEnv = {
   ENVIRONMENT: string;
-  DEFAULT_TENANT_ID?: string;
-  TENANT_ROUTES_JSON: string;
+  TENANT_CONFIG_SOURCE?: string;
+  TENANT_CONFIG: TenantKvNamespace;
+  TENANT_ROUTES_JSON?: string;
   REALTIME_MODEL: string;
   REALTIME_VOICE: string;
   OPENAI_PROJECT_ID: string;
@@ -103,8 +108,11 @@ function requireEnvString(value: unknown, name: string): string {
   return value.trim();
 }
 
-function getTenantResolver(env: WorkerEnv): StaticTenantResolver {
-  return new StaticTenantResolver(parseTenantRoutesJson(requireEnvString(env.TENANT_ROUTES_JSON, "TENANT_ROUTES_JSON")));
+function getTenantRepository(env: WorkerEnv): KvTenantRepository {
+  if (!env.TENANT_CONFIG || typeof env.TENANT_CONFIG.get !== "function") {
+    throw new Error("Missing runtime configuration: TENANT_CONFIG");
+  }
+  return new KvTenantRepository(env.TENANT_CONFIG);
 }
 
 function getSipHeader(headers: Array<{ name: string; value: string }> | undefined, name: string): string | null {
@@ -181,7 +189,7 @@ function buildOpenAISipUri(env: WorkerEnv): string {
 async function transferTelnyxCallToOpenAI(
   callControlId: string,
   eventId: string,
-  resolution: TenantResolution,
+  resolution: TenantResolutionV1,
   env: WorkerEnv,
 ): Promise<void> {
   const startedAt = Date.now();
@@ -192,6 +200,7 @@ async function transferTelnyxCallToOpenAI(
     called_number: resolution.calledNumber,
     routing_source: resolution.source,
     target_host: "sip.api.openai.com",
+    tenant_config_source: "kv",
   });
 
   const response = await fetch(
@@ -296,26 +305,31 @@ async function handleTelnyxWebhook(
       call_control_id: callControlId,
       called_number: calledNumber,
       routing_source: "called_number",
+      tenant_config_source: "kv",
     });
 
-    let resolution: TenantResolution | null = null;
+    let resolution: TenantResolutionV1 | null = null;
+    let tenantConfig: TenantConfigurationV1 | null = null;
     try {
-      resolution = getTenantResolver(env).resolve({ calledNumber });
+      const repository = getTenantRepository(env);
+      resolution = await repository.resolveByCalledNumber(calledNumber);
+      if (resolution) tenantConfig = await repository.getTenantConfiguration(resolution.tenantId);
     } catch (error) {
       log("error", "tenant_resolution_failed", {
         call_control_id: callControlId,
         called_number: calledNumber,
-        reason: "invalid_tenant_routes_configuration",
+        reason: "kv_configuration_invalid",
         error: error instanceof Error ? error.message : String(error),
       });
-      return json({ ok: false, error: "tenant_routes_configuration_invalid" }, 500);
+      return json({ ok: false, error: "tenant_kv_configuration_invalid" }, 500);
     }
 
-    if (!resolution) {
+    if (!resolution || !tenantConfig) {
       log("error", "tenant_resolution_failed", {
         call_control_id: callControlId,
         called_number: calledNumber,
-        reason: "route_not_found",
+        reason: resolution ? "tenant_configuration_not_found" : "route_not_found",
+        tenant_id: resolution?.tenantId,
       });
       ctx.waitUntil(
         rejectTelnyxCall(callControlId, eventId, env).catch((error) => {
@@ -329,18 +343,6 @@ async function handleTelnyxWebhook(
       return json({ ok: true, accepted: false, action: "reject_unroutable", called_number: calledNumber });
     }
 
-    const tenantConfig = getTenantConfiguration(resolution.tenantId);
-    if (!tenantConfig) {
-      log("error", "tenant_resolution_failed", {
-        call_control_id: callControlId,
-        tenant_id: resolution.tenantId,
-        called_number: resolution.calledNumber,
-        reason: "tenant_configuration_not_found",
-      });
-      ctx.waitUntil(rejectTelnyxCall(callControlId, eventId, env).catch(() => undefined));
-      return json({ ok: true, accepted: false, action: "reject_tenant_config_missing" });
-    }
-
     log("info", "tenant_resolution_succeeded", {
       call_control_id: callControlId,
       tenant_id: resolution.tenantId,
@@ -348,22 +350,15 @@ async function handleTelnyxWebhook(
       routing_source: resolution.source,
       business_name: tenantConfig.business.displayName,
       allowed_tools: tenantConfig.tools.allowed,
-    });
-
-    log("info", "call_orchestrator_route_selected", {
-      call_control_id: callControlId,
-      tenant_id: resolution.tenantId,
-      called_number: resolution.calledNumber,
-      routing_source: resolution.source,
-      route: "openai_realtime_sip",
+      tenant_config_source: "kv",
     });
 
     ctx.waitUntil(
       transferTelnyxCallToOpenAI(callControlId, eventId, resolution, env).catch((error) => {
         log("error", "call_orchestrator_failed", {
           call_control_id: callControlId,
-          tenant_id: resolution.tenantId,
-          called_number: resolution.calledNumber,
+          tenant_id: resolution!.tenantId,
+          called_number: resolution!.calledNumber,
           error: error instanceof Error ? error.message : String(error),
         });
       }),
@@ -378,6 +373,7 @@ async function handleTelnyxWebhook(
       routing_source: resolution.source,
       business_name: tenantConfig.business.displayName,
       allowed_tools: tenantConfig.tools.allowed,
+      tenant_config_source: "kv",
     });
   }
 
@@ -386,8 +382,9 @@ async function handleTelnyxWebhook(
 
 function buildRealtimeSessionConfiguration(
   env: WorkerEnv,
-  tenantConfig: TenantConfiguration,
+  tenantConfig: TenantConfigurationV1,
 ): RealtimeSessionConfiguration {
+  const vad = tenantConfig.realtime.vad ?? {};
   const instructions = [
     `Atiendes llamadas para ${tenantConfig.business.displayName}.`,
     `Tu nombre de asistente es ${tenantConfig.assistant.name}.`,
@@ -407,6 +404,7 @@ function buildRealtimeSessionConfiguration(
     "Una mención narrativa o contextual de una despedida no implica END_CLEAR si el usuario no pretende terminar la conversación actual.",
     "No anuncies que vas a colgar por tu cuenta. CallSession decide la política, genera la despedida final y ejecuta el hangup.",
     "Después de invocar conversation_intent espera el resultado de la herramienta; CallSession generará la siguiente etapa de respuesta.",
+    ...(tenantConfig.assistant.instructions ? [tenantConfig.assistant.instructions] : []),
   ].join("\n");
 
   return {
@@ -422,15 +420,15 @@ function buildRealtimeSessionConfiguration(
           type: "server_vad",
           create_response: true,
           interrupt_response: true,
-          threshold: 0.5,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 500,
-          idle_timeout_ms: IDLE_TIMEOUT_MS,
+          threshold: vad.threshold ?? 0.5,
+          prefix_padding_ms: vad.prefixPaddingMs ?? 300,
+          silence_duration_ms: vad.silenceDurationMs ?? 500,
+          idle_timeout_ms: vad.idleTimeoutMs ?? IDLE_TIMEOUT_MS,
         },
       },
       output: {
         format: { type: "audio/pcmu" },
-        voice: requireEnvString(env.REALTIME_VOICE, "REALTIME_VOICE"),
+        voice: tenantConfig.realtime.voice ?? requireEnvString(env.REALTIME_VOICE, "REALTIME_VOICE"),
       },
     },
     tools: [
@@ -445,8 +443,6 @@ function buildRealtimeSessionConfiguration(
             intent: {
               type: "string",
               enum: ["CONTINUE", "END_AMBIGUOUS", "END_CLEAR"],
-              description:
-                "CONTINUE: desea seguir o hace una consulta. END_AMBIGUOUS: podría estar terminando pero no es seguro. END_CLEAR: intención clara de terminar.",
             },
             reason: {
               type: "string",
@@ -477,6 +473,7 @@ async function acceptRealtimeCall(
     tools: configuration.tools.map((tool) => tool.name),
     tool_choice: configuration.tool_choice,
     input_transcription: configuration.audio.input.transcription.model,
+    tenant_config_source: "kv",
   });
 
   try {
@@ -507,7 +504,7 @@ async function acceptRealtimeCall(
 
 async function startCallSession(
   callId: string,
-  tenantConfig: TenantConfiguration,
+  tenantConfig: TenantConfigurationV1,
   env: WorkerEnv,
 ): Promise<void> {
   const id = env.CALL_SESSIONS.idFromName(callId);
@@ -521,8 +518,7 @@ async function startCallSession(
     assistant_name: tenantConfig.assistant.name,
     allowed_tools: tenantConfig.tools.allowed,
     persistence: "durable_object",
-    intent_policy: "semantic_v9",
-    tool_gateway: "tenant_allowlist_v1",
+    tenant_config_source: "kv",
   });
 
   const response = await stub.fetch("https://call-session.internal/start", {
@@ -535,6 +531,7 @@ async function startCallSession(
       assistant_name: tenantConfig.assistant.name,
       initial_greeting: tenantConfig.assistant.greeting,
       allowed_tools: tenantConfig.tools.allowed,
+      business_facts: tenantConfig.business.facts,
     }),
   });
 
@@ -604,18 +601,35 @@ async function handleOpenAIWebhook(request: Request, env: WorkerEnv): Promise<Re
       tenant_header_present: Boolean(tenantId),
       called_number_header_present: Boolean(calledNumber),
       routing_source: routingSource,
-      sip_header_names: incoming.data.sip_headers?.map((header) => header.name) ?? [],
     });
     return json({ ok: false, error: "tenant_binding_missing" }, 409);
   }
 
-  const tenantConfig = getTenantConfiguration(tenantId);
-  if (!tenantConfig) {
-    log("error", "call_bootstrap_tenant_configuration_missing", {
+  let tenantConfig: TenantConfigurationV1 | null = null;
+  try {
+    const repository = getTenantRepository(env);
+    const resolution = await repository.resolveByCalledNumber(calledNumber);
+    if (!resolution || resolution.tenantId !== tenantId) {
+      log("error", "call_bootstrap_tenant_binding_mismatch", {
+        call_id: callId,
+        tenant_id: tenantId,
+        called_number: calledNumber,
+        resolved_tenant_id: resolution?.tenantId ?? null,
+      });
+      return json({ ok: false, error: "tenant_binding_mismatch" }, 409);
+    }
+    tenantConfig = await repository.getTenantConfiguration(tenantId);
+  } catch (error) {
+    log("error", "call_bootstrap_tenant_configuration_invalid", {
       call_id: callId,
       tenant_id: tenantId,
       called_number: calledNumber,
+      error: error instanceof Error ? error.message : String(error),
     });
+    return json({ ok: false, error: "tenant_kv_configuration_invalid" }, 500);
+  }
+
+  if (!tenantConfig) {
     return json({ ok: false, error: "tenant_configuration_missing" }, 409);
   }
 
@@ -627,19 +641,10 @@ async function handleOpenAIWebhook(request: Request, env: WorkerEnv): Promise<Re
     business_name: tenantConfig.business.displayName,
     assistant_name: tenantConfig.assistant.name,
     allowed_tools: tenantConfig.tools.allowed,
+    tenant_config_source: "kv",
   });
 
   const configuration = buildRealtimeSessionConfiguration(env, tenantConfig);
-  log("info", "realtime_call_incoming", {
-    call_id: callId,
-    tenant_id: tenantId,
-    called_number: calledNumber,
-    routing_source: routingSource,
-    business_name: tenantConfig.business.displayName,
-    assistant_name: tenantConfig.assistant.name,
-    allowed_tools: tenantConfig.tools.allowed,
-    sip_header_names: incoming.data.sip_headers?.map((header) => header.name) ?? [],
-  });
 
   let openAIResponse: Response;
   try {
@@ -681,11 +686,11 @@ async function handleOpenAIWebhook(request: Request, env: WorkerEnv): Promise<Re
     call_id: callId,
     tenant_id: tenantId,
     called_number: calledNumber,
-    routing_source: routingSource,
     business_name: tenantConfig.business.displayName,
     assistant_name: tenantConfig.assistant.name,
     allowed_tools: tenantConfig.tools.allowed,
     call_session_started: callSessionStarted,
+    tenant_config_source: "kv",
   });
 
   return json({
@@ -693,10 +698,10 @@ async function handleOpenAIWebhook(request: Request, env: WorkerEnv): Promise<Re
     call_id: callId,
     tenant_id: tenantId,
     called_number: calledNumber,
-    routing_source: routingSource,
     business_name: tenantConfig.business.displayName,
     assistant_name: tenantConfig.assistant.name,
     allowed_tools: tenantConfig.tools.allowed,
+    tenant_config_source: "kv",
     tool_gateway: true,
     intent_hangup: true,
     intent_hangup_mode: "semantic_intent_v9",
@@ -709,43 +714,17 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/health") {
-      let tenantRoutesValid = false;
-      let tenantRoutesCount = 0;
-      let configuredTenantId: string | null = null;
-      let configuredBusinessName: string | null = null;
-      let configuredAssistantName: string | null = null;
-      let configuredAllowedTools: string[] = [];
-      try {
-        const routes = parseTenantRoutesJson(requireEnvString(env.TENANT_ROUTES_JSON, "TENANT_ROUTES_JSON"));
-        new StaticTenantResolver(routes);
-        tenantRoutesValid = true;
-        tenantRoutesCount = routes.length;
-        if (routes.length === 1) {
-          configuredTenantId = routes[0].tenantId;
-          const tenantConfig = getTenantConfiguration(configuredTenantId);
-          configuredBusinessName = tenantConfig?.business.displayName ?? null;
-          configuredAssistantName = tenantConfig?.assistant.name ?? null;
-          configuredAllowedTools = tenantConfig?.tools.allowed ?? [];
-        }
-      } catch {
-        tenantRoutesValid = false;
-      }
-
       return json({
         ok: true,
         service: "IA_RealTime_CenterCall",
-        phase: "F3",
+        phase: "F4",
         environment: env.ENVIRONMENT,
         telephony_provider: "telnyx",
         call_orchestrator: true,
-        tenant_resolver: "StaticTenantResolver",
+        tenant_resolver: "KvTenantRepository",
+        tenant_config_source: "kv",
         tenant_routing_source: "called_number",
-        tenant_routes_valid: tenantRoutesValid,
-        tenant_routes_count: tenantRoutesCount,
-        configured_tenant_id: configuredTenantId,
-        configured_business_name: configuredBusinessName,
-        configured_assistant_name: configuredAssistantName,
-        configured_allowed_tools: configuredAllowedTools,
+        tenant_fail_closed: true,
         tool_gateway: true,
         tool_gateway_policy: "tenant_allowlist_fail_closed",
         first_read_tool: "get_business_information",
@@ -753,7 +732,7 @@ export default {
         default_tenant_used_for_routing: false,
         tenant_binding_transport: "sip_custom_headers",
         telnyx_webhook_verification: "webcrypto-ed25519",
-        tracing: "f3-tool-gateway-v1",
+        tracing: "f4-kv-tenant-config-v1",
         realtime_sideband_lifecycle: "durable_object",
         call_session_class: "CallSession",
         intent_hangup: true,
@@ -767,7 +746,7 @@ export default {
         hangup_retry: true,
         input_transcription: "gpt-4o-mini-transcribe_observability_only",
         runtime_config: {
-          tenant_routes_json: typeof env.TENANT_ROUTES_JSON === "string" && env.TENANT_ROUTES_JSON.length > 0,
+          tenant_config_binding: Boolean(env.TENANT_CONFIG && typeof env.TENANT_CONFIG.get === "function"),
           openai_api_key: typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.length > 0,
           openai_webhook_secret:
             typeof env.OPENAI_WEBHOOK_SECRET === "string" && env.OPENAI_WEBHOOK_SECRET.length > 0,
