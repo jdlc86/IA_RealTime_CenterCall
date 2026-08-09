@@ -93,6 +93,7 @@ const END_CONFIRMATION_TTL_MS = 30_000;
 const ASSISTANT_FAREWELL_TTL_MS = 30_000;
 const FAREWELL_FALLBACK_MS = 8_000;
 const ASSISTANT_COMMITMENT_GRACE_MS = 1_200;
+const CONFIRMATION_IDLE_TIMEOUT_MS = 10_000;
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, { status });
@@ -143,28 +144,45 @@ function classifyEndCallIntent(rawTranscript: string, assistantFarewellRecent: b
     /\bno quiero nada mas\b/,
     /\bno necesito mas ayuda\b/,
     /\bnada mas gracias\b/,
+    /\bno no (?:en )?nada mas\b/,
+    /\bno (?:en )?nada mas\b/,
+    /\ben nada mas\b/,
+    /\bno tengo nada mas\b/,
+    /\bya no tengo nada mas\b/,
+    /\bya no necesito nada\b/,
+    /\bya termine(?: la consulta)?\b/,
+    /\bya he terminado(?: la consulta)?\b/,
+    /\bhe terminado(?: la consulta)?\b/,
+    /\btermine(?: la consulta)?\b/,
+    /\bya acabe(?: la consulta)?\b/,
+    /\bhe acabado(?: la consulta)?\b/,
+    /\bya no tengo mas preguntas\b/,
+    /\bno quiero seguir hablando\b/,
+    /\bno necesito seguir hablando\b/,
+    /\bpodemos dejarlo aqui\b/,
+    /\blo dejamos aqui\b/,
+    /\bdejamos esto aqui\b/,
+    /\bme tengo que ir\b/,
+    /\bhemos terminado\b/,
+    /\bya hemos terminado\b/,
+    /\bme despido\b/,
+    /\bya esta gracias\b/,
+    /\bcon eso es suficiente\b/,
+  ].some((pattern) => pattern.test(text));
+  if (explicitTermination) return { level: "clear", rule: "explicit_termination" };
+
+  const explicitHangupCommand = [
     /\bpuedes colgar\b/,
     /\bpuede colgar\b/,
+    /\bcuelga(?: ya| ahora)?\b/,
     /\bpuedes finalizar la llamada\b/,
     /\bpuede finalizar la llamada\b/,
     /\btermina la llamada\b/,
     /\btermine la llamada\b/,
-    /\bquiero terminar la llamada\b/,
-    /\bpodemos terminar la llamada\b/,
     /\bfinaliza la llamada\b/,
     /\bfinalice la llamada\b/,
-    /\bhemos terminado\b/,
-    /\bya hemos terminado\b/,
-    /\bhe terminado\b/,
-    /\bme despido\b/,
-    /\bya esta gracias\b/,
-    /\bcon eso es suficiente\b/,
-    /\blo dejamos aqui\b/,
-    /\bdejamos esto aqui\b/,
-    /\bme tengo que ir\b/,
-    /\bya no necesito nada\b/,
   ].some((pattern) => pattern.test(text));
-  if (explicitTermination) return { level: "clear", rule: "explicit_termination" };
+  if (explicitHangupCommand) return { level: "clear", rule: "explicit_hangup_command" };
 
   const shortFarewell = /^(?:(?:vale|bueno|ok|okay|perfecto|muy bien|gracias|muchas gracias) )*(?:adios|hasta luego|hasta pronto|nos vemos|chao|ciao)(?: gracias| muchas gracias)?$/;
   if (words.length <= 10 && shortFarewell.test(text)) {
@@ -182,8 +200,9 @@ function classifyEndCallIntent(rawTranscript: string, assistantFarewellRecent: b
     /\bcreo que ya esta\b/,
     /\bpor mi parte nada mas\b/,
     /\bde momento nada mas\b/,
-    /\bya no tengo mas preguntas\b/,
     /\bcreo que es todo\b/,
+    /\bcreo que ya termine\b/,
+    /\bparece que ya esta todo\b/,
   ].some((pattern) => pattern.test(text));
   if (softClosing) {
     return {
@@ -201,16 +220,29 @@ function classifyConfirmationReply(rawTranscript: string): "close" | "continue" 
 
   const closePatterns = [
     /^no$/,
+    /^no no$/,
     /^no gracias$/,
     /^no muchas gracias$/,
     /^no nada mas$/,
+    /^no no nada mas$/,
+    /^no en nada mas$/,
+    /^no no en nada mas$/,
+    /^en nada mas$/,
     /^nada mas$/,
+    /^nada mas gracias$/,
     /^eso es todo$/,
     /^correcto nada mas$/,
     /^no necesito nada mas$/,
     /^no necesito mas ayuda$/,
+    /^no tengo nada mas$/,
+    /^ya no tengo nada mas$/,
     /^ya esta$/,
     /^ya esta gracias$/,
+    /^ya termine$/,
+    /^ya he terminado$/,
+    /^he terminado$/,
+    /^termine la consulta$/,
+    /^ya termine la consulta$/,
   ];
   if (closePatterns.some((pattern) => pattern.test(text))) return "close";
 
@@ -218,11 +250,15 @@ function classifyConfirmationReply(rawTranscript: string): "close" | "continue" 
     /^si$/,
     /^si gracias$/,
     /^si necesito\b/,
+    /^si tengo\b/,
+    /^no espera\b/,
     /^espera\b/,
     /^un momento\b/,
     /^tengo otra pregunta\b/,
     /^otra cosa\b/,
     /^ademas\b/,
+    /^quiero preguntar\b/,
+    /^necesito otra cosa\b/,
   ];
   if (continuePatterns.some((pattern) => pattern.test(text))) return "continue";
 
@@ -311,13 +347,15 @@ function buildRealtimeSessionConfiguration(env: Env): RealtimeSessionConfigurati
     "Si el usuario te interrumpe, deja de hablar y escúchalo.",
     "Si no entiendes algo, pide que lo repita.",
     "Dispones de la herramienta end_call para solicitar el cierre de la llamada actual.",
-    "Usa end_call cuando el usuario exprese una intención clara de terminar esta conversación telefónica: adiós, hasta luego, eso es todo, no necesito nada más, hemos terminado, puedes colgar o equivalentes semánticos.",
-    "Si el usuario solo dice gracias, perfecto gracias o una expresión de cortesía que podría ser cierre pero no es inequívoca, pregunta brevemente si necesita algo más antes de terminar.",
-    "Si ya te has despedido y el usuario responde con otra despedida o con un agradecimiento final, usa end_call.",
-    "No uses end_call por silencio, pausas, falta de audio ni porque el usuario tarde en responder.",
+    "Cuando percibas que el usuario probablemente ha terminado su consulta o ya no desea continuar hablando, no asumas ni permanezcas en silencio: confirma brevemente su intención de terminar.",
+    "Una confirmación natural puede ser: Entiendo que ya has terminado. ¿Necesitas algo más antes de que cierre la llamada?",
+    "Si el usuario confirma que no necesita nada más, usa end_call.",
+    "Si el usuario expresa una orden directa de colgar o finalizar la llamada, usa end_call.",
+    "Si el usuario quiere continuar, continúa con normalidad.",
+    "Si el usuario no responde a una confirmación de cierre, el sistema gestionará automáticamente la despedida y el cierre; no generes respuestas repetitivas.",
+    "No uses end_call por silencio ordinario, pausas o falta de audio si no existe previamente una señal de intención de terminar.",
     "No uses end_call si adiós, hasta luego u otra despedida aparece citada dentro de una historia, una pregunta o un contexto que no implique terminar esta llamada.",
     "REGLA CRÍTICA: nunca digas que vas a colgar, finalizar o terminar la llamada si no has invocado end_call. Si decides que corresponde terminar, invoca end_call en lugar de limitarte a anunciarlo verbalmente.",
-    "Cuando la intención sea clara, llama a end_call. El sistema gestionará una despedida final breve y después cerrará la llamada.",
   ].join("\n");
 
   return {
@@ -336,7 +374,7 @@ function buildRealtimeSessionConfiguration(env: Env): RealtimeSessionConfigurati
           threshold: 0.5,
           prefix_padding_ms: 300,
           silence_duration_ms: 500,
-          idle_timeout_ms: 10_000,
+          idle_timeout_ms: CONFIRMATION_IDLE_TIMEOUT_MS,
         },
       },
       output: { format: { type: "audio/pcmu" }, voice: env.REALTIME_VOICE },
@@ -346,7 +384,7 @@ function buildRealtimeSessionConfiguration(env: Env): RealtimeSessionConfigurati
         type: "function",
         name: "end_call",
         description:
-          "Solicita finalizar la llamada actual cuando el usuario haya expresado una intención clara de terminarla. Debe invocarse también antes de afirmar verbalmente que se va a colgar. No usar por silencio ni menciones contextuales.",
+          "Solicita finalizar la llamada actual. Úsala después de que el usuario confirme que ha terminado/no necesita nada más, o ante una orden directa de colgar. No usar por silencio ordinario ni por menciones contextuales.",
         parameters: {
           type: "object",
           properties: {
@@ -605,6 +643,7 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
   let endCallReason = "user_requested_end";
   let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
   let confirmationPendingAt = 0;
+  let confirmationRule = "";
   let assistantFarewellAt = 0;
 
   const clearFallback = () => {
@@ -617,6 +656,13 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
     confirmationPendingAt > 0 && Date.now() - confirmationPendingAt <= END_CONFIRMATION_TTL_MS;
   const assistantFarewellIsRecent = () =>
     assistantFarewellAt > 0 && Date.now() - assistantFarewellAt <= ASSISTANT_FAREWELL_TTL_MS;
+
+  const clearConfirmation = (reason: string) => {
+    if (!confirmationIsPending()) return;
+    confirmationPendingAt = 0;
+    confirmationRule = "";
+    log("info", "end_call_confirmation_cleared", { call_id: callId, reason });
+  };
 
   const performHangup = async (trigger: string) => {
     if (hangupStarted) return;
@@ -652,6 +698,7 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
     endCallPending = true;
     endCallReason = reason.slice(0, 300);
     confirmationPendingAt = 0;
+    confirmationRule = "";
     log("info", "end_call_intent_detected", {
       call_id: callId,
       source,
@@ -693,17 +740,39 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
     }, FAREWELL_FALLBACK_MS);
   };
 
-  const requestEndConfirmation = (rule: string) => {
+  const requestEndConfirmation = (rule: string, toolCallId?: string) => {
     if (endCallPending || hangupStarted || confirmationIsPending()) return;
     confirmationPendingAt = Date.now();
-    log("info", "end_call_confirmation_requested", { call_id: callId, rule });
-    socket.send(JSON.stringify({ type: "response.cancel" }));
+    confirmationRule = rule;
+
+    if (toolCallId) {
+      socket.send(
+        JSON.stringify({
+          type: "conversation.item.create",
+          item: {
+            type: "function_call_output",
+            call_id: toolCallId,
+            output: JSON.stringify({ ok: true, action: "confirmation_required" }),
+          },
+        }),
+      );
+    } else {
+      socket.send(JSON.stringify({ type: "response.cancel" }));
+    }
+
+    log("info", "end_call_confirmation_requested", {
+      call_id: callId,
+      rule,
+      tool_call_id: toolCallId,
+      no_response_timeout_ms: CONFIRMATION_IDLE_TIMEOUT_MS,
+    });
+
     socket.send(
       JSON.stringify({
         type: "response.create",
         response: {
           instructions:
-            "Pregunta únicamente y de forma natural: ¿Necesitas algo más? No te despidas todavía y no llames a ninguna herramienta en esta respuesta.",
+            "Confirma brevemente la intención de terminar diciendo de forma natural: Entiendo que ya has terminado. ¿Necesitas algo más antes de que cierre la llamada? No te despidas todavía. No ofrezcas información adicional y no llames a herramientas en esta respuesta.",
         },
       }),
     );
@@ -714,6 +783,7 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
     endCallPending = true;
     endCallReason = "assistant_announced_hangup_without_tool";
     confirmationPendingAt = 0;
+    confirmationRule = "";
     log("error", "end_call_assistant_commitment_without_tool", {
       call_id: callId,
       transcript_chars: transcript.length,
@@ -761,7 +831,17 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
           // Safe default remains.
         }
       }
-      startClosingFlow(reason, "model_tool", event.call_id);
+      requestEndConfirmation(`model_tool:${reason}`, event.call_id);
+      return;
+    }
+
+    if (event.type === "input_audio_buffer.timeout_triggered" && confirmationIsPending()) {
+      log("info", "end_call_confirmation_timeout", {
+        call_id: callId,
+        rule: confirmationRule,
+        timeout_ms: CONFIRMATION_IDLE_TIMEOUT_MS,
+      });
+      startClosingFlow("confirmation_timeout_no_response", "confirmation_timeout");
       return;
     }
 
@@ -773,6 +853,7 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
         log("info", "end_call_confirmation_classified", {
           call_id: callId,
           result: confirmation,
+          rule: confirmationRule,
           transcript_chars: event.transcript.length,
         });
         if (confirmation === "close") {
@@ -780,11 +861,18 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
           return;
         }
         if (confirmation === "continue") {
-          confirmationPendingAt = 0;
-          log("info", "end_call_confirmation_cleared", {
+          clearConfirmation("user_wants_to_continue");
+          return;
+        }
+
+        const repeatedIntent = classifyEndCallIntent(event.transcript, assistantFarewellIsRecent());
+        if (repeatedIntent.level !== "none") {
+          log("info", "end_call_confirmation_inferred_close", {
             call_id: callId,
-            reason: "user_wants_to_continue",
+            level: repeatedIntent.level,
+            rule: repeatedIntent.rule,
           });
+          startClosingFlow(`confirmation_intent:${repeatedIntent.rule}`, "confirmation_reply_intent");
           return;
         }
       }
@@ -798,9 +886,10 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
         assistant_farewell_recent: assistantFarewellIsRecent(),
         confirmation_pending: confirmationIsPending(),
       });
-      if (intent.level === "clear") {
-        startClosingFlow(`deterministic:${intent.rule}`, "transcript_detector");
-      } else if (intent.level === "probable") {
+
+      if (intent.rule === "explicit_hangup_command") {
+        startClosingFlow("explicit_hangup_command", "transcript_detector");
+      } else if (intent.level === "clear" || intent.level === "probable") {
         requestEndConfirmation(intent.rule);
       }
       return;
@@ -943,7 +1032,7 @@ async function handleOpenAIWebhook(
     call_id: callId,
     tenant_id: env.DEFAULT_TENANT_ID,
     intent_hangup: true,
-    intent_hangup_mode: "hybrid_v5",
+    intent_hangup_mode: "hybrid_confirm_timeout_v6",
   });
 }
 
@@ -961,10 +1050,12 @@ export default {
         telephony_provider: "telnyx",
         call_orchestrator: true,
         telnyx_webhook_verification: "webcrypto-ed25519",
-        tracing: "f0-e2e-v5",
+        tracing: "f0-e2e-v6",
         intent_hangup: true,
-        intent_hangup_mode: "hybrid_v5",
+        intent_hangup_mode: "hybrid_confirm_timeout_v6",
         assistant_hangup_commitment_guard: true,
+        confirmation_silence_auto_hangup: true,
+        confirmation_idle_timeout_ms: CONFIRMATION_IDLE_TIMEOUT_MS,
         input_transcription: "gpt-4o-mini-transcribe",
         runtime_config: {
           openai_api_key: typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.length > 0,
