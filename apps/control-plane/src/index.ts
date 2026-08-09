@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { StaticTenantResolver, parseTenantRoutesJson, type TenantResolution } from "./tenant-resolver";
+import { getTenantConfiguration, type TenantConfiguration } from "./tenant-configuration";
 export { CallSession } from "./call-session";
 
 type WorkerEnv = {
@@ -328,11 +329,24 @@ async function handleTelnyxWebhook(
       return json({ ok: true, accepted: false, action: "reject_unroutable", called_number: calledNumber });
     }
 
+    const tenantConfig = getTenantConfiguration(resolution.tenantId);
+    if (!tenantConfig) {
+      log("error", "tenant_resolution_failed", {
+        call_control_id: callControlId,
+        tenant_id: resolution.tenantId,
+        called_number: resolution.calledNumber,
+        reason: "tenant_configuration_not_found",
+      });
+      ctx.waitUntil(rejectTelnyxCall(callControlId, eventId, env).catch(() => undefined));
+      return json({ ok: true, accepted: false, action: "reject_tenant_config_missing" });
+    }
+
     log("info", "tenant_resolution_succeeded", {
       call_control_id: callControlId,
       tenant_id: resolution.tenantId,
       called_number: resolution.calledNumber,
       routing_source: resolution.source,
+      business_name: tenantConfig.business.displayName,
     });
 
     log("info", "call_orchestrator_route_selected", {
@@ -361,20 +375,25 @@ async function handleTelnyxWebhook(
       tenant_id: resolution.tenantId,
       called_number: resolution.calledNumber,
       routing_source: resolution.source,
+      business_name: tenantConfig.business.displayName,
     });
   }
 
   return json({ ok: true, ignored: true, event_type: eventType });
 }
 
-function buildRealtimeSessionConfiguration(env: WorkerEnv): RealtimeSessionConfiguration {
+function buildRealtimeSessionConfiguration(
+  env: WorkerEnv,
+  tenantConfig: TenantConfiguration,
+): RealtimeSessionConfiguration {
   const instructions = [
-    "Eres el asistente telefónico de pruebas de IA_RealTime_CenterCall.",
+    `Atiendes llamadas para ${tenantConfig.business.displayName}.`,
+    `Tu nombre de asistente es ${tenantConfig.assistant.name}.`,
     "Habla siempre en español, de forma amable, natural, breve y profesional.",
-    "FASE 1 mantiene todavía un comportamiento genérico mientras se valida el binding multi-tenant.",
-    "No gestiones citas, reservas, pedidos ni acciones externas.",
+    "La identidad del negocio y del asistente procede de TenantConfiguration y no debe sustituirse por otro negocio.",
+    "No gestiones todavía citas, reservas, pedidos ni acciones externas durante FASE 1.",
     "No solicites datos médicos ni información personal innecesaria.",
-    "No inventes información sobre ningún negocio.",
+    "No inventes información del negocio que no esté presente en la configuración o en una fuente autorizada.",
     "Si el usuario te interrumpe, deja de hablar y escúchalo.",
     "Si no entiendes algo, pide que lo repita.",
     "Antes de responder a CADA turno real del usuario debes invocar exactamente una vez la herramienta conversation_intent.",
@@ -483,13 +502,20 @@ async function acceptRealtimeCall(
   }
 }
 
-async function startCallSession(callId: string, env: WorkerEnv): Promise<void> {
+async function startCallSession(
+  callId: string,
+  tenantConfig: TenantConfiguration,
+  env: WorkerEnv,
+): Promise<void> {
   const id = env.CALL_SESSIONS.idFromName(callId);
   const stub = env.CALL_SESSIONS.get(id);
   const startedAt = Date.now();
 
   log("info", "call_session_start_requested", {
     call_id: callId,
+    tenant_id: tenantConfig.tenantId,
+    business_name: tenantConfig.business.displayName,
+    assistant_name: tenantConfig.assistant.name,
     persistence: "durable_object",
     intent_policy: "semantic_v9",
   });
@@ -497,12 +523,19 @@ async function startCallSession(callId: string, env: WorkerEnv): Promise<void> {
   const response = await stub.fetch("https://call-session.internal/start", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ call_id: callId }),
+    body: JSON.stringify({
+      call_id: callId,
+      tenant_id: tenantConfig.tenantId,
+      business_name: tenantConfig.business.displayName,
+      assistant_name: tenantConfig.assistant.name,
+      initial_greeting: tenantConfig.assistant.greeting,
+    }),
   });
 
   const body = await response.text();
   log(response.ok ? "info" : "error", "call_session_start_result", {
     call_id: callId,
+    tenant_id: tenantConfig.tenantId,
     status: response.status,
     elapsed_ms: Date.now() - startedAt,
     body: body.slice(0, 1000),
@@ -570,19 +603,33 @@ async function handleOpenAIWebhook(request: Request, env: WorkerEnv): Promise<Re
     return json({ ok: false, error: "tenant_binding_missing" }, 409);
   }
 
+  const tenantConfig = getTenantConfiguration(tenantId);
+  if (!tenantConfig) {
+    log("error", "call_bootstrap_tenant_configuration_missing", {
+      call_id: callId,
+      tenant_id: tenantId,
+      called_number: calledNumber,
+    });
+    return json({ ok: false, error: "tenant_configuration_missing" }, 409);
+  }
+
   log("info", "call_bootstrap_started", {
     call_id: callId,
     tenant_id: tenantId,
     called_number: calledNumber,
     routing_source: routingSource,
+    business_name: tenantConfig.business.displayName,
+    assistant_name: tenantConfig.assistant.name,
   });
 
-  const configuration = buildRealtimeSessionConfiguration(env);
+  const configuration = buildRealtimeSessionConfiguration(env, tenantConfig);
   log("info", "realtime_call_incoming", {
     call_id: callId,
     tenant_id: tenantId,
     called_number: calledNumber,
     routing_source: routingSource,
+    business_name: tenantConfig.business.displayName,
+    assistant_name: tenantConfig.assistant.name,
     sip_header_names: incoming.data.sip_headers?.map((header) => header.name) ?? [],
   });
 
@@ -612,7 +659,7 @@ async function handleOpenAIWebhook(request: Request, env: WorkerEnv): Promise<Re
 
   let callSessionStarted = false;
   try {
-    await startCallSession(callId, env);
+    await startCallSession(callId, tenantConfig, env);
     callSessionStarted = true;
   } catch (error) {
     log("error", "call_session_start_failed", {
@@ -627,6 +674,8 @@ async function handleOpenAIWebhook(request: Request, env: WorkerEnv): Promise<Re
     tenant_id: tenantId,
     called_number: calledNumber,
     routing_source: routingSource,
+    business_name: tenantConfig.business.displayName,
+    assistant_name: tenantConfig.assistant.name,
     call_session_started: callSessionStarted,
   });
 
@@ -636,6 +685,8 @@ async function handleOpenAIWebhook(request: Request, env: WorkerEnv): Promise<Re
     tenant_id: tenantId,
     called_number: calledNumber,
     routing_source: routingSource,
+    business_name: tenantConfig.business.displayName,
+    assistant_name: tenantConfig.assistant.name,
     intent_hangup: true,
     intent_hangup_mode: "semantic_intent_v9",
     call_session_started: callSessionStarted,
@@ -649,11 +700,20 @@ export default {
     if (request.method === "GET" && url.pathname === "/health") {
       let tenantRoutesValid = false;
       let tenantRoutesCount = 0;
+      let configuredTenantId: string | null = null;
+      let configuredBusinessName: string | null = null;
+      let configuredAssistantName: string | null = null;
       try {
         const routes = parseTenantRoutesJson(requireEnvString(env.TENANT_ROUTES_JSON, "TENANT_ROUTES_JSON"));
         new StaticTenantResolver(routes);
         tenantRoutesValid = true;
         tenantRoutesCount = routes.length;
+        if (routes.length === 1) {
+          configuredTenantId = routes[0].tenantId;
+          const tenantConfig = getTenantConfiguration(configuredTenantId);
+          configuredBusinessName = tenantConfig?.business.displayName ?? null;
+          configuredAssistantName = tenantConfig?.assistant.name ?? null;
+        }
       } catch {
         tenantRoutesValid = false;
       }
@@ -669,10 +729,14 @@ export default {
         tenant_routing_source: "called_number",
         tenant_routes_valid: tenantRoutesValid,
         tenant_routes_count: tenantRoutesCount,
+        configured_tenant_id: configuredTenantId,
+        configured_business_name: configuredBusinessName,
+        configured_assistant_name: configuredAssistantName,
+        initial_tenant_greeting: true,
         default_tenant_used_for_routing: false,
         tenant_binding_transport: "sip_custom_headers",
         telnyx_webhook_verification: "webcrypto-ed25519",
-        tracing: "f1-tenant-routing-v1",
+        tracing: "f1-tenant-greeting-v2",
         realtime_sideband_lifecycle: "durable_object",
         call_session_class: "CallSession",
         intent_hangup: true,
