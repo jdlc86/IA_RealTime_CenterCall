@@ -8,7 +8,7 @@
     "deploy:dry": "wrangler deploy --dry-run",
     "types": "wrangler types",
     "check": "wrangler deploy --dry-run",
-    "test": "node --test src/*.test.ts"
+    "test": "rm -rf .test-dist && tsc src/tenant-resolver.ts --target ES2022 --module ES2022 --moduleResolution bundler --outDir .test-dist --skipLibCheck && node --test src/*.test.mjs"
   },
   "dependencies": {
     "openai": "^7.1.0"
