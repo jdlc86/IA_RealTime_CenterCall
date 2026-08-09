@@ -8,7 +8,7 @@
   "preview_urls": true,
   "vars": {
     "ENVIRONMENT": "dev",
-    "TENANT_CONFIG_SOURCE": "static",
+    "TENANT_CONFIG_SOURCE": "kv",
     "TENANT_KV_VALIDATED": "true",
     "DEFAULT_TENANT_ID": "clinica-estetica-madrid",
     "TENANT_ROUTES_JSON": "[{\"called_number\":\"+34910789057\",\"tenant_id\":\"clinica-estetica-madrid\"}]",
