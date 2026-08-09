@@ -38,7 +38,8 @@ El modelo nunca es autoridad de permisos y ninguna integración empresarial pued
 - Errores de executor se contienen y devuelven de forma estructurada.
 - READ y WRITE quedan diferenciados desde el contrato.
 - El dominio de ToolGateway no importa SDKs externos.
-- F3 no introduce todavía lógica específica de clínica ni integración CRM/calendario.
+- La allowlist procede de `TenantConfiguration`, nunca del modelo.
+- F3-B introduce una primera READ segura; no conecta todavía calendario, CRM ni operaciones WRITE.
 
 ## 3. F3-A — Core ToolGateway — IMPLEMENTADO
 
@@ -84,14 +85,14 @@ ToolSuccess
 
 ## 4. Seguridad por tenant
 
-La autorización se resuelve mediante allowlist explícita por tenant:
+`TenantConfiguration` contiene ahora la allowlist del tenant de validación:
 
 ```text
-TenantToolPolicy {
-  tenantId,
-  allowedTools[]
-}
+clinica-estetica-madrid
+  tools.allowed = [get_business_information]
 ```
+
+`CallSession` recibe esa lista durante el bootstrap y además la contrasta contra la `TenantConfiguration` canónica. Una lista enviada a `/start` no puede ampliar permisos por encima de la configuración del tenant.
 
 No existe fallback a permisos globales ni a otro tenant.
 
@@ -103,11 +104,25 @@ Cada `ToolDefinition` declara:
 access: READ | WRITE
 ```
 
-En F3-A esta clasificación ya forma parte del resultado estructurado. Las políticas adicionales para WRITE se ampliarán antes de conectar operaciones que modifiquen sistemas externos.
+La primera tool E2E es exclusivamente READ:
+
+```text
+get_business_information
+```
+
+Devuelve información autorizada procedente de la configuración del tenant:
+
+```text
+business_name
+assistant_name
+source = tenant_configuration
+```
+
+No modifica ningún sistema.
 
 ## 6. Pruebas contractuales F3-A
 
-Se añadieron tests reproducibles:
+Tests reproducibles:
 
 ```text
 apps/control-plane/src/tool-gateway.test.mjs
@@ -123,7 +138,7 @@ Casos:
 - F3-T06 fallo del executor queda contenido;
 - F3-T07 definiciones duplicadas se rechazan.
 
-Resultado de ejecución inicial:
+Resultado inicial registrado:
 
 ```text
 # tests 7
@@ -133,42 +148,96 @@ Resultado de ejecución inicial:
 
 ## 7. Compatibilidad con cierre semántico v9
 
-La sesión actual utiliza una primera etapa obligatoria `conversation_intent` para cada turno. Esta política no se eliminará para introducir herramientas empresariales.
-
-La integración F3 con Realtime seguirá el patrón:
+La primera etapa de cada turno sigue siendo obligatoriamente:
 
 ```text
 User turn
   ↓
-conversation_intent (obligatoria)
-  ↓
-CONTINUE
-  ↓
-segunda response.create
-  ↓
-tool_choice=auto + tools permitidas del tenant
-  ↓
-si hay tool call → ToolGateway
-  ↓
-function_call_output
-  ↓
-respuesta hablada
+conversation_intent
 ```
 
-OpenAI Realtime permite que `response.create` sobrescriba `tools` y `tool_choice` para una respuesta concreta. De este modo se preserva la clasificación semántica v9 y se habilitan tools únicamente en la segunda etapa.
+Solo cuando el resultado es `CONTINUE` se crea una segunda respuesta:
 
-## 8. Próximo bloque — F3-B
+```text
+CONTINUE
+  ↓
+response.create
+  tool_choice=auto
+  tools=allowlist del tenant
+  ↓
+¿tool necesaria?
+  ├─ no → respuesta hablada normal
+  └─ sí → ToolGateway
+              ↓
+         function_call_output
+              ↓
+         respuesta hablada
+```
 
-Integrar `ToolGateway` en `CallSession`:
+`END_AMBIGUOUS` y `END_CLEAR` no habilitan herramientas empresariales y conservan la política v9 existente.
 
-1. propagar la allowlist desde `TenantConfiguration`;
-2. habilitar tools empresariales solo después de `CONTINUE`;
-3. procesar tool calls mediante `ToolGateway`;
-4. devolver `function_call_output` al modelo;
-5. añadir logs correlacionados con `call_id`, `tenant_id`, tool, acceso y resultado;
-6. mantener intacta la lógica END_AMBIGUOUS / END_CLEAR.
+OpenAI Realtime permite que `response.create` defina `tools` y `tool_choice` para una respuesta concreta, por lo que las tools de negocio no sustituyen al clasificador semántico de sesión.
 
-## 9. Gate F3 preliminar
+## 8. F3-B — integración CallSession — IMPLEMENTADA, E2E PENDIENTE
+
+Implementado:
+
+- `TenantConfiguration.tools.allowed`;
+- propagación de allowlist al `CallSession`;
+- defensa adicional: `/start` no puede ampliar la allowlist canónica;
+- tools empresariales disponibles únicamente después de `CONTINUE`;
+- `get_business_information` como primera READ;
+- ejecución mediante `ToolGateway`;
+- retorno mediante `function_call_output`;
+- nueva respuesta hablada basada en el resultado;
+- estado `closing` impide nuevas operaciones empresariales.
+
+Eventos de observabilidad:
+
+```text
+tool_enabled_response_requested
+tool_gateway_request
+tool_gateway_result
+```
+
+Cada evento incluye `call_id`, `tenant_id` y tool cuando aplica.
+
+## 9. Prueba E2E F3-T08 — primera READ
+
+Después de confirmar que `/health` muestra F3, realizar una llamada normal. Tras el saludo de Carolina decir literalmente o de forma equivalente:
+
+```text
+Carolina, consulta tu herramienta de información del negocio y dime el nombre oficial de la clínica y tu nombre de asistente.
+```
+
+Esperado:
+
+```text
+conversation_intent = CONTINUE
+→ tool_enabled_response_requested
+→ get_business_information
+→ tool_gateway_request
+→ tool_gateway_result ok=true access=READ
+→ Carolina responde con Clínica Estética Madrid y Carolina
+```
+
+La prueba solo se considera PASS si existe evidencia de `tool_gateway_request/result`; que Carolina conozca el nombre por el prompt no es suficiente.
+
+## 10. Health esperado
+
+```json
+{
+  "phase": "F3",
+  "tool_gateway": true,
+  "tool_gateway_policy": "tenant_allowlist_fail_closed",
+  "configured_tenant_id": "clinica-estetica-madrid",
+  "configured_allowed_tools": ["get_business_information"],
+  "first_read_tool": "get_business_information",
+  "tracing": "f3-tool-gateway-v1"
+}
+```
+
+## 11. Gate F3 preliminar
 
 - [x] contrato `ToolGateway` independiente de SDKs externos;
 - [x] autorización por tenant fail-closed;
@@ -176,9 +245,22 @@ Integrar `ToolGateway` en `CallSession`:
 - [x] errores estructurados;
 - [x] diferenciación READ/WRITE;
 - [x] pruebas contractuales iniciales 7/7 PASS;
-- [ ] integración con `CallSession`/Realtime;
-- [ ] allowlist derivada de `TenantConfiguration`;
-- [ ] tool real de lectura E2E;
-- [ ] observabilidad E2E de tool calls;
-- [ ] pruebas de regresión de cierre semántico;
+- [x] integración de código con `CallSession`/Realtime;
+- [x] allowlist derivada de `TenantConfiguration`;
+- [x] primera tool READ implementada;
+- [x] observabilidad de tool calls implementada;
+- [ ] deploy F3-B confirmado;
+- [ ] F3-T08 READ E2E PASS;
+- [ ] prueba de regresión de cierre semántico tras activar ToolGateway;
 - [ ] documentación reconciliada al cierre.
+
+## 12. Siguiente paso
+
+```text
+Cloudflare deploy automático
+→ /health = F3 / f3-tool-gateway-v1
+→ ejecutar F3-T08
+→ revisar tool_gateway_request/result
+→ comprobar una despedida END_CLEAR como regresión v9
+→ evaluar cierre de F3 o siguiente bloque
+```
