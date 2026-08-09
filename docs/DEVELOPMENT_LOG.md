@@ -150,11 +150,14 @@ Evidencia observada antes de la corrección final y útil para aislar el problem
 
 - [x] Silencio 5–10 s: la IA permanece activa, solicita repetir/continúa esperando y la conversación puede reanudarse.
 - [x] Cuelgue manual del llamante: Telnyx registra `hangup_cause=normal_clearing`.
-- [ ] Cuelgue automático por intención de despedida: funcional pero todavía bajo endurecimiento y prueba repetida.
+- [x] Llamada real mantenida durante más de 5 minutos con conversación funcional.
+- [x] Barge-in/interrupciones durante la respuesta de la IA validados manualmente.
+- [x] 20 llamadas consecutivas realizadas como prueba de estabilidad y setup básico.
+- [x] Cierre automático por intención semántica v9 validado manualmente mediante diálogos de cierre claro, cierre ambiguo, continuación tras ambigüedad, silencio tras ambigüedad y casos contextuales negativos.
 
 ### F0-014 — Cuelgue automático por intención
 
-Se implementó una acción controlada `end_call` en la sesión Realtime.
+Se implementó inicialmente una acción controlada `end_call` en la sesión Realtime.
 
 Diseño inicial:
 
@@ -221,27 +224,68 @@ Cambios:
 - [x] `CallSession` extiende `DurableObject`.
 - [x] Un objeto lógico por `call_id` usando `idFromName(call_id)`.
 - [x] El WebSocket sideband ya no depende de `ctx.waitUntil()`.
-- [x] Máquina `ACTIVE → CONFIRMING → CLOSING` movida a `CallSession`.
-- [x] `end_call`, detector auxiliar, confirmación, timeout y despedida viven dentro del objeto por llamada.
+- [x] Estado conversacional y cierre movidos a `CallSession`.
 - [x] `/hangup` tiene reintento.
 - [x] Si todos los intentos de hangup fallan, la sesión vuelve a `ACTIVE` y avisa al usuario en lugar de quedar conectada y muda.
 - [x] `response_cancel_not_active` se degrada a no-op informativo.
 - [x] `output_audio_buffer.stopped` se correlaciona con la respuesta final cuando existe `response_id`.
 - [x] Binding `CALL_SESSIONS` añadido a Wrangler.
 - [x] Durable Object declarado con almacenamiento SQLite mediante `exports`.
-- [x] Trazado actualizado a `f0-e2e-v8`.
 - [x] Creado ADR `docs/architecture/ADR-001-CALL-SESSION-DURABLE-OBJECT.md`.
 
-### Estado de validación v8
+### F0-017 — Política semántica de cierre v9
 
-La causa raíz queda corregida en código, pero **F0-T08 sigue pendiente de validación E2E** tras el despliegue de v8.
+La lógica de cierre se simplificó y pasó a una política basada en intención semántica del modelo:
 
-Próxima prueba requerida:
+```text
+CONTINUE
+END_AMBIGUOUS
+END_CLEAR
+```
 
-1. confirmar `/health.tracing = f0-e2e-v8`;
-2. mantener una llamada activa varios minutos;
-3. comprobar que la IA sigue respondiendo;
-4. decir «hasta luego» o equivalente;
-5. confirmar cierre o guardar silencio tras la confirmación;
-6. verificar `end_call_hangup_result status=200` y `Telnyx call.hangup`;
-7. confirmar que ya no aparece el warning de cancelación del sideband por `waitUntil()`.
+`CallSession` aplica la política determinista:
+
+```text
+CONTINUE
+→ ACTIVE
+→ ambiguous_count = 0
+
+END_AMBIGUOUS
+→ ambiguous_count += 1
+→ preguntar si necesita algo más
+→ silencio / nueva ambigüedad / nueva consulta
+
+END_CLEAR
+→ despedida
+→ hangup
+
+ambiguous_count >= 3
+→ despedida
+→ hangup
+```
+
+Regla esencial: `ambiguous_count` solo acumula ambigüedades consecutivas dentro del mismo intento de cierre. Una nueva consulta real produce `CONTINUE` y resetea el contador a 0.
+
+Documento canónico: `docs/implementation/END_CALL_INTENT_V9.md`.
+
+### Validación manual consolidada de F0
+
+A fecha 2026-08-09 quedan registrados como PASS manual:
+
+- [x] F0-T03 — llamada ≥5 minutos estable.
+- [x] F0-T04 — barge-in/interrupciones.
+- [x] F0-T05 — silencio ordinario y recuperación de conversación.
+- [x] F0-T06 — cuelgue manual con `normal_clearing`.
+- [x] F0-T07 — 20 llamadas consecutivas.
+- [x] F0-T08 — cierre automático por intención semántica v9.
+
+El E2E de voz, la persistencia del sideband con Durable Object y la política de cierre están funcionalmente validados.
+
+### Pendiente para declarar PASS global de FASE 0
+
+Según el Gate documentado, todavía deben quedar respaldados formalmente:
+
+- [ ] F0-T02 — conversación ≥5 preguntas, si no se registra explícitamente como prueba independiente.
+- [ ] baseline de setup/latencia.
+
+No se deben reabrir F0-T03, F0-T04, F0-T07 ni F0-T08 salvo cambio relevante de implementación o regresión observable.
