@@ -1,6 +1,6 @@
 # Test Plan — FASE 0
 
-> **Estado:** activo — E2E de voz y cierre semántico v9 validados manualmente
+> **Estado:** activo — E2E de voz, estabilidad ≥5 min, barge-in y cierre semántico v9 validados manualmente
 
 ## Gate F0
 
@@ -34,8 +34,8 @@ PASS solo si:
 |---|---|---|---|---|
 | F0-T01 | [x] parcial | sí | observado | Llamada PSTN real; Telnyx `call.bridged`; OpenAI webhook; IA respondió por voz. |
 | F0-T02 | [ ] | | | |
-| F0-T03 | [ ] | | | |
-| F0-T04 | [ ] | | | |
+| F0-T03 | [x] | sí | estable | PASS manual: llamada real mantenida durante más de 5 minutos con conversación funcional. |
+| F0-T04 | [x] | sí | continúa | PASS manual: interrupciones/barge-in durante la respuesta de la IA probadas satisfactoriamente y la conversación continúa. |
 | F0-T05 | [x] | sí | llamada permanece activa | Silencio ordinario no termina la llamada y la conversación puede reanudarse. |
 | F0-T06 | [x] | sí | `normal_clearing` | Al colgar el llamante, Telnyx registra terminación normal. |
 | F0-T07 | [ ] | | | |
@@ -169,10 +169,12 @@ La transcripción auxiliar se conserva para observabilidad, no como detector pri
 - [x] `CallSession` Durable Object por `call_id`.
 - [x] Sideband Realtime persistente fuera de `waitUntil()`.
 - [x] Reintento de `/hangup` y recuperación a `ACTIVE` si el cierre técnico falla.
+- [x] Llamada ≥5 minutos estable validada manualmente.
+- [x] Barge-in/interrupciones validado manualmente.
 - [x] Política semántica v9 de cierre validada manualmente.
 
 ## Estado
 
-**F0-T08 queda marcado PASS manual con v9.** No es necesario repetir los diálogos ya ejecutados salvo que se modifique la política de intención o aparezca una regresión.
+**F0-T03, F0-T04 y F0-T08 quedan marcados PASS manual.** No es necesario repetir estas pruebas salvo modificación relevante o regresión.
 
-FASE 0 todavía no debe declararse PASS global mientras permanezcan sin evidencia los demás casos del Gate, en particular los tests actualmente no marcados y el baseline de setup/latencia.
+FASE 0 todavía no debe declararse PASS global mientras permanezcan sin evidencia los demás casos del Gate, especialmente F0-T02, F0-T07 y el baseline de setup/latencia.
