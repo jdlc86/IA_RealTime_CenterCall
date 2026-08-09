@@ -1,5 +1,4 @@
 import { DurableObject } from "cloudflare:workers";
-import { getTenantConfiguration } from "./tenant-configuration";
 import { ToolGateway, requireObject, type ToolDefinition, type ToolResult } from "./tool-gateway";
 
 type CallSessionEnv = {
@@ -8,6 +7,7 @@ type CallSessionEnv = {
 
 type SemanticIntent = "CONTINUE" | "END_AMBIGUOUS" | "END_CLEAR";
 type ClosingState = "active" | "ambiguous" | "closing";
+type BusinessFacts = Record<string, string | number | boolean>;
 
 type RealtimeFunctionTool = {
   type: "function";
@@ -34,6 +34,7 @@ type CallSessionStartBody = {
   assistant_name?: unknown;
   initial_greeting?: unknown;
   allowed_tools?: unknown;
+  business_facts?: unknown;
 };
 
 const IDLE_TIMEOUT_MS = 10_000;
@@ -79,6 +80,21 @@ function parseAllowedTools(value: unknown): string[] {
   });
   if (new Set(tools).size !== tools.length) throw new Error("Invalid call session field: duplicate allowed_tools");
   return tools;
+}
+
+function parseBusinessFacts(value: unknown): BusinessFacts {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid call session field: business_facts");
+  }
+  const facts: BusinessFacts = {};
+  for (const [key, fact] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof fact !== "string" && typeof fact !== "number" && typeof fact !== "boolean") {
+      throw new Error(`Invalid call session field: business_facts.${key}`);
+    }
+    facts[key] = fact;
+  }
+  return facts;
 }
 
 function parseJsonArguments(argumentsJson: string | undefined): unknown {
@@ -144,6 +160,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
   private assistantName: string | null = null;
   private initialGreeting: string | null = null;
   private allowedTools: string[] = [];
+  private businessFacts: BusinessFacts = {};
   private greetingSent = false;
   private state: ClosingState = "active";
   private ambiguousCount = 0;
@@ -169,23 +186,15 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       let assistantName: string;
       let initialGreeting: string;
       let allowedTools: string[];
+      let businessFacts: BusinessFacts;
       try {
         callId = requireBodyString(body.call_id, "call_id");
         tenantId = requireBodyString(body.tenant_id, "tenant_id");
         businessName = requireBodyString(body.business_name, "business_name");
         assistantName = requireBodyString(body.assistant_name, "assistant_name");
         initialGreeting = requireBodyString(body.initial_greeting, "initial_greeting");
-
-        const tenantConfig = getTenantConfiguration(tenantId);
-        if (!tenantConfig) throw new Error(`Tenant configuration not found for ${tenantId}`);
-        allowedTools = body.allowed_tools === undefined
-          ? [...tenantConfig.tools.allowed]
-          : parseAllowedTools(body.allowed_tools);
-
-        const configuredTools = new Set(tenantConfig.tools.allowed);
-        if (allowedTools.some((tool) => !configuredTools.has(tool))) {
-          throw new Error("CallSession allowed_tools exceeds TenantConfiguration allowlist");
-        }
+        allowedTools = parseAllowedTools(body.allowed_tools);
+        businessFacts = parseBusinessFacts(body.business_facts);
       } catch (error) {
         return Response.json(
           { ok: false, error: error instanceof Error ? error.message : "invalid_call_session_start" },
@@ -206,6 +215,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       this.assistantName = assistantName;
       this.initialGreeting = initialGreeting;
       this.allowedTools = allowedTools;
+      this.businessFacts = businessFacts;
 
       if (!this.socket) {
         this.connectPromise ??= this.connectSideband(callId).finally(() => {
@@ -229,6 +239,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         sideband: "durable_object",
         intent_policy: "semantic_v9",
         tool_gateway: "tenant_allowlist_v1",
+        tenant_config_source: "bootstrap",
       });
     }
 
@@ -247,6 +258,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         websocket_connected: this.socket !== null,
         hangup_started: this.hangupStarted,
         tool_gateway: "tenant_allowlist_v1",
+        tenant_config_source: "bootstrap",
       });
     }
 
@@ -404,7 +416,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
   private createToolGateway(): ToolGateway {
     if (!this.tenantId) throw new Error("ToolGateway requires tenant_id");
 
-    const businessInformationDefinition: ToolDefinition<Record<string, never>, Record<string, string | number>> = {
+    const businessInformationDefinition: ToolDefinition<Record<string, never>, Record<string, string | number | boolean>> = {
       name: GET_BUSINESS_INFORMATION,
       access: "READ",
       description: BUSINESS_INFORMATION_REALTIME_TOOL.description,
@@ -413,16 +425,12 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         if (Object.keys(object).length > 0) throw new Error("get_business_information does not accept arguments");
         return {};
       },
-      execute: async () => {
-        const tenantConfig = getTenantConfiguration(this.tenantId!);
-        if (!tenantConfig) throw new Error(`Tenant configuration not found for ${this.tenantId}`);
-        return {
-          business_name: this.businessName ?? "",
-          assistant_name: this.assistantName ?? "",
-          years_in_operation: tenantConfig.business.yearsInOperation,
-          source: "tenant_configuration",
-        };
-      },
+      execute: async () => ({
+        business_name: this.businessName ?? "",
+        assistant_name: this.assistantName ?? "",
+        ...this.businessFacts,
+        source: "tenant_configuration",
+      }),
     };
 
     return new ToolGateway(
