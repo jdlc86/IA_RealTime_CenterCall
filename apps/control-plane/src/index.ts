@@ -285,10 +285,18 @@ async function acceptRealtimeCall(callId: string, configuration: RealtimeSession
 
 async function handleOpenAIWebhook(request: Request, env: Env): Promise<Response> {
   const rawBody = await request.text();
+  let rawEventType = "unknown";
+  try {
+    const rawEvent = JSON.parse(rawBody) as { type?: string };
+    rawEventType = rawEvent.type ?? "unknown";
+  } catch {
+    rawEventType = "invalid_json";
+  }
 
   log("info", "openai_webhook_received", {
     webhook_id: request.headers.get("webhook-id"),
     body_bytes: rawBody.length,
+    raw_event_type: rawEventType,
   });
 
   const client = new OpenAI({
@@ -298,14 +306,17 @@ async function handleOpenAIWebhook(request: Request, env: Env): Promise<Response
 
   let event: unknown;
   try {
-    event = client.webhooks.unwrap(rawBody, request.headers);
+    event = await client.webhooks.unwrap(rawBody, request.headers);
   } catch (error) {
     log("error", "invalid_openai_webhook", { error: error instanceof Error ? error.message : String(error) });
     return json({ ok: false, error: "invalid_webhook_signature" }, 400);
   }
 
   const typedEvent = event as { type?: string };
-  log("info", "openai_event", { type: typedEvent.type ?? "unknown" });
+  log("info", "openai_event", {
+    type: typedEvent.type ?? "unknown",
+    raw_event_type: rawEventType,
+  });
 
   if (typedEvent.type !== "realtime.call.incoming") {
     return json({ ok: true, ignored: true, event_type: typedEvent.type ?? "unknown" });
@@ -361,7 +372,7 @@ export default {
         telephony_provider: "telnyx",
         call_orchestrator: true,
         telnyx_webhook_verification: "webcrypto-ed25519",
-        tracing: "f0-e2e-v1",
+        tracing: "f0-e2e-v2",
         runtime_config: {
           openai_api_key: typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.length > 0,
           openai_webhook_secret: typeof env.OPENAI_WEBHOOK_SECRET === "string" && env.OPENAI_WEBHOOK_SECRET.length > 0,
