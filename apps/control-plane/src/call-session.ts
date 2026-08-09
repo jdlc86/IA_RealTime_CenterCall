@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { ToolGateway, requireObject, type ToolDefinition, type ToolResult } from "./tool-gateway";
 
 type CallSessionEnv = {
   OPENAI_API_KEY: string;
@@ -6,6 +7,13 @@ type CallSessionEnv = {
 
 type SemanticIntent = "CONTINUE" | "END_AMBIGUOUS" | "END_CLEAR";
 type ClosingState = "active" | "ambiguous" | "closing";
+
+type RealtimeFunctionTool = {
+  type: "function";
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+};
 
 type RealtimeSidebandEvent = {
   type?: string;
@@ -24,6 +32,7 @@ type CallSessionStartBody = {
   business_name?: unknown;
   assistant_name?: unknown;
   initial_greeting?: unknown;
+  allowed_tools?: unknown;
 };
 
 const IDLE_TIMEOUT_MS = 10_000;
@@ -31,6 +40,19 @@ const AMBIGUOUS_LIMIT = 3;
 const FINAL_FAREWELL_WATCHDOG_MS = 7_000;
 const HANGUP_RETRY_DELAY_MS = 300;
 const HANGUP_MAX_ATTEMPTS = 2;
+const GET_BUSINESS_INFORMATION = "get_business_information";
+
+const BUSINESS_INFORMATION_REALTIME_TOOL: RealtimeFunctionTool = {
+  type: "function",
+  name: GET_BUSINESS_INFORMATION,
+  description:
+    "Consulta la fuente autorizada del tenant para obtener la identidad oficial del negocio y de la asistente. Úsala cuando el usuario pida explícitamente consultar la herramienta, verificar el nombre oficial del negocio o comprobar la identidad configurada.",
+  parameters: {
+    type: "object",
+    properties: {},
+    additionalProperties: false,
+  },
+};
 
 function log(level: "info" | "error", event: string, details: Record<string, unknown> = {}): void {
   const entry = JSON.stringify({ level, event, component: "CallSession", ...details });
@@ -46,6 +68,21 @@ function requireEnvString(value: unknown, name: string): string {
 function requireBodyString(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`Missing call session field: ${name}`);
   return value.trim();
+}
+
+function parseAllowedTools(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new Error("Missing call session field: allowed_tools");
+  const tools = value.map((item) => {
+    if (typeof item !== "string" || !item.trim()) throw new Error("Invalid call session field: allowed_tools");
+    return item.trim();
+  });
+  if (new Set(tools).size !== tools.length) throw new Error("Invalid call session field: duplicate allowed_tools");
+  return tools;
+}
+
+function parseJsonArguments(argumentsJson: string | undefined): unknown {
+  if (!argumentsJson?.trim()) return {};
+  return JSON.parse(argumentsJson);
 }
 
 function normalizeText(value: string): string {
@@ -106,6 +143,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
   private businessName: string | null = null;
   private assistantName: string | null = null;
   private initialGreeting: string | null = null;
+  private allowedTools: string[] = [];
   private greetingSent = false;
   private state: ClosingState = "active";
   private ambiguousCount = 0;
@@ -130,12 +168,14 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       let businessName: string;
       let assistantName: string;
       let initialGreeting: string;
+      let allowedTools: string[];
       try {
         callId = requireBodyString(body.call_id, "call_id");
         tenantId = requireBodyString(body.tenant_id, "tenant_id");
         businessName = requireBodyString(body.business_name, "business_name");
         assistantName = requireBodyString(body.assistant_name, "assistant_name");
         initialGreeting = requireBodyString(body.initial_greeting, "initial_greeting");
+        allowedTools = parseAllowedTools(body.allowed_tools);
       } catch (error) {
         return Response.json(
           { ok: false, error: error instanceof Error ? error.message : "invalid_call_session_start" },
@@ -155,6 +195,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       this.businessName = businessName;
       this.assistantName = assistantName;
       this.initialGreeting = initialGreeting;
+      this.allowedTools = allowedTools;
 
       if (!this.socket) {
         this.connectPromise ??= this.connectSideband(callId).finally(() => {
@@ -171,11 +212,13 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         tenant_id: tenantId,
         business_name: businessName,
         assistant_name: assistantName,
+        allowed_tools: this.allowedTools,
         greeting_sent: this.greetingSent,
         state: this.state,
         ambiguous_count: this.ambiguousCount,
         sideband: "durable_object",
         intent_policy: "semantic_v9",
+        tool_gateway: "tenant_allowlist_v1",
       });
     }
 
@@ -186,12 +229,14 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         tenant_id: this.tenantId,
         business_name: this.businessName,
         assistant_name: this.assistantName,
+        allowed_tools: this.allowedTools,
         greeting_sent: this.greetingSent,
         state: this.state,
         ambiguous_count: this.ambiguousCount,
         ambiguous_limit: AMBIGUOUS_LIMIT,
         websocket_connected: this.socket !== null,
         hangup_started: this.hangupStarted,
+        tool_gateway: "tenant_allowlist_v1",
       });
     }
 
@@ -226,6 +271,8 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       elapsed_ms: Date.now() - startedAt,
       lifecycle: "durable_object_outbound_websocket",
       intent_policy: "semantic_v9",
+      tool_gateway: "tenant_allowlist_v1",
+      allowed_tools: this.allowedTools,
     });
 
     socket.addEventListener("message", (event) => {
@@ -286,7 +333,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     }
   }
 
-  private sendToolResult(callId: string | undefined, payload: Record<string, unknown>): void {
+  private sendToolResult(callId: string | undefined, payload: Record<string, unknown> | ToolResult): void {
     if (!callId) return;
     this.send({
       type: "conversation.item.create",
@@ -306,6 +353,129 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         instructions,
       },
     });
+  }
+
+  private getRealtimeBusinessTools(): RealtimeFunctionTool[] {
+    const tools: RealtimeFunctionTool[] = [];
+    if (this.allowedTools.includes(GET_BUSINESS_INFORMATION)) tools.push(BUSINESS_INFORMATION_REALTIME_TOOL);
+    return tools;
+  }
+
+  private createBusinessEnabledResponse(): void {
+    const tools = this.getRealtimeBusinessTools();
+    if (tools.length === 0) {
+      this.createSpokenResponse(
+        "Continúa la conversación normalmente. Responde de forma breve, natural y útil a la última intervención real del usuario. No menciones la clasificación de intención ni procesos internos.",
+      );
+      return;
+    }
+
+    this.send({
+      type: "response.create",
+      response: {
+        tool_choice: "auto",
+        tools,
+        instructions: [
+          "Continúa la conversación de forma breve, natural y útil a la última intervención real del usuario.",
+          "Tienes disponibles únicamente las herramientas autorizadas para este tenant en esta respuesta.",
+          "Si el usuario pide explícitamente consultar una herramienta o verificar información oficial del negocio que la herramienta pueda proporcionar, úsala antes de responder.",
+          "No inventes resultados de herramientas y no menciones la clasificación de intención ni detalles internos del ToolGateway.",
+        ].join(" "),
+      },
+    });
+
+    log("info", "tool_enabled_response_requested", {
+      call_id: this.callId,
+      tenant_id: this.tenantId,
+      allowed_tools: tools.map((tool) => tool.name),
+    });
+  }
+
+  private createToolGateway(): ToolGateway {
+    if (!this.tenantId) throw new Error("ToolGateway requires tenant_id");
+
+    const businessInformationDefinition: ToolDefinition<Record<string, never>, Record<string, string>> = {
+      name: GET_BUSINESS_INFORMATION,
+      access: "READ",
+      description: BUSINESS_INFORMATION_REALTIME_TOOL.description,
+      validate: (value: unknown) => {
+        const object = requireObject(value);
+        if (Object.keys(object).length > 0) throw new Error("get_business_information does not accept arguments");
+        return {};
+      },
+      execute: async () => ({
+        business_name: this.businessName ?? "",
+        assistant_name: this.assistantName ?? "",
+        source: "tenant_configuration",
+      }),
+    };
+
+    return new ToolGateway(
+      [businessInformationDefinition as ToolDefinition<unknown, unknown>],
+      [{ tenantId: this.tenantId, allowedTools: this.allowedTools }],
+    );
+  }
+
+  private async handleBusinessToolCall(event: RealtimeSidebandEvent): Promise<void> {
+    if (!this.tenantId || !this.callId || !event.name) return;
+
+    let args: unknown;
+    try {
+      args = parseJsonArguments(event.arguments);
+    } catch {
+      const payload = {
+        ok: false as const,
+        tool: event.name,
+        tenantId: this.tenantId,
+        error: "INVALID_ARGUMENTS" as const,
+        message: "Tool arguments must be valid JSON",
+      };
+      this.sendToolResult(event.call_id, payload);
+      log("error", "tool_gateway_result", {
+        call_id: this.callId,
+        tenant_id: this.tenantId,
+        tool: event.name,
+        ok: false,
+        error: payload.error,
+      });
+      this.createSpokenResponse(
+        "La consulta de la herramienta no pudo ejecutarse por argumentos inválidos. Informa brevemente al usuario de que no pudiste verificar ese dato ahora mismo; no inventes el resultado.",
+      );
+      return;
+    }
+
+    log("info", "tool_gateway_request", {
+      call_id: this.callId,
+      tenant_id: this.tenantId,
+      tool: event.name,
+    });
+
+    const result = await this.createToolGateway().execute({
+      name: event.name,
+      arguments: args,
+      context: { tenantId: this.tenantId, callId: this.callId },
+    });
+
+    this.sendToolResult(event.call_id, result);
+    log(result.ok ? "info" : "error", "tool_gateway_result", {
+      call_id: this.callId,
+      tenant_id: this.tenantId,
+      tool: event.name,
+      ok: result.ok,
+      access: result.ok ? result.access : undefined,
+      error: result.ok ? undefined : result.error,
+    });
+
+    if (result.ok) {
+      this.createSpokenResponse(
+        "Responde ahora a la última petición del usuario usando únicamente el resultado autorizado de la herramienta que acaba de incorporarse a la conversación. Sé breve y natural. No menciones ToolGateway, JSON ni procesos internos.",
+      );
+      return;
+    }
+
+    this.createSpokenResponse(
+      "La herramienta no pudo proporcionar un resultado autorizado. Informa brevemente al usuario de que no pudiste verificar ese dato ahora mismo y continúa atendiendo; no inventes información.",
+    );
   }
 
   private continueConversation(reason: string, toolCallId?: string): void {
@@ -336,9 +506,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       });
     }
 
-    this.createSpokenResponse(
-      "Continúa la conversación normalmente. Responde de forma breve, natural y útil a la última intervención real del usuario. No menciones la clasificación de intención ni el contador interno.",
-    );
+    this.createBusinessEnabledResponse();
   }
 
   private handleAmbiguousIntent(reason: string, toolCallId?: string): void {
@@ -468,7 +636,6 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       }
     }
 
-    // Safety invariant: a failed hangup must never leave a connected but mute call in CLOSING.
     this.hangupStarted = false;
     this.state = "active";
     this.ambiguousCount = 0;
@@ -581,6 +748,15 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       return;
     }
 
+    if (event.type === "response.function_call_arguments.done" && event.name && event.name !== "conversation_intent") {
+      if (this.state === "closing" || this.hangupStarted) {
+        this.sendToolResult(event.call_id, { ok: false, error: "CALL_CLOSING" });
+        return;
+      }
+      await this.handleBusinessToolCall(event);
+      return;
+    }
+
     // Transcription is retained only for observability. It is deliberately not used as a phrase-list intent detector.
     if (event.type === "conversation.item.input_audio_transcription.completed" && event.transcript) {
       log("info", "call_user_transcription_observed", {
@@ -606,8 +782,6 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       return;
     }
 
-    // Safety guard: if the assistant verbally commits to hanging up without the semantic controller
-    // already being in CLOSING, convert that commitment into a technical close.
     if (event.type === "response.output_audio_transcript.done" && event.transcript) {
       if (this.state !== "closing" && isAssistantHangupCommitment(event.transcript)) {
         log("error", "end_call_assistant_commitment_without_core_close", {
