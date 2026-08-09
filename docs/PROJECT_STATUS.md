@@ -9,8 +9,8 @@
 ```text
 F0 Voz E2E                              ✅ CERRADA — PASS
 F1 Baseline + observabilidad + TenantResolver ✅ CERRADA — PASS con baseline cuantitativo CANCELADO por decisión de proyecto
-F2 Latencia + barge-in                  ⏭️ SIGUIENTE FASE
-F3 ToolGateway                          ⬜ NO INICIADA
+F2 Latencia + barge-in                  ✅ CERRADA SIN CAMBIOS DE OPTIMIZACIÓN — comportamiento actual aceptado como satisfactorio por decisión de proyecto
+F3 ToolGateway                          🟡 EN CURSO
 F4 Clínica + validación multi-negocio   ⬜ NO INICIADA
 F5 Persistencia/post-call               ⬜ NO INICIADA
 F6 Handoff humano                       ⬜ NO INICIADA
@@ -37,16 +37,43 @@ Validado:
 - pruebas contractuales del resolver: 7/7 PASS;
 - logs de tenant resolution/bootstrap implementados.
 
-Decisión de alcance:
+Decisión de alcance F1:
 
-- el baseline cuantitativo de latencia/setup de F1 fue **CANCELADO por decisión de proyecto el 2026-08-09**;
-- no se considera fallo ni pendiente bloqueante;
-- la cancelación queda documentada como desviación consciente del gate original.
+- el baseline cuantitativo de latencia/setup fue CANCELADO por decisión de proyecto;
+- no se considera fallo ni pendiente bloqueante.
+
+## Disposición de F2
+
+La fase de Latencia + barge-in se cerró sin introducir nuevas optimizaciones. El sistema ya había demostrado barge-in e interacción satisfactoria durante F0 y el comportamiento actual fue aceptado por decisión de proyecto. Se prioriza no modificar un flujo de voz estable sin un defecto reproducible que lo justifique.
+
+Esto no significa que la latencia quede fuera del proyecto: si aparece un problema medible o reproducible, se reabre como trabajo de rendimiento/regresión.
+
+## F3 — ToolGateway
+
+FASE 3 está EN CURSO.
+
+Primer bloque implementado:
+
+- contrato `ToolGateway` independiente de SDKs externos;
+- `tenant_id` obligatorio;
+- allowlist explícita por tenant;
+- fail-closed para tools desconocidas/no autorizadas;
+- validación de argumentos antes de ejecutar;
+- errores estructurados;
+- clasificación `READ` / `WRITE`;
+- pruebas contractuales iniciales 7/7 PASS.
+
+Guía activa: `docs/implementation/PHASE_3_IMPLEMENTATION_GUIDE.md`.
 
 ## Próximo paso
 
-La siguiente fase definida por la arquitectura canónica es:
+Integrar ToolGateway con `CallSession` y OpenAI Realtime sin romper la política de cierre semántico v9:
 
-**FASE 2 — Latencia + barge-in.**
-
-Antes de implementar cambios de F2 se debe crear su guía operativa específica a partir de `SYSTEM_ARCHITECTURE.md`, preservando lo ya validado en F0/F1 y evitando regresiones del flujo de llamada y del tenant binding.
+```text
+conversation_intent
+→ CONTINUE
+→ response con tools autorizadas del tenant
+→ ToolGateway
+→ function_call_output
+→ respuesta hablada
+```
