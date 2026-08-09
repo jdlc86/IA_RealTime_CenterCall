@@ -7,7 +7,8 @@
     "deploy": "wrangler deploy",
     "deploy:dry": "wrangler deploy --dry-run",
     "types": "wrangler types",
-    "check": "wrangler deploy --dry-run"
+    "check": "wrangler deploy --dry-run",
+    "test": "node --test src/*.test.ts"
   },
   "dependencies": {
     "openai": "^7.1.0"
