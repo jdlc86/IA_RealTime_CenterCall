@@ -45,9 +45,8 @@
 
 ### FASE 0 — CallOrchestrator
 
-- [x] Añadido SDK oficial Telnyx al Worker.
 - [x] Implementado `POST /webhooks/telnyx`.
-- [x] Verificación Ed25519 y tolerancia anti-replay de 5 minutos.
+- [x] Tolerancia anti-replay de 5 minutos.
 - [x] Procesamiento exclusivo de `call.initiated` inbound para routing inicial.
 - [x] Transferencia del leg entrante a OpenAI SIP mediante Telnyx Call Control.
 - [x] TLS explícito para el tramo SIP.
@@ -55,16 +54,40 @@
 - [x] `command_id` usado para mitigar comandos duplicados.
 - [x] `/health` extendido con `telephony_provider=telnyx` y `call_orchestrator=true`.
 
-### Pendiente manual antes de primera llamada
+## 2026-08-09
 
-- [ ] Configurar `TELNYX_API_KEY` como Secret en Cloudflare.
-- [ ] Configurar `TELNYX_PUBLIC_KEY` como Secret en Cloudflare.
-- [ ] Confirmar build/deploy automático del último commit.
-- [ ] Verificar `/health`.
+### CI/CD y primera llamada
+
+- [x] Detectado repositorio GitHub duplicado conectado por error a Cloudflare.
+- [x] Cloudflare reconectado al repositorio canónico `jdlc86/IA_RealTime_CenterCall`.
+- [x] Root directory corregido a `apps/control-plane`.
+- [x] Deploy automático GitHub → Cloudflare validado.
+- [x] `TELNYX_API_KEY` y `TELNYX_PUBLIC_KEY` configurados como Secrets.
+- [x] Primera llamada real al número Telnyx alcanzó `/webhooks/telnyx`.
+
+### Incidencia F0-013-A — verificación webhook Telnyx
+
+La primera llamada reveló el error runtime:
+
+```text
+telnyx.webhooks.constructEvent is not a function
+```
+
+Conclusión: la integración de red Telnyx → Cloudflare estaba funcionando, pero la verificación dependía de una API del SDK no disponible en el runtime instalado.
+
+Corrección aplicada:
+
+- [x] Eliminada la dependencia del SDK Telnyx para verificación de webhooks.
+- [x] Implementada verificación Ed25519 directamente con Cloudflare Web Crypto.
+- [x] La firma se verifica sobre `telnyx-timestamp + "|" + rawBody`.
+- [x] Se mantienen los 5 minutos de tolerancia anti-replay.
+- [x] Soporte de clave pública Telnyx en formato raw base64 y PEM/SPKI.
+- [x] Eliminada la dependencia `telnyx` de `package.json`.
+- [x] `/health` expone `telnyx_webhook_verification=webcrypto-ed25519` para comprobar la versión activa.
 
 ### Próximo hito
 
-Realizar la primera llamada al número +34 y confirmar, en orden:
+Repetir la llamada y confirmar, en orden:
 
 1. `telnyx_webhook_received` (`call.initiated`, incoming);
 2. `telnyx_transfer_requested`;
