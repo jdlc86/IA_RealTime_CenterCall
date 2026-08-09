@@ -146,20 +146,25 @@ Los logs incluyen `tenant_id` cuando aplica y nunca exponen secretos.
 ## 7. Prueba E2E F1-T05 — tenant binding audible — PASS
 
 **Fecha:** 2026-08-09  
-**Resultado:** PASS manual E2E.
+**Resultado:** PASS manual E2E.  
+**Evidencia:** validación directa durante llamada real por el operador de pruebas.
 
 Procedimiento realizado:
 
 - llamada real al número configurado `+34910789057`;
 - el sistema resolvió la llamada al tenant de validación;
-- la IA inició automáticamente el saludo personalizado;
-- el usuario confirmó que Carolina saludó correctamente y que el funcionamiento posterior fue normal.
+- la IA inició automáticamente el saludo personalizado sin requerir que el llamante hablara primero;
+- se escuchó correctamente el nombre de la asistente, Carolina;
+- se escuchó correctamente el nombre comercial, Clínica Estética Madrid;
+- el usuario confirmó explícitamente: «Carolina me saluda y todo bien».
 
 Resultado audible confirmado:
 
 ```text
 Business = Clínica Estética Madrid
 Assistant = Carolina
+Initial greeting = OK
+Conversation after greeting = OK
 ```
 
 Saludo esperado y validado funcionalmente:
@@ -180,7 +185,7 @@ La evidencia audible valida conjuntamente el camino funcional:
 → saludo personalizado de Carolina
 ```
 
-F1-T05 se considera PASS para tenant binding y personalización audible. Esta evidencia no sustituye las pruebas negativas de aislamiento ni el baseline cuantitativo pendiente.
+**Conclusión F1-T05:** PASS. El routing por número, el tenant binding, la carga de `TenantConfiguration` y la personalización audible funcionan E2E para el tenant de validación. Esta evidencia no sustituye las pruebas negativas de aislamiento ni el baseline cuantitativo pendiente.
 
 ## 8. Manejo de errores
 
