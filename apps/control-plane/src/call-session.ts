@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { getTenantConfiguration } from "./tenant-configuration";
 import { ToolGateway, requireObject, type ToolDefinition, type ToolResult } from "./tool-gateway";
 
 type CallSessionEnv = {
@@ -71,7 +72,7 @@ function requireBodyString(value: unknown, name: string): string {
 }
 
 function parseAllowedTools(value: unknown): string[] {
-  if (!Array.isArray(value)) throw new Error("Missing call session field: allowed_tools");
+  if (!Array.isArray(value)) throw new Error("Invalid call session field: allowed_tools");
   const tools = value.map((item) => {
     if (typeof item !== "string" || !item.trim()) throw new Error("Invalid call session field: allowed_tools");
     return item.trim();
@@ -95,7 +96,6 @@ function normalizeText(value: string): string {
     .trim();
 }
 
-// Safety guard only. User intent is NOT detected here; it is classified semantically by the Realtime model.
 function isAssistantHangupCommitment(raw: string): boolean {
   const text = normalizeText(raw);
   return [
@@ -175,7 +175,17 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         businessName = requireBodyString(body.business_name, "business_name");
         assistantName = requireBodyString(body.assistant_name, "assistant_name");
         initialGreeting = requireBodyString(body.initial_greeting, "initial_greeting");
-        allowedTools = parseAllowedTools(body.allowed_tools);
+
+        const tenantConfig = getTenantConfiguration(tenantId);
+        if (!tenantConfig) throw new Error(`Tenant configuration not found for ${tenantId}`);
+        allowedTools = body.allowed_tools === undefined
+          ? [...tenantConfig.tools.allowed]
+          : parseAllowedTools(body.allowed_tools);
+
+        const configuredTools = new Set(tenantConfig.tools.allowed);
+        if (allowedTools.some((tool) => !configuredTools.has(tool))) {
+          throw new Error("CallSession allowed_tools exceeds TenantConfiguration allowlist");
+        }
       } catch (error) {
         return Response.json(
           { ok: false, error: error instanceof Error ? error.message : "invalid_call_session_start" },
@@ -757,7 +767,6 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       return;
     }
 
-    // Transcription is retained only for observability. It is deliberately not used as a phrase-list intent detector.
     if (event.type === "conversation.item.input_audio_transcription.completed" && event.transcript) {
       log("info", "call_user_transcription_observed", {
         call_id: this.callId,
