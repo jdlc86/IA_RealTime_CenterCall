@@ -71,6 +71,13 @@ function log(level: "info" | "error", event: string, details: Record<string, unk
   }
 }
 
+function requireEnvString(value: unknown, name: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`Missing runtime configuration: ${name}`);
+  }
+  return value.trim();
+}
+
 function decodeBase64(value: string): Uint8Array {
   const normalized = value.replace(/\s+/g, "");
   const binary = atob(normalized);
@@ -82,7 +89,7 @@ function decodeBase64(value: string): Uint8Array {
 }
 
 function decodeTelnyxPublicKey(value: string): { format: "raw" | "spki"; bytes: Uint8Array } {
-  const trimmed = value.trim();
+  const trimmed = requireEnvString(value, "TELNYX_PUBLIC_KEY");
 
   if (trimmed.includes("BEGIN PUBLIC KEY")) {
     const base64 = trimmed
@@ -94,8 +101,6 @@ function decodeTelnyxPublicKey(value: string): { format: "raw" | "spki"; bytes: 
 
   const bytes = decodeBase64(trimmed);
 
-  // Telnyx commonly exposes the Ed25519 public key as the raw 32-byte key.
-  // Accept SPKI as well so the Worker remains robust if the portal representation changes.
   if (bytes.byteLength === 32) {
     return { format: "raw", bytes };
   }
@@ -173,6 +178,7 @@ async function transferTelnyxCallToOpenAI(
   eventId: string,
   env: Env,
 ): Promise<void> {
+  const apiKey = requireEnvString(env.TELNYX_API_KEY, "TELNYX_API_KEY");
   const target = buildOpenAISipUri(env);
   const startedAt = Date.now();
 
@@ -181,7 +187,7 @@ async function transferTelnyxCallToOpenAI(
     {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${env.TELNYX_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -226,6 +232,8 @@ async function verifyAndParseTelnyxWebhook(
     throw new Error("Missing Telnyx signature headers");
   }
 
+  const publicKey = requireEnvString(env.TELNYX_PUBLIC_KEY, "TELNYX_PUBLIC_KEY");
+
   const timestampSeconds = Number(timestamp);
   if (!Number.isFinite(timestampSeconds)) {
     throw new Error("Invalid Telnyx timestamp");
@@ -236,12 +244,7 @@ async function verifyAndParseTelnyxWebhook(
     throw new Error("Telnyx webhook timestamp outside 5 minute tolerance");
   }
 
-  const valid = await verifyTelnyxSignature(
-    rawBody,
-    signature,
-    timestamp,
-    env.TELNYX_PUBLIC_KEY,
-  );
+  const valid = await verifyTelnyxSignature(rawBody, signature, timestamp, publicKey);
 
   if (!valid) {
     throw new Error("Telnyx Ed25519 signature verification failed");
@@ -281,8 +284,6 @@ async function handleTelnyxWebhook(
     state: payload?.state,
   });
 
-  // Only the initial inbound parked leg is routed by F0 CallOrchestrator.
-  // Webhooks for the transferred/outbound leg are acknowledged but ignored.
   if (eventType === "call.initiated" && payload?.direction === "incoming") {
     const callControlId = payload.call_control_id;
     if (!callControlId) {
@@ -438,6 +439,16 @@ export default {
         telephony_provider: "telnyx",
         call_orchestrator: true,
         telnyx_webhook_verification: "webcrypto-ed25519",
+        runtime_config: {
+          openai_api_key: typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.length > 0,
+          openai_webhook_secret:
+            typeof env.OPENAI_WEBHOOK_SECRET === "string" && env.OPENAI_WEBHOOK_SECRET.length > 0,
+          openai_project_id:
+            typeof env.OPENAI_PROJECT_ID === "string" && env.OPENAI_PROJECT_ID.length > 0,
+          telnyx_api_key: typeof env.TELNYX_API_KEY === "string" && env.TELNYX_API_KEY.length > 0,
+          telnyx_public_key:
+            typeof env.TELNYX_PUBLIC_KEY === "string" && env.TELNYX_PUBLIC_KEY.length > 0,
+        },
       });
     }
 
