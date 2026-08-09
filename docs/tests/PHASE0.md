@@ -13,7 +13,7 @@ PASS solo si:
 5. barge-in razonable;
 6. llamada ≥5 minutos estable;
 7. cuelgue manual limpia la sesión;
-8. cuelgue automático por intención de terminar funciona de forma consistente, confirma cuando corresponde y no introduce falsos positivos obvios;
+8. cuelgue automático por intención de terminar funciona de forma consistente y sin falsos positivos obvios;
 9. ≥19/20 llamadas consecutivas completan setup/conversación básica;
 10. baseline de setup y latencia documentado.
 
@@ -26,235 +26,192 @@ PASS solo si:
 - **F0-T05** — silencio 5–10 s.
 - **F0-T06** — cuelgue manual del cliente.
 - **F0-T07** — 20 llamadas consecutivas.
-- **F0-T08** — cierre automático por intención de terminar.
+- **F0-T08** — cierre automático por intención semántica.
 
 ## Evidencia
 
-| Test | Estado | Setup ms | Voz | Barge-in | Duración | Cierre | Observaciones |
-|---|---|---:|---|---|---:|---|---|
-| F0-T01 | [x] parcial | pendiente baseline | sí | no evaluado | prueba corta | observado | Llamada PSTN real; Telnyx `call.bridged`; OpenAI webhook; tras fix de `await unwrap()` la IA respondió por voz. |
-| F0-T02 | [ ] | | | | | | |
-| F0-T03 | [ ] | | | | | | |
-| F0-T04 | [ ] | | | | | | |
-| F0-T05 | [x] | | sí | | 5–10 s de silencio | llamada permanece activa | La IA indica que no ha escuchado, espera y permite reanudar la conversación normalmente. |
-| F0-T06 | [x] | | sí | | | `normal_clearing` | Al colgar el llamante, Telnyx registra terminación normal. |
-| F0-T07 | [ ] | | | | | | |
-| F0-T08 | [ ] | | | | | pendiente | v6 implementada: intención → confirmación → respuesta o timeout de silencio → despedida → hangup. |
+| Test | Estado | Voz | Cierre | Observaciones |
+|---|---|---|---|---|
+| F0-T01 | [x] parcial | sí | observado | Llamada PSTN real; Telnyx `call.bridged`; OpenAI webhook; IA respondió por voz. |
+| F0-T02 | [ ] | | | |
+| F0-T03 | [ ] | | | |
+| F0-T04 | [ ] | | | |
+| F0-T05 | [x] | sí | llamada permanece activa | Silencio ordinario no termina la llamada y la conversación puede reanudarse. |
+| F0-T06 | [x] | sí | `normal_clearing` | Al colgar el llamante, Telnyx registra terminación normal. |
+| F0-T07 | [ ] | | | |
+| F0-T08 | [ ] | sí | pendiente validación v9 | Modelo clasifica `CONTINUE`, `END_AMBIGUOUS`, `END_CLEAR`; Core aplica política y hangup. |
 
-`F0-T01` se marca **parcial** porque el setup y la respuesta de voz están demostrados, pero todavía falta medir el baseline de tiempo de establecimiento/saludo.
+## F0-T08 — procedimiento v9
 
-## F0-T08 — procedimiento v6
+Documento de diseño: `docs/implementation/END_CALL_INTENT_V9.md`.
 
-La v6 cambia el cierre de una colección de frases a una máquina de estados:
+La detección primaria ya no depende de listas de palabras. El modelo Realtime clasifica semánticamente cada turno con contexto completo mediante la tool obligatoria `conversation_intent`.
 
 ```text
-CONVERSANDO
-   ↓ señal de intención de terminar
-CONFIRMACION_PENDIENTE
-   ├─ usuario confirma que no necesita nada más → CIERRE
-   ├─ usuario quiere continuar → CONVERSANDO
-   └─ usuario no responde hasta idle timeout → CIERRE
-
-CIERRE
-   ↓
-despedida breve
-   ↓
-POST /v1/realtime/calls/{call_id}/hangup
+CONTINUE
+END_AMBIGUOUS
+END_CLEAR
 ```
 
-La transcripción auxiliar se usa como señal de control; el modelo Realtime sigue procesando el audio nativamente.
+### A. END_CLEAR — cierre directo
 
-### A. Intenciones de terminar — deben provocar confirmación
+Probar distintas formas naturales de terminar, no solo expresiones predefinidas.
 
-Probar, en llamadas separadas o durante una conversación:
-
-```text
-«Adiós»
-«Hasta luego»
-«Eso es todo»
-«No necesito nada más»
-«No, no, en nada más»
-«Ya terminé la consulta»
-«No tengo más preguntas»
-«No quiero seguir hablando»
-«Lo dejamos aquí»
-«Me tengo que ir»
-«Gracias»
-«Perfecto, gracias»
-```
-
-Esperado: salvo una orden explícita de colgar, el Core entra en confirmación y la IA dice algo equivalente a:
+Ejemplos orientativos:
 
 ```text
-«Entiendo que ya has terminado. ¿Necesitas algo más antes de que cierre la llamada?»
-```
-
-### B. Confirmación con respuesta de cierre
-
-Después de la pregunta anterior probar:
-
-```text
-«No»
-«No, gracias»
-«No, no»
-«No, no, en nada más»
-«En nada más»
-«Nada más»
-«No tengo nada más»
-«Ya terminé»
+«Creo que con esto ya está, muchas gracias.»
+«Perfecto, era todo lo que necesitaba.»
+«No necesito nada más, gracias por la ayuda.»
 ```
 
 Esperado:
 
-1. `end_call_confirmation_classified result=close` o cierre inferido equivalente;
-2. despedida breve;
-3. `/hangup` devuelve 200;
-4. la llamada termina automáticamente.
-
-### C. Confirmación sin respuesta — debe cerrar automáticamente
-
-1. Expresar una intención de terminar.
-2. Escuchar la pregunta de confirmación.
-3. No decir absolutamente nada.
-4. No colgar manualmente.
-
-Esperado: al alcanzar el `idle_timeout_ms` configurado, OpenAI emite `input_audio_buffer.timeout_triggered`. Si el Core sigue en `CONFIRMACION_PENDIENTE`, ese silencio se interpreta como confirmación implícita de cierre.
-
-Secuencia esperada:
-
 ```text
-end_call_confirmation_requested
-input_audio_buffer.timeout_triggered
-end_call_confirmation_timeout
-end_call_intent_detected source=confirmation_timeout
-end_call_farewell_requested
+call_intent_classified intent=END_CLEAR
+call_intent_end_clear
+end_call_closing_started
+end_call_final_farewell_requested
 end_call_hangup_triggered
 end_call_hangup_result status=200
 Telnyx call.hangup
 ```
 
-**Importante:** un silencio ordinario fuera de `CONFIRMACION_PENDIENTE` no debe colgar la llamada.
+No debe realizar una confirmación adicional si el modelo considera clara la intención.
 
-### D. El usuario quiere continuar — no debe cerrar
+### B. END_AMBIGUOUS — preguntar si necesita más ayuda
 
-Después de la confirmación responder:
-
-```text
-«Sí, necesito otra cosa»
-«Tengo otra pregunta»
-«Espera»
-«Quiero preguntar otra cosa»
-```
+Probar intervenciones cuyo significado contextual pueda ser de cierre pero no sea suficientemente claro.
 
 Esperado:
 
 ```text
-end_call_confirmation_classified result=continue
-end_call_confirmation_cleared reason=user_wants_to_continue
+call_intent_classified intent=END_AMBIGUOUS
+call_intent_ambiguous ambiguous_count=1
 ```
 
-La conversación continúa normalmente.
-
-### E. Orden explícita de colgar
-
-Probar:
+La IA pregunta una sola vez algo equivalente a:
 
 ```text
-«Cuelga»
-«Puedes colgar ahora»
-«Finaliza la llamada»
+«¿Puedo ayudarte en algo más?»
 ```
 
-Esperado: puede pasar directamente a despedida + hangup sin una segunda confirmación innecesaria.
+### C. Ambigüedad + nueva consulta real
 
-### F. Pruebas negativas — no deben iniciar cierre
+Después de una detección ambigua, realizar una nueva consulta real.
+
+Esperado:
 
 ```text
-silencio 10 s sin señal previa de cierre
-«Mi amigo se despidió diciendo adiós»
-«¿Qué significa adiós?»
-«¿Cómo se dice adiós en inglés?»
-«Cuando alguien dice hasta luego, ¿qué quiere decir?»
+call_intent_classified intent=CONTINUE
+call_intent_continue
+call_intent_ambiguity_reset
+ambiguous_count=0
 ```
 
-Esperado: la llamada continúa.
+Esta regla es obligatoria: las ambigüedades separadas durante una llamada larga no se acumulan.
 
-### G. Guarda de compromiso verbal de la IA
+### D. Ambigüedad + intención clara posterior
 
-Si por cualquier motivo la IA dice explícitamente algo como:
+Después de la pregunta «¿Puedo ayudarte en algo más?», expresar claramente que se ha terminado.
+
+Esperado:
 
 ```text
-«Voy a colgar la llamada ahora»
+END_AMBIGUOUS (count=1)
+→ END_CLEAR
+→ despedida
+→ hangup
 ```
 
-sin haber completado el flujo de tool/confirmación, el Core mantiene la guarda v5: esa declaración verbal debe convertirse en un hangup técnico real y no quedar solo como una frase.
+### E. Ambigüedad + silencio
 
-## Logs relevantes
+1. Provocar `END_AMBIGUOUS`.
+2. Escuchar la pregunta de seguimiento.
+3. No responder.
+4. No colgar manualmente.
+
+Esperado: al alcanzar el timeout configurado (~10 s), solo estando en estado `AMBIGUOUS`:
 
 ```text
-end_call_intent_classified
-end_call_confirmation_requested
-end_call_confirmation_classified
-end_call_confirmation_inferred_close
-end_call_confirmation_cleared
-end_call_confirmation_timeout
-end_call_assistant_farewell_observed
-end_call_assistant_commitment_without_tool
-end_call_intent_detected
-end_call_farewell_requested
-end_call_farewell_response_created
+input_audio_buffer.timeout_triggered
+call_intent_ambiguous_silence_timeout
+end_call_closing_started
+end_call_hangup_result status=200
+```
+
+**Importante:** un silencio ordinario estando en `ACTIVE` no debe cerrar la llamada.
+
+### F. Tres ambigüedades consecutivas
+
+Repetir tres veces una respuesta que el modelo clasifique como `END_AMBIGUOUS`, sin volver realmente a una consulta normal.
+
+Esperado:
+
+```text
+END_AMBIGUOUS → count=1
+END_AMBIGUOUS → count=2
+END_AMBIGUOUS → count=3
+→ CLOSING
+→ despedida
+→ hangup
+```
+
+En F0 el límite es `3`. En una fase futura este punto podrá activar handoff humano en lugar de hangup.
+
+### G. CONTINUE desde conversación normal
+
+Realizar preguntas normales durante varios turnos.
+
+Esperado: cada turno se clasifica como `CONTINUE`, se responde normalmente y `ambiguous_count` permanece en 0.
+
+### H. Prueba contextual negativa
+
+Usar frases cuyo texto superficial pueda parecer una despedida pero cuyo significado contextual no sea terminar la llamada, por ejemplo hablar sobre cómo otra persona se despidió o preguntar por el significado de una despedida.
+
+Esperado:
+
+```text
+call_intent_classified intent=CONTINUE
+```
+
+La llamada continúa. La clasificación debe depender del significado y contexto, no de coincidencias léxicas.
+
+### I. Guarda de seguridad de salida de la IA
+
+Si por un fallo el asistente anuncia verbalmente que va a colgar sin que el Core ya esté en `CLOSING`, permanece una guarda secundaria que convierte esa promesa en cierre técnico.
+
+## Logs v9 relevantes
+
+```text
+call_intent_classified
+call_intent_continue
+call_intent_ambiguous
+call_intent_ambiguity_reset
+call_intent_end_clear
+call_intent_ambiguous_silence_timeout
+end_call_closing_started
+end_call_final_farewell_requested
 end_call_hangup_triggered
+end_call_hangup_start
 end_call_hangup_result
 realtime_sideband_closed
 Telnyx call.hangup
 ```
 
-Para privacidad, el trazado no guarda el texto completo de la transcripción: registra clasificación, regla y longitud.
-
-## Evidencia técnica de la primera llamada E2E
-
-Fecha: 2026-08-09.
-
-Cadena demostrada:
-
-```text
-PSTN
-→ número +34 Telnyx
-→ Voice API Application
-→ Cloudflare /webhooks/telnyx
-→ CallOrchestrator
-→ Telnyx transfer
-→ OpenAI SIP/TLS
-→ call.bridged
-→ realtime.call.incoming
-→ Cloudflare /webhooks/openai
-→ OpenAI /accept
-→ respuesta de voz al llamante
-```
-
-Incidencias resueltas durante la prueba:
-
-1. `telnyx.webhooks.constructEvent is not a function` → verificación Ed25519 migrada a Cloudflare Web Crypto.
-2. Secrets visibles pero no disponibles en runtime → configurados explícitamente como tipo Secret y validados mediante `/health.runtime_config`.
-3. OpenAI webhook registrado como `unknown` → corregido procesamiento asíncrono usando `await client.webhooks.unwrap(...)`.
-
-Resultado: **la IA respondió por voz en una llamada PSTN real**.
+La transcripción auxiliar se conserva para observabilidad de longitud/flujo, no como detector primario de intención.
 
 ## Infraestructura validada
 
-- [x] Repositorio canónico `jdlc86/IA_RealTime_CenterCall`.
 - [x] GitHub → Cloudflare Workers Builds.
-- [x] Deploy automático desde `main` con root `apps/control-plane`.
-- [x] Worker público.
-- [x] `/health` responde `ok: true`.
-- [x] Secrets OpenAI/Telnyx disponibles en runtime.
-- [x] Firma webhook Telnyx validada mediante Ed25519/Web Crypto.
-- [x] Telnyx Call Control transfer a OpenAI SIP/TLS.
-- [x] `call.bridged` observado.
-- [x] Webhook OpenAI recibido y verificado.
-- [x] `/accept` ejecutado tras reconocer `realtime.call.incoming`.
-- [x] Audio de respuesta de OpenAI recibido por el llamante.
+- [x] Worker público y `/health` operativo.
+- [x] Telnyx → OpenAI SIP/TLS.
+- [x] OpenAI `realtime.call.incoming` + `/accept`.
+- [x] Audio bidireccional.
+- [x] `CallSession` Durable Object por `call_id`.
+- [x] Sideband Realtime persistente fuera de `waitUntil()`.
+- [x] Reintento de `/hangup` y recuperación a `ACTIVE` si el cierre técnico falla.
 
 ## Estado
 
-El E2E mínimo de voz está validado, pero **FASE 0 todavía no está cerrada**. F0-T08 debe repetirse con la v6 para confirmar consistencia del nuevo cierre por confirmación y silencio, y siguen pendientes los demás casos no marcados junto al baseline de latencia/setup.
+El E2E mínimo de voz está validado. **F0-T08 debe repetirse con v9** para validar la nueva política semántica, especialmente `END_CLEAR`, `END_AMBIGUOUS`, reset a cero tras `CONTINUE`, timeout durante ambigüedad y límite de tres ambigüedades consecutivas.
