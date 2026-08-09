@@ -7,6 +7,9 @@ export type TenantConfiguration = {
     name: string;
     greeting: string;
   };
+  tools: {
+    allowed: string[];
+  };
 };
 
 const TENANTS: Record<string, TenantConfiguration> = {
@@ -18,6 +21,9 @@ const TENANTS: Record<string, TenantConfiguration> = {
     assistant: {
       name: "Carolina",
       greeting: "Buenas, soy Carolina, asistente virtual de la Clínica Estética Madrid. ¿En qué puedo ayudarte?",
+    },
+    tools: {
+      allowed: ["get_business_information"],
     },
   },
 };
