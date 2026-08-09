@@ -6,15 +6,7 @@
 
 ## 1. Objetivo
 
-FASE 1 convierte el E2E de voz validado en un bootstrap multi-tenant observable y medible.
-
-La definición canónica de arquitectura establece:
-
-```text
-F1 = Baseline + observabilidad + TenantResolver
-```
-
-El objetivo funcional principal es que una llamada deje de depender de un tenant fijo de desarrollo y se resuelva mediante contexto confiable de telefonía:
+FASE 1 convierte el E2E de voz validado en un bootstrap multi-tenant observable, medible y personalizado por configuración.
 
 ```text
 called_number
@@ -23,26 +15,37 @@ TenantResolver
    ↓
 tenant_id
    ↓
-Call Bootstrap / RoutingDecision
+TenantConfiguration
+   ↓
+RealtimeSessionConfiguration + CallSession
 ```
 
-No se añade todavía lógica específica de clínica, restaurante, citas o reservas.
+La personalización pertenece a configuración del tenant; no se crean forks ni condicionales de Core por cliente.
 
-## 2. Reglas aplicables
+## 2. Tenant de validación F1
 
-- El dominio no importa SDKs externos.
-- El tenant se resuelve desde routing confiable, inicialmente `called_number → tenant_id`.
-- Toda sesión tiene `tenant_id`.
-- No comienza conversación específica de negocio antes de completar Tenant Binding.
-- La personalización futura se hará mediante `TenantConfiguration`, módulos y providers, nunca forks o condicionales de cliente.
-- No se optimiza latencia sin baseline.
-- Ningún gate se cierra sin evidencia.
+El número real de pruebas queda asociado a:
 
-## 3. Bloques de trabajo
+```text
++34910789057
+   ↓
+tenant_id = clinica-estetica-madrid
+   ↓
+Business = Clínica Estética Madrid
+Assistant = Carolina
+```
 
-### F1-A — TenantResolver — IMPLEMENTADO
+Configuración inicial del saludo:
 
-Contrato de dominio independiente del carrier:
+```text
+Buenas, soy Carolina, asistente virtual de la Clínica Estética Madrid. ¿En qué puedo ayudarte?
+```
+
+Este saludo tiene una función de validación arquitectónica: si se escucha al llamar al número configurado, existe evidencia audible de que el número fue resuelto al tenant correcto y que su `TenantConfiguration` llegó a la sesión Realtime.
+
+## 3. F1-A — TenantResolver — IMPLEMENTADO
+
+Contrato independiente del carrier:
 
 ```text
 TenantRoutingContext { calledNumber }
@@ -52,51 +55,35 @@ TenantResolver.resolve(...)
 TenantResolution { tenantId, calledNumber, source }
 ```
 
-Implementación inicial: `StaticTenantResolver`, alimentado por configuración `TENANT_ROUTES_JSON`.
+Implementación inicial: `StaticTenantResolver`, alimentado por `TENANT_ROUTES_JSON`.
 
-Configuración inicial de desarrollo:
+Ruta vigente:
 
 ```text
-+34910789057 → dev-clinic
++34910789057 → clinica-estetica-madrid
 ```
 
-`DEFAULT_TENANT_ID` se conserva temporalmente únicamente por compatibilidad histórica, pero ya no es fuente de routing del CallOrchestrator.
+`DEFAULT_TENANT_ID` puede permanecer temporalmente por compatibilidad histórica, pero no participa en el routing operativo.
 
-### F1-B — Integración con CallOrchestrator — IMPLEMENTADO, E2E PENDIENTE
+## 4. F1-B — CallOrchestrator — IMPLEMENTADO, E2E PENDIENTE
 
 En `call.initiated` inbound:
 
-1. se obtiene `payload.to` como número llamado confiable;
-2. se ejecuta `TenantResolver`;
-3. se registran `tenant_resolution_started` y resultado;
-4. si existe ruta, el CallOrchestrator selecciona OpenAI Realtime con tenant binding conocido;
-5. si no existe ruta, no se aplica tenant por defecto y la llamada se rechaza mediante Telnyx `CALL_REJECTED`;
-6. el webhook se responde con HTTP 200 tras aceptar la decisión, evitando reintentos innecesarios de entrega;
-7. `DEFAULT_TENANT_ID` no participa en la decisión operativa.
-
-Flujo vigente:
-
 ```text
-Telnyx call.initiated
-        ↓
 payload.to
-        ↓
+   ↓
 StaticTenantResolver
-        ↓
-     ¿ruta?
-     /    \
-   no      sí
-   ↓       ↓
-reject   tenant_id
-            ↓
-       RoutingDecision
-            ↓
-     OpenAI Realtime SIP
+   ↓
+¿ruta conocida?
+   ├─ NO → tenant_resolution_failed → Telnyx reject
+   └─ SÍ → tenant_id → TenantConfiguration → transfer OpenAI
 ```
 
-### F1-C — Tenant binding hacia OpenAI / CallSession — PARCIAL
+No existe fallback silencioso a otro tenant.
 
-Para conservar el binding durante el salto Telnyx → OpenAI, el comando `transfer` añade headers SIP internos:
+## 5. F1-C — Tenant binding y personalización — IMPLEMENTADO, E2E PENDIENTE
+
+El binding se conserva en el salto Telnyx → OpenAI mediante headers SIP internos:
 
 ```text
 X-IA-Tenant-ID
@@ -104,143 +91,112 @@ X-IA-Called-Number
 X-IA-Routing-Source
 ```
 
-OpenAI expone los headers del INVITE en `realtime.call.incoming`; el webhook valida la presencia de los tres antes de `/accept`.
+El webhook `realtime.call.incoming` exige esos datos antes de `/accept`.
+
+Después:
 
 ```text
-TenantResolver
+tenant_id
    ↓
-Telnyx transfer custom_headers
+getTenantConfiguration(...)
    ↓
-SIP INVITE OpenAI
+Clínica Estética Madrid / Carolina
    ↓
-realtime.call.incoming.sip_headers
+RealtimeSessionConfiguration
    ↓
-Call Bootstrap tenant binding
+CallSession Durable Object
+   ↓
+saludo inicial automático
 ```
 
-Si falta el binding esperado, el bootstrap falla cerrado con `tenant_binding_missing`; no se sustituye silenciosamente por `DEFAULT_TENANT_ID`.
-
-Pendiente de F1-C:
-
-- persistir/propagar `tenant_id` dentro de `CallSession` Durable Object;
-- usar posteriormente ese binding para construir `TenantConfiguration` y `RealtimeSessionConfiguration` específicas.
-
-### F1-D — Baseline
-
-Registrar como mínimo por llamada:
-
-- `call_received_at`;
-- tiempo Telnyx webhook → comando transfer;
-- tiempo `realtime.call.incoming` → `/accept` completado;
-- tiempo `/accept` → sideband `CallSession` conectado;
-- setup total observable hasta sesión lista;
-- duración total de llamada;
-- resultado de cierre.
-
-Para cada métrica agregable se documentarán muestras y, cuando haya volumen suficiente, p50/p95.
-
-FASE 0 aceptó latencia perceptual; F1 debe crear baseline cuantitativo sin inventar valores retrospectivos.
-
-### F1-E — Observabilidad — PARCIAL
-
-Logs estructurados incluyen cuando aplica:
+`CallSession` recibe y conserva:
 
 ```text
 call_id
-call_control_id
-call_session_id
 tenant_id
-called_number
-routing_source
-elapsed_ms
-result/status
+business_name
+assistant_name
+initial_greeting
 ```
 
-No se registran secretos ni contenido sensible innecesario.
+El saludo solo se solicita una vez por `CallSession` mediante `greetingSent`, incluso si `/start` se reintentara.
 
-Eventos F1 implementados:
+## 6. Observabilidad F1
+
+Eventos relevantes:
 
 ```text
 tenant_resolution_started
 tenant_resolution_succeeded
 tenant_resolution_failed
+call_orchestrator_route_selected
 call_bootstrap_started
+realtime_call_incoming
+realtime_accept_result
+call_session_start_requested
+realtime_sideband_connected
+tenant_initial_greeting_requested
 call_bootstrap_ready
-call_bootstrap_tenant_binding_missing
 ```
 
-Los eventos existentes de Telnyx/OpenAI/CallSession continúan siendo parte del trazado.
+Los logs incluyen `tenant_id` cuando aplica y nunca exponen secretos.
 
-## 4. Manejo de errores
+## 7. Prueba E2E F1-T05 — tenant binding audible
 
-### Número sin tenant
+Realizar una llamada al número configurado y no hablar inicialmente.
+
+Esperado:
+
+```text
+Telnyx call.initiated
+→ tenant_resolution_succeeded tenant_id=clinica-estetica-madrid
+→ transfer OpenAI con headers SIP
+→ realtime.call.incoming
+→ call_bootstrap_started
+→ /accept
+→ CallSession tenant_id=clinica-estetica-madrid
+→ realtime_sideband_connected
+→ tenant_initial_greeting_requested
+→ audio: "Buenas, soy Carolina, asistente virtual de la Clínica Estética Madrid. ¿En qué puedo ayudarte?"
+```
+
+PASS si:
+
+- el nombre de negocio escuchado es Clínica Estética Madrid;
+- la asistente se presenta como Carolina;
+- la conversación continúa normalmente después del saludo;
+- el cierre semántico v9 sigue funcionando;
+- no aparece `tenant_binding_missing` ni `tenant_configuration_missing`.
+
+## 8. Manejo de errores
+
+Número desconocido:
 
 ```text
 called_number sin ruta
 → tenant_resolution_failed
-→ no seleccionar tenant por defecto
-→ Telnyx reject CALL_REJECTED
+→ reject CALL_REJECTED
 ```
 
-FASE 1 adopta fail-closed para routing desconocido. Ya no existe fallback silencioso a `dev-clinic`.
-
-### Binding SIP ausente
+Tenant conocido sin configuración:
 
 ```text
-realtime.call.incoming sin X-IA-Tenant-ID / X-IA-Called-Number / routing source
+tenant_id resuelto
+→ tenant_configuration_not_found
+→ reject
+```
+
+Binding SIP ausente:
+
+```text
+realtime.call.incoming sin headers internos requeridos
 → call_bootstrap_tenant_binding_missing
 → no /accept
 ```
 
-### Configuración inválida
+## 9. Health esperado
 
-`TENANT_ROUTES_JSON` inválido o con números duplicados produce error visible; no se elige un tenant arbitrario.
-
-`/health` publica únicamente estado de validez y número de rutas; no expone secretos.
-
-## 5. Pruebas F1
-
-### F1-T01 — número conocido
-
-```text
-+34910789057 → dev-clinic
-```
-
-Esperado: resolución exacta por `called_number`.
-
-### F1-T02 — normalización
-
-El mismo E.164 con caracteres de presentación tolerados debe resolver al mismo tenant.
-
-### F1-T03 — número desconocido
-
-Esperado: ruta no encontrada, `tenant_resolution_failed` y rechazo controlado; nunca tenant incorrecto.
-
-### F1-T04 — duplicados de configuración
-
-Esperado: error de configuración.
-
-### F1-T05 — llamada E2E con tenant binding
-
-Llamada real al número configurado:
-
-```text
-Telnyx call.initiated
-→ TenantResolver
-→ tenant_resolution_succeeded tenant_id=dev-clinic
-→ transfer OpenAI con headers de binding
-→ realtime.call.incoming
-→ call_bootstrap_started tenant_id=dev-clinic
-→ /accept
-→ CallSession
-→ call_bootstrap_ready
-```
-
-### F1-T06 — aislamiento básico
-
-Cuando exista un segundo número de prueba, confirmar que cada número produce su tenant correspondiente y que no hay fallback cruzado.
-
-## 6. Health esperado tras despliegue F1-B
+Tras despliegue de esta iteración:
 
 ```json
 {
@@ -249,55 +205,56 @@ Cuando exista un segundo número de prueba, confirmar que cada número produce s
   "tenant_routing_source": "called_number",
   "tenant_routes_valid": true,
   "tenant_routes_count": 1,
+  "configured_tenant_id": "clinica-estetica-madrid",
+  "configured_business_name": "Clínica Estética Madrid",
+  "configured_assistant_name": "Carolina",
+  "initial_tenant_greeting": true,
   "default_tenant_used_for_routing": false,
   "tenant_binding_transport": "sip_custom_headers",
-  "tracing": "f1-tenant-routing-v1"
+  "tracing": "f1-tenant-greeting-v2"
 }
 ```
 
-## 7. Gate F1
+## 10. Baseline pendiente
 
-FASE 1 se puede cerrar cuando:
+F1 debe registrar cuantitativamente:
 
-- [x] `TenantResolver` está implementado como contrato independiente.
-- [x] routing inbound usa `called_number → tenant_id` en código.
-- [x] una ruta desconocida no termina asignada silenciosamente a otro tenant en código.
-- [ ] `tenant_id` queda unido al `CallSession` Durable Object.
-- [x] logs de tenant resolution y bootstrap están implementados.
-- [ ] baseline cuantitativo inicial de setup está documentado.
-- [ ] pruebas unitarias/contractuales aplicables están implementadas o existe evidencia equivalente.
-- [ ] prueba E2E real confirma tenant binding.
-- [ ] documentación y arquitectura están reconciliadas al cierre.
+- webhook Telnyx → transfer;
+- `realtime.call.incoming` → `/accept`;
+- `/accept` → sideband conectado;
+- setup total hasta `call_bootstrap_ready`;
+- duración de llamada y resultado de cierre.
 
-## 8. Estado actual
+No se inventan valores retrospectivos. p50/p95 se calcularán cuando haya suficiente evidencia.
 
-Completado:
+## 11. Gate F1
 
-- [x] FASE 0 cerrada PASS.
-- [x] creado `apps/control-plane/src/tenant-resolver.ts`;
-- [x] definidos `TenantResolver`, `TenantRoutingContext` y `TenantResolution`;
-- [x] creada implementación inicial `StaticTenantResolver` sin SDK externo;
-- [x] parser de `TENANT_ROUTES_JSON` con validación y detección de duplicados;
-- [x] ruta de desarrollo declarada en Wrangler: `+34910789057 → dev-clinic`;
-- [x] `CallOrchestrator` usa `payload.to → TenantResolver`;
-- [x] eliminado `DEFAULT_TENANT_ID` como fuente de routing;
-- [x] routing desconocido falla cerrado mediante rechazo Telnyx;
-- [x] tenant binding propagado Telnyx → OpenAI mediante headers SIP internos;
-- [x] webhook OpenAI valida el binding antes de aceptar la llamada;
-- [x] `/health` actualizado a F1 y expone estado de TenantResolver sin datos sensibles.
+- [x] `TenantResolver` independiente.
+- [x] routing por `called_number → tenant_id`.
+- [x] número desconocido falla cerrado.
+- [x] `TenantConfiguration` mínima creada para el tenant de validación.
+- [x] `tenant_id` propagado a `CallSession`.
+- [x] saludo inicial derivado de configuración del tenant.
+- [x] logs de tenant resolution/bootstrap implementados.
+- [ ] despliegue de la iteración verificado.
+- [ ] F1-T05 E2E confirma binding y saludo audible.
+- [ ] baseline cuantitativo inicial documentado.
+- [ ] pruebas contractuales/unitarias o evidencia equivalente.
+- [ ] documentación y arquitectura reconciliadas al cierre.
 
-Commit principal de integración F1-B:
+## 12. Commits de esta iteración
 
 ```text
-e90576f60f4e9aeb98a435a285658d93d577b911
+59a8c960985c4e6cb69d775df7630b0fdcb0d664  TenantConfiguration Estética Madrid
+e860bc0477a879317e6daee7db65f90c260c5d5c  número → clinica-estetica-madrid
+eba3ed47530924e99326c40175987571c8439a18  tenant binding + saludo en CallSession
+d9d987566b764255d7e7892684d562c2871adbe2  bootstrap personalizado en Worker
 ```
 
-Siguiente tarea inmediata:
+Siguiente acción:
 
 ```text
-Despliegue automático Cloudflare
-→ comprobar /health f1-tenant-routing-v1
-→ llamada E2E F1-T05
-→ confirmar headers/binding
-→ propagar tenant_id al CallSession Durable Object
+esperar deploy Cloudflare
+→ comprobar /health f1-tenant-greeting-v2
+→ realizar F1-T05
 ```
