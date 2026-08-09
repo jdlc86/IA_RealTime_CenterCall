@@ -347,6 +347,7 @@ async function handleTelnyxWebhook(
       called_number: resolution.calledNumber,
       routing_source: resolution.source,
       business_name: tenantConfig.business.displayName,
+      allowed_tools: tenantConfig.tools.allowed,
     });
 
     log("info", "call_orchestrator_route_selected", {
@@ -376,6 +377,7 @@ async function handleTelnyxWebhook(
       called_number: resolution.calledNumber,
       routing_source: resolution.source,
       business_name: tenantConfig.business.displayName,
+      allowed_tools: tenantConfig.tools.allowed,
     });
   }
 
@@ -391,7 +393,8 @@ function buildRealtimeSessionConfiguration(
     `Tu nombre de asistente es ${tenantConfig.assistant.name}.`,
     "Habla siempre en español, de forma amable, natural, breve y profesional.",
     "La identidad del negocio y del asistente procede de TenantConfiguration y no debe sustituirse por otro negocio.",
-    "No gestiones todavía citas, reservas, pedidos ni acciones externas durante FASE 1.",
+    "Las herramientas empresariales se habilitan únicamente después de la clasificación conversation_intent y solo desde la allowlist del tenant.",
+    "No gestiones todavía citas, reservas, pedidos ni escrituras externas en FASE 3-B.",
     "No solicites datos médicos ni información personal innecesaria.",
     "No inventes información del negocio que no esté presente en la configuración o en una fuente autorizada.",
     "Si el usuario te interrumpe, deja de hablar y escúchalo.",
@@ -403,7 +406,7 @@ function buildRealtimeSessionConfiguration(
     "Usa END_AMBIGUOUS cuando parece que el usuario podría estar terminando pero el contexto no permite afirmarlo con suficiente seguridad.",
     "Una mención narrativa o contextual de una despedida no implica END_CLEAR si el usuario no pretende terminar la conversación actual.",
     "No anuncies que vas a colgar por tu cuenta. CallSession decide la política, genera la despedida final y ejecuta el hangup.",
-    "Después de invocar conversation_intent espera el resultado de la herramienta; CallSession generará la respuesta hablada apropiada.",
+    "Después de invocar conversation_intent espera el resultado de la herramienta; CallSession generará la siguiente etapa de respuesta.",
   ].join("\n");
 
   return {
@@ -516,8 +519,10 @@ async function startCallSession(
     tenant_id: tenantConfig.tenantId,
     business_name: tenantConfig.business.displayName,
     assistant_name: tenantConfig.assistant.name,
+    allowed_tools: tenantConfig.tools.allowed,
     persistence: "durable_object",
     intent_policy: "semantic_v9",
+    tool_gateway: "tenant_allowlist_v1",
   });
 
   const response = await stub.fetch("https://call-session.internal/start", {
@@ -529,6 +534,7 @@ async function startCallSession(
       business_name: tenantConfig.business.displayName,
       assistant_name: tenantConfig.assistant.name,
       initial_greeting: tenantConfig.assistant.greeting,
+      allowed_tools: tenantConfig.tools.allowed,
     }),
   });
 
@@ -620,6 +626,7 @@ async function handleOpenAIWebhook(request: Request, env: WorkerEnv): Promise<Re
     routing_source: routingSource,
     business_name: tenantConfig.business.displayName,
     assistant_name: tenantConfig.assistant.name,
+    allowed_tools: tenantConfig.tools.allowed,
   });
 
   const configuration = buildRealtimeSessionConfiguration(env, tenantConfig);
@@ -630,6 +637,7 @@ async function handleOpenAIWebhook(request: Request, env: WorkerEnv): Promise<Re
     routing_source: routingSource,
     business_name: tenantConfig.business.displayName,
     assistant_name: tenantConfig.assistant.name,
+    allowed_tools: tenantConfig.tools.allowed,
     sip_header_names: incoming.data.sip_headers?.map((header) => header.name) ?? [],
   });
 
@@ -676,6 +684,7 @@ async function handleOpenAIWebhook(request: Request, env: WorkerEnv): Promise<Re
     routing_source: routingSource,
     business_name: tenantConfig.business.displayName,
     assistant_name: tenantConfig.assistant.name,
+    allowed_tools: tenantConfig.tools.allowed,
     call_session_started: callSessionStarted,
   });
 
@@ -687,6 +696,8 @@ async function handleOpenAIWebhook(request: Request, env: WorkerEnv): Promise<Re
     routing_source: routingSource,
     business_name: tenantConfig.business.displayName,
     assistant_name: tenantConfig.assistant.name,
+    allowed_tools: tenantConfig.tools.allowed,
+    tool_gateway: true,
     intent_hangup: true,
     intent_hangup_mode: "semantic_intent_v9",
     call_session_started: callSessionStarted,
@@ -703,6 +714,7 @@ export default {
       let configuredTenantId: string | null = null;
       let configuredBusinessName: string | null = null;
       let configuredAssistantName: string | null = null;
+      let configuredAllowedTools: string[] = [];
       try {
         const routes = parseTenantRoutesJson(requireEnvString(env.TENANT_ROUTES_JSON, "TENANT_ROUTES_JSON"));
         new StaticTenantResolver(routes);
@@ -713,6 +725,7 @@ export default {
           const tenantConfig = getTenantConfiguration(configuredTenantId);
           configuredBusinessName = tenantConfig?.business.displayName ?? null;
           configuredAssistantName = tenantConfig?.assistant.name ?? null;
+          configuredAllowedTools = tenantConfig?.tools.allowed ?? [];
         }
       } catch {
         tenantRoutesValid = false;
@@ -721,7 +734,7 @@ export default {
       return json({
         ok: true,
         service: "IA_RealTime_CenterCall",
-        phase: "F1",
+        phase: "F3",
         environment: env.ENVIRONMENT,
         telephony_provider: "telnyx",
         call_orchestrator: true,
@@ -732,11 +745,15 @@ export default {
         configured_tenant_id: configuredTenantId,
         configured_business_name: configuredBusinessName,
         configured_assistant_name: configuredAssistantName,
+        configured_allowed_tools: configuredAllowedTools,
+        tool_gateway: true,
+        tool_gateway_policy: "tenant_allowlist_fail_closed",
+        first_read_tool: "get_business_information",
         initial_tenant_greeting: true,
         default_tenant_used_for_routing: false,
         tenant_binding_transport: "sip_custom_headers",
         telnyx_webhook_verification: "webcrypto-ed25519",
-        tracing: "f1-tenant-greeting-v2",
+        tracing: "f3-tool-gateway-v1",
         realtime_sideband_lifecycle: "durable_object",
         call_session_class: "CallSession",
         intent_hangup: true,
