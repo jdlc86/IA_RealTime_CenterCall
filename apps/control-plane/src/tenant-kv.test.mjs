@@ -5,7 +5,7 @@ import {
   phoneRouteKey,
   tenantConfigurationKey,
   parseTenantConfigurationV1,
-} from "../../.test-dist/tenant-kv.js";
+} from "../.test-dist/tenant-kv.js";
 
 class FakeKv {
   constructor(entries = {}) {
