@@ -115,8 +115,11 @@ Devuelve información autorizada procedente de la configuración del tenant:
 ```text
 business_name
 assistant_name
+years_in_operation
 source = tenant_configuration
 ```
+
+El tenant de validación almacena `yearsInOperation = 20`. Este dato se usa deliberadamente como **dato de verificación tool-only**: no se incluye en el saludo, en las instrucciones base de Realtime ni en la descripción de la tool. Solo llega al modelo después de ejecutar `get_business_information` y recibir su `function_call_output`.
 
 No modifica ningún sistema.
 
@@ -204,10 +207,10 @@ Cada evento incluye `call_id`, `tenant_id` y tool cuando aplica.
 
 ## 9. Prueba E2E F3-T08 — primera READ
 
-Después de confirmar que `/health` muestra F3, realizar una llamada normal. Tras el saludo de Carolina decir literalmente o de forma equivalente:
+Después de confirmar que `/health` muestra F3, realizar una llamada normal. Tras el saludo de Carolina preguntar:
 
 ```text
-Carolina, consulta tu herramienta de información del negocio y dime el nombre oficial de la clínica y tu nombre de asistente.
+Carolina, ¿cuántos años lleva funcionando la clínica?
 ```
 
 Esperado:
@@ -218,10 +221,11 @@ conversation_intent = CONTINUE
 → get_business_information
 → tool_gateway_request
 → tool_gateway_result ok=true access=READ
-→ Carolina responde con Clínica Estética Madrid y Carolina
+→ function_call_output contiene years_in_operation = 20
+→ Carolina responde que la clínica lleva 20 años funcionando
 ```
 
-La prueba solo se considera PASS si existe evidencia de `tool_gateway_request/result`; que Carolina conozca el nombre por el prompt no es suficiente.
+La prueba solo se considera PASS si Carolina responde **20 años** y existe evidencia de `tool_gateway_request/result`. El valor 20 no está disponible en el prompt base, por lo que esta prueba proporciona evidencia audible de la ejecución de la READ tool.
 
 ## 10. Health esperado
 
@@ -259,7 +263,7 @@ La prueba solo se considera PASS si existe evidencia de `tool_gateway_request/re
 ```text
 Cloudflare deploy automático
 → /health = F3 / f3-tool-gateway-v1
-→ ejecutar F3-T08
+→ ejecutar F3-T08 preguntando los años de funcionamiento
 → revisar tool_gateway_request/result
 → comprobar una despedida END_CLEAR como regresión v9
 → evaluar cierre de F3 o siguiente bloque
