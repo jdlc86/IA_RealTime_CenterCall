@@ -18,6 +18,14 @@ type RealtimeSidebandEvent = {
   error?: { type?: string; code?: string; message?: string };
 };
 
+type CallSessionStartBody = {
+  call_id?: unknown;
+  tenant_id?: unknown;
+  business_name?: unknown;
+  assistant_name?: unknown;
+  initial_greeting?: unknown;
+};
+
 const IDLE_TIMEOUT_MS = 10_000;
 const AMBIGUOUS_LIMIT = 3;
 const FINAL_FAREWELL_WATCHDOG_MS = 7_000;
@@ -32,6 +40,11 @@ function log(level: "info" | "error", event: string, details: Record<string, unk
 
 function requireEnvString(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`Missing runtime configuration: ${name}`);
+  return value.trim();
+}
+
+function requireBodyString(value: unknown, name: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`Missing call session field: ${name}`);
   return value.trim();
 }
 
@@ -89,6 +102,11 @@ export class CallSession extends DurableObject<CallSessionEnv> {
   private socket: WebSocket | null = null;
   private connectPromise: Promise<void> | null = null;
   private callId: string | null = null;
+  private tenantId: string | null = null;
+  private businessName: string | null = null;
+  private assistantName: string | null = null;
+  private initialGreeting: string | null = null;
+  private greetingSent = false;
   private state: ClosingState = "active";
   private ambiguousCount = 0;
   private closingReason = "user_requested_end";
@@ -100,17 +118,44 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     const url = new URL(request.url);
 
     if (request.method === "POST" && url.pathname === "/start") {
-      const body = (await request.json()) as { call_id?: unknown };
-      if (typeof body.call_id !== "string" || !body.call_id.trim()) {
-        return Response.json({ ok: false, error: "missing_call_id" }, { status: 400 });
+      let body: CallSessionStartBody;
+      try {
+        body = (await request.json()) as CallSessionStartBody;
+      } catch {
+        return Response.json({ ok: false, error: "invalid_json" }, { status: 400 });
       }
 
-      const callId = body.call_id.trim();
+      let callId: string;
+      let tenantId: string;
+      let businessName: string;
+      let assistantName: string;
+      let initialGreeting: string;
+      try {
+        callId = requireBodyString(body.call_id, "call_id");
+        tenantId = requireBodyString(body.tenant_id, "tenant_id");
+        businessName = requireBodyString(body.business_name, "business_name");
+        assistantName = requireBodyString(body.assistant_name, "assistant_name");
+        initialGreeting = requireBodyString(body.initial_greeting, "initial_greeting");
+      } catch (error) {
+        return Response.json(
+          { ok: false, error: error instanceof Error ? error.message : "invalid_call_session_start" },
+          { status: 400 },
+        );
+      }
+
       if (this.callId && this.callId !== callId) {
         return Response.json({ ok: false, error: "call_session_id_mismatch" }, { status: 409 });
       }
+      if (this.tenantId && this.tenantId !== tenantId) {
+        return Response.json({ ok: false, error: "call_session_tenant_mismatch" }, { status: 409 });
+      }
 
       this.callId = callId;
+      this.tenantId = tenantId;
+      this.businessName = businessName;
+      this.assistantName = assistantName;
+      this.initialGreeting = initialGreeting;
+
       if (!this.socket) {
         this.connectPromise ??= this.connectSideband(callId).finally(() => {
           this.connectPromise = null;
@@ -118,9 +163,15 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         await this.connectPromise;
       }
 
+      this.sendInitialGreetingIfNeeded();
+
       return Response.json({
         ok: true,
         call_id: callId,
+        tenant_id: tenantId,
+        business_name: businessName,
+        assistant_name: assistantName,
+        greeting_sent: this.greetingSent,
         state: this.state,
         ambiguous_count: this.ambiguousCount,
         sideband: "durable_object",
@@ -132,6 +183,10 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       return Response.json({
         ok: true,
         call_id: this.callId,
+        tenant_id: this.tenantId,
+        business_name: this.businessName,
+        assistant_name: this.assistantName,
+        greeting_sent: this.greetingSent,
         state: this.state,
         ambiguous_count: this.ambiguousCount,
         ambiguous_limit: AMBIGUOUS_LIMIT,
@@ -145,7 +200,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
   private async connectSideband(callId: string): Promise<void> {
     const startedAt = Date.now();
-    log("info", "realtime_sideband_connect_start", { call_id: callId });
+    log("info", "realtime_sideband_connect_start", { call_id: callId, tenant_id: this.tenantId });
 
     const response = await fetch(`https://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}`, {
       method: "GET",
@@ -167,6 +222,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.socket = socket;
     log("info", "realtime_sideband_connected", {
       call_id: callId,
+      tenant_id: this.tenantId,
       elapsed_ms: Date.now() - startedAt,
       lifecycle: "durable_object_outbound_websocket",
       intent_policy: "semantic_v9",
@@ -181,6 +237,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       this.socket = null;
       log("info", "realtime_sideband_closed", {
         call_id: this.callId,
+        tenant_id: this.tenantId,
         state: this.state,
         ambiguous_count: this.ambiguousCount,
         hangup_started: this.hangupStarted,
@@ -190,6 +247,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     socket.addEventListener("error", () => {
       log("error", "realtime_sideband_socket_error", {
         call_id: this.callId,
+        tenant_id: this.tenantId,
         state: this.state,
         ambiguous_count: this.ambiguousCount,
       });
@@ -199,6 +257,21 @@ export class CallSession extends DurableObject<CallSessionEnv> {
   private send(event: unknown): void {
     if (!this.socket) throw new Error("Realtime sideband socket is not connected");
     this.socket.send(JSON.stringify(event));
+  }
+
+  private sendInitialGreetingIfNeeded(): void {
+    if (this.greetingSent || !this.socket || !this.initialGreeting || !this.callId) return;
+    this.greetingSent = true;
+    this.createSpokenResponse(
+      `Pronuncia exactamente este saludo inicial y nada más: ${JSON.stringify(this.initialGreeting)}`,
+    );
+    log("info", "tenant_initial_greeting_requested", {
+      call_id: this.callId,
+      tenant_id: this.tenantId,
+      business_name: this.businessName,
+      assistant_name: this.assistantName,
+      greeting_chars: this.initialGreeting.length,
+    });
   }
 
   private sendBestEffortCancel(): void {
@@ -248,6 +321,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
     log("info", "call_intent_continue", {
       call_id: this.callId,
+      tenant_id: this.tenantId,
       reason,
       ambiguous_count_before_reset: previousAmbiguousCount,
       ambiguous_count: 0,
@@ -256,6 +330,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     if (previousAmbiguousCount > 0) {
       log("info", "call_intent_ambiguity_reset", {
         call_id: this.callId,
+        tenant_id: this.tenantId,
         reason: "user_returned_to_normal_conversation",
         previous_ambiguous_count: previousAmbiguousCount,
       });
@@ -281,6 +356,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
     log("info", "call_intent_ambiguous", {
       call_id: this.callId,
+      tenant_id: this.tenantId,
       reason,
       ambiguous_count: this.ambiguousCount,
       ambiguous_limit: AMBIGUOUS_LIMIT,
@@ -305,6 +381,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
     log("info", "call_intent_end_clear", {
       call_id: this.callId,
+      tenant_id: this.tenantId,
       reason,
       ambiguous_count: this.ambiguousCount,
     });
@@ -320,6 +397,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.closingResponseId = null;
     log("info", "end_call_closing_started", {
       call_id: this.callId,
+      tenant_id: this.tenantId,
       source,
       reason,
       ambiguous_count: this.ambiguousCount,
@@ -329,7 +407,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.createSpokenResponse(
       "Despídete ahora con una sola frase muy breve, natural y amable en español. No preguntes nada más, no ofrezcas más ayuda y no menciones procesos internos. Esta es la despedida final antes de cerrar la llamada.",
     );
-    log("info", "end_call_final_farewell_requested", { call_id: this.callId, source });
+    log("info", "end_call_final_farewell_requested", { call_id: this.callId, tenant_id: this.tenantId, source });
 
     this.clearFinalFarewellWatchdog();
     this.finalFarewellWatchdog = setTimeout(() => {
@@ -344,6 +422,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.closingResponseId = null;
     log("info", "end_call_closing_armed_current_audio", {
       call_id: this.callId,
+      tenant_id: this.tenantId,
       source,
       reason,
       ambiguous_count: this.ambiguousCount,
@@ -362,6 +441,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
     log("info", "end_call_hangup_triggered", {
       call_id: this.callId,
+      tenant_id: this.tenantId,
       trigger,
       state: this.state,
       ambiguous_count: this.ambiguousCount,
@@ -377,6 +457,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         lastError = error;
         log("error", "end_call_hangup_attempt_failed", {
           call_id: this.callId,
+          tenant_id: this.tenantId,
           trigger,
           attempt,
           error: error instanceof Error ? error.message : String(error),
@@ -393,6 +474,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.ambiguousCount = 0;
     log("error", "end_call_hangup_abandoned_session_reactivated", {
       call_id: this.callId,
+      tenant_id: this.tenantId,
       trigger,
       error: lastError instanceof Error ? lastError.message : String(lastError),
     });
@@ -406,7 +488,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
   private async hangupOpenAICall(callId: string, reason: string, attempt: number): Promise<void> {
     const startedAt = Date.now();
-    log("info", "end_call_hangup_start", { call_id: callId, reason, attempt });
+    log("info", "end_call_hangup_start", { call_id: callId, tenant_id: this.tenantId, reason, attempt });
 
     const response = await fetch(`https://api.openai.com/v1/realtime/calls/${encodeURIComponent(callId)}/hangup`, {
       method: "POST",
@@ -418,6 +500,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     const body = await response.text();
     log(response.ok ? "info" : "error", "end_call_hangup_result", {
       call_id: callId,
+      tenant_id: this.tenantId,
       status: response.status,
       elapsed_ms: Date.now() - startedAt,
       attempt,
@@ -435,18 +518,19 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     try {
       event = JSON.parse(text) as RealtimeSidebandEvent;
     } catch {
-      log("error", "realtime_sideband_invalid_json", { call_id: this.callId });
+      log("error", "realtime_sideband_invalid_json", { call_id: this.callId, tenant_id: this.tenantId });
       return;
     }
 
     if (event.type === "error") {
       if (event.error?.code === "response_cancel_not_active") {
-        log("info", "realtime_sideband_cancel_noop", { call_id: this.callId, state: this.state });
+        log("info", "realtime_sideband_cancel_noop", { call_id: this.callId, tenant_id: this.tenantId, state: this.state });
         return;
       }
 
       log("error", "realtime_sideband_error_event", {
         call_id: this.callId,
+        tenant_id: this.tenantId,
         state: this.state,
         ambiguous_count: this.ambiguousCount,
         error_type: event.error?.type,
@@ -466,6 +550,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       if (!classification) {
         log("error", "call_intent_invalid_arguments", {
           call_id: this.callId,
+          tenant_id: this.tenantId,
           arguments_chars: event.arguments?.length ?? 0,
         });
         this.sendToolResult(event.call_id, { ok: false, error: "invalid_intent_arguments" });
@@ -475,6 +560,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
       log("info", "call_intent_classified", {
         call_id: this.callId,
+        tenant_id: this.tenantId,
         intent: classification.intent,
         reason: classification.reason,
         state_before: this.state,
@@ -499,6 +585,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     if (event.type === "conversation.item.input_audio_transcription.completed" && event.transcript) {
       log("info", "call_user_transcription_observed", {
         call_id: this.callId,
+        tenant_id: this.tenantId,
         state: this.state,
         ambiguous_count: this.ambiguousCount,
         transcript_chars: event.transcript.length,
@@ -510,6 +597,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       if (this.state === "ambiguous") {
         log("info", "call_intent_ambiguous_silence_timeout", {
           call_id: this.callId,
+          tenant_id: this.tenantId,
           ambiguous_count: this.ambiguousCount,
           idle_timeout_ms: IDLE_TIMEOUT_MS,
         });
@@ -524,6 +612,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       if (this.state !== "closing" && isAssistantHangupCommitment(event.transcript)) {
         log("error", "end_call_assistant_commitment_without_core_close", {
           call_id: this.callId,
+          tenant_id: this.tenantId,
           state: this.state,
           ambiguous_count: this.ambiguousCount,
           transcript_chars: event.transcript.length,
@@ -538,6 +627,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       if (this.closingResponseId) {
         log("info", "end_call_final_response_created", {
           call_id: this.callId,
+          tenant_id: this.tenantId,
           response_id: this.closingResponseId,
         });
       }
@@ -550,6 +640,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       } else {
         log("info", "end_call_nonfinal_audio_stopped_ignored", {
           call_id: this.callId,
+          tenant_id: this.tenantId,
           response_id: event.response_id,
           closing_response_id: this.closingResponseId,
         });
