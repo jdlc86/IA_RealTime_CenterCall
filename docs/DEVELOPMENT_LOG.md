@@ -150,13 +150,13 @@ Evidencia observada antes de la corrección final y útil para aislar el problem
 
 - [x] Silencio 5–10 s: la IA permanece activa, solicita repetir/continúa esperando y la conversación puede reanudarse.
 - [x] Cuelgue manual del llamante: Telnyx registra `hangup_cause=normal_clearing`.
-- [ ] Cuelgue automático por intención de despedida: implementación añadida; prueba E2E pendiente.
+- [ ] Cuelgue automático por intención de despedida: funcional pero todavía bajo endurecimiento y prueba repetida.
 
 ### F0-014 — Cuelgue automático por intención
 
 Se implementó una acción controlada `end_call` en la sesión Realtime.
 
-Diseño:
+Diseño inicial:
 
 ```text
 usuario expresa intención clara de terminar
@@ -164,7 +164,7 @@ usuario expresa intención clara de terminar
   → sideband Realtime del Worker recibe function_call
   → Worker confirma tool result
   → Worker solicita despedida final breve
-  → output_audio_buffer.stopped
+  → output_audio_buffer.stopped o fallback
   → POST /v1/realtime/calls/{call_id}/hangup
   → SIP BYE / Telnyx call.hangup
 ```
@@ -173,35 +173,68 @@ Decisiones de seguridad/arquitectura:
 
 - [x] El modelo no recibe credenciales Telnyx ni acceso directo al proveedor telefónico.
 - [x] El cierre se ejecuta mediante el `call_id` de OpenAI, manteniendo el proveedor telefónico desacoplado.
-- [x] `end_call` solo debe usarse ante intención clara de terminar la llamada.
-- [x] El silencio nunca dispara `end_call`.
+- [x] El silencio nunca dispara `end_call` por sí solo.
 - [x] Una mención contextual de palabras como «adiós» no debe cerrar la llamada.
 - [x] Si la intención es dudosa, la IA debe confirmar antes.
 - [x] La despedida final se genera antes de ejecutar `/hangup`.
-- [x] Existe fallback de 8 s para evitar una llamada huérfana si no llega el evento de fin de audio.
+- [x] Existe fallback temporal para evitar una llamada huérfana si no llega el evento de fin de audio.
 - [x] Sideband conectado mediante WebSocket de Realtime asociado al `call_id` usando el patrón `fetch + Upgrade` compatible con Cloudflare Workers.
-- [x] Trazado actualizado a `f0-e2e-v3`.
 
-Eventos de observabilidad añadidos:
+### F0-014-B — detector híbrido de cierre
+
+Se observó que depender únicamente de `end_call` podía omitir algunas despedidas. Se añadió una segunda capa basada en transcripción auxiliar y reglas conservadoras:
 
 ```text
-realtime_sideband_connect_start
-realtime_sideband_connected
-end_call_intent_detected
-end_call_farewell_requested
-end_call_farewell_response_created
+CLEAR    → cierre directo
+PROBABLE → «¿Necesitas algo más?»
+NONE     → continuar
+```
+
+- [x] Transcripción auxiliar mediante `gpt-4o-mini-transcribe`.
+- [x] Frases de despedida claras se convierten en cierre determinista.
+- [x] Agradecimientos aislados requieren confirmación.
+- [x] Menciones contextuales quedan excluidas.
+- [x] Se conserva la tool `end_call` como segunda capa semántica del modelo.
+- [x] Trazado actualizado a `f0-e2e-v4`.
+
+### F0-014-C — la IA anuncia «voy a colgar» pero no ejecuta hangup
+
+Durante una prueba real se observó este caso:
+
+```text
+usuario se despide
+→ silencio prolongado
+→ la IA dice «parece que hubo un pequeño retraso y voy a colgar la llamada ahora»
+→ la llamada permanece activa
+```
+
+Diagnóstico: una decisión verbal del modelo no equivale a una acción técnica. Si la despedida del usuario no fue clasificada como `CLEAR` y el modelo tampoco invocó `end_call`, no se armaba el flujo de hangup aunque la IA anunciara verbalmente que iba a colgar.
+
+Corrección v5:
+
+- [x] Regla de prompt: la IA no debe afirmar que va a colgar/finalizar sin invocar `end_call`.
+- [x] Añadida guarda determinista sobre la transcripción de salida de la IA.
+- [x] Si la IA dice explícitamente «voy a colgar», «voy a finalizar la llamada», «procedo a colgar» o equivalentes, el Core arma el cierre aunque no exista tool-call.
+- [x] La guarda espera ~1,2 s para no cortar el final de la frase y ejecuta `/hangup`.
+- [x] Se amplió el detector de usuario con expresiones como «lo dejamos aquí», «me tengo que ir», `chao` y `ciao`.
+- [x] Se simplificó el criterio de `output_audio_buffer.stopped` para que cualquier fin de audio durante `endCallPending` pueda activar el hangup.
+- [x] `response.created` soporta tanto `response_id` como `response.id`.
+- [x] Trazado actualizado a `f0-e2e-v5`.
+
+Nuevos eventos relevantes:
+
+```text
+end_call_assistant_commitment_without_tool
+end_call_hangup_guard_armed
 end_call_hangup_triggered
 end_call_hangup_start
 end_call_hangup_result
-realtime_sideband_closed
 ```
-
-Prueba pendiente: realizar llamada, despedirse de forma inequívoca y confirmar que la IA se despide y que la llamada finaliza sin intervención manual.
 
 ### Estado del Gate F0
 
-La primera conversación con voz **no implica todavía PASS completo de F0**. Quedan por completar/registrar las pruebas restantes definidas en `docs/tests/PHASE0.md`, incluido el nuevo cierre automático por intención si se mantiene como requisito del comportamiento final.
+La voz E2E y el cuelgue manual están validados. El cierre automático por intención funciona en múltiples casos, pero **F0-T08 no se considera todavía estable** hasta repetir pruebas con la v5 y confirmar que desaparece el caso «la IA dice que cuelga pero la llamada sigue activa» sin introducir falsos positivos.
 
 ### Próximo hito
 
-Validar F0-014 con una llamada real y, después, completar el Gate F0 y obtener baseline de latencia/setup.
+Desplegar `f0-e2e-v5`, repetir pruebas de despedida clara, despedida ambigua, mención contextual y el caso de silencio posterior a una despedida. Después reevaluar F0-T08.
