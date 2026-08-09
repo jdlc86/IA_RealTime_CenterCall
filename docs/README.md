@@ -1,4 +1,4 @@
-# IA_RealTime_CenterCall — Documentación oficial v2.2
+# IA_RealTime_CenterCall — Documentación oficial v2.3
 
 Este directorio es la puerta de entrada a la documentación del proyecto. GitHub es la fuente de verdad del código y de la documentación.
 
@@ -7,11 +7,12 @@ Este directorio es la puerta de entrada a la documentación del proyecto. GitHub
 1. [`SYSTEM_OVERVIEW.md`](./SYSTEM_OVERVIEW.md) — qué es el producto y cómo funciona a alto nivel.
 2. [`architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — arquitectura canónica del sistema.
 3. [`architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — reglas no negociables de implementación.
-4. [`implementation/PHASE_0_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_0_IMPLEMENTATION_GUIDE.md) — guía operativa y reproducible de la FASE 0.
-5. [`implementation/END_CALL_INTENT_V9.md`](./implementation/END_CALL_INTENT_V9.md) — flujo canónico de cierre por intención semántica, estados, contador de ambigüedad, silencio, hangup y pruebas.
-6. [`runbooks/Telnyx.md`](./runbooks/Telnyx.md) — configuración operativa del proveedor telefónico inicial.
-7. [`tests/PHASE0.md`](./tests/PHASE0.md) — plan y evidencia del Gate F0.
-8. [`DEVELOPMENT_LOG.md`](./DEVELOPMENT_LOG.md) — bitácora cronológica.
+4. [`implementation/PHASE_1_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_1_IMPLEMENTATION_GUIDE.md) — guía operativa de la FASE 1: baseline, observabilidad y TenantResolver.
+5. [`implementation/PHASE_0_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_0_IMPLEMENTATION_GUIDE.md) — guía reproducible de la FASE 0 cerrada.
+6. [`implementation/END_CALL_INTENT_V9.md`](./implementation/END_CALL_INTENT_V9.md) — flujo canónico de cierre por intención semántica.
+7. [`runbooks/Telnyx.md`](./runbooks/Telnyx.md) — configuración operativa del proveedor telefónico inicial.
+8. [`tests/PHASE0.md`](./tests/PHASE0.md) — plan y evidencia del Gate F0.
+9. [`DEVELOPMENT_LOG.md`](./DEVELOPMENT_LOG.md) — bitácora cronológica.
 
 ## Estructura
 
@@ -26,6 +27,7 @@ docs/
 │   └── GLOSSARY.md
 ├── implementation/
 │   ├── PHASE_0_IMPLEMENTATION_GUIDE.md
+│   ├── PHASE_1_IMPLEMENTATION_GUIDE.md
 │   └── END_CALL_INTENT_V9.md
 ├── adr/
 │   └── README.md
@@ -44,7 +46,7 @@ docs/
 
 - **Arquitectura vigente:** `architecture/SYSTEM_ARCHITECTURE.md`.
 - **Reglas arquitectónicas:** `architecture/DESIGN_RULES.md`.
-- **Implementación activa:** documentos de `implementation/`.
+- **Implementación activa:** `implementation/PHASE_1_IMPLEMENTATION_GUIDE.md`.
 - **Cierre de llamadas por intención:** `implementation/END_CALL_INTENT_V9.md`.
 - **Operación:** `runbooks/`.
 - **Evidencia de gates:** `tests/`.
