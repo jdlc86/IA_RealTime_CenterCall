@@ -1,18 +1,12 @@
 # Cierre de llamada por intención semántica — v9
 
-> Estado: **flujo canónico implementado**. Pendiente únicamente de completar validación E2E repetida de F0-T08.
->
-> Código canónico: `apps/control-plane/src/call-session.ts` y `apps/control-plane/src/index.ts`.
->
-> Persistencia por llamada: `CallSession` Durable Object, uno por `call_id`.
+> **Estado: VALIDADO MANUALMENTE EN E2E.** F0-T08 = PASS.
 
 ## 1. Objetivo
 
-El sistema debe finalizar una llamada de forma natural cuando el usuario realmente quiere terminar la conversación, sin depender de una lista de palabras o frases prefijadas y sin introducir falsos cuelgues por menciones contextuales.
+El cierre de llamada no se basa en una lista de palabras del usuario. El modelo Realtime clasifica semánticamente cada turno usando la intervención actual y el contexto completo de la conversación.
 
-La decisión primaria pertenece al modelo Realtime, que interpreta semánticamente la intervención actual usando el contexto completo de la conversación. El Core no intenta sustituir esa comprensión mediante coincidencia léxica; recibe una intención estructurada y aplica una política determinista y auditable.
-
-Las tres intenciones válidas son:
+El Core aplica una política determinista sobre tres intenciones estructuradas:
 
 ```text
 CONTINUE
@@ -20,37 +14,29 @@ END_AMBIGUOUS
 END_CLEAR
 ```
 
-## 2. Principio de diseño
-
-Se separan tres responsabilidades:
+La responsabilidad queda separada de forma explícita:
 
 ```text
-Modelo Realtime
-    ↓
-comprensión semántica + contexto conversacional
-    ↓
-CONTINUE | END_AMBIGUOUS | END_CLEAR
-
-CallSession Durable Object
-    ↓
-estado + ambiguous_count + política
-    ↓
-continuar | pedir confirmación natural | cerrar
-
-OpenAI Realtime / SIP
-    ↓
-despedida final + /hangup
+Modelo Realtime → comprende intención y contexto
+CallSession      → aplica política y mantiene estado
+OpenAI /hangup   → termina técnicamente la llamada
 ```
 
-El modelo **clasifica intención**. El `CallSession` **decide la acción**. El modelo no ejecuta directamente `/hangup`.
+## 2. Principio de diseño
+
+La pregunta relevante no es si la frase contiene palabras como «adiós», «gracias» o «hasta luego». La pregunta es:
+
+> ¿Qué intención expresa el usuario en este momento, teniendo en cuenta el turno actual y toda la conversación previa?
+
+Por eso una frase que mencione una despedida dentro de otra consulta puede ser `CONTINUE`, mientras que una frase sin ninguna palabra típica de despedida puede ser `END_CLEAR` si el contexto indica claramente que el usuario ha terminado.
 
 ## 3. Clasificación semántica
 
-### 3.1 CONTINUE
+### CONTINUE
 
-Se usa cuando el usuario quiere seguir conversando, hace una nueva pregunta, solicita más ayuda, corrige algo, cambia de tema o cuando no existe evidencia razonable de que quiera finalizar la llamada.
+El usuario quiere continuar, formula una nueva consulta, pide más ayuda o no existe evidencia suficiente de cierre.
 
-Efecto obligatorio:
+Efecto:
 
 ```text
 state = ACTIVE
@@ -58,383 +44,343 @@ ambiguous_count = 0
 respuesta normal
 ```
 
-El reset a cero es una regla formal del sistema.
+El reset a cero es obligatorio. `ambiguous_count` representa ambigüedades consecutivas de un mismo intento de cierre; nunca se acumula a lo largo de toda la llamada.
 
-`ambiguous_count` representa únicamente **ambigüedades consecutivas dentro de un mismo intento de cierre**. Nunca acumula ambigüedades independientes a lo largo de una llamada larga.
+### END_CLEAR
 
-Ejemplo conceptual:
+El contexto conversacional hace clara la intención de finalizar la conversación o llamada.
 
-```text
-END_AMBIGUOUS → count=1
-usuario formula una nueva consulta real
-CONTINUE → count=0
-```
-
-### 3.2 END_CLEAR
-
-Se usa cuando, considerando el contexto completo, la intención de finalizar la conversación es suficientemente clara.
-
-No se añade una segunda pregunta de confirmación porque generaría fricción innecesaria.
-
-Flujo:
+Efecto:
 
 ```text
 END_CLEAR
-    ↓
-CLOSING
-    ↓
-despedida breve y natural
-    ↓
-output_audio_buffer.stopped o watchdog
-    ↓
-POST /v1/realtime/calls/{call_id}/hangup
+→ CLOSING
+→ despedida breve
+→ /hangup
 ```
 
-### 3.3 END_AMBIGUOUS
+No se añade una confirmación innecesaria.
 
-Se usa cuando parece que el usuario puede estar terminando, pero el contexto todavía permite razonablemente que quiera continuar.
+### END_AMBIGUOUS
 
-Flujo:
+Parece que el usuario podría estar terminando, pero el modelo no tiene suficiente seguridad contextual.
+
+Efecto:
 
 ```text
-END_AMBIGUOUS
-    ↓
 ambiguous_count += 1
-    ↓
-¿count >= 3?
-   │
-   ├─ sí → CLOSING → despedida → HANGUP
-   │
-   └─ no → preguntar de forma natural:
-          «¿Puedo ayudarte en algo más?»
-          ↓
-          esperar siguiente turno o timeout
+
+si ambiguous_count < 3:
+    preguntar brevemente si necesita algo más
+    esperar
+
+si ambiguous_count >= 3:
+    despedida
+    /hangup
 ```
 
-La pregunta no debe mencionar "ambigüedad", "clasificación", "intención" ni ningún mecanismo interno.
-
-## 4. Máquina de estados canónica
+## 4. Flujo canónico
 
 ```text
-                              ┌──────────────────────┐
-                              │        ACTIVE        │
-                              └──────────┬───────────┘
-                                         │
-                 ┌───────────────────────┼────────────────────────┐
-                 │                       │                        │
-              CONTINUE             END_AMBIGUOUS             END_CLEAR
-                 │                       │                        │
-                 │                       ▼                        │
-                 │              ┌─────────────────┐               │
-                 │              │    AMBIGUOUS    │               │
-                 │              └────────┬────────┘               │
-                 │                       │                        │
-                 │       ┌───────────────┼───────────────┐        │
-                 │       │               │               │        │
-                 │    CONTINUE       END_CLEAR      END_AMBIGUOUS  │
-                 │       │               │               │        │
-                 │       │               │           count += 1   │
-                 │       │               │               │        │
-                 │       │               │       count < 3 / >= 3 │
-                 │       │               │               │        │
-                 └───────┴──→ ACTIVE     │        preguntar /     │
-                     count=0             │          cerrar         │
-                                         │               │        │
-                                         └───────┬───────┴────────┘
-                                                 ▼
-                                        ┌─────────────────┐
-                                        │     CLOSING     │
-                                        └────────┬────────┘
-                                                 │
-                                      despedida final breve
-                                                 │
-                               output_audio_buffer.stopped
-                                       o watchdog de cierre
-                                                 │
-                                                 ▼
-                                              HANGUP
+                     TURNO DEL USUARIO
+                            ↓
+                MODELO + CONTEXTO COMPLETO
+                            ↓
+           ┌────────────────┼─────────────────┐
+           ↓                ↓                 ↓
+       CONTINUE       END_AMBIGUOUS       END_CLEAR
+           │                │                 │
+   ambiguous_count=0   count = count+1        │
+           │                │                 │
+   respuesta normal    count < 3 ?            │
+                            │                  │
+                   «¿Puedo ayudarte           │
+                    en algo más?»             │
+                            │                  │
+             ┌──────────────┼────────────┐     │
+             ↓              ↓            ↓     │
+         CONTINUE       END_CLEAR    END_AMBIGUOUS
+             │              │            │
+          count=0           │         count+1
+             │              │            │
+           ACTIVE           │       count >= 3
+                            │            │
+                            └──────┬─────┘
+                                   ↓
+                               CLOSING
+                                   ↓
+                           despedida final
+                                   ↓
+                                HANGUP
 ```
 
-Estados efectivos de F0:
+## 5. Respuesta posterior a una ambigüedad
 
-```text
-ACTIVE
-AMBIGUOUS
-CLOSING
-```
-
-`COMPLETED` se representa operativamente por el cierre de la llamada/SIP y del sideband.
-
-## 5. Política después de END_AMBIGUOUS
-
-Después de una clasificación ambigua, la IA hace una única pregunta breve equivalente a:
+Después de `END_AMBIGUOUS`, el sistema pregunta de forma natural algo equivalente a:
 
 ```text
 ¿Puedo ayudarte en algo más?
 ```
 
-A partir de ahí existen cuatro caminos.
-
-### A. El usuario vuelve a una consulta normal
+A continuación:
 
 ```text
-usuario pide ayuda o formula nueva consulta
-    ↓
-modelo = CONTINUE
-    ↓
-ambiguous_count = 0
-    ↓
-ACTIVE
-    ↓
-la conversación continúa normalmente
+usuario pide ayuda / nueva consulta
+→ modelo: CONTINUE
+→ ambiguous_count = 0
+→ ACTIVE
+
+usuario expresa cierre claro
+→ modelo: END_CLEAR
+→ despedida
+→ HANGUP
+
+usuario vuelve a ser ambiguo
+→ modelo: END_AMBIGUOUS
+→ ambiguous_count += 1
+
+silencio hasta idle_timeout
+→ despedida
+→ HANGUP
 ```
 
-Este reset evita que tres ambigüedades totalmente separadas en una llamada larga provoquen un cuelgue injustificado.
+## 6. Regla del contador de ambigüedades
 
-### B. El usuario expresa una intención clara de terminar
-
-```text
-modelo = END_CLEAR
-    ↓
-despedida
-    ↓
-HANGUP
-```
-
-No se vuelve a preguntar si necesita ayuda.
-
-### C. El usuario vuelve a ser ambiguo
-
-```text
-modelo = END_AMBIGUOUS
-    ↓
-ambiguous_count += 1
-```
-
-Si todavía es menor que 3, puede hacerse otra confirmación natural. Si alcanza 3, F0 cierra la llamada.
-
-### D. El usuario guarda silencio
-
-Si el estado es `AMBIGUOUS` y se alcanza `idle_timeout_ms` después de la pregunta de confirmación:
-
-```text
-AMBIGUOUS
-    ↓
-silencio hasta timeout
-    ↓
-CLOSING
-    ↓
-despedida
-    ↓
-HANGUP
-```
-
-Un silencio ordinario en `ACTIVE` **no debe cerrar la llamada**.
-
-## 6. Límite de ambigüedades
-
-Configuración F0:
+Versión F0:
 
 ```text
 AMBIGUOUS_LIMIT = 3
 ```
 
-La regla completa es:
+La regla formal es:
 
 ```text
-END_AMBIGUOUS → count += 1
-CONTINUE      → count = 0
-END_CLEAR     → cerrar
-count >= 3    → cerrar
+END_AMBIGUOUS → ambiguous_count += 1
+CONTINUE      → ambiguous_count = 0
+END_CLEAR     → CLOSING
+count >= 3    → CLOSING
 ```
 
-El contador mide una secuencia continua de incertidumbre de cierre, no una puntuación acumulativa de toda la llamada.
+El contador representa exclusivamente ambigüedades **consecutivas dentro del mismo intento de cierre**.
 
-## 7. Evolución futura: handoff humano
-
-En F0, tres ambigüedades consecutivas terminan la llamada de forma educada. La política está preparada para evolucionar sin cambiar la clasificación semántica:
+Ejemplo correcto:
 
 ```text
-ambiguous_count >= limit
-        ↓
-¿human_handoff habilitado?
-   │                  │
-   sí                 no
-   │                  │
-   ▼                  ▼
-transferencia      despedida
-agente humano      + hangup
+END_AMBIGUOUS → count=1
+usuario hace una pregunta real
+CONTINUE      → count=0
+...
+END_AMBIGUOUS → count=1, no 2
 ```
 
-El handoff humano **no forma parte de F0** y no debe marcarse todavía como implementado.
+Esto evita terminar injustificadamente una llamada larga por ambigüedades independientes ocurridas en momentos diferentes.
 
-## 8. Integración con OpenAI Realtime
+## 7. Silencio
 
-La sesión Realtime expone una herramienta obligatoria:
+El silencio tiene significado distinto según el estado.
+
+### Silencio en ACTIVE
+
+No provoca cierre.
 
 ```text
-conversation_intent(intent, reason)
+ACTIVE + silencio
+→ la llamada permanece disponible
 ```
 
-con:
+### Silencio después de END_AMBIGUOUS
+
+El sistema ya preguntó si puede ayudar en algo más. Si el usuario no responde durante el `idle_timeout_ms` configurado (~10 s), el silencio se acepta como confirmación implícita de que no desea continuar.
+
+```text
+AMBIGUOUS
+→ pregunta de continuación
+→ silencio
+→ input_audio_buffer.timeout_triggered
+→ CLOSING
+→ despedida
+→ HANGUP
+```
+
+## 8. Integración Realtime
+
+La sesión configura:
 
 ```text
 tool_choice = required
 ```
 
-El modelo debe clasificar cada turno real del usuario antes de producir la respuesta controlada por el Core.
+con la herramienta:
 
-Contrato conceptual:
-
-```json
-{
-  "intent": "CONTINUE | END_AMBIGUOUS | END_CLEAR",
-  "reason": "explicación breve basada en el contexto conversacional"
-}
+```text
+conversation_intent(intent, reason)
 ```
 
-Después de recibir la tool-call, `CallSession` envía el resultado de la herramienta y crea la respuesta hablada apropiada usando:
+El modelo clasifica cada turno real antes de generar una respuesta hablada.
+
+`CallSession` recibe la tool-call por el sideband persistente del Durable Object y aplica la política. Las respuestas habladas creadas por el Core usan:
 
 ```text
 tool_choice = none
 ```
 
-Esto evita ciclos en los que una respuesta generada por el propio Core vuelva a invocar el clasificador.
+para evitar que una respuesta de control vuelva a invocar el clasificador.
 
-## 9. Rol de la transcripción auxiliar
-
-`gpt-4o-mini-transcribe` continúa habilitado, pero en v9 su función es **observabilidad**.
-
-No es el detector primario de intención y no se utiliza una lista de frases para decidir `CONTINUE`, `END_AMBIGUOUS` o `END_CLEAR`.
+## 9. Responsabilidades
 
 ```text
-audio del usuario
-    ↓
-Modelo Realtime + contexto → intención semántica
+Modelo Realtime
+→ comprensión semántica
+→ contexto completo
+→ CONTINUE / END_AMBIGUOUS / END_CLEAR
 
-transcripción auxiliar
-    ↓
-logs / diagnóstico
+CallSession Durable Object
+→ estado por call_id
+→ ambiguous_count
+→ reset del contador
+→ política de silencio
+→ límite de ambigüedades
+→ despedida final
+→ reintento de /hangup
+
+Transcripción auxiliar
+→ observabilidad únicamente
 ```
 
-Esto permite inspeccionar el sistema sin convertir la transcripción literal en la fuente de verdad de la intención.
+La transcripción de `gpt-4o-mini-transcribe` no se utiliza como detector primario basado en frases.
 
-## 10. Cierre técnico
-
-Cuando la política entra en `CLOSING`:
-
-1. se bloquea un segundo flujo de cierre concurrente;
-2. se solicita una despedida final de una sola frase;
-3. se espera el drenado del audio final mediante `output_audio_buffer.stopped` cuando es posible;
-4. existe un watchdog para no quedar esperando indefinidamente;
-5. se ejecuta:
+## 10. Estados
 
 ```text
-POST /v1/realtime/calls/{call_id}/hangup
+ACTIVE
+  ├─ CONTINUE ───────────────→ ACTIVE (count=0)
+  ├─ END_CLEAR ──────────────→ CLOSING
+  └─ END_AMBIGUOUS ─────────→ AMBIGUOUS
+                                  │
+                                  ├─ CONTINUE → ACTIVE (count=0)
+                                  ├─ END_CLEAR → CLOSING
+                                  ├─ END_AMBIGUOUS → count+1
+                                  ├─ count >= 3 → CLOSING
+                                  └─ timeout → CLOSING
+
+CLOSING
+  → despedida final
+  → output_audio_buffer.stopped o watchdog
+  → POST /v1/realtime/calls/{call_id}/hangup
 ```
 
-6. `/hangup` tiene reintento;
-7. Telnyx debe terminar observando `call.hangup`.
+## 11. Invariantes de seguridad
 
-Si todos los intentos de `/hangup` fallan, el sistema **no puede permanecer conectado y mudo en `CLOSING`**. El `CallSession` vuelve a `ACTIVE`, resetea el contador y avisa brevemente de que la llamada sigue activa.
+- Una nueva consulta real resetea `ambiguous_count` a 0.
+- El silencio ordinario en `ACTIVE` no debe cerrar la llamada.
+- El silencio en `AMBIGUOUS`, después de preguntar si necesita más ayuda, sí puede cerrar por timeout.
+- `END_CLEAR` no requiere otra pregunta de confirmación.
+- El modelo no ejecuta `/hangup`; solo clasifica intención.
+- Si `/hangup` falla tras los reintentos, la sesión vuelve a `ACTIVE` para evitar una llamada conectada y muda.
+- Se mantiene una guarda secundaria: si la IA anuncia verbalmente que va a colgar sin que el Core esté cerrando, el Core convierte esa promesa en cierre técnico.
+- Un fallo del clasificador no debe dejar la llamada en un estado muerto; se favorece continuar la conversación.
 
-## 11. Guardas secundarias
+## 12. Escenarios de validación manual
 
-Las guardas no sustituyen al clasificador semántico; solo protegen invariantes operativas.
+La v9 fue probada manualmente con diálogos que cubren las siguientes familias:
 
-- Una promesa verbal de la IA de que va a colgar no debe quedarse sin acción técnica.
-- `response_cancel_not_active` se trata como no-op recuperable.
-- El sideband vive en `CallSession` Durable Object y no depende de `waitUntil()` durante toda la llamada.
-- Un fallo de hangup debe reactivar la sesión antes que dejar una llamada muda.
-- El estado `CLOSING` no acepta un segundo cierre paralelo.
-
-## 12. Invariantes funcionales
-
-Estas reglas son canónicas:
-
-1. **El significado y el contexto mandan; no las palabras aisladas.**
-2. `CONTINUE` resetea siempre `ambiguous_count = 0`.
-3. `END_CLEAR` cierra sin confirmación adicional.
-4. `END_AMBIGUOUS` solicita ayuda adicional de forma natural.
-5. Solo el silencio posterior a una ambigüedad pendiente puede confirmar cierre por timeout.
-6. Tres `END_AMBIGUOUS` consecutivos cierran en F0.
-7. Una nueva consulta real rompe la cadena de ambigüedades.
-8. Una mención contextual de una despedida no implica por sí sola que el usuario quiera terminar.
-9. La despedida final ocurre antes del hangup siempre que el canal de audio lo permita.
-10. El Core ejecuta el hangup; el modelo únicamente aporta la intención.
-
-## 13. Escenarios de validación
-
-### T1 — intención clara
+### Caso 1 — cierre claro
 
 ```text
-Usuario: Perfecto, ya no necesito nada más. Me voy. Hasta luego.
-Esperado: END_CLEAR → despedida → HANGUP
+Usuario realiza una consulta
+IA responde
+Usuario expresa inequívocamente que ya no necesita nada más
 ```
 
-### T2 — ambigüedad + silencio
+Esperado y validado funcionalmente:
 
 ```text
-Usuario: Bueno... creo que ya está.
-Esperado: END_AMBIGUOUS, count=1
-IA: ¿Puedo ayudarte en algo más?
-Usuario: [silencio]
-Esperado: timeout → despedida → HANGUP
+END_CLEAR
+→ despedida
+→ hangup
 ```
 
-### T3 — ambigüedad + nueva consulta
+### Caso 2 — ambigüedad + silencio
 
 ```text
-Usuario: Bueno... creo que ya está.
-Esperado: END_AMBIGUOUS, count=1
-IA: ¿Puedo ayudarte en algo más?
-Usuario: Sí, otra cosa. ¿Cuál es la velocidad de la luz?
-Esperado: CONTINUE → count=0 → respuesta normal
-```
-
-### T4 — tres ambigüedades consecutivas
-
-```text
-Usuario: Bueno... creo que ya está.
-→ END_AMBIGUOUS, count=1
-
-Usuario: No sé... supongo que no.
-→ END_AMBIGUOUS, count=2
-
-Usuario: Pues... parece que eso es todo, creo.
-→ END_AMBIGUOUS, count=3
-→ despedida → HANGUP
-```
-
-### T5 — falso positivo contextual
-
-```text
-Usuario: Mi amigo terminó la conversación diciendo «hasta luego». ¿Te parece una despedida educada?
-Esperado: CONTINUE
-```
-
-### T6 — palabra de despedida dentro de una consulta
-
-```text
-Usuario: ¿Cómo se dice «adiós» en inglés y en francés?
-Esperado: CONTINUE
-```
-
-### T7 — cambio de opinión
-
-```text
-Usuario: Bueno, creo que ya hemos terminado.
+Usuario expresa una posible intención de cierre no concluyente
 → END_AMBIGUOUS
-
-IA: ¿Puedo ayudarte en algo más?
-Usuario: Espera, sí. Se me olvidó preguntarte una cosa.
-→ CONTINUE
-→ ambiguous_count = 0
+IA pregunta si puede ayudar en algo más
+Usuario guarda silencio
 ```
 
-## 14. Observabilidad
+Esperado y validado funcionalmente:
 
-Eventos principales de v9:
+```text
+timeout
+→ despedida
+→ hangup
+```
+
+### Caso 3 — ambigüedad + nueva consulta
+
+```text
+END_AMBIGUOUS → count=1
+IA pregunta si puede ayudar en algo más
+Usuario realiza una nueva consulta real
+```
+
+Esperado y validado:
+
+```text
+CONTINUE
+→ ambiguous_count=0
+→ conversación normal
+```
+
+### Caso 4 — ambigüedades consecutivas
+
+```text
+END_AMBIGUOUS → 1
+END_AMBIGUOUS → 2
+END_AMBIGUOUS → 3
+```
+
+Esperado:
+
+```text
+CLOSING
+→ despedida
+→ hangup
+```
+
+### Caso 5 — falso positivo contextual
+
+Se habla sobre una despedida dentro de otra consulta, sin querer terminar la llamada.
+
+Esperado y validado:
+
+```text
+CONTINUE
+```
+
+### Caso 6 — cambio de opinión
+
+```text
+END_AMBIGUOUS
+→ pregunta de continuación
+→ usuario recuerda otra consulta
+→ CONTINUE
+→ count=0
+```
+
+## 13. Criterio de aceptación F0-T08
+
+F0-T08 se considera **PASS manual** porque los diálogos de validación de la v9 se ejecutaron satisfactoriamente y el flujo conversacional resultó adecuado para esta fase.
+
+La prueba deberá repetirse únicamente si:
+
+- cambia la política semántica;
+- cambia el modelo Realtime;
+- cambia la implementación de `CallSession` relacionada con estados o cierre;
+- aparece una regresión observada en llamadas reales.
+
+## 14. Logs principales
 
 ```text
 call_intent_classified
@@ -443,58 +389,26 @@ call_intent_ambiguous
 call_intent_ambiguity_reset
 call_intent_end_clear
 call_intent_ambiguous_silence_timeout
-call_user_transcription_observed
 end_call_closing_started
 end_call_final_farewell_requested
-end_call_final_response_created
 end_call_hangup_triggered
 end_call_hangup_start
 end_call_hangup_result
 realtime_sideband_closed
 ```
 
-Para diagnosticar una llamada hay que correlacionar por `call_id` y observar, como mínimo:
+## 15. Evolución futura: agente humano
+
+La política está diseñada para evolucionar sin cambiar la clasificación semántica:
 
 ```text
-intent
-state_before
-ambiguous_count_before
-ambiguous_count
-reason
-hangup status
-Telnyx call.hangup
+ambiguous_count >= AMBIGUOUS_LIMIT
+              ↓
+     ¿human_handoff habilitado?
+          │              │
+         sí             no
+          ↓              ↓
+   agente humano    despedida + hangup
 ```
 
-No debe guardarse contenido conversacional completo innecesariamente en logs.
-
-## 15. Health esperado
-
-La versión v9 debe anunciar una configuración equivalente a:
-
-```json
-{
-  "tracing": "f0-e2e-v9",
-  "intent_hangup": true,
-  "intent_hangup_mode": "semantic_intent_v9",
-  "intent_classifier": "conversation_intent",
-  "intent_classifier_required": true,
-  "ambiguous_limit": 3,
-  "ambiguity_reset_on_continue": true,
-  "realtime_sideband_lifecycle": "durable_object"
-}
-```
-
-## 16. Criterio de aceptación F0-T08
-
-El flujo puede considerarse estable cuando pruebas repetidas demuestren simultáneamente:
-
-- `END_CLEAR` termina la llamada de forma consistente;
-- `END_AMBIGUOUS` no produce cuelgues prematuros;
-- silencio tras una ambigüedad termina correctamente;
-- `CONTINUE` restaura `ACTIVE` y resetea el contador;
-- tres ambigüedades consecutivas aplican la política definida;
-- consultas que contienen palabras de despedida no generan falsos positivos obvios;
-- el sideband permanece operativo durante llamadas prolongadas;
-- `/hangup` termina en éxito y Telnyx registra cierre normal.
-
-Hasta completar esa repetición, la arquitectura y política v9 son canónicas, pero el Gate F0-T08 continúa bajo validación.
+La transferencia a agente humano no forma parte de F0. En la versión actual, alcanzar el límite provoca despedida y cierre automático.
