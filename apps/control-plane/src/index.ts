@@ -46,6 +46,10 @@ type RealtimeSessionConfiguration = {
   audio: {
     input: {
       format: { type: "audio/pcmu" };
+      transcription: {
+        model: "gpt-4o-mini-transcribe";
+        language: "es";
+      };
       turn_detection: {
         type: "server_vad";
         create_response: true;
@@ -72,6 +76,7 @@ type RealtimeSidebandEvent = {
   call_id?: string;
   name?: string;
   arguments?: string;
+  transcript?: string;
   error?: {
     type?: string;
     code?: string;
@@ -79,7 +84,16 @@ type RealtimeSidebandEvent = {
   };
 };
 
+type EndCallIntentLevel = "clear" | "probable" | "none";
+
+type EndCallIntent = {
+  level: EndCallIntentLevel;
+  rule: string;
+};
+
 const activeSidebands = new Map<string, WebSocket>();
+const END_CONFIRMATION_TTL_MS = 30_000;
+const ASSISTANT_FAREWELL_TTL_MS = 30_000;
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, { status });
@@ -96,6 +110,138 @@ function requireEnvString(value: unknown, name: string): string {
     throw new Error(`Missing runtime configuration: ${name}`);
   }
   return value.trim();
+}
+
+function normalizeIntentText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9ñ\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function classifyEndCallIntent(rawTranscript: string, assistantFarewellRecent: boolean): EndCallIntent {
+  const text = normalizeIntentText(rawTranscript);
+  if (!text) return { level: "none", rule: "empty" };
+
+  const words = text.split(" ").filter(Boolean);
+
+  const contextualMention = [
+    /\b(me|nos|le|les) dijo (adios|hasta luego)\b/,
+    /\b(dijo|dijeron) (adios|hasta luego)\b/,
+    /\b(decir|diga|dice|dices|dijo) adios\b/,
+    /\b(palabra|expresion) adios\b/,
+    /\b(significa|significado de) adios\b/,
+    /\bcomo se dice adios\b/,
+    /\bcuando alguien dice (adios|hasta luego)\b/,
+  ].some((pattern) => pattern.test(text));
+
+  if (contextualMention) {
+    return { level: "none", rule: "contextual_farewell_mention" };
+  }
+
+  const explicitTermination = [
+    /\beso es todo\b/,
+    /\bno necesito nada mas\b/,
+    /\bno quiero nada mas\b/,
+    /\bno necesito mas ayuda\b/,
+    /\bnada mas gracias\b/,
+    /\bpuedes colgar\b/,
+    /\bpuede colgar\b/,
+    /\bpuedes finalizar la llamada\b/,
+    /\bpuede finalizar la llamada\b/,
+    /\btermina la llamada\b/,
+    /\btermine la llamada\b/,
+    /\bquiero terminar la llamada\b/,
+    /\bpodemos terminar la llamada\b/,
+    /\bfinaliza la llamada\b/,
+    /\bfinalice la llamada\b/,
+    /\bhemos terminado\b/,
+    /\bya hemos terminado\b/,
+    /\bhe terminado\b/,
+    /\bme despido\b/,
+    /\bya esta gracias\b/,
+    /\bcon eso es suficiente\b/,
+  ].find((pattern) => pattern.test(text));
+
+  if (explicitTermination) {
+    return { level: "clear", rule: "explicit_termination" };
+  }
+
+  const shortFarewell = /^(?:(?:vale|bueno|ok|okay|perfecto|muy bien|gracias|muchas gracias) )*(?:adios|hasta luego|hasta pronto|nos vemos)(?: gracias| muchas gracias)?$/;
+  if (words.length <= 10 && shortFarewell.test(text)) {
+    return { level: "clear", rule: "short_farewell" };
+  }
+
+  const shortThanks = /^(?:vale |bueno |ok |okay |perfecto |muy bien )?(?:gracias|muchas gracias|mil gracias)$/;
+  if (words.length <= 6 && shortThanks.test(text)) {
+    if (assistantFarewellRecent) {
+      return { level: "clear", rule: "thanks_after_assistant_farewell" };
+    }
+    return { level: "probable", rule: "thanks_only" };
+  }
+
+  const softClosing = [
+    /\bcreo que ya esta\b/,
+    /\bpor mi parte nada mas\b/,
+    /\bde momento nada mas\b/,
+    /\bya no tengo mas preguntas\b/,
+    /\bcreo que es todo\b/,
+  ].some((pattern) => pattern.test(text));
+
+  if (softClosing) {
+    return { level: assistantFarewellRecent ? "clear" : "probable", rule: "soft_closing" };
+  }
+
+  return { level: "none", rule: "no_closing_signal" };
+}
+
+function classifyConfirmationReply(rawTranscript: string): "close" | "continue" | "unknown" {
+  const text = normalizeIntentText(rawTranscript);
+  if (!text) return "unknown";
+
+  const closePatterns = [
+    /^no$/,
+    /^no gracias$/,
+    /^no muchas gracias$/,
+    /^no nada mas$/,
+    /^nada mas$/,
+    /^eso es todo$/,
+    /^correcto nada mas$/,
+    /^no necesito nada mas$/,
+    /^no necesito mas ayuda$/,
+    /^ya esta$/,
+    /^ya esta gracias$/,
+  ];
+  if (closePatterns.some((pattern) => pattern.test(text))) return "close";
+
+  const continuePatterns = [
+    /^si$/,
+    /^si gracias$/,
+    /^si necesito\b/,
+    /^espera\b/,
+    /^un momento\b/,
+    /^tengo otra pregunta\b/,
+    /^otra cosa\b/,
+    /^ademas\b/,
+  ];
+  if (continuePatterns.some((pattern) => pattern.test(text))) return "continue";
+
+  return "unknown";
+}
+
+function isAssistantFarewell(rawTranscript: string): boolean {
+  const text = normalizeIntentText(rawTranscript);
+  return [
+    /\badios\b/,
+    /\bhasta luego\b/,
+    /\bhasta pronto\b/,
+    /\bque tengas un buen dia\b/,
+    /\bque tenga un buen dia\b/,
+    /\bha sido un placer\b/,
+  ].some((pattern) => pattern.test(text));
 }
 
 function decodeBase64(value: string): Uint8Array {
@@ -150,10 +296,11 @@ function buildRealtimeSessionConfiguration(env: Env): RealtimeSessionConfigurati
     "Si el usuario te interrumpe, deja de hablar y escúchalo.",
     "Si no entiendes algo, pide que lo repita.",
     "Dispones de la herramienta end_call para solicitar el cierre de la llamada actual.",
-    "Usa end_call solamente cuando el usuario exprese una intención clara de terminar la conversación telefónica, por ejemplo: adiós, hasta luego, eso es todo, no necesito nada más o gracias, hemos terminado.",
-    "No uses end_call solo porque aparezca una palabra de despedida dentro de otra historia o contexto que no implique terminar esta llamada.",
-    "No uses end_call debido a silencio, pausas, falta de audio o porque el usuario tarde en responder.",
-    "Si existe duda real sobre si desea terminar, pregunta brevemente antes de usar end_call.",
+    "Usa end_call cuando el usuario exprese una intención clara de terminar esta conversación telefónica: adiós, hasta luego, eso es todo, no necesito nada más, hemos terminado, puedes colgar o equivalentes semánticos.",
+    "Si el usuario solo dice gracias, perfecto gracias o una expresión de cortesía que podría ser cierre pero no es inequívoca, pregunta brevemente si necesita algo más antes de terminar.",
+    "Si ya te has despedido y el usuario responde con otra despedida o con un agradecimiento final, usa end_call.",
+    "No uses end_call por silencio, pausas, falta de audio ni porque el usuario tarde en responder.",
+    "No uses end_call si adiós, hasta luego u otra despedida aparece citada dentro de una historia, una pregunta o un contexto que no implique terminar esta llamada.",
     "Cuando la intención sea clara, llama a end_call. El sistema gestionará una despedida final breve y después cerrará la llamada.",
   ].join("\n");
 
@@ -165,6 +312,10 @@ function buildRealtimeSessionConfiguration(env: Env): RealtimeSessionConfigurati
     audio: {
       input: {
         format: { type: "audio/pcmu" },
+        transcription: {
+          model: "gpt-4o-mini-transcribe",
+          language: "es",
+        },
         turn_detection: {
           type: "server_vad",
           create_response: true,
@@ -182,7 +333,7 @@ function buildRealtimeSessionConfiguration(env: Env): RealtimeSessionConfigurati
         type: "function",
         name: "end_call",
         description:
-          "Solicita finalizar la llamada telefónica actual únicamente cuando el usuario haya expresado una intención clara de terminarla. No usar por silencio, pausas ni menciones de despedidas en otros contextos.",
+          "Solicita finalizar la llamada telefónica actual cuando el usuario haya expresado una intención clara de terminarla. No usar por silencio, pausas ni menciones contextuales de despedidas.",
         parameters: {
           type: "object",
           properties: {
@@ -343,6 +494,7 @@ async function acceptRealtimeCall(
     model: configuration.model,
     voice: configuration.audio.output.voice,
     tools: configuration.tools.map((tool) => tool.name),
+    input_transcription: configuration.audio.input.transcription.model,
   });
 
   try {
@@ -452,6 +604,8 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
   let closingResponseId: string | null = null;
   let endCallReason = "user_requested_end";
   let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  let confirmationPendingAt = 0;
+  let assistantFarewellAt = 0;
 
   const clearFallback = () => {
     if (fallbackTimer !== null) {
@@ -459,6 +613,12 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
       fallbackTimer = null;
     }
   };
+
+  const confirmationIsPending = () =>
+    confirmationPendingAt > 0 && Date.now() - confirmationPendingAt <= END_CONFIRMATION_TTL_MS;
+
+  const assistantFarewellIsRecent = () =>
+    assistantFarewellAt > 0 && Date.now() - assistantFarewellAt <= ASSISTANT_FAREWELL_TTL_MS;
 
   const performHangup = async (trigger: string) => {
     if (hangupStarted) return;
@@ -481,6 +641,85 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  };
+
+  const startClosingFlow = (reason: string, source: string, toolCallId?: string) => {
+    if (endCallPending || hangupStarted) {
+      log("info", "end_call_duplicate_ignored", {
+        call_id: callId,
+        source,
+        tool_call_id: toolCallId,
+      });
+      return;
+    }
+
+    endCallPending = true;
+    endCallReason = reason.slice(0, 300);
+    confirmationPendingAt = 0;
+
+    log("info", "end_call_intent_detected", {
+      call_id: callId,
+      source,
+      tool_call_id: toolCallId,
+      reason: endCallReason,
+    });
+
+    if (toolCallId) {
+      socket.send(
+        JSON.stringify({
+          type: "conversation.item.create",
+          item: {
+            type: "function_call_output",
+            call_id: toolCallId,
+            output: JSON.stringify({ ok: true, action: "prepare_final_farewell" }),
+          },
+        }),
+      );
+    } else {
+      // A server-VAD response may already be starting. Cancel it so the final farewell is the only output.
+      socket.send(JSON.stringify({ type: "response.cancel" }));
+    }
+
+    socket.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          instructions:
+            "Despídete ahora en español con una sola frase breve, natural y amable. No hagas preguntas ni ofrezcas más ayuda. Esta es la despedida final antes de terminar la llamada.",
+        },
+      }),
+    );
+
+    log("info", "end_call_farewell_requested", {
+      call_id: callId,
+      source,
+      tool_call_id: toolCallId,
+    });
+
+    fallbackTimer = setTimeout(() => {
+      void performHangup("farewell_timeout");
+    }, 8_000);
+  };
+
+  const requestEndConfirmation = (rule: string) => {
+    if (endCallPending || hangupStarted || confirmationIsPending()) return;
+
+    confirmationPendingAt = Date.now();
+    log("info", "end_call_confirmation_requested", {
+      call_id: callId,
+      rule,
+    });
+
+    socket.send(JSON.stringify({ type: "response.cancel" }));
+    socket.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          instructions:
+            "Pregunta únicamente y de forma natural: ¿Necesitas algo más? No te despidas todavía y no llames a ninguna herramienta en esta respuesta.",
+        },
+      }),
+    );
   };
 
   socket.addEventListener("message", (message) => {
@@ -506,67 +745,73 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
     }
 
     if (event.type === "response.function_call_arguments.done" && event.name === "end_call") {
-      if (endCallPending || hangupStarted) {
-        log("info", "end_call_duplicate_ignored", {
-          call_id: callId,
-          tool_call_id: event.call_id,
-        });
-        return;
-      }
-
-      let reason = "user_requested_end";
+      let reason = "model_end_call";
       if (event.arguments) {
         try {
           const parsed = JSON.parse(event.arguments) as { reason?: unknown };
           if (typeof parsed.reason === "string" && parsed.reason.trim()) {
-            reason = parsed.reason.trim().slice(0, 300);
+            reason = parsed.reason.trim();
           }
         } catch {
-          // Keep the safe default reason; malformed tool arguments must not prevent closure.
+          // Keep safe default reason.
+        }
+      }
+      startClosingFlow(reason, "model_tool", event.call_id);
+      return;
+    }
+
+    if (event.type === "conversation.item.input_audio_transcription.completed" && event.transcript) {
+      if (endCallPending || hangupStarted) return;
+
+      if (confirmationIsPending()) {
+        const confirmation = classifyConfirmationReply(event.transcript);
+        log("info", "end_call_confirmation_classified", {
+          call_id: callId,
+          result: confirmation,
+          transcript_chars: event.transcript.length,
+        });
+
+        if (confirmation === "close") {
+          startClosingFlow("confirmed_no_more_help", "confirmation_reply");
+          return;
+        }
+
+        if (confirmation === "continue") {
+          confirmationPendingAt = 0;
+          log("info", "end_call_confirmation_cleared", {
+            call_id: callId,
+            reason: "user_wants_to_continue",
+          });
+          return;
         }
       }
 
-      endCallPending = true;
-      endCallReason = reason;
-
-      log("info", "end_call_intent_detected", {
+      const intent = classifyEndCallIntent(event.transcript, assistantFarewellIsRecent());
+      log("info", "end_call_intent_classified", {
         call_id: callId,
-        tool_call_id: event.call_id,
-        reason,
+        level: intent.level,
+        rule: intent.rule,
+        transcript_chars: event.transcript.length,
+        assistant_farewell_recent: assistantFarewellIsRecent(),
+        confirmation_pending: confirmationIsPending(),
       });
 
-      if (event.call_id) {
-        socket.send(
-          JSON.stringify({
-            type: "conversation.item.create",
-            item: {
-              type: "function_call_output",
-              call_id: event.call_id,
-              output: JSON.stringify({ ok: true, action: "prepare_final_farewell" }),
-            },
-          }),
-        );
+      if (intent.level === "clear") {
+        startClosingFlow(`deterministic:${intent.rule}`, "transcript_detector");
+      } else if (intent.level === "probable") {
+        requestEndConfirmation(intent.rule);
       }
+      return;
+    }
 
-      socket.send(
-        JSON.stringify({
-          type: "response.create",
-          response: {
-            instructions:
-              "Despídete ahora en español con una sola frase breve, natural y amable. No hagas preguntas ni ofrezcas más ayuda. Esta es la despedida final antes de terminar la llamada.",
-          },
-        }),
-      );
-
-      log("info", "end_call_farewell_requested", {
-        call_id: callId,
-        tool_call_id: event.call_id,
-      });
-
-      fallbackTimer = setTimeout(() => {
-        void performHangup("farewell_timeout");
-      }, 8_000);
-
+    if (event.type === "response.output_audio_transcript.done" && event.transcript) {
+      if (isAssistantFarewell(event.transcript)) {
+        assistantFarewellAt = Date.now();
+        log("info", "end_call_assistant_farewell_observed", {
+          call_id: callId,
+          transcript_chars: event.transcript.length,
+        });
+      }
       return;
     }
 
@@ -595,6 +840,7 @@ async function attachRealtimeSideband(callId: string, env: Env): Promise<void> {
       call_id: callId,
       end_call_pending: endCallPending,
       hangup_started: hangupStarted,
+      confirmation_pending: confirmationIsPending(),
     });
   });
 
@@ -695,6 +941,7 @@ async function handleOpenAIWebhook(
     call_id: callId,
     tenant_id: env.DEFAULT_TENANT_ID,
     intent_hangup: true,
+    intent_hangup_mode: "hybrid",
   });
 }
 
@@ -712,8 +959,10 @@ export default {
         telephony_provider: "telnyx",
         call_orchestrator: true,
         telnyx_webhook_verification: "webcrypto-ed25519",
-        tracing: "f0-e2e-v3",
+        tracing: "f0-e2e-v4",
         intent_hangup: true,
+        intent_hangup_mode: "hybrid",
+        input_transcription: "gpt-4o-mini-transcribe",
         runtime_config: {
           openai_api_key: typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.length > 0,
           openai_webhook_secret:
