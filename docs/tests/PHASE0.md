@@ -1,6 +1,6 @@
 # Test Plan — FASE 0
 
-> **Estado:** activo — E2E de voz, estabilidad ≥5 min, barge-in y cierre semántico v9 validados manualmente
+> **Estado:** activo — E2E de voz, estabilidad ≥5 min, barge-in, 20 llamadas consecutivas y cierre semántico v9 validados manualmente
 
 ## Gate F0
 
@@ -38,7 +38,7 @@ PASS solo si:
 | F0-T04 | [x] | sí | continúa | PASS manual: interrupciones/barge-in durante la respuesta de la IA probadas satisfactoriamente y la conversación continúa. |
 | F0-T05 | [x] | sí | llamada permanece activa | Silencio ordinario no termina la llamada y la conversación puede reanudarse. |
 | F0-T06 | [x] | sí | `normal_clearing` | Al colgar el llamante, Telnyx registra terminación normal. |
-| F0-T07 | [ ] | | | |
+| F0-T07 | [x] | sí | estable | PASS manual: se realizaron 20 llamadas consecutivas de validación del setup y conversación básica. |
 | F0-T08 | [x] | sí | PASS manual v9 | Probados los diálogos de validación: cierre claro, ambigüedad, continuación con reset, silencio tras ambigüedad y casos contextuales negativos. El flujo fue considerado satisfactorio. |
 
 ## F0-T08 — política v9 validada
@@ -171,10 +171,11 @@ La transcripción auxiliar se conserva para observabilidad, no como detector pri
 - [x] Reintento de `/hangup` y recuperación a `ACTIVE` si el cierre técnico falla.
 - [x] Llamada ≥5 minutos estable validada manualmente.
 - [x] Barge-in/interrupciones validado manualmente.
+- [x] 20 llamadas consecutivas realizadas como prueba de estabilidad/setup.
 - [x] Política semántica v9 de cierre validada manualmente.
 
 ## Estado
 
-**F0-T03, F0-T04 y F0-T08 quedan marcados PASS manual.** No es necesario repetir estas pruebas salvo modificación relevante o regresión.
+**F0-T03, F0-T04, F0-T07 y F0-T08 quedan marcados PASS manual.** No es necesario repetir estas pruebas salvo modificación relevante o regresión.
 
-FASE 0 todavía no debe declararse PASS global mientras permanezcan sin evidencia los demás casos del Gate, especialmente F0-T02, F0-T07 y el baseline de setup/latencia.
+FASE 0 todavía no debe declararse PASS global mientras permanezcan sin evidencia los demás casos del Gate, especialmente F0-T02 y el baseline de setup/latencia.
