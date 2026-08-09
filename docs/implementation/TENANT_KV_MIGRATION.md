@@ -1,15 +1,15 @@
 # Migración de TenantConfiguration a Cloudflare KV
 
-> Estado: EN CURSO
+> Estado: CUTOVER COMPLETADO — VALIDACIÓN MULTI-NEGOCIO PENDIENTE
 > Fecha: 2026-08-09
 > Alcance: configuración operativa multi-negocio
 > Fuente arquitectónica: `docs/architecture/SYSTEM_ARCHITECTURE.md`
 
 ## 1. Objetivo
 
-Eliminar progresivamente la configuración específica de negocios embebida en TypeScript y moverla a Cloudflare Workers KV sin interrumpir las llamadas existentes.
+Eliminar la configuración específica de negocios embebida en TypeScript y usar Cloudflare Workers KV como única fuente activa de configuración de tenant y routing telefónico, sin interrumpir las llamadas existentes.
 
-Separación objetivo:
+Separación vigente:
 
 ```text
 Worker / código
@@ -28,7 +28,7 @@ Supabase
 
 ## 2. Principio multi-tenant
 
-No existe una clave global `current_tenant` ni un tenant por defecto que pueda absorber tráfico de otros negocios.
+No existe una clave global `current_tenant`, un `DEFAULT_TENANT_ID` ni un fallback que pueda absorber tráfico de otros negocios.
 
 Cada negocio tiene una configuración independiente y cada ruta telefónica apunta explícitamente a un `tenant_id`.
 
@@ -38,8 +38,8 @@ Cada negocio tiene una configuración independiente y cada ruta telefónica apun
   -> configuración Clínica Estética Madrid
 
 +34XXXXXXXXX
-  -> restaurante-centro
-  -> configuración Restaurante Centro
+  -> otro-negocio
+  -> configuración independiente
 ```
 
 Un número desconocido debe fallar cerrado.
@@ -52,9 +52,13 @@ Binding del Worker:
 TENANT_CONFIG
 ```
 
-En desarrollo y producción se usarán namespaces separados aunque el binding conserve el mismo nombre.
+Namespace físico usado actualmente:
 
-Cloudflare permite enlazar un namespace KV mediante `wrangler.jsonc`. Durante la migración el binding se provisiona antes de activar KV como fuente de verdad.
+```text
+ia-realtime-centercall-tenant-config
+```
+
+El Worker consume el binding y no conoce ni depende del nombre físico del namespace.
 
 ## 4. Esquema de claves v1
 
@@ -98,7 +102,7 @@ Ejemplo:
 ia-rtcc:v1:tenant:clinica-estetica-madrid
 ```
 
-Valor inicial:
+Valor validado:
 
 ```json
 {
@@ -131,9 +135,9 @@ Valor inicial:
 }
 ```
 
-Los datos de `business.facts` son extensibles por negocio. No deben usarse para información transaccional como citas o pacientes.
+`business.facts` contiene datos configuracionales relativamente estables. No se utiliza para pacientes, citas, agenda, tratamientos/servicios operativos ni otra información transaccional; esos datos pertenecen al plano empresarial persistente en Supabase.
 
-## 5. Validación
+## 5. Implementación activa
 
 `apps/control-plane/src/tenant-kv.ts` define:
 
@@ -146,39 +150,41 @@ Los datos de `business.facts` son extensibles por negocio. No deben usarse para 
 - fail-closed ante rutas desconocidas, tenants inexistentes o payload inválido;
 - repositorio `KvTenantRepository`.
 
-La configuración cargada para `tenant-a` no puede declarar internamente `tenant-b`.
+El bootstrap Telnyx resuelve `called_number -> tenant_id` mediante KV. El webhook de OpenAI vuelve a validar la asociación `called_number -> tenant_id` antes de aceptar la configuración y arrancar `CallSession`.
 
-## 6. Estrategia de migración sin caída
+`CallSession` no consulta ningún mapa TypeScript de tenants. Recibe por bootstrap los datos autorizados necesarios para la llamada, incluidos `business_facts` y `allowed_tools`.
 
-La migración se hace en dos etapas.
+## 6. Cutover realizado
 
-### Etapa A — infraestructura y carga
-
-1. provisionar binding `TENANT_CONFIG`;
-2. desplegar sin cambiar todavía la fuente activa;
-3. cargar ruta y configuración de `clinica-estetica-madrid`;
-4. validar lectura y estructura;
-5. ejecutar pruebas multi-tenant/negativas.
-
-Durante esta etapa:
+La transición se ejecutó de forma segura:
 
 ```text
-TENANT_CONFIG_SOURCE=static
+1. binding TENANT_CONFIG provisionado
+2. configuración y ruta de la clínica cargadas
+3. lectura KV validada en /health
+4. llamada real validada manteniendo origen anterior
+5. KvTenantRepository conectado al bootstrap
+6. CallSession desacoplado del mapa estático
+7. KV activado como fuente real
+8. llamada real posterior al cutover validada
+9. saludo de Carolina correcto
+10. get_business_information devolvió years_in_operation=20
+11. cierre de llamada conservó funcionamiento
+12. origen estático retirado
 ```
 
-El sistema telefónico continúa utilizando la configuración existente.
+Se eliminaron del runtime/configuración:
 
-### Etapa B — cutover
+- `DEFAULT_TENANT_ID`;
+- `TENANT_ROUTES_JSON`;
+- `TENANT_CONFIG_SOURCE`;
+- `TENANT_KV_VALIDATED`;
+- `tenant-configuration.ts` y su mapa `TENANTS`;
+- `StaticTenantResolver`;
+- tests del resolver estático;
+- wrapper temporal de diagnóstico KV.
 
-1. integrar `KvTenantRepository` en TenantResolver/Call Bootstrap;
-2. eliminar la dependencia de configuración estática dentro de `CallSession`;
-3. cambiar `TENANT_CONFIG_SOURCE=kv`;
-4. comprobar `/health` y una llamada real;
-5. probar número desconocido;
-6. probar segundo negocio;
-7. retirar `TENANT_ROUTES_JSON`, `DEFAULT_TENANT_ID` y el mapa TypeScript de tenants.
-
-No se elimina el origen anterior antes de verificar KV en producción.
+`wrangler.jsonc` vuelve a apuntar directamente a `src/index.ts`.
 
 ## 7. Orden seguro al crear un negocio
 
@@ -203,18 +209,18 @@ Para retirar un negocio:
 
 ## 8. Consistencia de KV
 
-Workers KV está optimizado para lecturas frecuentes y escrituras infrecuentes. Es eventualmente consistente: una modificación puede tardar en propagarse a otros puntos de presencia.
-
-Para configuración se adopta inicialmente `cacheTtl=30` segundos. Por tanto:
+Workers KV se utiliza únicamente para configuración de lectura frecuente y escritura infrecuente. Es eventualmente consistente, por lo que:
 
 - un cambio administrativo no se considera instantáneo globalmente;
 - una llamada ya iniciada conserva su configuración de bootstrap;
 - modificaciones críticas de routing se realizan de forma controlada;
 - no se usa KV para citas, locks, contadores transaccionales ni operaciones que requieran atomicidad.
 
-## 9. Segundo negocio de validación
+El repositorio utiliza inicialmente `cacheTtl=30` segundos.
 
-Antes de cerrar la migración se creará un tenant sintético distinto, por ejemplo:
+## 9. Validación multi-negocio pendiente
+
+Antes de cerrar F4 se creará un segundo tenant sintético o de prueba, por ejemplo:
 
 ```text
 restaurante-centro
@@ -229,14 +235,16 @@ Debe tener:
 - facts diferentes;
 - allowlist independiente.
 
-Gate mínimo:
+Gate:
 
 ```text
 Número clínica -> solo clínica
-Número restaurante -> solo restaurante
+Número negocio B -> solo negocio B
 Número desconocido -> rechazo
 Tenant A nunca puede leer configuración de Tenant B
 ```
+
+Las pruebas contractuales KV ya cubren aislamiento y fail-closed en código; faltan las pruebas E2E sobre infraestructura real para cerrar el gate.
 
 ## 10. Secretos
 
@@ -257,12 +265,12 @@ Esas credenciales permanecen en Cloudflare Secrets.
 - [x] `KvTenantRepository` implementado;
 - [x] tests contractuales multi-tenant añadidos;
 - [x] binding `TENANT_CONFIG` declarado;
-- [x] modo de transición conserva origen estático;
-- [ ] namespace provisionado por deploy confirmado;
-- [ ] claves de Clínica Estética Madrid cargadas;
-- [ ] lectura KV validada en Worker;
-- [ ] Call Bootstrap migrado a KV;
-- [ ] CallSession desacoplado del mapa estático;
+- [x] namespace provisionado confirmado;
+- [x] claves de Clínica Estética Madrid cargadas;
+- [x] lectura KV validada en Worker;
+- [x] Call Bootstrap migrado a KV;
+- [x] CallSession desacoplado del mapa estático;
+- [x] llamada real post-cutover validada;
+- [x] origen estático eliminado;
 - [ ] segundo negocio E2E validado;
-- [ ] número desconocido E2E fail-closed;
-- [ ] origen estático eliminado.
+- [ ] número desconocido E2E fail-closed validado.
