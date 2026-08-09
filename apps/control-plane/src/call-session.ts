@@ -47,7 +47,7 @@ const BUSINESS_INFORMATION_REALTIME_TOOL: RealtimeFunctionTool = {
   type: "function",
   name: GET_BUSINESS_INFORMATION,
   description:
-    "Consulta la fuente autorizada del tenant para obtener la identidad oficial del negocio y de la asistente. Úsala cuando el usuario pida explícitamente consultar la herramienta, verificar el nombre oficial del negocio o comprobar la identidad configurada.",
+    "Consulta la fuente autorizada del tenant para obtener información oficial del negocio. Úsala cuando el usuario pida verificar datos del negocio que deban proceder de una fuente autorizada.",
   parameters: {
     type: "object",
     properties: {},
@@ -404,7 +404,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
   private createToolGateway(): ToolGateway {
     if (!this.tenantId) throw new Error("ToolGateway requires tenant_id");
 
-    const businessInformationDefinition: ToolDefinition<Record<string, never>, Record<string, string>> = {
+    const businessInformationDefinition: ToolDefinition<Record<string, never>, Record<string, string | number>> = {
       name: GET_BUSINESS_INFORMATION,
       access: "READ",
       description: BUSINESS_INFORMATION_REALTIME_TOOL.description,
@@ -413,11 +413,16 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         if (Object.keys(object).length > 0) throw new Error("get_business_information does not accept arguments");
         return {};
       },
-      execute: async () => ({
-        business_name: this.businessName ?? "",
-        assistant_name: this.assistantName ?? "",
-        source: "tenant_configuration",
-      }),
+      execute: async () => {
+        const tenantConfig = getTenantConfiguration(this.tenantId!);
+        if (!tenantConfig) throw new Error(`Tenant configuration not found for ${this.tenantId}`);
+        return {
+          business_name: this.businessName ?? "",
+          assistant_name: this.assistantName ?? "",
+          years_in_operation: tenantConfig.business.yearsInOperation,
+          source: "tenant_configuration",
+        };
+      },
     };
 
     return new ToolGateway(
