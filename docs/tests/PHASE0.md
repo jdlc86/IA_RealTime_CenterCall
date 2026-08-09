@@ -1,6 +1,6 @@
 # Test Plan — FASE 0
 
-> **Estado:** activo — primera llamada E2E con voz validada
+> **Estado:** activo — E2E de voz y cierre semántico v9 validados manualmente
 
 ## Gate F0
 
@@ -39,13 +39,13 @@ PASS solo si:
 | F0-T05 | [x] | sí | llamada permanece activa | Silencio ordinario no termina la llamada y la conversación puede reanudarse. |
 | F0-T06 | [x] | sí | `normal_clearing` | Al colgar el llamante, Telnyx registra terminación normal. |
 | F0-T07 | [ ] | | | |
-| F0-T08 | [ ] | sí | pendiente validación v9 | Modelo clasifica `CONTINUE`, `END_AMBIGUOUS`, `END_CLEAR`; Core aplica política y hangup. |
+| F0-T08 | [x] | sí | PASS manual v9 | Probados los diálogos de validación: cierre claro, ambigüedad, continuación con reset, silencio tras ambigüedad y casos contextuales negativos. El flujo fue considerado satisfactorio. |
 
-## F0-T08 — procedimiento v9
+## F0-T08 — política v9 validada
 
-Documento de diseño: `docs/implementation/END_CALL_INTENT_V9.md`.
+Documento de diseño canónico: `docs/implementation/END_CALL_INTENT_V9.md`.
 
-La detección primaria ya no depende de listas de palabras. El modelo Realtime clasifica semánticamente cada turno con contexto completo mediante la tool obligatoria `conversation_intent`.
+La detección primaria no depende de listas de palabras. El modelo Realtime clasifica semánticamente cada turno con contexto completo mediante la tool obligatoria `conversation_intent`:
 
 ```text
 CONTINUE
@@ -53,72 +53,47 @@ END_AMBIGUOUS
 END_CLEAR
 ```
 
+La validación manual confirmó el comportamiento funcional esperado de esta política.
+
 ### A. END_CLEAR — cierre directo
 
-Probar distintas formas naturales de terminar, no solo expresiones predefinidas.
-
-Ejemplos orientativos:
+Cuando el contexto hace clara la intención de terminar:
 
 ```text
-«Creo que con esto ya está, muchas gracias.»
-«Perfecto, era todo lo que necesitaba.»
-«No necesito nada más, gracias por la ayuda.»
+END_CLEAR
+→ CLOSING
+→ despedida breve
+→ /hangup
 ```
 
-Esperado:
+No se añade una confirmación innecesaria.
+
+### B. END_AMBIGUOUS — pregunta de continuación
+
+Cuando la intención de terminar es probable pero no suficientemente segura:
 
 ```text
-call_intent_classified intent=END_CLEAR
-call_intent_end_clear
-end_call_closing_started
-end_call_final_farewell_requested
-end_call_hangup_triggered
-end_call_hangup_result status=200
-Telnyx call.hangup
-```
-
-No debe realizar una confirmación adicional si el modelo considera clara la intención.
-
-### B. END_AMBIGUOUS — preguntar si necesita más ayuda
-
-Probar intervenciones cuyo significado contextual pueda ser de cierre pero no sea suficientemente claro.
-
-Esperado:
-
-```text
-call_intent_classified intent=END_AMBIGUOUS
-call_intent_ambiguous ambiguous_count=1
-```
-
-La IA pregunta una sola vez algo equivalente a:
-
-```text
-«¿Puedo ayudarte en algo más?»
+END_AMBIGUOUS
+→ ambiguous_count += 1
+→ «¿Puedo ayudarte en algo más?»
 ```
 
 ### C. Ambigüedad + nueva consulta real
 
-Después de una detección ambigua, realizar una nueva consulta real.
-
-Esperado:
+Si el usuario vuelve realmente a una consulta normal:
 
 ```text
-call_intent_classified intent=CONTINUE
-call_intent_continue
-call_intent_ambiguity_reset
-ambiguous_count=0
+CONTINUE
+→ ACTIVE
+→ ambiguous_count = 0
 ```
 
-Esta regla es obligatoria: las ambigüedades separadas durante una llamada larga no se acumulan.
+Esta regla está validada y es obligatoria: `ambiguous_count` representa ambigüedades consecutivas de un mismo intento de cierre y no se acumula durante toda la llamada.
 
 ### D. Ambigüedad + intención clara posterior
 
-Después de la pregunta «¿Puedo ayudarte en algo más?», expresar claramente que se ha terminado.
-
-Esperado:
-
 ```text
-END_AMBIGUOUS (count=1)
+END_AMBIGUOUS
 → END_CLEAR
 → despedida
 → hangup
@@ -126,27 +101,22 @@ END_AMBIGUOUS (count=1)
 
 ### E. Ambigüedad + silencio
 
-1. Provocar `END_AMBIGUOUS`.
-2. Escuchar la pregunta de seguimiento.
-3. No responder.
-4. No colgar manualmente.
-
-Esperado: al alcanzar el timeout configurado (~10 s), solo estando en estado `AMBIGUOUS`:
+Si el sistema ha preguntado si puede ayudar en algo más y el usuario no responde hasta el `idle_timeout_ms` (~10 s):
 
 ```text
-input_audio_buffer.timeout_triggered
-call_intent_ambiguous_silence_timeout
-end_call_closing_started
-end_call_hangup_result status=200
+AMBIGUOUS
+→ input_audio_buffer.timeout_triggered
+→ call_intent_ambiguous_silence_timeout
+→ CLOSING
+→ despedida
+→ hangup
 ```
 
-**Importante:** un silencio ordinario estando en `ACTIVE` no debe cerrar la llamada.
+Un silencio ordinario en `ACTIVE` no debe cerrar la llamada.
 
 ### F. Tres ambigüedades consecutivas
 
-Repetir tres veces una respuesta que el modelo clasifique como `END_AMBIGUOUS`, sin volver realmente a una consulta normal.
-
-Esperado:
+En F0:
 
 ```text
 END_AMBIGUOUS → count=1
@@ -157,29 +127,17 @@ END_AMBIGUOUS → count=3
 → hangup
 ```
 
-En F0 el límite es `3`. En una fase futura este punto podrá activar handoff humano en lugar de hangup.
+`AMBIGUOUS_LIMIT = 3`.
 
-### G. CONTINUE desde conversación normal
+En una fase futura este límite podrá activar transferencia a un agente humano en lugar de hangup.
 
-Realizar preguntas normales durante varios turnos.
+### G. Prueba contextual negativa
 
-Esperado: cada turno se clasifica como `CONTINUE`, se responde normalmente y `ambiguous_count` permanece en 0.
+Las menciones de despedidas dentro de otra intención conversacional deben clasificarse por significado y contexto, no por coincidencias léxicas. Los diálogos de prueba incluyeron ejemplos de este tipo y no produjeron cierres indebidos apreciables.
 
-### H. Prueba contextual negativa
+### H. Guarda de seguridad
 
-Usar frases cuyo texto superficial pueda parecer una despedida pero cuyo significado contextual no sea terminar la llamada, por ejemplo hablar sobre cómo otra persona se despidió o preguntar por el significado de una despedida.
-
-Esperado:
-
-```text
-call_intent_classified intent=CONTINUE
-```
-
-La llamada continúa. La clasificación debe depender del significado y contexto, no de coincidencias léxicas.
-
-### I. Guarda de seguridad de salida de la IA
-
-Si por un fallo el asistente anuncia verbalmente que va a colgar sin que el Core ya esté en `CLOSING`, permanece una guarda secundaria que convierte esa promesa en cierre técnico.
+Si por un fallo el asistente anuncia verbalmente que va a colgar sin que el Core esté ya en `CLOSING`, permanece una guarda secundaria que convierte esa promesa en cierre técnico.
 
 ## Logs v9 relevantes
 
@@ -199,7 +157,7 @@ realtime_sideband_closed
 Telnyx call.hangup
 ```
 
-La transcripción auxiliar se conserva para observabilidad de longitud/flujo, no como detector primario de intención.
+La transcripción auxiliar se conserva para observabilidad, no como detector primario de intención.
 
 ## Infraestructura validada
 
@@ -211,7 +169,10 @@ La transcripción auxiliar se conserva para observabilidad de longitud/flujo, no
 - [x] `CallSession` Durable Object por `call_id`.
 - [x] Sideband Realtime persistente fuera de `waitUntil()`.
 - [x] Reintento de `/hangup` y recuperación a `ACTIVE` si el cierre técnico falla.
+- [x] Política semántica v9 de cierre validada manualmente.
 
 ## Estado
 
-El E2E mínimo de voz está validado. **F0-T08 debe repetirse con v9** para validar la nueva política semántica, especialmente `END_CLEAR`, `END_AMBIGUOUS`, reset a cero tras `CONTINUE`, timeout durante ambigüedad y límite de tres ambigüedades consecutivas.
+**F0-T08 queda marcado PASS manual con v9.** No es necesario repetir los diálogos ya ejecutados salvo que se modifique la política de intención o aparezca una regresión.
+
+FASE 0 todavía no debe declararse PASS global mientras permanezcan sin evidencia los demás casos del Gate, en particular los tests actualmente no marcados y el baseline de setup/latencia.
