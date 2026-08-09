@@ -387,7 +387,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     const tools = this.getRealtimeBusinessTools();
     if (tools.length === 0) {
       this.createSpokenResponse(
-        "Continúa la conversación normalmente. Responde de forma breve, natural y útil a la última intervención real del usuario. No menciones la clasificación de intención ni procesos internos.",
+        "Continúa la conversación normalmente. Responde de forma breve, natural y útil a la última intervención real del usuario. No menciones la clasificación de intención ni procesos internos. No afirmes datos empresariales concretos que no estén en una fuente autorizada.",
       );
       return;
     }
@@ -395,21 +395,23 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.send({
       type: "response.create",
       response: {
-        tool_choice: "auto",
+        tool_choice: "required",
         tools,
         instructions: [
-          "Continúa la conversación de forma breve, natural y útil a la última intervención real del usuario.",
-          "Tienes disponibles únicamente las herramientas autorizadas para este tenant en esta respuesta.",
-          "Si el usuario pide explícitamente consultar una herramienta o verificar información oficial del negocio que la herramienta pueda proporcionar, úsala antes de responder.",
-          "No inventes resultados de herramientas y no menciones la clasificación de intención ni detalles internos del ToolGateway.",
+          "Antes de responder debes consultar una herramienta autorizada del tenant.",
+          "No respondas directamente ni uses memoria o conocimiento general para afirmar precios, tratamientos, servicios, horarios, disponibilidad, profesionales u otros datos del negocio.",
+          "La herramienta es la única fuente autorizada para datos empresariales concretos en esta etapa.",
+          "Después de la herramienta, si el dato solicitado no aparece explícitamente en el resultado, indica que no dispones de ese dato verificado. No lo estimes, completes, deduzcas ni inventes.",
+          "No menciones la clasificación de intención, ToolGateway, JSON ni procesos internos.",
         ].join(" "),
       },
     });
 
-    log("info", "tool_enabled_response_requested", {
+    log("info", "tool_grounded_response_required", {
       call_id: this.callId,
       tenant_id: this.tenantId,
       allowed_tools: tools.map((tool) => tool.name),
+      grounding_policy: "required_v1",
     });
   }
 
@@ -491,7 +493,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
     if (result.ok) {
       this.createSpokenResponse(
-        "Responde ahora a la última petición del usuario usando únicamente el resultado autorizado de la herramienta que acaba de incorporarse a la conversación. Sé breve y natural. No menciones ToolGateway, JSON ni procesos internos.",
+        "Responde a la última petición usando exclusivamente hechos que aparezcan explícitamente en el resultado autorizado de la herramienta. Si el usuario solicitó un precio, tratamiento, servicio, horario, disponibilidad, profesional u otro dato que NO figure explícitamente en ese resultado, di brevemente que no dispones de ese dato verificado en este momento. No estimes, deduzcas, completes ni inventes ningún dato. Para conversación general que no requiera hechos del negocio, puedes responder de forma natural sin introducir información empresarial nueva. No menciones ToolGateway, JSON ni procesos internos.",
       );
       return;
     }
