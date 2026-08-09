@@ -146,10 +146,62 @@ Evidencia observada antes de la corrección final y útil para aislar el problem
 
 **Conclusión:** el objetivo técnico mínimo de F0 — llamada PSTN real con respuesta de voz de OpenAI Realtime a través de Telnyx y Cloudflare — queda demostrado.
 
+### Pruebas funcionales manuales adicionales
+
+- [x] Silencio 5–10 s: la IA permanece activa, solicita repetir/continúa esperando y la conversación puede reanudarse.
+- [x] Cuelgue manual del llamante: Telnyx registra `hangup_cause=normal_clearing`.
+- [ ] Cuelgue automático por intención de despedida: implementación añadida; prueba E2E pendiente.
+
+### F0-014 — Cuelgue automático por intención
+
+Se implementó una acción controlada `end_call` en la sesión Realtime.
+
+Diseño:
+
+```text
+usuario expresa intención clara de terminar
+  → modelo solicita tool end_call
+  → sideband Realtime del Worker recibe function_call
+  → Worker confirma tool result
+  → Worker solicita despedida final breve
+  → output_audio_buffer.stopped
+  → POST /v1/realtime/calls/{call_id}/hangup
+  → SIP BYE / Telnyx call.hangup
+```
+
+Decisiones de seguridad/arquitectura:
+
+- [x] El modelo no recibe credenciales Telnyx ni acceso directo al proveedor telefónico.
+- [x] El cierre se ejecuta mediante el `call_id` de OpenAI, manteniendo el proveedor telefónico desacoplado.
+- [x] `end_call` solo debe usarse ante intención clara de terminar la llamada.
+- [x] El silencio nunca dispara `end_call`.
+- [x] Una mención contextual de palabras como «adiós» no debe cerrar la llamada.
+- [x] Si la intención es dudosa, la IA debe confirmar antes.
+- [x] La despedida final se genera antes de ejecutar `/hangup`.
+- [x] Existe fallback de 8 s para evitar una llamada huérfana si no llega el evento de fin de audio.
+- [x] Sideband conectado mediante WebSocket de Realtime asociado al `call_id` usando el patrón `fetch + Upgrade` compatible con Cloudflare Workers.
+- [x] Trazado actualizado a `f0-e2e-v3`.
+
+Eventos de observabilidad añadidos:
+
+```text
+realtime_sideband_connect_start
+realtime_sideband_connected
+end_call_intent_detected
+end_call_farewell_requested
+end_call_farewell_response_created
+end_call_hangup_triggered
+end_call_hangup_start
+end_call_hangup_result
+realtime_sideband_closed
+```
+
+Prueba pendiente: realizar llamada, despedirse de forma inequívoca y confirmar que la IA se despide y que la llamada finaliza sin intervención manual.
+
 ### Estado del Gate F0
 
-La primera conversación con voz **no implica todavía PASS completo de F0**. Quedan por ejecutar y registrar las pruebas de estabilidad, multi-turno, barge-in, silencio, duración ≥5 min y 20 llamadas consecutivas definidas en `docs/tests/PHASE0.md`.
+La primera conversación con voz **no implica todavía PASS completo de F0**. Quedan por completar/registrar las pruebas restantes definidas en `docs/tests/PHASE0.md`, incluido el nuevo cierre automático por intención si se mantiene como requisito del comportamiento final.
 
 ### Próximo hito
 
-Completar el Gate F0 y obtener baseline de latencia/setup. Después, avanzar al routing de tenant por número llamado sin introducir todavía lógica productiva de citas/CRM en F0.
+Validar F0-014 con una llamada real y, después, completar el Gate F0 y obtener baseline de latencia/setup.
