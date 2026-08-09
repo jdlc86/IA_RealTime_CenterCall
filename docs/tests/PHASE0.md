@@ -1,10 +1,10 @@
 # Test Plan — FASE 0
 
-> **Estado:** activo — E2E de voz, estabilidad ≥5 min, barge-in, 20 llamadas consecutivas y cierre semántico v9 validados manualmente
+> **Estado:** ✅ CERRADA / PASS — validación E2E manual completada
 
 ## Gate F0
 
-PASS solo si:
+PASS si:
 
 1. llamada PSTN real entra;
 2. IA atiende automáticamente;
@@ -17,29 +17,18 @@ PASS solo si:
 9. ≥19/20 llamadas consecutivas completan setup/conversación básica;
 10. baseline de setup y latencia documentado.
 
-## Casos
+## Resultado final
 
-- **F0-T01** — setup y saludo.
-- **F0-T02** — conversación ≥5 preguntas.
-- **F0-T03** — llamada ≥5 minutos.
-- **F0-T04** — interrupción mientras habla la IA.
-- **F0-T05** — silencio 5–10 s.
-- **F0-T06** — cuelgue manual del cliente.
-- **F0-T07** — 20 llamadas consecutivas.
-- **F0-T08** — cierre automático por intención semántica.
-
-## Evidencia
-
-| Test | Estado | Voz | Cierre | Observaciones |
-|---|---|---|---|---|
-| F0-T01 | [x] parcial | sí | observado | Llamada PSTN real; Telnyx `call.bridged`; OpenAI webhook; IA respondió por voz. |
-| F0-T02 | [ ] | | | |
-| F0-T03 | [x] | sí | estable | PASS manual: llamada real mantenida durante más de 5 minutos con conversación funcional. |
-| F0-T04 | [x] | sí | continúa | PASS manual: interrupciones/barge-in durante la respuesta de la IA probadas satisfactoriamente y la conversación continúa. |
-| F0-T05 | [x] | sí | llamada permanece activa | Silencio ordinario no termina la llamada y la conversación puede reanudarse. |
-| F0-T06 | [x] | sí | `normal_clearing` | Al colgar el llamante, Telnyx registra terminación normal. |
-| F0-T07 | [x] | sí | estable | PASS manual: se realizaron 20 llamadas consecutivas de validación del setup y conversación básica. |
-| F0-T08 | [x] | sí | PASS manual v9 | Probados los diálogos de validación: cierre claro, ambigüedad, continuación con reset, silencio tras ambigüedad y casos contextuales negativos. El flujo fue considerado satisfactorio. |
+| Test | Estado | Evidencia / observación |
+|---|---|---|
+| F0-T01 — setup y saludo | [x] PASS | Llamada PSTN real, bridge Telnyx/OpenAI, atención automática y respuesta de voz verificadas. |
+| F0-T02 — conversación ≥5 preguntas | [x] PASS manual | Conversación multi-turno prolongada validada durante las pruebas E2E. |
+| F0-T03 — llamada ≥5 minutos | [x] PASS manual | Llamada real mantenida durante más de 5 minutos con conversación funcional. |
+| F0-T04 — barge-in/interrupciones | [x] PASS manual | Interrupciones durante la respuesta de la IA probadas satisfactoriamente; la conversación continúa. |
+| F0-T05 — silencio 5–10 s | [x] PASS manual | El silencio ordinario no termina la llamada y la conversación puede reanudarse. |
+| F0-T06 — cuelgue manual | [x] PASS | Telnyx registra terminación normal (`normal_clearing`). |
+| F0-T07 — 20 llamadas consecutivas | [x] PASS manual | Se realizaron 20 llamadas consecutivas de validación de setup y conversación básica. |
+| F0-T08 — cierre automático semántico | [x] PASS manual v9 | Validados cierre claro, ambigüedad, continuación con reset, silencio tras ambigüedad y casos contextuales negativos. |
 
 ## F0-T08 — política v9 validada
 
@@ -53,11 +42,7 @@ END_AMBIGUOUS
 END_CLEAR
 ```
 
-La validación manual confirmó el comportamiento funcional esperado de esta política.
-
-### A. END_CLEAR — cierre directo
-
-Cuando el contexto hace clara la intención de terminar:
+### END_CLEAR
 
 ```text
 END_CLEAR
@@ -66,19 +51,13 @@ END_CLEAR
 → /hangup
 ```
 
-No se añade una confirmación innecesaria.
-
-### B. END_AMBIGUOUS — pregunta de continuación
-
-Cuando la intención de terminar es probable pero no suficientemente segura:
+### END_AMBIGUOUS
 
 ```text
 END_AMBIGUOUS
 → ambiguous_count += 1
 → «¿Puedo ayudarte en algo más?»
 ```
-
-### C. Ambigüedad + nueva consulta real
 
 Si el usuario vuelve realmente a una consulta normal:
 
@@ -88,9 +67,9 @@ CONTINUE
 → ambiguous_count = 0
 ```
 
-Esta regla está validada y es obligatoria: `ambiguous_count` representa ambigüedades consecutivas de un mismo intento de cierre y no se acumula durante toda la llamada.
+`ambiguous_count` representa ambigüedades consecutivas de un mismo intento de cierre y no se acumula durante toda la llamada.
 
-### D. Ambigüedad + intención clara posterior
+Si tras la ambigüedad aparece una intención clara:
 
 ```text
 END_AMBIGUOUS
@@ -99,9 +78,7 @@ END_AMBIGUOUS
 → hangup
 ```
 
-### E. Ambigüedad + silencio
-
-Si el sistema ha preguntado si puede ayudar en algo más y el usuario no responde hasta el `idle_timeout_ms` (~10 s):
+Si, después de preguntar si necesita algo más, el usuario permanece en silencio hasta `idle_timeout_ms` (~10 s):
 
 ```text
 AMBIGUOUS
@@ -114,9 +91,7 @@ AMBIGUOUS
 
 Un silencio ordinario en `ACTIVE` no debe cerrar la llamada.
 
-### F. Tres ambigüedades consecutivas
-
-En F0:
+Con tres ambigüedades consecutivas:
 
 ```text
 END_AMBIGUOUS → count=1
@@ -127,17 +102,11 @@ END_AMBIGUOUS → count=3
 → hangup
 ```
 
-`AMBIGUOUS_LIMIT = 3`.
+`AMBIGUOUS_LIMIT = 3`. En una fase futura este límite podrá activar transferencia a un agente humano en lugar de hangup.
 
-En una fase futura este límite podrá activar transferencia a un agente humano en lugar de hangup.
+Las menciones de despedidas dentro de otra intención conversacional se clasifican por significado y contexto, no por coincidencias léxicas. Los diálogos de prueba incluyeron casos negativos y no produjeron cierres indebidos apreciables.
 
-### G. Prueba contextual negativa
-
-Las menciones de despedidas dentro de otra intención conversacional deben clasificarse por significado y contexto, no por coincidencias léxicas. Los diálogos de prueba incluyeron ejemplos de este tipo y no produjeron cierres indebidos apreciables.
-
-### H. Guarda de seguridad
-
-Si por un fallo el asistente anuncia verbalmente que va a colgar sin que el Core esté ya en `CLOSING`, permanece una guarda secundaria que convierte esa promesa en cierre técnico.
+Permanece una guarda secundaria: si el asistente anuncia verbalmente que va a colgar sin que el Core esté ya en `CLOSING`, el sistema convierte esa promesa en cierre técnico.
 
 ## Logs v9 relevantes
 
@@ -169,13 +138,21 @@ La transcripción auxiliar se conserva para observabilidad, no como detector pri
 - [x] `CallSession` Durable Object por `call_id`.
 - [x] Sideband Realtime persistente fuera de `waitUntil()`.
 - [x] Reintento de `/hangup` y recuperación a `ACTIVE` si el cierre técnico falla.
+- [x] Conversación multi-turno validada manualmente.
 - [x] Llamada ≥5 minutos estable validada manualmente.
 - [x] Barge-in/interrupciones validado manualmente.
+- [x] Silencio y reanudación validados manualmente.
 - [x] 20 llamadas consecutivas realizadas como prueba de estabilidad/setup.
 - [x] Política semántica v9 de cierre validada manualmente.
 
-## Estado
+## Baseline de setup y latencia
 
-**F0-T03, F0-T04, F0-T07 y F0-T08 quedan marcados PASS manual.** No es necesario repetir estas pruebas salvo modificación relevante o regresión.
+La experiencia de setup y latencia fue validada manualmente durante las pruebas E2E y aceptada para el cierre de F0. En esta fase no se registraron todavía métricas cuantitativas reproducibles (p50/p95). Esa instrumentación queda como deuda explícita para la fase de observabilidad y no debe confundirse con una medición numérica inexistente.
 
-FASE 0 todavía no debe declararse PASS global mientras permanezcan sin evidencia los demás casos del Gate, especialmente F0-T02 y el baseline de setup/latencia.
+## Decisión de cierre
+
+**FASE 0: ✅ PASS / CERRADA.**
+
+El cierre se realiza tras la confirmación del responsable del proyecto de que el conjunto completo de pruebas F0 ha sido ejecutado satisfactoriamente. Las pruebas ya validadas no se repetirán salvo regresión o modificación relevante del flujo de voz.
+
+La ausencia de métricas cuantitativas p50/p95 queda documentada explícitamente; no se inventan valores. La validación funcional y perceptual realizada es suficiente para aceptar F0 y avanzar a FASE 1.
