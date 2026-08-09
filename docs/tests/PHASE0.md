@@ -12,9 +12,10 @@ PASS solo si:
 4. conversación multi-turno coherente;
 5. barge-in razonable;
 6. llamada ≥5 minutos estable;
-7. cuelgue limpia la sesión;
-8. ≥19/20 llamadas consecutivas completan setup/conversación básica;
-9. baseline de setup y latencia documentado.
+7. cuelgue manual limpia la sesión;
+8. cuelgue automático por intención clara de despedida funciona sin falsos positivos obvios;
+9. ≥19/20 llamadas consecutivas completan setup/conversación básica;
+10. baseline de setup y latencia documentado.
 
 ## Casos
 
@@ -23,8 +24,9 @@ PASS solo si:
 - **F0-T03** — llamada ≥5 minutos.
 - **F0-T04** — interrupción mientras habla la IA.
 - **F0-T05** — silencio 5–10 s.
-- **F0-T06** — cuelgue del cliente.
+- **F0-T06** — cuelgue manual del cliente.
 - **F0-T07** — 20 llamadas consecutivas.
+- **F0-T08** — cuelgue automático por intención de despedida.
 
 ## Evidencia
 
@@ -34,11 +36,37 @@ PASS solo si:
 | F0-T02 | [ ] | | | | | | |
 | F0-T03 | [ ] | | | | | | |
 | F0-T04 | [ ] | | | | | | |
-| F0-T05 | [ ] | | | | | | |
-| F0-T06 | [ ] | | | | | | |
+| F0-T05 | [x] | | sí | | 5–10 s de silencio | llamada permanece activa | La IA indica que no ha escuchado, espera y permite reanudar la conversación normalmente. |
+| F0-T06 | [x] | | sí | | | `normal_clearing` | Al colgar el llamante, Telnyx registra terminación normal. |
 | F0-T07 | [ ] | | | | | | |
+| F0-T08 | [ ] | | | | | pendiente | Implementado `end_call`; validar despedida final + cierre automático y ausencia de falsos positivos simples. |
 
 `F0-T01` se marca **parcial** porque el setup y la respuesta de voz están demostrados, pero todavía falta medir el baseline de tiempo de establecimiento/saludo.
+
+## F0-T08 — procedimiento
+
+1. Iniciar una llamada normal y mantener al menos dos turnos de conversación.
+2. Decir una intención clara de terminar, por ejemplo: «gracias, eso es todo, hasta luego».
+3. Esperar una despedida breve de la IA.
+4. No colgar manualmente.
+5. Confirmar que la llamada termina automáticamente pocos segundos después.
+6. En logs, buscar en orden aproximado:
+
+```text
+end_call_intent_detected
+end_call_farewell_requested
+end_call_farewell_response_created
+end_call_hangup_triggered
+end_call_hangup_result   status=200
+realtime_sideband_closed
+Telnyx call.hangup
+```
+
+Pruebas negativas mínimas para evitar falsos positivos:
+
+- permanecer en silencio 10 s → **no debe colgar**;
+- decir «mi amigo se despidió diciendo adiós» → **no debe colgar**;
+- frase ambigua como «bueno...» → la IA debe continuar o confirmar, no cerrar automáticamente.
 
 ## Evidencia técnica de la primera llamada E2E
 
@@ -86,4 +114,4 @@ Resultado: **la IA respondió por voz en una llamada PSTN real**.
 
 ## Estado
 
-El E2E mínimo de voz está validado, pero **FASE 0 todavía no está cerrada**. Deben completarse F0-T02 a F0-T07 y obtener el baseline de latencia/setup antes de declarar PASS del Gate F0.
+El E2E mínimo de voz está validado, pero **FASE 0 todavía no está cerrada**. Deben completarse las pruebas pendientes y obtener el baseline de latencia/setup antes de declarar PASS del Gate F0.
