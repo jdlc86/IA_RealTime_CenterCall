@@ -1,12 +1,13 @@
 # FASE 1 — Baseline, observabilidad y TenantResolver
 
-> Estado: EN CURSO
+> Estado: CERRADA — PASS
 > Inicio: 2026-08-09
+> Cierre: 2026-08-09
 > Prerrequisito: FASE 0 cerrada PASS.
 
 ## 1. Objetivo
 
-FASE 1 convierte el E2E de voz validado en un bootstrap multi-tenant observable, medible y personalizado por configuración.
+FASE 1 convierte el E2E de voz validado en un bootstrap multi-tenant observable y personalizado por configuración.
 
 ```text
 called_number
@@ -24,8 +25,6 @@ La personalización pertenece a configuración del tenant; no se crean forks ni 
 
 ## 2. Tenant de validación F1
 
-El número real de pruebas queda asociado a:
-
 ```text
 +34910789057
    ↓
@@ -35,27 +34,15 @@ Business = Clínica Estética Madrid
 Assistant = Carolina
 ```
 
-Configuración inicial del saludo:
+Saludo validado:
 
 ```text
 Buenas, soy Carolina, asistente virtual de la Clínica Estética Madrid. ¿En qué puedo ayudarte?
 ```
 
-Este saludo tiene una función de validación arquitectónica: si se escucha al llamar al número configurado, existe evidencia audible de que el número fue resuelto al tenant correcto y que su `TenantConfiguration` llegó a la sesión Realtime.
+## 3. TenantResolver — IMPLEMENTADO Y VALIDADO
 
-## 3. F1-A — TenantResolver — IMPLEMENTADO
-
-Contrato independiente del carrier:
-
-```text
-TenantRoutingContext { calledNumber }
-        ↓
-TenantResolver.resolve(...)
-        ↓
-TenantResolution { tenantId, calledNumber, source }
-```
-
-Implementación inicial: `StaticTenantResolver`, alimentado por `TENANT_ROUTES_JSON`.
+Implementación: `StaticTenantResolver`, alimentado por `TENANT_ROUTES_JSON`.
 
 Ruta vigente:
 
@@ -63,9 +50,11 @@ Ruta vigente:
 +34910789057 → clinica-estetica-madrid
 ```
 
-`DEFAULT_TENANT_ID` puede permanecer temporalmente por compatibilidad histórica, pero no participa en el routing operativo.
+No existe fallback silencioso a otro tenant. Un número desconocido resuelve `null` y el orquestador aplica fail-closed.
 
-## 4. F1-B — CallOrchestrator — IMPLEMENTADO, E2E VALIDADO
+Las pruebas contractuales reproducibles están registradas en `docs/tests/PHASE1.md`: 7/7 PASS, incluyendo normalización, número desconocido, entrada inválida, rutas duplicadas y parser de configuración.
+
+## 4. CallOrchestrator — IMPLEMENTADO, E2E VALIDADO
 
 En `call.initiated` inbound:
 
@@ -79,21 +68,15 @@ StaticTenantResolver
    └─ SÍ → tenant_id → TenantConfiguration → transfer OpenAI
 ```
 
-No existe fallback silencioso a otro tenant.
+## 5. Tenant binding y personalización — E2E VALIDADO
 
-La prueba E2E F1-T05 del 2026-08-09 confirmó mediante el saludo personalizado que la llamada al número configurado alcanza el tenant esperado.
-
-## 5. F1-C — Tenant binding y personalización — IMPLEMENTADO, E2E VALIDADO
-
-El binding se conserva en el salto Telnyx → OpenAI mediante headers SIP internos:
+El binding se conserva Telnyx → OpenAI mediante headers SIP internos:
 
 ```text
 X-IA-Tenant-ID
 X-IA-Called-Number
 X-IA-Routing-Source
 ```
-
-El webhook `realtime.call.incoming` exige esos datos antes de `/accept`.
 
 Después:
 
@@ -111,21 +94,11 @@ CallSession Durable Object
 saludo inicial automático
 ```
 
-`CallSession` recibe y conserva:
-
-```text
-call_id
-tenant_id
-business_name
-assistant_name
-initial_greeting
-```
-
-El saludo solo se solicita una vez por `CallSession` mediante `greetingSent`, incluso si `/start` se reintentara.
+`CallSession` conserva `call_id`, `tenant_id`, `business_name`, `assistant_name` e `initial_greeting`.
 
 ## 6. Observabilidad F1
 
-Eventos relevantes:
+Eventos relevantes implementados:
 
 ```text
 tenant_resolution_started
@@ -141,112 +114,56 @@ tenant_initial_greeting_requested
 call_bootstrap_ready
 ```
 
-Los logs incluyen `tenant_id` cuando aplica y nunca exponen secretos.
+## 7. F1-T05 — tenant binding audible — PASS
 
-## 7. Prueba E2E F1-T05 — tenant binding audible — PASS
+Fecha: 2026-08-09.
 
-**Fecha:** 2026-08-09  
-**Resultado:** PASS manual E2E.  
-**Evidencia:** validación directa durante llamada real por el operador de pruebas.
-
-Procedimiento realizado:
-
-- llamada real al número configurado `+34910789057`;
-- el sistema resolvió la llamada al tenant de validación;
-- la IA inició automáticamente el saludo personalizado sin requerir que el llamante hablara primero;
-- se escuchó correctamente el nombre de la asistente, Carolina;
-- se escuchó correctamente el nombre comercial, Clínica Estética Madrid;
-- el operador confirmó que el saludo y el funcionamiento posterior fueron correctos.
-
-Resultado audible confirmado:
+Validación manual E2E mediante llamada real:
 
 ```text
-Business = Clínica Estética Madrid
-Assistant = Carolina
-Initial greeting = PASS
-Conversation after greeting = PASS
+Número: +34910789057
+Tenant: clinica-estetica-madrid
+Business: Clínica Estética Madrid
+Assistant: Carolina
+Saludo automático: PASS
+Nombre de clínica: PASS
+Nombre de asistente: PASS
+Continuidad tras saludo: PASS
 ```
 
-Saludo esperado y validado funcionalmente:
+Conclusión: routing por número, tenant binding, carga de `TenantConfiguration` y personalización audible funcionan E2E para el tenant de validación.
+
+## 8. Pruebas contractuales/negativas — PASS
+
+Evidencia reproducible en `docs/tests/PHASE1.md`.
+
+Resultado:
 
 ```text
-Buenas, soy Carolina, asistente virtual de la Clínica Estética Madrid. ¿En qué puedo ayudarte?
+# tests 7
+# pass 7
+# fail 0
 ```
 
-La evidencia audible valida conjuntamente el camino funcional:
+Invariante principal validada:
 
 ```text
-+34910789057
-→ TenantResolver
-→ tenant_id=clinica-estetica-madrid
-→ TenantConfiguration
-→ RealtimeSessionConfiguration
-→ CallSession
-→ saludo personalizado de Carolina
++34999999999
+→ StaticTenantResolver.resolve(...)
+→ null
 ```
 
-**Conclusión F1-T05:** PASS. El routing por número, el tenant binding, la carga de `TenantConfiguration` y la personalización audible funcionan E2E para el tenant de validación. Esta evidencia no sustituye las pruebas negativas de aislamiento ni el baseline cuantitativo pendiente.
+No existe fallback accidental a `clinica-estetica-madrid` a nivel contractual del resolver.
 
-## 8. Manejo de errores
+## 9. Baseline cuantitativo — CANCELADO
 
-Número desconocido:
+El baseline cuantitativo de latencias inicialmente previsto para F1 queda **CANCELADO POR DECISIÓN DE PROYECTO** el 2026-08-09.
 
-```text
-called_number sin ruta
-→ tenant_resolution_failed
-→ reject CALL_REJECTED
-```
+No se considera FAIL ni pendiente y no bloquea el Gate F1. No se inventan valores retrospectivos de p50/p95.
 
-Tenant conocido sin configuración:
+La observabilidad necesaria para realizar mediciones en una fase futura permanece disponible.
 
-```text
-tenant_id resuelto
-→ tenant_configuration_not_found
-→ reject
-```
-
-Binding SIP ausente:
-
-```text
-realtime.call.incoming sin headers internos requeridos
-→ call_bootstrap_tenant_binding_missing
-→ no /accept
-```
-
-## 9. Health esperado
-
-Tras despliegue de esta iteración:
-
-```json
-{
-  "phase": "F1",
-  "tenant_resolver": "StaticTenantResolver",
-  "tenant_routing_source": "called_number",
-  "tenant_routes_valid": true,
-  "tenant_routes_count": 1,
-  "configured_tenant_id": "clinica-estetica-madrid",
-  "configured_business_name": "Clínica Estética Madrid",
-  "configured_assistant_name": "Carolina",
-  "initial_tenant_greeting": true,
-  "default_tenant_used_for_routing": false,
-  "tenant_binding_transport": "sip_custom_headers",
-  "tracing": "f1-tenant-greeting-v2"
-}
-```
-
-## 10. Baseline pendiente
-
-F1 debe registrar cuantitativamente:
-
-- webhook Telnyx → transfer;
-- `realtime.call.incoming` → `/accept`;
-- `/accept` → sideband conectado;
-- setup total hasta `call_bootstrap_ready`;
-- duración de llamada y resultado de cierre.
-
-No se inventan valores retrospectivos. p50/p95 se calcularán cuando haya suficiente evidencia.
-
-## 11. Gate F1
+## 10. Gate F1 — CERRADO PASS
 
 - [x] `TenantResolver` independiente.
 - [x] routing por `called_number → tenant_id`.
@@ -255,45 +172,36 @@ No se inventan valores retrospectivos. p50/p95 se calcularán cuando haya sufici
 - [x] `tenant_id` propagado a `CallSession`.
 - [x] saludo inicial derivado de configuración del tenant.
 - [x] logs de tenant resolution/bootstrap implementados.
-- [x] despliegue de la iteración verificado funcionalmente mediante llamada real.
+- [x] despliegue verificado mediante llamada real.
 - [x] F1-T05 E2E confirma binding y saludo audible.
-- [ ] baseline cuantitativo inicial documentado.
-- [ ] pruebas contractuales/unitarias o evidencia equivalente.
-- [ ] documentación y arquitectura reconciliadas al cierre.
+- [x] pruebas contractuales/negativas: 7/7 PASS.
+- [x] baseline cuantitativo retirado formalmente del Gate por decisión de proyecto.
+- [x] documentación reconciliada con la evidencia disponible.
 
-## 12. Registro de evidencia — 2026-08-09
+**Resultado Gate F1: PASS.**
 
-Se registra formalmente la validación manual de F1-T05:
+## 11. Decisión de cierre
 
-```text
-Número marcado: +34910789057
-Tenant esperado: clinica-estetica-madrid
-Negocio esperado: Clínica Estética Madrid
-Asistente esperada: Carolina
-Saludo automático: PASS
-Nombre de clínica correcto: PASS
-Nombre de asistente correcto: PASS
-Continuidad de la llamada tras el saludo: PASS
-Resultado global F1-T05: PASS
-```
+FASE 1 queda formalmente **CERRADA — PASS**.
 
-Esta validación constituye evidencia funcional E2E del camino positivo de Tenant Binding para el tenant configurado. No se interpreta como evidencia de aislamiento entre dos tenants; F1-T06 requerirá un segundo número/tenant o una prueba contractual equivalente.
+La evidencia disponible demuestra el objetivo funcional de la fase para el tenant de validación: resolución por número, fail-closed contractual, propagación de identidad de tenant, configuración por tenant, personalización audible y observabilidad del bootstrap.
 
-## 13. Commits de esta iteración
+Limitación explícita: no se ha realizado una prueba PSTN E2E con un segundo número desconocido/segundo tenant. El comportamiento fail-closed del `TenantResolver` está cubierto mediante prueba contractual reproducible. Esto no se considera bloqueante para el cierre acordado de F1.
+
+## 12. Commits relevantes
 
 ```text
 59a8c960985c4e6cb69d775df7630b0fdcb0d664  TenantConfiguration Estética Madrid
 e860bc0477a879317e6daee7db65f90c260c5d5c  número → clinica-estetica-madrid
 eba3ed47530924e99326c40175987571c8439a18  tenant binding + saludo en CallSession
 d9d987566b764255d7e7892684d562c2871adbe2  bootstrap personalizado en Worker
+dde03c063059889c7ff9517a2203b65f20f2e178  evidencia contractual TenantResolver
 ```
 
-Siguiente trabajo de F1:
+## 13. Siguiente paso
 
 ```text
-F1-T05 PASS
-→ completar baseline cuantitativo
-→ añadir/confirmar pruebas contractuales y negativas de TenantResolver
-→ reconciliar documentación/arquitectura
-→ evaluar Gate F1
+FASE 0 — CERRADA PASS
+FASE 1 — CERRADA PASS
+→ iniciar FASE 2 según el plan maestro vigente
 ```
