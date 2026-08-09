@@ -1,28 +1,86 @@
-# IA_RealTime_CenterCall — Documentación oficial v2.3
+# IA_RealTime_CenterCall — Documentación oficial v2.4
 
 Este directorio es la puerta de entrada a la documentación del proyecto. GitHub es la fuente de verdad del código y de la documentación.
 
+## Entrada estable
+
+Para evitar que vuelva a perderse la referencia al documento maestro, el path permanente es:
+
+1. [`MASTER_PROJECT_GUIDE.md`](./MASTER_PROJECT_GUIDE.md) — entrada estable; no se renombra ni se elimina.
+2. [`PROJECT_STATUS.md`](./PROJECT_STATUS.md) — estado operativo actual de fases.
+3. [`architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — arquitectura normativa y definición canónica del roadmap.
+4. [`architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — reglas no negociables de implementación.
+
+## Orden de autoridad documental
+
+Cuando existan dudas o contradicciones, usar este orden:
+
+```text
+ADR posterior aplicable
+        ↓
+architecture/SYSTEM_ARCHITECTURE.md
+        ↓
+architecture/DESIGN_RULES.md
+        ↓
+PROJECT_STATUS.md (solo progreso/estado de fases)
+        ↓
+implementation/PHASE_*_IMPLEMENTATION_GUIDE.md
+        ↓
+tests/ + runbooks/ + DEVELOPMENT_LOG.md
+```
+
+`MASTER_PROJECT_GUIDE.md` es una puerta de entrada estable, no una copia independiente de la arquitectura. Así evitamos dos fuentes de verdad divergentes.
+
 ## Lectura recomendada
 
-1. [`SYSTEM_OVERVIEW.md`](./SYSTEM_OVERVIEW.md) — qué es el producto y cómo funciona a alto nivel.
-2. [`architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — arquitectura canónica del sistema.
-3. [`architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — reglas no negociables de implementación.
-4. [`implementation/PHASE_1_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_1_IMPLEMENTATION_GUIDE.md) — guía operativa de la FASE 1: baseline, observabilidad y TenantResolver.
-5. [`implementation/PHASE_0_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_0_IMPLEMENTATION_GUIDE.md) — guía reproducible de la FASE 0 cerrada.
-6. [`implementation/END_CALL_INTENT_V9.md`](./implementation/END_CALL_INTENT_V9.md) — flujo canónico de cierre por intención semántica.
-7. [`runbooks/Telnyx.md`](./runbooks/Telnyx.md) — configuración operativa del proveedor telefónico inicial.
-8. [`tests/PHASE0.md`](./tests/PHASE0.md) — plan y evidencia del Gate F0.
-9. [`DEVELOPMENT_LOG.md`](./DEVELOPMENT_LOG.md) — bitácora cronológica.
+1. [`MASTER_PROJECT_GUIDE.md`](./MASTER_PROJECT_GUIDE.md) — entrada permanente al proyecto.
+2. [`PROJECT_STATUS.md`](./PROJECT_STATUS.md) — qué fase está cerrada y cuál sigue.
+3. [`SYSTEM_OVERVIEW.md`](./SYSTEM_OVERVIEW.md) — producto a alto nivel.
+4. [`architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — arquitectura y roadmap canónicos.
+5. [`architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — reglas arquitectónicas.
+6. [`implementation/PHASE_1_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_1_IMPLEMENTATION_GUIDE.md) — implementación/evidencia de F1.
+7. [`implementation/PHASE_0_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_0_IMPLEMENTATION_GUIDE.md) — F0 cerrada.
+8. [`implementation/END_CALL_INTENT_V9.md`](./implementation/END_CALL_INTENT_V9.md) — cierre por intención semántica.
+9. [`tests/PHASE0.md`](./tests/PHASE0.md) y [`tests/PHASE1.md`](./tests/PHASE1.md) — evidencia de gates.
+10. [`DEVELOPMENT_LOG.md`](./DEVELOPMENT_LOG.md) — bitácora cronológica.
 
-## Estructura
+## Roadmap vigente
+
+Definido por `architecture/SYSTEM_ARCHITECTURE.md`:
+
+```text
+F0 Voz E2E
+  ↓
+F1 Baseline + observabilidad + TenantResolver
+  ↓
+F2 Latencia + barge-in
+  ↓
+F3 ToolGateway
+  ↓
+F4 Clínica + validación multi-negocio
+  ↓
+F5 Persistencia/post-call
+  ↓
+F6 Handoff humano
+  ↓
+F7 Concurrencia
+  ↓
+F8 Hardening producción
+```
+
+El estado de ejecución de estas fases se consulta en `PROJECT_STATUS.md`, no en snapshots históricos dentro de documentos antiguos.
+
+## Estructura principal
 
 ```text
 docs/
-├── README.md
+├── MASTER_PROJECT_GUIDE.md       # path estable
+├── PROJECT_STATUS.md             # estado actual
+├── README.md                     # índice y autoridad
 ├── SYSTEM_OVERVIEW.md
 ├── DEVELOPMENT_LOG.md
 ├── architecture/
-│   ├── SYSTEM_ARCHITECTURE.md
+│   ├── SYSTEM_ARCHITECTURE.md    # arquitectura canónica
 │   ├── DESIGN_RULES.md
 │   └── GLOSSARY.md
 ├── implementation/
@@ -30,26 +88,14 @@ docs/
 │   ├── PHASE_1_IMPLEMENTATION_GUIDE.md
 │   └── END_CALL_INTENT_V9.md
 ├── adr/
-│   └── README.md
 ├── runbooks/
-│   ├── Cloudflare.md
-│   ├── OpenAI.md
-│   ├── Telnyx.md
-│   ├── Twilio.md
-│   ├── Deployment.md
-│   └── Troubleshooting.md
 └── tests/
-    └── PHASE0.md
+    ├── PHASE0.md
+    └── PHASE1.md
 ```
 
-## Fuente de verdad
+## Compatibilidad documental
 
-- **Arquitectura vigente:** `architecture/SYSTEM_ARCHITECTURE.md`.
-- **Reglas arquitectónicas:** `architecture/DESIGN_RULES.md`.
-- **Implementación activa:** `implementation/PHASE_1_IMPLEMENTATION_GUIDE.md`.
-- **Cierre de llamadas por intención:** `implementation/END_CALL_INTENT_V9.md`.
-- **Operación:** `runbooks/`.
-- **Evidencia de gates:** `tests/`.
-- **Historial de decisiones:** `adr/`.
+`ARCHITECTURE_SPECIFICATION.md` permanece como redirección legado hacia la documentación v2.x.
 
-Los antiguos paths `ARCHITECTURE_SPECIFICATION.md` y `PHASE_0_IMPLEMENTATION_GUIDE.md` se conservan únicamente como redirecciones de compatibilidad hacia la documentación v2.x. Las versiones v1.x completas siguen disponibles en el historial Git y no son fuente de verdad para nuevas implementaciones.
+`MASTER_PROJECT_GUIDE.md` queda restaurado deliberadamente como **path estable de compatibilidad**. Si en el futuro cambia el archivo arquitectónico interno, se actualiza el enlace del master; el nombre del master no vuelve a desaparecer.
