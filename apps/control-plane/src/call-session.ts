@@ -189,6 +189,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
   private waitingPhraseIndex = 0;
   private pendingExternalRequirement: DataRequirement | null = null;
   private waitingResponseId: string | null = null;
+  private waitingPhraseStarted = false;
   private greetingSent = false;
   private state: ClosingState = "active";
   private ambiguousCount = 0;
@@ -269,7 +270,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         state: this.state,
         ambiguous_count: this.ambiguousCount,
         sideband: "durable_object",
-        intent_policy: "semantic_v11_fail_safe",
+        intent_policy: "semantic_v12_serial_waiting",
         tool_gateway: "tenant_allowlist_v2",
         business_data_provider: "supabase",
         tenant_config_source: "bootstrap+kv_waiting_phrases",
@@ -321,7 +322,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       tenant_id: this.tenantId,
       elapsed_ms: Date.now() - startedAt,
       lifecycle: "durable_object_outbound_websocket",
-      intent_policy: "semantic_v11_fail_safe",
+      intent_policy: "semantic_v12_serial_waiting",
       allowed_tools: this.allowedTools,
       waiting_phrases: this.waitingPhrases.length,
     });
@@ -408,6 +409,28 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     });
   }
 
+  private startWaitingPhrase(requirement: DataRequirement): void {
+    const waitingPhrase = this.nextWaitingPhrase();
+    if (!waitingPhrase) {
+      this.pendingExternalRequirement = null;
+      this.waitingResponseId = null;
+      this.waitingPhraseStarted = false;
+      this.forceToolForRequirement(requirement);
+      return;
+    }
+
+    this.waitingPhraseStarted = true;
+    this.waitingResponseId = null;
+    this.createSpokenResponse(`Pronuncia exactamente esta frase de espera y nada más: ${JSON.stringify(waitingPhrase)}`);
+    log("info", "business_data_waiting_phrase_requested", {
+      call_id: this.callId,
+      tenant_id: this.tenantId,
+      data_requirement: requirement,
+      phrase_chars: waitingPhrase.length,
+      sequencing: "after_classifier_response_done",
+    });
+  }
+
   private createResponseForRequirement(requirement: DataRequirement): void {
     if (requirement === "NONE") {
       this.createSpokenResponse(
@@ -421,20 +444,19 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       return;
     }
 
-    const waitingPhrase = this.nextWaitingPhrase();
-    if (!waitingPhrase) {
+    if (this.waitingPhrases.length === 0) {
       this.forceToolForRequirement(requirement);
       return;
     }
 
     this.pendingExternalRequirement = requirement;
     this.waitingResponseId = null;
-    this.createSpokenResponse(`Pronuncia exactamente esta frase de espera y nada más: ${JSON.stringify(waitingPhrase)}`);
-    log("info", "business_data_waiting_phrase_requested", {
+    this.waitingPhraseStarted = false;
+    log("info", "business_data_waiting_phrase_queued", {
       call_id: this.callId,
       tenant_id: this.tenantId,
       data_requirement: requirement,
-      phrase_chars: waitingPhrase.length,
+      sequencing: "wait_for_classifier_response_done",
     });
   }
 
@@ -553,6 +575,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     if (this.state === "closing" || this.hangupStarted) return;
     this.pendingExternalRequirement = null;
     this.waitingResponseId = null;
+    this.waitingPhraseStarted = false;
     this.state = "closing";
     this.closingReason = reason;
     this.closingResponseId = null;
@@ -567,6 +590,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     if (this.state === "closing" || this.hangupStarted) return;
     this.pendingExternalRequirement = null;
     this.waitingResponseId = null;
+    this.waitingPhraseStarted = false;
     this.state = "closing";
     this.closingReason = reason;
     this.closingResponseId = null;
@@ -698,7 +722,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
     if (event.type === "response.created") {
       const responseId = event.response_id ?? event.response?.id ?? null;
-      if (this.pendingExternalRequirement && !this.waitingResponseId && responseId) {
+      if (this.pendingExternalRequirement && this.waitingPhraseStarted && !this.waitingResponseId && responseId) {
         this.waitingResponseId = responseId;
         log("info", "business_data_waiting_response_created", {
           call_id: this.callId,
@@ -714,15 +738,30 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       }
     }
 
-    if (event.type === "output_audio_buffer.stopped" && this.pendingExternalRequirement) {
-      if (!this.waitingResponseId || !event.response_id || event.response_id === this.waitingResponseId) {
-        const requirement = this.pendingExternalRequirement;
+    if (event.type === "response.done" && this.pendingExternalRequirement) {
+      const requirement = this.pendingExternalRequirement;
+      const responseId = event.response_id ?? event.response?.id ?? null;
+
+      if (!this.waitingPhraseStarted) {
+        log("info", "business_data_classifier_response_completed", {
+          call_id: this.callId,
+          tenant_id: this.tenantId,
+          data_requirement: requirement,
+          response_id: responseId,
+        });
+        this.startWaitingPhrase(requirement);
+        return;
+      }
+
+      if (!this.waitingResponseId || !responseId || responseId === this.waitingResponseId) {
         this.pendingExternalRequirement = null;
         this.waitingResponseId = null;
+        this.waitingPhraseStarted = false;
         log("info", "business_data_waiting_phrase_completed", {
           call_id: this.callId,
           tenant_id: this.tenantId,
           data_requirement: requirement,
+          trigger: "response.done",
         });
         this.forceToolForRequirement(requirement);
         return;
