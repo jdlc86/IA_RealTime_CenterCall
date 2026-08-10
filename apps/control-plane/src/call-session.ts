@@ -1,8 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
+import { SupabaseServicesReader } from "./supabase-services";
 import { ToolGateway, requireObject, type ToolDefinition, type ToolResult } from "./tool-gateway";
 
 type CallSessionEnv = {
   OPENAI_API_KEY: string;
+  SUPABASE_URL: string;
+  SUPABASE_SECRET_KEY: string;
 };
 
 type SemanticIntent = "CONTINUE" | "END_AMBIGUOUS" | "END_CLEAR";
@@ -43,12 +46,25 @@ const FINAL_FAREWELL_WATCHDOG_MS = 7_000;
 const HANGUP_RETRY_DELAY_MS = 300;
 const HANGUP_MAX_ATTEMPTS = 2;
 const GET_BUSINESS_INFORMATION = "get_business_information";
+const GET_SERVICES = "get_services";
 
 const BUSINESS_INFORMATION_REALTIME_TOOL: RealtimeFunctionTool = {
   type: "function",
   name: GET_BUSINESS_INFORMATION,
   description:
-    "Consulta la fuente autorizada del tenant para obtener información oficial del negocio. Úsala cuando el usuario pida verificar datos del negocio que deban proceder de una fuente autorizada.",
+    "Consulta la fuente autorizada del tenant para obtener información general oficial del negocio. No la uses para tratamientos, servicios ni precios si get_services está disponible.",
+  parameters: {
+    type: "object",
+    properties: {},
+    additionalProperties: false,
+  },
+};
+
+const SERVICES_REALTIME_TOOL: RealtimeFunctionTool = {
+  type: "function",
+  name: GET_SERVICES,
+  description:
+    "Consulta exclusivamente los servicios o tratamientos activos del tenant en Supabase. Úsala para preguntas sobre tratamientos, servicios, precios o duración. Si no aparece un servicio o precio en el resultado, no está verificado.",
   parameters: {
     type: "object",
     properties: {},
@@ -238,7 +254,8 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         ambiguous_count: this.ambiguousCount,
         sideband: "durable_object",
         intent_policy: "semantic_v9",
-        tool_gateway: "tenant_allowlist_v1",
+        tool_gateway: "tenant_allowlist_v1_services",
+        business_data_provider: "kv+supabase_services",
         tenant_config_source: "bootstrap",
       });
     }
@@ -257,7 +274,8 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         ambiguous_limit: AMBIGUOUS_LIMIT,
         websocket_connected: this.socket !== null,
         hangup_started: this.hangupStarted,
-        tool_gateway: "tenant_allowlist_v1",
+        tool_gateway: "tenant_allowlist_v1_services",
+        business_data_provider: "kv+supabase_services",
         tenant_config_source: "bootstrap",
       });
     }
@@ -293,7 +311,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       elapsed_ms: Date.now() - startedAt,
       lifecycle: "durable_object_outbound_websocket",
       intent_policy: "semantic_v9",
-      tool_gateway: "tenant_allowlist_v1",
+      tool_gateway: "tenant_allowlist_v1_services",
       allowed_tools: this.allowedTools,
     });
 
@@ -380,6 +398,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
   private getRealtimeBusinessTools(): RealtimeFunctionTool[] {
     const tools: RealtimeFunctionTool[] = [];
     if (this.allowedTools.includes(GET_BUSINESS_INFORMATION)) tools.push(BUSINESS_INFORMATION_REALTIME_TOOL);
+    if (this.allowedTools.includes(GET_SERVICES)) tools.push(SERVICES_REALTIME_TOOL);
     return tools;
   }
 
@@ -398,11 +417,12 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         tool_choice: "required",
         tools,
         instructions: [
-          "Antes de responder debes consultar una herramienta autorizada del tenant.",
+          "Antes de responder debes consultar exactamente una herramienta autorizada del tenant.",
+          "Para tratamientos, servicios, precios o duración usa get_services cuando esté disponible.",
+          "Para hechos generales del negocio usa get_business_information.",
           "No respondas directamente ni uses memoria o conocimiento general para afirmar precios, tratamientos, servicios, horarios, disponibilidad, profesionales u otros datos del negocio.",
-          "La herramienta es la única fuente autorizada para datos empresariales concretos en esta etapa.",
           "Después de la herramienta, si el dato solicitado no aparece explícitamente en el resultado, indica que no dispones de ese dato verificado. No lo estimes, completes, deduzcas ni inventes.",
-          "No menciones la clasificación de intención, ToolGateway, JSON ni procesos internos.",
+          "No menciones la clasificación de intención, ToolGateway, Supabase, JSON ni procesos internos.",
         ].join(" "),
       },
     });
@@ -411,7 +431,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       call_id: this.callId,
       tenant_id: this.tenantId,
       allowed_tools: tools.map((tool) => tool.name),
-      grounding_policy: "required_v1",
+      grounding_policy: "required_v1_services",
     });
   }
 
@@ -435,8 +455,29 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       }),
     };
 
+    const servicesDefinition: ToolDefinition<Record<string, never>, { services: unknown[]; source: string }> = {
+      name: GET_SERVICES,
+      access: "READ",
+      description: SERVICES_REALTIME_TOOL.description,
+      validate: (value: unknown) => {
+        const object = requireObject(value);
+        if (Object.keys(object).length > 0) throw new Error("get_services does not accept arguments");
+        return {};
+      },
+      execute: async (_args, context) => ({
+        services: await new SupabaseServicesReader({
+          SUPABASE_URL: requireEnvString(this.env.SUPABASE_URL, "SUPABASE_URL"),
+          SUPABASE_SECRET_KEY: requireEnvString(this.env.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
+        }).listServices(context.tenantId),
+        source: "supabase",
+      }),
+    };
+
     return new ToolGateway(
-      [businessInformationDefinition as ToolDefinition<unknown, unknown>],
+      [
+        businessInformationDefinition as ToolDefinition<unknown, unknown>,
+        servicesDefinition as ToolDefinition<unknown, unknown>,
+      ],
       [{ tenantId: this.tenantId, allowedTools: this.allowedTools }],
     );
   }
@@ -493,7 +534,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
     if (result.ok) {
       this.createSpokenResponse(
-        "Responde a la última petición usando exclusivamente hechos que aparezcan explícitamente en el resultado autorizado de la herramienta. Si el usuario solicitó un precio, tratamiento, servicio, horario, disponibilidad, profesional u otro dato que NO figure explícitamente en ese resultado, di brevemente que no dispones de ese dato verificado en este momento. No estimes, deduzcas, completes ni inventes ningún dato. Para conversación general que no requiera hechos del negocio, puedes responder de forma natural sin introducir información empresarial nueva. No menciones ToolGateway, JSON ni procesos internos.",
+        "Responde a la última petición usando exclusivamente hechos que aparezcan explícitamente en el resultado autorizado de la herramienta. Si el usuario solicitó un precio, tratamiento, servicio, horario, disponibilidad, profesional u otro dato que NO figure explícitamente en ese resultado, di brevemente que no dispones de ese dato verificado en este momento. No estimes, deduzcas, completes ni inventes ningún dato. Para conversación general que no requiera hechos del negocio, puedes responder de forma natural sin introducir información empresarial nueva. No menciones ToolGateway, Supabase, JSON ni procesos internos.",
       );
       return;
     }
