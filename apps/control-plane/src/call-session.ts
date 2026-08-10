@@ -1,15 +1,16 @@
 import { DurableObject } from "cloudflare:workers";
 import { SupabaseAdapter } from "./supabase-adapter";
+import { KvTenantRepository, type TenantKvNamespace } from "./tenant-kv";
+import { parseSemanticDecision, type DataRequirement } from "./semantic-router";
 import { ToolGateway, requireObject, type ToolDefinition, type ToolResult } from "./tool-gateway";
 
 type CallSessionEnv = {
   OPENAI_API_KEY: string;
   SUPABASE_URL: string;
   SUPABASE_SECRET_KEY: string;
+  TENANT_CONFIG: TenantKvNamespace;
 };
 
-type SemanticIntent = "CONTINUE" | "END_AMBIGUOUS" | "END_CLEAR";
-type DataRequirement = "NONE" | "BUSINESS_INFO" | "SERVICES" | "PROFESSIONALS" | "HOURS";
 type ClosingState = "active" | "ambiguous" | "closing";
 type BusinessFacts = Record<string, string | number | boolean>;
 
@@ -164,34 +165,14 @@ function readWebSocketText(data: unknown): string | null {
   return null;
 }
 
-function parseSemanticIntent(argumentsJson: string | undefined): {
-  intent: SemanticIntent;
-  dataRequirement: DataRequirement;
-  reason: string;
-} | null {
-  if (!argumentsJson) return null;
-  try {
-    const parsed = JSON.parse(argumentsJson) as { intent?: unknown; data_requirement?: unknown; reason?: unknown };
-    if (parsed.intent !== "CONTINUE" && parsed.intent !== "END_AMBIGUOUS" && parsed.intent !== "END_CLEAR") return null;
-    const validRequirements: DataRequirement[] = ["NONE", "BUSINESS_INFO", "SERVICES", "PROFESSIONALS", "HOURS"];
-    const dataRequirement = validRequirements.includes(parsed.data_requirement as DataRequirement)
-      ? (parsed.data_requirement as DataRequirement)
-      : parsed.intent === "CONTINUE"
-        ? "BUSINESS_INFO"
-        : "NONE";
-    const reason = typeof parsed.reason === "string" && parsed.reason.trim()
-      ? parsed.reason.trim().slice(0, 300)
-      : "semantic_intent_classifier";
-    return { intent: parsed.intent, dataRequirement, reason };
-  } catch {
-    return null;
-  }
-}
-
 function emptyObjectValidator(value: unknown): Record<string, never> {
   const object = requireObject(value);
   if (Object.keys(object).length > 0) throw new Error("This tool does not accept arguments");
   return {};
+}
+
+function isExternalRequirement(requirement: DataRequirement): boolean {
+  return requirement === "SERVICES" || requirement === "PROFESSIONALS" || requirement === "HOURS";
 }
 
 export class CallSession extends DurableObject<CallSessionEnv> {
@@ -204,6 +185,10 @@ export class CallSession extends DurableObject<CallSessionEnv> {
   private initialGreeting: string | null = null;
   private allowedTools: string[] = [];
   private businessFacts: BusinessFacts = {};
+  private waitingPhrases: string[] = [];
+  private waitingPhraseIndex = 0;
+  private pendingExternalRequirement: DataRequirement | null = null;
+  private waitingResponseId: string | null = null;
   private greetingSent = false;
   private state: ClosingState = "active";
   private ambiguousCount = 0;
@@ -252,6 +237,20 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       this.allowedTools = allowedTools;
       this.businessFacts = businessFacts;
 
+      try {
+        if (this.env.TENANT_CONFIG && typeof this.env.TENANT_CONFIG.get === "function") {
+          const config = await new KvTenantRepository(this.env.TENANT_CONFIG).getTenantConfiguration(tenantId);
+          this.waitingPhrases = config?.assistant.waitingPhrases ?? [];
+        }
+      } catch (error) {
+        this.waitingPhrases = [];
+        log("error", "tenant_waiting_phrases_load_failed", {
+          call_id: callId,
+          tenant_id: tenantId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
       if (!this.socket) {
         this.connectPromise ??= this.connectSideband(callId).finally(() => { this.connectPromise = null; });
         await this.connectPromise;
@@ -265,14 +264,15 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         business_name: businessName,
         assistant_name: assistantName,
         allowed_tools: this.allowedTools,
+        waiting_phrases: this.waitingPhrases.length,
         greeting_sent: this.greetingSent,
         state: this.state,
         ambiguous_count: this.ambiguousCount,
         sideband: "durable_object",
-        intent_policy: "semantic_v10_data_router",
+        intent_policy: "semantic_v11_fail_safe",
         tool_gateway: "tenant_allowlist_v2",
         business_data_provider: "supabase",
-        tenant_config_source: "bootstrap",
+        tenant_config_source: "bootstrap+kv_waiting_phrases",
       });
     }
 
@@ -284,6 +284,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         business_name: this.businessName,
         assistant_name: this.assistantName,
         allowed_tools: this.allowedTools,
+        waiting_phrases: this.waitingPhrases.length,
         greeting_sent: this.greetingSent,
         state: this.state,
         ambiguous_count: this.ambiguousCount,
@@ -320,8 +321,9 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       tenant_id: this.tenantId,
       elapsed_ms: Date.now() - startedAt,
       lifecycle: "durable_object_outbound_websocket",
-      intent_policy: "semantic_v10_data_router",
+      intent_policy: "semantic_v11_fail_safe",
       allowed_tools: this.allowedTools,
+      waiting_phrases: this.waitingPhrases.length,
     });
     socket.addEventListener("message", (event) => { void this.handleRealtimeMessage(event.data); });
     socket.addEventListener("close", () => {
@@ -366,14 +368,14 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.send({ type: "response.create", response: { tool_choice: "none", instructions } });
   }
 
-  private createResponseForRequirement(requirement: DataRequirement): void {
-    if (requirement === "NONE") {
-      this.createSpokenResponse(
-        "Continúa la conversación de forma breve, natural y útil. No introduzcas datos concretos del negocio que no estén ya verificados en la conversación.",
-      );
-      return;
-    }
+  private nextWaitingPhrase(): string | null {
+    if (this.waitingPhrases.length === 0) return null;
+    const phrase = this.waitingPhrases[this.waitingPhraseIndex % this.waitingPhrases.length];
+    this.waitingPhraseIndex = (this.waitingPhraseIndex + 1) % this.waitingPhrases.length;
+    return phrase;
+  }
 
+  private forceToolForRequirement(requirement: DataRequirement): void {
     const tool = TOOL_BY_REQUIREMENT[requirement];
     if (!tool || !this.allowedTools.includes(tool.name)) {
       log("error", "business_data_requirement_not_available", {
@@ -403,6 +405,36 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       data_requirement: requirement,
       tool: tool.name,
       grounding_policy: "domain_forced_v2",
+    });
+  }
+
+  private createResponseForRequirement(requirement: DataRequirement): void {
+    if (requirement === "NONE") {
+      this.createSpokenResponse(
+        "Continúa la conversación de forma breve, natural y útil. No introduzcas datos concretos del negocio que no estén ya verificados en la conversación.",
+      );
+      return;
+    }
+
+    if (!isExternalRequirement(requirement)) {
+      this.forceToolForRequirement(requirement);
+      return;
+    }
+
+    const waitingPhrase = this.nextWaitingPhrase();
+    if (!waitingPhrase) {
+      this.forceToolForRequirement(requirement);
+      return;
+    }
+
+    this.pendingExternalRequirement = requirement;
+    this.waitingResponseId = null;
+    this.createSpokenResponse(`Pronuncia exactamente esta frase de espera y nada más: ${JSON.stringify(waitingPhrase)}`);
+    log("info", "business_data_waiting_phrase_requested", {
+      call_id: this.callId,
+      tenant_id: this.tenantId,
+      data_requirement: requirement,
+      phrase_chars: waitingPhrase.length,
     });
   }
 
@@ -519,6 +551,8 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
   private beginClosing(reason: string, source: string): void {
     if (this.state === "closing" || this.hangupStarted) return;
+    this.pendingExternalRequirement = null;
+    this.waitingResponseId = null;
     this.state = "closing";
     this.closingReason = reason;
     this.closingResponseId = null;
@@ -531,6 +565,8 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
   private armHangupAfterCurrentAudio(reason: string, source: string): void {
     if (this.state === "closing" || this.hangupStarted) return;
+    this.pendingExternalRequirement = null;
+    this.waitingResponseId = null;
     this.state = "closing";
     this.closingReason = reason;
     this.closingResponseId = null;
@@ -598,19 +634,26 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         this.sendToolResult(event.call_id, { ok: true, action: "closing_already_in_progress" });
         return;
       }
-      const classification = parseSemanticIntent(event.arguments);
-      if (!classification) {
-        log("error", "call_intent_invalid_arguments", { call_id: this.callId, tenant_id: this.tenantId, arguments_chars: event.arguments?.length ?? 0 });
-        this.sendToolResult(event.call_id, { ok: false, error: "invalid_intent_arguments" });
-        this.continueConversation("invalid_classifier_output", "BUSINESS_INFO");
-        return;
+
+      const classification = parseSemanticDecision(event.arguments);
+      if (classification.degraded) {
+        log("error", "call_intent_degraded_fallback", {
+          call_id: this.callId,
+          tenant_id: this.tenantId,
+          arguments_chars: event.arguments?.length ?? 0,
+          fallback_intent: classification.intent,
+          fallback_data_requirement: classification.dataRequirement,
+          reason: classification.reason,
+        });
       }
+
       log("info", "call_intent_classified", {
         call_id: this.callId,
         tenant_id: this.tenantId,
         intent: classification.intent,
         data_requirement: classification.dataRequirement,
         reason: classification.reason,
+        degraded: classification.degraded,
         state_before: this.state,
         ambiguous_count_before: this.ambiguousCount,
       });
@@ -653,9 +696,37 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       return;
     }
 
-    if (this.state === "closing" && event.type === "response.created" && !this.closingResponseId) {
-      this.closingResponseId = event.response_id ?? event.response?.id ?? null;
-      return;
+    if (event.type === "response.created") {
+      const responseId = event.response_id ?? event.response?.id ?? null;
+      if (this.pendingExternalRequirement && !this.waitingResponseId && responseId) {
+        this.waitingResponseId = responseId;
+        log("info", "business_data_waiting_response_created", {
+          call_id: this.callId,
+          tenant_id: this.tenantId,
+          response_id: responseId,
+          data_requirement: this.pendingExternalRequirement,
+        });
+        return;
+      }
+      if (this.state === "closing" && !this.closingResponseId) {
+        this.closingResponseId = responseId;
+        return;
+      }
+    }
+
+    if (event.type === "output_audio_buffer.stopped" && this.pendingExternalRequirement) {
+      if (!this.waitingResponseId || !event.response_id || event.response_id === this.waitingResponseId) {
+        const requirement = this.pendingExternalRequirement;
+        this.pendingExternalRequirement = null;
+        this.waitingResponseId = null;
+        log("info", "business_data_waiting_phrase_completed", {
+          call_id: this.callId,
+          tenant_id: this.tenantId,
+          data_requirement: requirement,
+        });
+        this.forceToolForRequirement(requirement);
+        return;
+      }
     }
 
     if (this.state === "closing" && event.type === "output_audio_buffer.stopped") {
