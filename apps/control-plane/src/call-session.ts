@@ -175,6 +175,78 @@ function isExternalRequirement(requirement: DataRequirement): boolean {
   return requirement === "SERVICES" || requirement === "PROFESSIONALS" || requirement === "HOURS";
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function formatVerifiedMoney(priceCents: unknown, currency: unknown): string | null {
+  if (typeof priceCents !== "number" || !Number.isInteger(priceCents) || priceCents < 0) return null;
+  if (typeof currency !== "string" || !currency.trim()) return null;
+  return `${(priceCents / 100).toFixed(2).replace(".", ",")} ${currency.trim().toUpperCase()}`;
+}
+
+function buildDeterministicBusinessReply(toolName: string, result: ToolResult): string | null {
+  if (!result.ok) return "Ahora mismo no puedo verificar esa información. Prefiero no darte un dato que no esté confirmado.";
+  const payload = asRecord(result.result);
+  if (!payload) return "Ahora mismo no dispongo de información verificada para responder a esa consulta.";
+
+  if (toolName === GET_SERVICES) {
+    const rawServices = payload.services;
+    if (!Array.isArray(rawServices) || rawServices.length === 0) {
+      return "En este momento no tengo tratamientos ni servicios verificados registrados para esta clínica.";
+    }
+    const services = rawServices.flatMap((raw) => {
+      const service = asRecord(raw);
+      const name = typeof service?.name === "string" ? service.name.trim() : "";
+      if (!name) return [];
+      const details: string[] = [];
+      const price = formatVerifiedMoney(service?.price_cents, service?.currency);
+      if (price) details.push(`precio ${price}`);
+      if (typeof service?.duration_minutes === "number" && Number.isInteger(service.duration_minutes) && service.duration_minutes > 0) {
+        details.push(`duración ${service.duration_minutes} minutos`);
+      }
+      return [details.length ? `${name}, ${details.join(", ")}` : name];
+    });
+    if (services.length === 0) return "En este momento no tengo tratamientos ni servicios verificados registrados para esta clínica.";
+    return `Los servicios verificados registrados son: ${services.join("; ")}.`;
+  }
+
+  if (toolName === GET_PROFESSIONALS) {
+    const rawProfessionals = payload.professionals;
+    if (!Array.isArray(rawProfessionals) || rawProfessionals.length === 0) {
+      return "En este momento no tengo profesionales verificados registrados para esta clínica.";
+    }
+    const professionals = rawProfessionals.flatMap((raw) => {
+      const professional = asRecord(raw);
+      const name = typeof professional?.display_name === "string" ? professional.display_name.trim() : "";
+      if (!name) return [];
+      const role = typeof professional?.role_title === "string" ? professional.role_title.trim() : "";
+      return [role ? `${name}, ${role}` : name];
+    });
+    if (professionals.length === 0) return "En este momento no tengo profesionales verificados registrados para esta clínica.";
+    return `Los profesionales verificados registrados son: ${professionals.join("; ")}.`;
+  }
+
+  if (toolName === GET_BUSINESS_HOURS) {
+    const rawHours = payload.business_hours;
+    if (!Array.isArray(rawHours) || rawHours.length === 0) {
+      return "En este momento no tengo un horario comercial verificado registrado para esta clínica.";
+    }
+    const hours = rawHours.flatMap((raw) => {
+      const item = asRecord(raw);
+      const weekday = typeof item?.weekday === "number" && Number.isInteger(item.weekday) ? item.weekday : null;
+      const opens = typeof item?.opens_at === "string" ? item.opens_at.slice(0, 5) : "";
+      const closes = typeof item?.closes_at === "string" ? item.closes_at.slice(0, 5) : "";
+      if (weekday === null || !opens || !closes) return [];
+      return [`día ${weekday}, de ${opens} a ${closes}`];
+    });
+    if (hours.length === 0) return "En este momento no tengo un horario comercial verificado registrado para esta clínica.";
+    return `El horario comercial verificado registrado es: ${hours.join("; ")}.`;
+  }
+
+  return null;
+}
+
 export class CallSession extends DurableObject<CallSessionEnv> {
   private socket: WebSocket | null = null;
   private connectPromise: Promise<void> | null = null;
@@ -270,7 +342,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         state: this.state,
         ambiguous_count: this.ambiguousCount,
         sideband: "durable_object",
-        intent_policy: "semantic_v12_serial_waiting",
+        intent_policy: "semantic_v13_deterministic_grounding",
         tool_gateway: "tenant_allowlist_v2",
         business_data_provider: "supabase",
         tenant_config_source: "bootstrap+kv_waiting_phrases",
@@ -322,7 +394,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       tenant_id: this.tenantId,
       elapsed_ms: Date.now() - startedAt,
       lifecycle: "durable_object_outbound_websocket",
-      intent_policy: "semantic_v12_serial_waiting",
+      intent_policy: "semantic_v13_deterministic_grounding",
       allowed_tools: this.allowedTools,
       waiting_phrases: this.waitingPhrases.length,
     });
@@ -386,9 +458,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         required_tool: tool?.name ?? null,
         allowed_tools: this.allowedTools,
       });
-      this.createSpokenResponse(
-        "El usuario solicita un dato empresarial que no tiene una fuente autorizada disponible para este tenant. Indica brevemente que no dispones de ese dato verificado en este momento. No lo estimes, deduzcas ni inventes.",
-      );
+      this.createSpokenResponse(`Pronuncia exactamente esta frase y nada más: ${JSON.stringify("Ahora mismo no dispongo de ese dato verificado.")}`);
       return;
     }
 
@@ -405,7 +475,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       tenant_id: this.tenantId,
       data_requirement: requirement,
       tool: tool.name,
-      grounding_policy: "domain_forced_v2",
+      grounding_policy: "domain_forced_v3_deterministic_output",
     });
   }
 
@@ -509,7 +579,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       args = parseJsonArguments(event.arguments);
     } catch {
       this.sendToolResult(event.call_id, { ok: false, tool: event.name, tenantId: this.tenantId, error: "INVALID_ARGUMENTS", message: "Tool arguments must be valid JSON" });
-      this.createSpokenResponse("No pude consultar una fuente autorizada. Indica que no dispones del dato verificado; no inventes información.");
+      this.createSpokenResponse(`Pronuncia exactamente esta frase y nada más: ${JSON.stringify("Ahora mismo no puedo verificar esa información.")}`);
       return;
     }
 
@@ -524,12 +594,24 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       error: result.ok ? undefined : result.error,
     });
 
+    const deterministicReply = buildDeterministicBusinessReply(event.name, result);
+    if (deterministicReply) {
+      log("info", "business_data_deterministic_reply", {
+        call_id: this.callId,
+        tenant_id: this.tenantId,
+        tool: event.name,
+        reply_chars: deterministicReply.length,
+      });
+      this.createSpokenResponse(`Pronuncia exactamente esta respuesta verificada y nada más. No añadas explicaciones, ejemplos, estimaciones ni información adicional: ${JSON.stringify(deterministicReply)}`);
+      return;
+    }
+
     if (result.ok) {
       this.createSpokenResponse(
-        "Responde usando exclusivamente los hechos que aparezcan explícitamente en el resultado autorizado de la herramienta. Si el dato pedido no figura o la lista está vacía, indica que no dispones de ese dato verificado. No estimes, deduzcas, completes ni inventes. No menciones Supabase, ToolGateway, JSON ni procesos internos.",
+        "Responde usando exclusivamente los hechos que aparezcan explícitamente en el resultado autorizado de la herramienta. No estimes, deduzcas, completes ni inventes ningún dato.",
       );
     } else {
-      this.createSpokenResponse("La fuente autorizada no pudo proporcionar el dato. Informa brevemente de que no puedes verificarlo ahora mismo; no inventes información.");
+      this.createSpokenResponse(`Pronuncia exactamente esta frase y nada más: ${JSON.stringify("Ahora mismo no puedo verificar esa información.")}`);
     }
   }
 
