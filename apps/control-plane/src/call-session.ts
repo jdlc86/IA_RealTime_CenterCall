@@ -1,16 +1,15 @@
 import { DurableObject } from "cloudflare:workers";
 import { SupabaseAdapter } from "./supabase-adapter";
-import { KvTenantRepository, type TenantKvNamespace } from "./tenant-kv";
-import { parseSemanticDecision, type DataRequirement } from "./semantic-router";
 import { ToolGateway, requireObject, type ToolDefinition, type ToolResult } from "./tool-gateway";
 
 type CallSessionEnv = {
   OPENAI_API_KEY: string;
   SUPABASE_URL: string;
   SUPABASE_SECRET_KEY: string;
-  TENANT_CONFIG: TenantKvNamespace;
 };
 
+type SemanticIntent = "CONTINUE" | "END_AMBIGUOUS" | "END_CLEAR";
+type DataRequirement = "NONE" | "BUSINESS_INFO" | "SERVICES" | "PROFESSIONALS" | "HOURS";
 type ClosingState = "active" | "ambiguous" | "closing";
 type BusinessFacts = Record<string, string | number | boolean>;
 
@@ -165,86 +164,34 @@ function readWebSocketText(data: unknown): string | null {
   return null;
 }
 
+function parseSemanticIntent(argumentsJson: string | undefined): {
+  intent: SemanticIntent;
+  dataRequirement: DataRequirement;
+  reason: string;
+} | null {
+  if (!argumentsJson) return null;
+  try {
+    const parsed = JSON.parse(argumentsJson) as { intent?: unknown; data_requirement?: unknown; reason?: unknown };
+    if (parsed.intent !== "CONTINUE" && parsed.intent !== "END_AMBIGUOUS" && parsed.intent !== "END_CLEAR") return null;
+    const validRequirements: DataRequirement[] = ["NONE", "BUSINESS_INFO", "SERVICES", "PROFESSIONALS", "HOURS"];
+    const dataRequirement = validRequirements.includes(parsed.data_requirement as DataRequirement)
+      ? (parsed.data_requirement as DataRequirement)
+      : parsed.intent === "CONTINUE"
+        ? "BUSINESS_INFO"
+        : "NONE";
+    const reason = typeof parsed.reason === "string" && parsed.reason.trim()
+      ? parsed.reason.trim().slice(0, 300)
+      : "semantic_intent_classifier";
+    return { intent: parsed.intent, dataRequirement, reason };
+  } catch {
+    return null;
+  }
+}
+
 function emptyObjectValidator(value: unknown): Record<string, never> {
   const object = requireObject(value);
   if (Object.keys(object).length > 0) throw new Error("This tool does not accept arguments");
   return {};
-}
-
-function isExternalRequirement(requirement: DataRequirement): boolean {
-  return requirement === "SERVICES" || requirement === "PROFESSIONALS" || requirement === "HOURS";
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
-}
-
-function formatVerifiedMoney(priceCents: unknown, currency: unknown): string | null {
-  if (typeof priceCents !== "number" || !Number.isInteger(priceCents) || priceCents < 0) return null;
-  if (typeof currency !== "string" || !currency.trim()) return null;
-  return `${(priceCents / 100).toFixed(2).replace(".", ",")} ${currency.trim().toUpperCase()}`;
-}
-
-function buildDeterministicBusinessReply(toolName: string, result: ToolResult): string | null {
-  if (!result.ok) return "Ahora mismo no puedo verificar esa información. Prefiero no darte un dato que no esté confirmado.";
-  const payload = asRecord(result.result);
-  if (!payload) return "Ahora mismo no dispongo de información verificada para responder a esa consulta.";
-
-  if (toolName === GET_SERVICES) {
-    const rawServices = payload.services;
-    if (!Array.isArray(rawServices) || rawServices.length === 0) {
-      return "En este momento no tengo tratamientos ni servicios verificados registrados para esta clínica.";
-    }
-    const services = rawServices.flatMap((raw) => {
-      const service = asRecord(raw);
-      const name = typeof service?.name === "string" ? service.name.trim() : "";
-      if (!name) return [];
-      const details: string[] = [];
-      const price = formatVerifiedMoney(service?.price_cents, service?.currency);
-      if (price) details.push(`precio ${price}`);
-      if (typeof service?.duration_minutes === "number" && Number.isInteger(service.duration_minutes) && service.duration_minutes > 0) {
-        details.push(`duración ${service.duration_minutes} minutos`);
-      }
-      return [details.length ? `${name}, ${details.join(", ")}` : name];
-    });
-    if (services.length === 0) return "En este momento no tengo tratamientos ni servicios verificados registrados para esta clínica.";
-    return `Los servicios verificados registrados son: ${services.join("; ")}.`;
-  }
-
-  if (toolName === GET_PROFESSIONALS) {
-    const rawProfessionals = payload.professionals;
-    if (!Array.isArray(rawProfessionals) || rawProfessionals.length === 0) {
-      return "En este momento no tengo profesionales verificados registrados para esta clínica.";
-    }
-    const professionals = rawProfessionals.flatMap((raw) => {
-      const professional = asRecord(raw);
-      const name = typeof professional?.display_name === "string" ? professional.display_name.trim() : "";
-      if (!name) return [];
-      const role = typeof professional?.role_title === "string" ? professional.role_title.trim() : "";
-      return [role ? `${name}, ${role}` : name];
-    });
-    if (professionals.length === 0) return "En este momento no tengo profesionales verificados registrados para esta clínica.";
-    return `Los profesionales verificados registrados son: ${professionals.join("; ")}.`;
-  }
-
-  if (toolName === GET_BUSINESS_HOURS) {
-    const rawHours = payload.business_hours;
-    if (!Array.isArray(rawHours) || rawHours.length === 0) {
-      return "En este momento no tengo un horario comercial verificado registrado para esta clínica.";
-    }
-    const hours = rawHours.flatMap((raw) => {
-      const item = asRecord(raw);
-      const weekday = typeof item?.weekday === "number" && Number.isInteger(item.weekday) ? item.weekday : null;
-      const opens = typeof item?.opens_at === "string" ? item.opens_at.slice(0, 5) : "";
-      const closes = typeof item?.closes_at === "string" ? item.closes_at.slice(0, 5) : "";
-      if (weekday === null || !opens || !closes) return [];
-      return [`día ${weekday}, de ${opens} a ${closes}`];
-    });
-    if (hours.length === 0) return "En este momento no tengo un horario comercial verificado registrado para esta clínica.";
-    return `El horario comercial verificado registrado es: ${hours.join("; ")}.`;
-  }
-
-  return null;
 }
 
 export class CallSession extends DurableObject<CallSessionEnv> {
@@ -257,11 +204,6 @@ export class CallSession extends DurableObject<CallSessionEnv> {
   private initialGreeting: string | null = null;
   private allowedTools: string[] = [];
   private businessFacts: BusinessFacts = {};
-  private waitingPhrases: string[] = [];
-  private waitingPhraseIndex = 0;
-  private pendingExternalRequirement: DataRequirement | null = null;
-  private waitingResponseId: string | null = null;
-  private waitingPhraseStarted = false;
   private greetingSent = false;
   private state: ClosingState = "active";
   private ambiguousCount = 0;
@@ -310,20 +252,6 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       this.allowedTools = allowedTools;
       this.businessFacts = businessFacts;
 
-      try {
-        if (this.env.TENANT_CONFIG && typeof this.env.TENANT_CONFIG.get === "function") {
-          const config = await new KvTenantRepository(this.env.TENANT_CONFIG).getTenantConfiguration(tenantId);
-          this.waitingPhrases = config?.assistant.waitingPhrases ?? [];
-        }
-      } catch (error) {
-        this.waitingPhrases = [];
-        log("error", "tenant_waiting_phrases_load_failed", {
-          call_id: callId,
-          tenant_id: tenantId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-
       if (!this.socket) {
         this.connectPromise ??= this.connectSideband(callId).finally(() => { this.connectPromise = null; });
         await this.connectPromise;
@@ -337,15 +265,14 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         business_name: businessName,
         assistant_name: assistantName,
         allowed_tools: this.allowedTools,
-        waiting_phrases: this.waitingPhrases.length,
         greeting_sent: this.greetingSent,
         state: this.state,
         ambiguous_count: this.ambiguousCount,
         sideband: "durable_object",
-        intent_policy: "semantic_v13_deterministic_grounding",
+        intent_policy: "semantic_v10_data_router",
         tool_gateway: "tenant_allowlist_v2",
         business_data_provider: "supabase",
-        tenant_config_source: "bootstrap+kv_waiting_phrases",
+        tenant_config_source: "bootstrap",
       });
     }
 
@@ -357,7 +284,6 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         business_name: this.businessName,
         assistant_name: this.assistantName,
         allowed_tools: this.allowedTools,
-        waiting_phrases: this.waitingPhrases.length,
         greeting_sent: this.greetingSent,
         state: this.state,
         ambiguous_count: this.ambiguousCount,
@@ -394,9 +320,8 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       tenant_id: this.tenantId,
       elapsed_ms: Date.now() - startedAt,
       lifecycle: "durable_object_outbound_websocket",
-      intent_policy: "semantic_v13_deterministic_grounding",
+      intent_policy: "semantic_v10_data_router",
       allowed_tools: this.allowedTools,
-      waiting_phrases: this.waitingPhrases.length,
     });
     socket.addEventListener("message", (event) => { void this.handleRealtimeMessage(event.data); });
     socket.addEventListener("close", () => {
@@ -441,14 +366,14 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.send({ type: "response.create", response: { tool_choice: "none", instructions } });
   }
 
-  private nextWaitingPhrase(): string | null {
-    if (this.waitingPhrases.length === 0) return null;
-    const phrase = this.waitingPhrases[this.waitingPhraseIndex % this.waitingPhrases.length];
-    this.waitingPhraseIndex = (this.waitingPhraseIndex + 1) % this.waitingPhrases.length;
-    return phrase;
-  }
+  private createResponseForRequirement(requirement: DataRequirement): void {
+    if (requirement === "NONE") {
+      this.createSpokenResponse(
+        "Continúa la conversación de forma breve, natural y útil. No introduzcas datos concretos del negocio que no estén ya verificados en la conversación.",
+      );
+      return;
+    }
 
-  private forceToolForRequirement(requirement: DataRequirement): void {
     const tool = TOOL_BY_REQUIREMENT[requirement];
     if (!tool || !this.allowedTools.includes(tool.name)) {
       log("error", "business_data_requirement_not_available", {
@@ -458,7 +383,9 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         required_tool: tool?.name ?? null,
         allowed_tools: this.allowedTools,
       });
-      this.createSpokenResponse(`Pronuncia exactamente esta frase y nada más: ${JSON.stringify("Ahora mismo no dispongo de ese dato verificado.")}`);
+      this.createSpokenResponse(
+        "El usuario solicita un dato empresarial que no tiene una fuente autorizada disponible para este tenant. Indica brevemente que no dispones de ese dato verificado en este momento. No lo estimes, deduzcas ni inventes.",
+      );
       return;
     }
 
@@ -475,58 +402,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       tenant_id: this.tenantId,
       data_requirement: requirement,
       tool: tool.name,
-      grounding_policy: "domain_forced_v3_deterministic_output",
-    });
-  }
-
-  private startWaitingPhrase(requirement: DataRequirement): void {
-    const waitingPhrase = this.nextWaitingPhrase();
-    if (!waitingPhrase) {
-      this.pendingExternalRequirement = null;
-      this.waitingResponseId = null;
-      this.waitingPhraseStarted = false;
-      this.forceToolForRequirement(requirement);
-      return;
-    }
-
-    this.waitingPhraseStarted = true;
-    this.waitingResponseId = null;
-    this.createSpokenResponse(`Pronuncia exactamente esta frase de espera y nada más: ${JSON.stringify(waitingPhrase)}`);
-    log("info", "business_data_waiting_phrase_requested", {
-      call_id: this.callId,
-      tenant_id: this.tenantId,
-      data_requirement: requirement,
-      phrase_chars: waitingPhrase.length,
-      sequencing: "after_classifier_response_done",
-    });
-  }
-
-  private createResponseForRequirement(requirement: DataRequirement): void {
-    if (requirement === "NONE") {
-      this.createSpokenResponse(
-        "Continúa la conversación de forma breve, natural y útil. No introduzcas datos concretos del negocio que no estén ya verificados en la conversación.",
-      );
-      return;
-    }
-
-    if (!isExternalRequirement(requirement)) {
-      this.forceToolForRequirement(requirement);
-      return;
-    }
-
-    if (this.waitingPhrases.length === 0) {
-      this.forceToolForRequirement(requirement);
-      return;
-    }
-
-    this.pendingExternalRequirement = requirement;
-    this.waitingResponseId = null;
-    this.waitingPhraseStarted = false;
-    log("info", "business_data_waiting_phrase_queued", {
-      call_id: this.callId,
-      tenant_id: this.tenantId,
-      data_requirement: requirement,
-      sequencing: "wait_for_classifier_response_done",
+      grounding_policy: "domain_forced_v2",
     });
   }
 
@@ -579,7 +455,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       args = parseJsonArguments(event.arguments);
     } catch {
       this.sendToolResult(event.call_id, { ok: false, tool: event.name, tenantId: this.tenantId, error: "INVALID_ARGUMENTS", message: "Tool arguments must be valid JSON" });
-      this.createSpokenResponse(`Pronuncia exactamente esta frase y nada más: ${JSON.stringify("Ahora mismo no puedo verificar esa información.")}`);
+      this.createSpokenResponse("No pude consultar una fuente autorizada. Indica que no dispones del dato verificado; no inventes información.");
       return;
     }
 
@@ -594,24 +470,12 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       error: result.ok ? undefined : result.error,
     });
 
-    const deterministicReply = buildDeterministicBusinessReply(event.name, result);
-    if (deterministicReply) {
-      log("info", "business_data_deterministic_reply", {
-        call_id: this.callId,
-        tenant_id: this.tenantId,
-        tool: event.name,
-        reply_chars: deterministicReply.length,
-      });
-      this.createSpokenResponse(`Pronuncia exactamente esta respuesta verificada y nada más. No añadas explicaciones, ejemplos, estimaciones ni información adicional: ${JSON.stringify(deterministicReply)}`);
-      return;
-    }
-
     if (result.ok) {
       this.createSpokenResponse(
-        "Responde usando exclusivamente los hechos que aparezcan explícitamente en el resultado autorizado de la herramienta. No estimes, deduzcas, completes ni inventes ningún dato.",
+        "Responde usando exclusivamente los hechos que aparezcan explícitamente en el resultado autorizado de la herramienta. Si el dato pedido no figura o la lista está vacía, indica que no dispones de ese dato verificado. No estimes, deduzcas, completes ni inventes. No menciones Supabase, ToolGateway, JSON ni procesos internos.",
       );
     } else {
-      this.createSpokenResponse(`Pronuncia exactamente esta frase y nada más: ${JSON.stringify("Ahora mismo no puedo verificar esa información.")}`);
+      this.createSpokenResponse("La fuente autorizada no pudo proporcionar el dato. Informa brevemente de que no puedes verificarlo ahora mismo; no inventes información.");
     }
   }
 
@@ -655,9 +519,6 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
   private beginClosing(reason: string, source: string): void {
     if (this.state === "closing" || this.hangupStarted) return;
-    this.pendingExternalRequirement = null;
-    this.waitingResponseId = null;
-    this.waitingPhraseStarted = false;
     this.state = "closing";
     this.closingReason = reason;
     this.closingResponseId = null;
@@ -670,9 +531,6 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
   private armHangupAfterCurrentAudio(reason: string, source: string): void {
     if (this.state === "closing" || this.hangupStarted) return;
-    this.pendingExternalRequirement = null;
-    this.waitingResponseId = null;
-    this.waitingPhraseStarted = false;
     this.state = "closing";
     this.closingReason = reason;
     this.closingResponseId = null;
@@ -740,26 +598,19 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         this.sendToolResult(event.call_id, { ok: true, action: "closing_already_in_progress" });
         return;
       }
-
-      const classification = parseSemanticDecision(event.arguments);
-      if (classification.degraded) {
-        log("error", "call_intent_degraded_fallback", {
-          call_id: this.callId,
-          tenant_id: this.tenantId,
-          arguments_chars: event.arguments?.length ?? 0,
-          fallback_intent: classification.intent,
-          fallback_data_requirement: classification.dataRequirement,
-          reason: classification.reason,
-        });
+      const classification = parseSemanticIntent(event.arguments);
+      if (!classification) {
+        log("error", "call_intent_invalid_arguments", { call_id: this.callId, tenant_id: this.tenantId, arguments_chars: event.arguments?.length ?? 0 });
+        this.sendToolResult(event.call_id, { ok: false, error: "invalid_intent_arguments" });
+        this.continueConversation("invalid_classifier_output", "BUSINESS_INFO");
+        return;
       }
-
       log("info", "call_intent_classified", {
         call_id: this.callId,
         tenant_id: this.tenantId,
         intent: classification.intent,
         data_requirement: classification.dataRequirement,
         reason: classification.reason,
-        degraded: classification.degraded,
         state_before: this.state,
         ambiguous_count_before: this.ambiguousCount,
       });
@@ -802,52 +653,9 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       return;
     }
 
-    if (event.type === "response.created") {
-      const responseId = event.response_id ?? event.response?.id ?? null;
-      if (this.pendingExternalRequirement && this.waitingPhraseStarted && !this.waitingResponseId && responseId) {
-        this.waitingResponseId = responseId;
-        log("info", "business_data_waiting_response_created", {
-          call_id: this.callId,
-          tenant_id: this.tenantId,
-          response_id: responseId,
-          data_requirement: this.pendingExternalRequirement,
-        });
-        return;
-      }
-      if (this.state === "closing" && !this.closingResponseId) {
-        this.closingResponseId = responseId;
-        return;
-      }
-    }
-
-    if (event.type === "response.done" && this.pendingExternalRequirement) {
-      const requirement = this.pendingExternalRequirement;
-      const responseId = event.response_id ?? event.response?.id ?? null;
-
-      if (!this.waitingPhraseStarted) {
-        log("info", "business_data_classifier_response_completed", {
-          call_id: this.callId,
-          tenant_id: this.tenantId,
-          data_requirement: requirement,
-          response_id: responseId,
-        });
-        this.startWaitingPhrase(requirement);
-        return;
-      }
-
-      if (!this.waitingResponseId || !responseId || responseId === this.waitingResponseId) {
-        this.pendingExternalRequirement = null;
-        this.waitingResponseId = null;
-        this.waitingPhraseStarted = false;
-        log("info", "business_data_waiting_phrase_completed", {
-          call_id: this.callId,
-          tenant_id: this.tenantId,
-          data_requirement: requirement,
-          trigger: "response.done",
-        });
-        this.forceToolForRequirement(requirement);
-        return;
-      }
+    if (this.state === "closing" && event.type === "response.created" && !this.closingResponseId) {
+      this.closingResponseId = event.response_id ?? event.response?.id ?? null;
+      return;
     }
 
     if (this.state === "closing" && event.type === "output_audio_buffer.stopped") {
