@@ -714,6 +714,23 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       }
     }
 
+    if (event.type === "response.done" && this.pendingExternalRequirement) {
+      const responseId = event.response_id ?? event.response?.id ?? null;
+      if (!this.waitingResponseId || !responseId || responseId === this.waitingResponseId) {
+        const requirement = this.pendingExternalRequirement;
+        this.pendingExternalRequirement = null;
+        this.waitingResponseId = null;
+        log("info", "business_data_waiting_phrase_completed", {
+          call_id: this.callId,
+          tenant_id: this.tenantId,
+          data_requirement: requirement,
+          trigger: "response.done",
+        });
+        this.forceToolForRequirement(requirement);
+        return;
+      }
+    }
+
     if (event.type === "output_audio_buffer.stopped" && this.pendingExternalRequirement) {
       if (!this.waitingResponseId || !event.response_id || event.response_id === this.waitingResponseId) {
         const requirement = this.pendingExternalRequirement;
@@ -723,6 +740,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
           call_id: this.callId,
           tenant_id: this.tenantId,
           data_requirement: requirement,
+          trigger: "output_audio_buffer.stopped_fallback",
         });
         this.forceToolForRequirement(requirement);
         return;
