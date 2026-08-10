@@ -19,6 +19,8 @@ export type TenantConfigurationV1 = {
     language: string;
     /** Canonical tenant-specific behavior/context/limitations prompt stored in KV. */
     systemPrompt?: string;
+    /** Short phrases spoken before external business-data lookups. */
+    waitingPhrases?: string[];
     /** @deprecated Transitional alias. New tenant payloads must use systemPrompt. */
     instructions?: string;
   };
@@ -133,8 +135,14 @@ export function parseTenantConfigurationV1(raw: string, expectedTenantId?: strin
   if (assistant.systemPrompt !== undefined) {
     systemPrompt = requireNonEmptyString(assistant.systemPrompt, "assistant.systemPrompt");
   } else if (assistant.instructions !== undefined) {
-    // Backward-compatible migration path. New KV payloads should use assistant.systemPrompt.
     systemPrompt = requireNonEmptyString(assistant.instructions, "assistant.instructions");
+  }
+
+  let waitingPhrases: string[] | undefined;
+  if (assistant.waitingPhrases !== undefined) {
+    waitingPhrases = requireStringArray(assistant.waitingPhrases, "assistant.waitingPhrases");
+    if (waitingPhrases.length === 0) throw new Error("Invalid tenant configuration: assistant.waitingPhrases must not be empty");
+    if (waitingPhrases.length > 10) throw new Error("Invalid tenant configuration: assistant.waitingPhrases supports at most 10 phrases");
   }
 
   let vad: TenantConfigurationV1["realtime"]["vad"];
@@ -170,6 +178,7 @@ export function parseTenantConfigurationV1(raw: string, expectedTenantId?: strin
       greeting: requireNonEmptyString(assistant.greeting, "assistant.greeting"),
       language: requireNonEmptyString(assistant.language, "assistant.language"),
       ...(systemPrompt === undefined ? {} : { systemPrompt, instructions: systemPrompt }),
+      ...(waitingPhrases === undefined ? {} : { waitingPhrases }),
     },
     realtime: {
       ...(realtime.voice === undefined ? {} : { voice: requireNonEmptyString(realtime.voice, "realtime.voice") }),
