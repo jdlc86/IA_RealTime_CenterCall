@@ -1,4 +1,4 @@
-import { isBusinessType, type BusinessType } from "./business-types";
+import { isBusinessType, type BusinessType } from "./business-types.js";
 
 export const TENANT_KV_SCHEMA_VERSION = 1 as const;
 export const TENANT_KV_SCHEMA_VERSION_V2 = 2 as const;
