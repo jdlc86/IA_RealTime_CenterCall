@@ -25,6 +25,17 @@ export type BusinessHours = {
   closes_at: string;
 };
 
+export type RestaurantMenuItem = {
+  id: string;
+  code: string | null;
+  name: string;
+  description: string | null;
+  category: string | null;
+  price_cents: number | null;
+  currency: string;
+  allergens: string[];
+};
+
 export type CallDiagnosticEvent = {
   call_id: string;
   tenant_id: string | null;
@@ -149,5 +160,17 @@ export class SupabaseAdapter {
       limit: "50",
     });
     return this.select<BusinessHours>("business_hours", params);
+  }
+
+  async listMenuItems(tenantId: string): Promise<RestaurantMenuItem[]> {
+    const tenant = assertTenantId(tenantId);
+    const params = new URLSearchParams({
+      select: "id,code,name,description,category,price_cents,currency,allergens",
+      tenant_id: `eq.${tenant}`,
+      active: "eq.true",
+      order: "category.asc,name.asc",
+      limit: "100",
+    });
+    return this.select<RestaurantMenuItem>("menu_items", params);
   }
 }
