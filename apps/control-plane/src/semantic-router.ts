@@ -21,7 +21,7 @@ function normalize(value: string): string {
 
 export function inferRequirementFromText(value: string): DataRequirement | null {
   const text = normalize(value);
-  if (/\b(tratamiento|tratamientos|servicio|servicios|procedimiento|procedimientos|terapia|terapias|catalogo|precio|precios|coste|costes|cuesta|cuestan|duracion|botox)\b/.test(text)) return "SERVICES";
+  if (/\b(tratamiento|tratamientos|servicio|servicios|procedimiento|procedimientos|terapia|terapias|catalogo|precio|precios|coste|costes|cuesta|cuestan|duracion|botox|ofrece|ofrecen|ofreceis|disponible|disponibles)\b/.test(text)) return "SERVICES";
   if (/\b(profesional|profesionales|especialista|especialistas|medico|medicos|personal)\b/.test(text)) return "PROFESSIONALS";
   if (/\b(horario|horarios|apertura|cierre|abre|abren|cierra|cierran)\b/.test(text)) return "HOURS";
   return null;
@@ -60,7 +60,9 @@ export function parseSemanticDecision(argumentsJson: string | undefined): Semant
   let degraded = !(typeof rawIntent === "string" && INTENTS.has(rawIntent as SemanticIntent)) || !(typeof rawRequirement === "string" && REQUIREMENTS.has(rawRequirement as DataRequirement));
   const reason = safeReason(parsed.reason, degraded ? "classifier_partial_output_fallback" : "semantic_intent_classifier");
 
-  if (requirement === "NONE") {
+  // If the classifier describes a concrete external domain but returns a generic
+  // NONE/BUSINESS_INFO requirement, prefer the domain evidence and fail closed.
+  if (requirement === "NONE" || requirement === "BUSINESS_INFO") {
     const recovered = recoverRequirementFromReason(reason);
     if (recovered) {
       requirement = recovered;
