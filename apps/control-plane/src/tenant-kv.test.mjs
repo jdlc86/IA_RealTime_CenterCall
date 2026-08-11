@@ -4,7 +4,9 @@ import {
   KvTenantRepository,
   phoneRouteKey,
   tenantConfigurationKey,
+  tenantConfigurationKeyV2,
   parseTenantConfigurationV1,
+  parseTenantConfigurationV2,
 } from "../.test-dist/tenant-kv.js";
 
 class FakeKv {
@@ -31,6 +33,16 @@ function tenantConfig(tenantId, displayName, assistantName) {
     realtime: { voice: "marin", vad: { threshold: 0.5 } },
     tools: { allowed: ["get_business_information"] },
   });
+}
+
+function tenantConfigV2(tenantId, displayName, assistantName, businessType) {
+  const value = JSON.parse(tenantConfig(tenantId, displayName, assistantName));
+  value.schemaVersion = 2;
+  value.businessType = businessType;
+  value.verticalConfig = businessType === "RESTAURANT"
+    ? { reservations: { enabled: true } }
+    : { appointments: { enabled: true } };
+  return JSON.stringify(value);
 }
 
 test("F4-KV01 phone route resolves the correct tenant", async () => {
@@ -96,4 +108,46 @@ test("F4-KV08 legacy assistant.instructions is accepted only as migration alias"
   const parsed = parseTenantConfigurationV1(JSON.stringify(value), "tenant-a");
   assert.equal(parsed.assistant.systemPrompt, "Prompt legacy temporal");
   assert.equal(parsed.assistant.instructions, "Prompt legacy temporal");
+});
+
+test("F4-KV09 v2 requires an explicit supported businessType", () => {
+  const parsed = parseTenantConfigurationV2(
+    tenantConfigV2("restaurante-centro", "Restaurante Centro", "Lucía", "RESTAURANT"),
+    "restaurante-centro",
+  );
+  assert.equal(parsed.schemaVersion, 2);
+  assert.equal(parsed.businessType, "RESTAURANT");
+  assert.deepEqual(parsed.verticalConfig, { reservations: { enabled: true } });
+
+  const invalid = JSON.parse(tenantConfigV2("tenant-x", "X", "Bot X", "RESTAURANT"));
+  invalid.businessType = "HOTEL";
+  assert.throws(() => parseTenantConfigurationV2(JSON.stringify(invalid), "tenant-x"), /businessType/);
+});
+
+test("F4-KV10 repository prefers v2 and falls back to existing v1", async () => {
+  const kv = new FakeKv({
+    [tenantConfigurationKey("clinica-estetica-madrid")]: tenantConfig("clinica-estetica-madrid", "Clínica Estética Madrid", "Carolina"),
+    [tenantConfigurationKey("restaurante-centro")]: tenantConfig("restaurante-centro", "Restaurante Legacy", "Lucía Legacy"),
+    [tenantConfigurationKeyV2("restaurante-centro")]: tenantConfigV2("restaurante-centro", "Restaurante Centro", "Lucía", "RESTAURANT"),
+  });
+  const repo = new KvTenantRepository(kv);
+
+  const clinic = await repo.getTenantConfiguration("clinica-estetica-madrid");
+  assert.equal(clinic?.schemaVersion, 1);
+  assert.equal(clinic?.business.displayName, "Clínica Estética Madrid");
+
+  const restaurant = await repo.getTenantConfiguration("restaurante-centro");
+  assert.equal(restaurant?.schemaVersion, 2);
+  assert.equal(restaurant?.business.displayName, "Restaurante Centro");
+  assert.equal(restaurant && "businessType" in restaurant ? restaurant.businessType : null, "RESTAURANT");
+});
+
+test("F4-KV11 disabled v2 does not silently fall back to active v1", async () => {
+  const v2 = JSON.parse(tenantConfigV2("restaurante-centro", "Restaurante Centro", "Lucía", "RESTAURANT"));
+  v2.status = "disabled";
+  const kv = new FakeKv({
+    [tenantConfigurationKey("restaurante-centro")]: tenantConfig("restaurante-centro", "Restaurante Legacy", "Lucía Legacy"),
+    [tenantConfigurationKeyV2("restaurante-centro")]: JSON.stringify(v2),
+  });
+  assert.equal(await new KvTenantRepository(kv).getTenantConfiguration("restaurante-centro"), null);
 });
