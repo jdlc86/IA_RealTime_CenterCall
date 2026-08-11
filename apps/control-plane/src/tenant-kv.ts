@@ -38,7 +38,7 @@ type TenantConfigurationCommon = {
   };
 };
 
-export type TenantConfigurationV1 = TenantConfigurationCommon & {
+export type LegacyTenantConfigurationV1 = TenantConfigurationCommon & {
   schemaVersion: 1;
 };
 
@@ -48,7 +48,13 @@ export type TenantConfigurationV2 = TenantConfigurationCommon & {
   verticalConfig: Record<string, unknown>;
 };
 
-export type TenantConfiguration = TenantConfigurationV1 | TenantConfigurationV2;
+export type TenantConfiguration = LegacyTenantConfigurationV1 | TenantConfigurationV2;
+
+/**
+ * @deprecated Compatibility alias for existing runtime consumers during the V1→V2 migration.
+ * New code should use TenantConfiguration or the explicit LegacyTenantConfigurationV1/TenantConfigurationV2 types.
+ */
+export type TenantConfigurationV1 = TenantConfiguration;
 
 export type TenantRouteV1 = {
   schemaVersion: 1;
@@ -205,7 +211,7 @@ function parseCommon(record: Record<string, unknown>, expectedTenantId?: string)
   };
 }
 
-export function parseTenantConfigurationV1(raw: string, expectedTenantId?: string): TenantConfigurationV1 {
+export function parseTenantConfigurationV1(raw: string, expectedTenantId?: string): LegacyTenantConfigurationV1 {
   const record = parseJsonRecord(raw, expectedTenantId ? tenantConfigurationKey(expectedTenantId) : "tenant");
   if (record.schemaVersion !== TENANT_KV_SCHEMA_VERSION) {
     throw new Error(`Unsupported tenant configuration schemaVersion: ${String(record.schemaVersion)}`);
