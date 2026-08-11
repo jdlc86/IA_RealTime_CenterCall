@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { CallDiagnostics, isDebugEnabled } from "./call-diagnostics";
 import { SupabaseAdapter } from "./supabase-adapter";
 import { KvTenantRepository, type TenantKvNamespace } from "./tenant-kv";
 import { parseSemanticDecision, type DataRequirement } from "./semantic-router";
@@ -8,6 +9,7 @@ type CallSessionEnv = {
   OPENAI_API_KEY: string;
   SUPABASE_URL: string;
   SUPABASE_SECRET_KEY: string;
+  DEBUG_KEY?: string;
   TENANT_CONFIG: TenantKvNamespace;
 };
 
@@ -202,6 +204,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
   private hangupStarted = false;
   private closingResponseId: string | null = null;
   private finalFarewellWatchdog: ReturnType<typeof setTimeout> | null = null;
+  private diagnostics = new CallDiagnostics(false);
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -242,14 +245,20 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       this.initialGreeting = initialGreeting;
       this.allowedTools = allowedTools;
       this.businessFacts = businessFacts;
+      this.diagnostics.configure(isDebugEnabled(this.env.DEBUG_KEY), callId, tenantId);
+      this.diagnostics.checkpoint("CALL_SESSION_STARTED", { allowed_tools_count: allowedTools.length });
 
       try {
         if (this.env.TENANT_CONFIG && typeof this.env.TENANT_CONFIG.get === "function") {
           const config = await new KvTenantRepository(this.env.TENANT_CONFIG).getTenantConfiguration(tenantId);
           this.waitingPhrases = config?.assistant.waitingPhrases ?? [];
+          this.diagnostics.checkpoint("TENANT_CONFIG_LOADED", { waiting_phrases_count: this.waitingPhrases.length });
         }
       } catch (error) {
         this.waitingPhrases = [];
+        this.diagnostics.fail("TENANT_CONFIG_FAILED", "TENANT_CONFIGURATION_READ_FAILED", {
+          error: error instanceof Error ? error.message : String(error),
+        });
         log("error", "tenant_waiting_phrases_load_failed", {
           call_id: callId,
           tenant_id: tenantId,
@@ -279,6 +288,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         tool_gateway: "tenant_allowlist_v2",
         business_data_provider: "supabase",
         tenant_config_source: "bootstrap+kv_waiting_phrases",
+        debug_enabled: this.diagnostics.snapshot().enabled,
       });
     }
 
@@ -303,7 +313,13 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         waiting_phrase_playback_complete: this.waitingPhrasePlaybackComplete,
         tool_gateway: "tenant_allowlist_v2",
         business_data_provider: "supabase",
+        diagnostics: this.diagnostics.snapshot(),
       });
+    }
+
+    if (request.method === "GET" && url.pathname === "/diagnostics") {
+      const snapshot = this.diagnostics.snapshot();
+      return Response.json(snapshot.enabled ? { ok: true, diagnostics: snapshot } : { ok: false, error: "debug_disabled" }, { status: snapshot.enabled ? 200 : 404 });
     }
     return Response.json({ ok: false, error: "not_found" }, { status: 404 });
   }
@@ -322,10 +338,12 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     const socket = (response as Response & { webSocket?: WebSocket }).webSocket;
     if (!socket) {
       const body = await response.text().catch(() => "");
+      this.diagnostics.fail("SIDEBAND_CONNECT_FAILED", "OPENAI_SIDEBAND_UPGRADE_FAILED", { status: response.status });
       throw new Error(`Realtime sideband upgrade failed: HTTP ${response.status} ${body.slice(0, 500)}`);
     }
     socket.accept();
     this.socket = socket;
+    this.diagnostics.checkpoint("SIDEBAND_CONNECTED", { elapsed_ms: Date.now() - startedAt });
     log("info", "realtime_sideband_connected", {
       call_id: callId,
       tenant_id: this.tenantId,
@@ -340,9 +358,11 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       this.clearFinalFarewellWatchdog();
       this.clearWaitingPlaybackWatchdog();
       this.socket = null;
+      this.diagnostics.checkpoint("SIDEBAND_CLOSED", { state: this.state, hangup_started: this.hangupStarted });
       log("info", "realtime_sideband_closed", { call_id: this.callId, tenant_id: this.tenantId, state: this.state, ambiguous_count: this.ambiguousCount, hangup_started: this.hangupStarted });
     });
     socket.addEventListener("error", () => {
+      this.diagnostics.fail("SIDEBAND_SOCKET_ERROR", "OPENAI_SIDEBAND_SOCKET_ERROR", { state: this.state });
       log("error", "realtime_sideband_socket_error", { call_id: this.callId, tenant_id: this.tenantId, state: this.state, ambiguous_count: this.ambiguousCount });
     });
   }
@@ -356,6 +376,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     if (this.greetingSent || !this.socket || !this.initialGreeting || !this.callId) return;
     this.greetingSent = true;
     this.createSpokenResponse(`Pronuncia exactamente este saludo inicial y nada más: ${JSON.stringify(this.initialGreeting)}`);
+    this.diagnostics.checkpoint("GREETING_SENT");
     log("info", "tenant_initial_greeting_requested", { call_id: this.callId, tenant_id: this.tenantId, business_name: this.businessName, assistant_name: this.assistantName });
   }
 
@@ -406,6 +427,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
   private forceToolForRequirement(requirement: DataRequirement): void {
     const tool = TOOL_BY_REQUIREMENT[requirement];
     if (!tool || !this.allowedTools.includes(tool.name)) {
+      this.diagnostics.fail("TOOL_NOT_AVAILABLE", "REQUIRED_TOOL_NOT_ALLOWED", { data_requirement: requirement, required_tool: tool?.name ?? null });
       log("error", "business_data_requirement_not_available", {
         call_id: this.callId,
         tenant_id: this.tenantId,
@@ -427,6 +449,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         instructions: `Consulta obligatoriamente ${tool.name} antes de responder. No generes una respuesta textual hasta recibir el resultado de la herramienta.`,
       },
     });
+    this.diagnostics.checkpoint("TOOL_FORCED", { data_requirement: requirement, tool: tool.name });
     log("info", "business_data_tool_forced", {
       call_id: this.callId,
       tenant_id: this.tenantId,
@@ -489,11 +512,13 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         error: "TOOL_NOT_ALLOWED",
         message: "Required external tool is not available for this tenant",
       } as ToolResult;
+      this.diagnostics.fail("BACKEND_QUERY_BLOCKED", "REQUIRED_EXTERNAL_TOOL_NOT_AVAILABLE", { data_requirement: requirement, tool: tool?.name ?? null });
       this.maybeDeliverExternalResult("tool_not_available");
       return;
     }
 
     const startedAt = Date.now();
+    this.diagnostics.checkpoint("BACKEND_QUERY_STARTED", { data_requirement: requirement, tool: tool.name });
     log("info", "business_data_backend_query_started", {
       call_id: this.callId,
       tenant_id: this.tenantId,
@@ -510,6 +535,8 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       });
       if (this.pendingExternalRequirement !== requirement) return;
       this.pendingExternalResult = result;
+      if (result.ok) this.diagnostics.checkpoint("BACKEND_QUERY_COMPLETED", { data_requirement: requirement, tool: tool.name, elapsed_ms: Date.now() - startedAt });
+      else this.diagnostics.fail("BACKEND_QUERY_FAILED", "TOOL_GATEWAY_RETURNED_ERROR", { data_requirement: requirement, tool: tool.name, elapsed_ms: Date.now() - startedAt, error: result.error });
       log(result.ok ? "info" : "error", "business_data_backend_query_completed", {
         call_id: this.callId,
         tenant_id: this.tenantId,
@@ -528,6 +555,12 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         error: "EXECUTION_FAILED",
         message: error instanceof Error ? error.message : String(error),
       };
+      this.diagnostics.fail("BACKEND_QUERY_EXCEPTION", "EXTERNAL_DATA_QUERY_EXCEPTION", {
+        data_requirement: requirement,
+        tool: tool.name,
+        elapsed_ms: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      });
       log("error", "business_data_backend_query_failed", {
         call_id: this.callId,
         tenant_id: this.tenantId,
@@ -548,6 +581,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     if (!waitingPhrase) {
       this.waitingPhraseStarted = false;
       this.waitingPhrasePlaybackComplete = true;
+      this.diagnostics.checkpoint("WAITING_PHRASE_SKIPPED", { data_requirement: requirement, reason: "not_configured" });
       log("info", "business_data_waiting_phrase_skipped", {
         call_id: this.callId,
         tenant_id: this.tenantId,
@@ -562,6 +596,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.waitingPhrasePlaybackComplete = false;
     this.waitingResponseId = null;
     this.createSpokenResponse(`Pronuncia exactamente esta frase de espera y nada más: ${JSON.stringify(waitingPhrase)}`);
+    this.diagnostics.checkpoint("WAITING_PHRASE_REQUESTED", { data_requirement: requirement, phrase_chars: waitingPhrase.length });
     this.clearWaitingPlaybackWatchdog();
     this.waitingPlaybackWatchdog = setTimeout(() => {
       this.markWaitingPhrasePlaybackComplete("playback_watchdog");
@@ -580,6 +615,15 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     if (!this.pendingExternalRequirement || !this.waitingPhraseStarted || this.waitingPhrasePlaybackComplete) return;
     this.clearWaitingPlaybackWatchdog();
     this.waitingPhrasePlaybackComplete = true;
+    if (trigger === "playback_watchdog") {
+      this.diagnostics.fail("WAITING_PHRASE_PLAYBACK_STALLED", "WAITING_PHRASE_PLAYBACK_EVENT_MISSING", {
+        data_requirement: this.pendingExternalRequirement,
+        watchdog_ms: WAITING_PLAYBACK_WATCHDOG_MS,
+      });
+      this.diagnostics.recovered("WAITING_PHRASE_FALLBACK_CONTINUE", "continue_with_already_started_backend_query", { data_requirement: this.pendingExternalRequirement });
+    } else {
+      this.diagnostics.checkpoint("WAITING_PHRASE_PLAYBACK_COMPLETED", { data_requirement: this.pendingExternalRequirement });
+    }
     log(trigger === "playback_watchdog" ? "error" : "info", "business_data_waiting_phrase_completed", {
       call_id: this.callId,
       tenant_id: this.tenantId,
@@ -596,6 +640,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     const result = this.pendingExternalResult;
     if (!requirement || !result || !this.externalResponseGateOpen || !this.waitingPhrasePlaybackComplete) return;
 
+    this.diagnostics.checkpoint("EXTERNAL_RESULT_READY_FOR_SPEECH", { data_requirement: requirement, trigger, ok: result.ok });
     log(result.ok ? "info" : "error", "business_data_external_result_ready_for_speech", {
       call_id: this.callId,
       tenant_id: this.tenantId,
@@ -611,15 +656,18 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       this.createSpokenResponse(
         `Responde ahora usando exclusivamente los hechos que aparezcan explícitamente en este resultado autorizado: ${serialized}. Si el dato pedido no figura o una lista está vacía, indica que no dispones de ese dato verificado. No estimes, deduzcas, completes ni inventes. No menciones Supabase, ToolGateway, JSON ni procesos internos.`,
       );
+      this.diagnostics.checkpoint("FINAL_RESPONSE_REQUESTED", { source: "authorized_external_result" });
     } else {
       this.createSpokenResponse(
         "La fuente autorizada no pudo proporcionar el dato. Informa brevemente de que no puedes verificarlo ahora mismo; no inventes información ni menciones procesos internos.",
       );
+      this.diagnostics.checkpoint("FINAL_RESPONSE_REQUESTED", { source: "external_error_fallback" });
     }
   }
 
   private createResponseForRequirement(requirement: DataRequirement): void {
     if (requirement === "NONE") {
+      this.diagnostics.checkpoint("GENERAL_CONVERSATION_RESPONSE", { data_requirement: requirement });
       this.createSpokenResponse(
         "Continúa la conversación de forma breve, natural y útil. No introduzcas datos concretos del negocio que no estén ya verificados en la conversación.",
       );
@@ -637,6 +685,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.externalResponseGateOpen = false;
     this.waitingPhraseStarted = false;
     this.waitingPhrasePlaybackComplete = this.waitingPhrases.length === 0;
+    this.diagnostics.checkpoint("EXTERNAL_FLOW_STARTED", { data_requirement: requirement });
     log("info", "business_data_external_flow_started", {
       call_id: this.callId,
       tenant_id: this.tenantId,
@@ -652,6 +701,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     try {
       args = parseJsonArguments(event.arguments);
     } catch {
+      this.diagnostics.fail("TOOL_ARGUMENTS_INVALID", "TOOL_ARGUMENTS_NOT_VALID_JSON", { tool: event.name });
       this.sendToolResult(event.call_id, { ok: false, tool: event.name, tenantId: this.tenantId, error: "INVALID_ARGUMENTS", message: "Tool arguments must be valid JSON" });
       this.createSpokenResponse("No pude consultar una fuente autorizada. Indica que no dispones del dato verificado; no inventes información.");
       return;
@@ -659,6 +709,8 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
     const result = await this.createToolGateway().execute({ name: event.name, arguments: args, context: { tenantId: this.tenantId, callId: this.callId } });
     this.sendToolResult(event.call_id, result);
+    if (result.ok) this.diagnostics.checkpoint("TOOL_GATEWAY_COMPLETED", { tool: event.name });
+    else this.diagnostics.fail("TOOL_GATEWAY_FAILED", "TOOL_GATEWAY_RETURNED_ERROR", { tool: event.name, error: result.error });
     log(result.ok ? "info" : "error", "tool_gateway_result", {
       call_id: this.callId,
       tenant_id: this.tenantId,
@@ -682,6 +734,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.state = "active";
     this.ambiguousCount = 0;
     this.sendToolResult(toolCallId, { ok: true, action: "continue", data_requirement: dataRequirement, ambiguous_count: 0 });
+    this.diagnostics.checkpoint("CONVERSATION_CONTINUE", { data_requirement: dataRequirement });
     log("info", "call_intent_continue", {
       call_id: this.callId,
       tenant_id: this.tenantId,
@@ -701,6 +754,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.ambiguousCount += 1;
     this.state = "ambiguous";
     this.sendToolResult(toolCallId, { ok: true, action: this.ambiguousCount >= AMBIGUOUS_LIMIT ? "close" : "ask_if_more_help", ambiguous_count: this.ambiguousCount, ambiguous_limit: AMBIGUOUS_LIMIT });
+    this.diagnostics.checkpoint("INTENT_AMBIGUOUS", { ambiguous_count: this.ambiguousCount });
     log("info", "call_intent_ambiguous", { call_id: this.callId, tenant_id: this.tenantId, reason, ambiguous_count: this.ambiguousCount, ambiguous_limit: AMBIGUOUS_LIMIT });
     if (this.ambiguousCount >= AMBIGUOUS_LIMIT) {
       this.beginClosing("ambiguous_limit_reached", "semantic_intent");
@@ -711,6 +765,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
   private handleClearEndIntent(reason: string, toolCallId?: string): void {
     this.sendToolResult(toolCallId, { ok: true, action: "close", ambiguous_count: this.ambiguousCount });
+    this.diagnostics.checkpoint("END_INTENT_CLEAR");
     log("info", "call_intent_end_clear", { call_id: this.callId, tenant_id: this.tenantId, reason, ambiguous_count: this.ambiguousCount });
     this.beginClosing("semantic_end_clear", "semantic_intent");
   }
@@ -721,6 +776,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.state = "closing";
     this.closingReason = reason;
     this.closingResponseId = null;
+    this.diagnostics.checkpoint("CLOSING_STARTED", { source, reason });
     log("info", "end_call_closing_started", { call_id: this.callId, tenant_id: this.tenantId, source, reason, ambiguous_count: this.ambiguousCount });
     this.sendBestEffortCancel();
     this.createSpokenResponse("Despídete ahora con una sola frase muy breve, natural y amable en español. No preguntes nada más ni ofrezcas más ayuda. Esta es la despedida final.");
@@ -734,6 +790,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.state = "closing";
     this.closingReason = reason;
     this.closingResponseId = null;
+    this.diagnostics.fail("HANGUP_COMMITMENT_GUARD", "ASSISTANT_ANNOUNCED_HANGUP_OUTSIDE_CORE_CLOSE", { source, reason });
     log("info", "end_call_closing_armed_current_audio", { call_id: this.callId, tenant_id: this.tenantId, source, reason, ambiguous_count: this.ambiguousCount });
     this.clearFinalFarewellWatchdog();
     this.finalFarewellWatchdog = setTimeout(() => { void this.performHangup("assistant_commitment_watchdog"); }, FINAL_FAREWELL_WATCHDOG_MS);
@@ -744,14 +801,17 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.hangupStarted = true;
     this.clearFinalFarewellWatchdog();
     this.resetExternalFlow();
+    this.diagnostics.checkpoint("HANGUP_STARTED", { trigger });
     log("info", "end_call_hangup_triggered", { call_id: this.callId, tenant_id: this.tenantId, trigger, state: this.state, ambiguous_count: this.ambiguousCount, closing_response_id: this.closingResponseId });
     let lastError: unknown;
     for (let attempt = 1; attempt <= HANGUP_MAX_ATTEMPTS; attempt += 1) {
       try {
         await this.hangupOpenAICall(this.callId, this.closingReason, attempt);
+        this.diagnostics.checkpoint("HANGUP_COMPLETED", { attempt });
         return;
       } catch (error) {
         lastError = error;
+        this.diagnostics.fail("HANGUP_ATTEMPT_FAILED", "OPENAI_HANGUP_REQUEST_FAILED", { attempt, error: error instanceof Error ? error.message : String(error) });
         log("error", "end_call_hangup_attempt_failed", { call_id: this.callId, tenant_id: this.tenantId, trigger, attempt, error: error instanceof Error ? error.message : String(error) });
         if (attempt < HANGUP_MAX_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, HANGUP_RETRY_DELAY_MS));
       }
@@ -759,6 +819,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.hangupStarted = false;
     this.state = "active";
     this.ambiguousCount = 0;
+    this.diagnostics.recovered("CALL_REACTIVATED", "hangup_abandoned_after_retries", { error: lastError instanceof Error ? lastError.message : String(lastError) });
     log("error", "end_call_hangup_abandoned_session_reactivated", { call_id: this.callId, tenant_id: this.tenantId, trigger, error: lastError instanceof Error ? lastError.message : String(lastError) });
     if (this.socket) this.createSpokenResponse("No se pudo cerrar automáticamente la llamada. Indica brevemente que la llamada sigue activa y continúa atendiendo.");
   }
@@ -781,6 +842,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     try {
       event = JSON.parse(text) as RealtimeSidebandEvent;
     } catch {
+      this.diagnostics.fail("REALTIME_INVALID_JSON", "OPENAI_REALTIME_EVENT_INVALID_JSON");
       log("error", "realtime_sideband_invalid_json", { call_id: this.callId, tenant_id: this.tenantId });
       return;
     }
@@ -790,6 +852,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         log("info", "realtime_sideband_cancel_noop", { call_id: this.callId, tenant_id: this.tenantId, state: this.state });
         return;
       }
+      this.diagnostics.fail("REALTIME_ERROR_EVENT", event.error?.code ?? "OPENAI_REALTIME_ERROR", { error_type: event.error?.type, error_code: event.error?.code, error_message: event.error?.message });
       log("error", "realtime_sideband_error_event", { call_id: this.callId, tenant_id: this.tenantId, state: this.state, error_type: event.error?.type, error_code: event.error?.code, error_message: event.error?.message });
       return;
     }
@@ -802,6 +865,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
       const classification = parseSemanticDecision(event.arguments);
       if (classification.degraded) {
+        this.diagnostics.fail("INTENT_CLASSIFIER_DEGRADED", "SEMANTIC_CLASSIFIER_FALLBACK_USED", { fallback_intent: classification.intent, fallback_data_requirement: classification.dataRequirement });
         log("error", "call_intent_degraded_fallback", {
           call_id: this.callId,
           tenant_id: this.tenantId,
@@ -810,6 +874,8 @@ export class CallSession extends DurableObject<CallSessionEnv> {
           fallback_data_requirement: classification.dataRequirement,
           reason: classification.reason,
         });
+      } else {
+        this.diagnostics.checkpoint("INTENT_CLASSIFIED", { intent: classification.intent, data_requirement: classification.dataRequirement });
       }
 
       log("info", "call_intent_classified", {
@@ -844,6 +910,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     }
 
     if (event.type === "conversation.item.input_audio_transcription.completed" && event.transcript) {
+      this.diagnostics.checkpoint("USER_TURN_RECEIVED", { transcript_chars: event.transcript.length });
       log("info", "call_user_transcription_observed", { call_id: this.callId, tenant_id: this.tenantId, state: this.state, ambiguous_count: this.ambiguousCount, transcript_chars: event.transcript.length });
       return;
     }
@@ -855,6 +922,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
     if (event.type === "response.output_audio_transcript.done" && event.transcript) {
       if (this.state !== "closing" && isAssistantHangupCommitment(event.transcript)) {
+        this.diagnostics.fail("ASSISTANT_HANGUP_COMMITMENT", "ASSISTANT_HANGUP_COMMITMENT_OUTSIDE_CLOSE", { transcript_chars: event.transcript.length });
         log("error", "end_call_assistant_commitment_without_core_close", { call_id: this.callId, tenant_id: this.tenantId, state: this.state, transcript_chars: event.transcript.length });
         this.armHangupAfterCurrentAudio("assistant_announced_hangup", "assistant_commitment_guard");
       }
@@ -865,6 +933,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       const responseId = event.response_id ?? event.response?.id ?? null;
       if (this.pendingExternalRequirement && this.waitingPhraseStarted && !this.waitingResponseId && responseId) {
         this.waitingResponseId = responseId;
+        this.diagnostics.checkpoint("WAITING_PHRASE_RESPONSE_CREATED", { data_requirement: this.pendingExternalRequirement });
         log("info", "business_data_waiting_response_created", {
           call_id: this.callId,
           tenant_id: this.tenantId,
@@ -884,6 +953,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       const responseId = event.response_id ?? event.response?.id ?? null;
 
       if (!this.externalResponseGateOpen) {
+        this.diagnostics.checkpoint("CLASSIFIER_RESPONSE_COMPLETED", { data_requirement: requirement, backend_result_ready: this.pendingExternalResult !== null });
         log("info", "business_data_classifier_response_completed", {
           call_id: this.callId,
           tenant_id: this.tenantId,
@@ -896,6 +966,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       }
 
       if (this.waitingPhraseStarted && (!this.waitingResponseId || !responseId || responseId === this.waitingResponseId)) {
+        this.diagnostics.checkpoint("WAITING_PHRASE_GENERATED", { data_requirement: requirement, backend_result_ready: this.pendingExternalResult !== null });
         log("info", "business_data_waiting_phrase_generated", {
           call_id: this.callId,
           tenant_id: this.tenantId,
