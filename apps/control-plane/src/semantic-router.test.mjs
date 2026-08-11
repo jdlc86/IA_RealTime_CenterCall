@@ -56,6 +56,10 @@ test("restaurant allergens recover MENU", () => {
   const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "BUSINESS_INFO", reason: "Pregunta por alérgenos de un plato" })); assert.equal(result.dataRequirement, "MENU"); assert.equal(result.degraded, true);
 });
 
+test("legacy SERVICES with restaurant evidence is promoted to MENU", () => {
+  const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "SERVICES", reason: "El usuario quiere ver la carta y preguntar por platos" })); assert.equal(result.dataRequirement, "MENU"); assert.equal(result.degraded, true);
+});
+
 test("ordinary conversation remains NONE", () => {
   const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "NONE", reason: "El usuario saluda y quiere continuar conversando" })); assert.equal(result.dataRequirement, "NONE"); assert.equal(result.degraded, false);
 });
