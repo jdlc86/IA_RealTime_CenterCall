@@ -1,12 +1,14 @@
+import { isBusinessType, type BusinessType } from "./business-types";
+
 export const TENANT_KV_SCHEMA_VERSION = 1 as const;
+export const TENANT_KV_SCHEMA_VERSION_V2 = 2 as const;
 export const TENANT_KV_PREFIX = "ia-rtcc:v1";
+export const TENANT_KV_PREFIX_V2 = "ia-rtcc:v2";
 
 export type TenantStatus = "active" | "disabled";
-
 export type TenantBusinessFacts = Record<string, string | number | boolean>;
 
-export type TenantConfigurationV1 = {
-  schemaVersion: 1;
+type TenantConfigurationCommon = {
   tenantId: string;
   status: TenantStatus;
   business: {
@@ -17,9 +19,7 @@ export type TenantConfigurationV1 = {
     name: string;
     greeting: string;
     language: string;
-    /** Canonical tenant-specific behavior/context/limitations prompt stored in KV. */
     systemPrompt?: string;
-    /** Short phrases spoken before external business-data lookups. */
     waitingPhrases?: string[];
     /** @deprecated Transitional alias. New tenant payloads must use systemPrompt. */
     instructions?: string;
@@ -37,6 +37,18 @@ export type TenantConfigurationV1 = {
     allowed: string[];
   };
 };
+
+export type TenantConfigurationV1 = TenantConfigurationCommon & {
+  schemaVersion: 1;
+};
+
+export type TenantConfigurationV2 = TenantConfigurationCommon & {
+  schemaVersion: 2;
+  businessType: BusinessType;
+  verticalConfig: Record<string, unknown>;
+};
+
+export type TenantConfiguration = TenantConfigurationV1 | TenantConfigurationV2;
 
 export type TenantRouteV1 = {
   schemaVersion: 1;
@@ -61,6 +73,11 @@ function requireNonEmptyString(value: unknown, field: string): string {
 
 function requireStatus(value: unknown, field: string): TenantStatus {
   if (value !== "active" && value !== "disabled") throw new Error(`Invalid tenant configuration: ${field}`);
+  return value;
+}
+
+function requireBusinessType(value: unknown, field: string): BusinessType {
+  if (!isBusinessType(value)) throw new Error(`Invalid tenant configuration: ${field}`);
   return value;
 }
 
@@ -101,18 +118,17 @@ export function tenantConfigurationKey(tenantId: string): string {
   return `${TENANT_KV_PREFIX}:tenant:${requireNonEmptyString(tenantId, "tenantId")}`;
 }
 
+export function tenantConfigurationKeyV2(tenantId: string): string {
+  return `${TENANT_KV_PREFIX_V2}:tenant:${requireNonEmptyString(tenantId, "tenantId")}`;
+}
+
 export function phoneRouteKey(calledNumber: string): string {
   const normalized = normalizeCalledNumber(calledNumber);
   if (!normalized) throw new Error("Invalid tenant route: calledNumber");
   return `${TENANT_KV_PREFIX}:route:phone:${normalized}`;
 }
 
-export function parseTenantConfigurationV1(raw: string, expectedTenantId?: string): TenantConfigurationV1 {
-  const record = parseJsonRecord(raw, expectedTenantId ? tenantConfigurationKey(expectedTenantId) : "tenant");
-  if (record.schemaVersion !== TENANT_KV_SCHEMA_VERSION) {
-    throw new Error(`Unsupported tenant configuration schemaVersion: ${String(record.schemaVersion)}`);
-  }
-
+function parseCommon(record: Record<string, unknown>, expectedTenantId?: string): TenantConfigurationCommon {
   const tenantId = requireNonEmptyString(record.tenantId, "tenantId");
   if (expectedTenantId && tenantId !== expectedTenantId) {
     throw new Error(`Tenant configuration mismatch: expected ${expectedTenantId}, got ${tenantId}`);
@@ -145,7 +161,7 @@ export function parseTenantConfigurationV1(raw: string, expectedTenantId?: strin
     if (waitingPhrases.length > 10) throw new Error("Invalid tenant configuration: assistant.waitingPhrases supports at most 10 phrases");
   }
 
-  let vad: TenantConfigurationV1["realtime"]["vad"];
+  let vad: TenantConfigurationCommon["realtime"]["vad"];
   if (realtime.vad !== undefined) {
     const vadRecord = requireRecord(realtime.vad, "realtime.vad");
     vad = {};
@@ -166,7 +182,6 @@ export function parseTenantConfigurationV1(raw: string, expectedTenantId?: strin
   }
 
   return {
-    schemaVersion: 1,
     tenantId,
     status: requireStatus(record.status, "status"),
     business: {
@@ -187,6 +202,28 @@ export function parseTenantConfigurationV1(raw: string, expectedTenantId?: strin
     tools: {
       allowed: requireStringArray(tools.allowed, "tools.allowed"),
     },
+  };
+}
+
+export function parseTenantConfigurationV1(raw: string, expectedTenantId?: string): TenantConfigurationV1 {
+  const record = parseJsonRecord(raw, expectedTenantId ? tenantConfigurationKey(expectedTenantId) : "tenant");
+  if (record.schemaVersion !== TENANT_KV_SCHEMA_VERSION) {
+    throw new Error(`Unsupported tenant configuration schemaVersion: ${String(record.schemaVersion)}`);
+  }
+  return { schemaVersion: 1, ...parseCommon(record, expectedTenantId) };
+}
+
+export function parseTenantConfigurationV2(raw: string, expectedTenantId?: string): TenantConfigurationV2 {
+  const record = parseJsonRecord(raw, expectedTenantId ? tenantConfigurationKeyV2(expectedTenantId) : "tenant-v2");
+  if (record.schemaVersion !== TENANT_KV_SCHEMA_VERSION_V2) {
+    throw new Error(`Unsupported tenant configuration schemaVersion: ${String(record.schemaVersion)}`);
+  }
+  const verticalConfig = requireRecord(record.verticalConfig ?? {}, "verticalConfig");
+  return {
+    schemaVersion: 2,
+    ...parseCommon(record, expectedTenantId),
+    businessType: requireBusinessType(record.businessType, "businessType"),
+    verticalConfig,
   };
 }
 
@@ -216,11 +253,18 @@ export class KvTenantRepository {
     return { tenantId: route.tenantId, calledNumber: normalized, source: "called_number" };
   }
 
-  async getTenantConfiguration(tenantId: string): Promise<TenantConfigurationV1 | null> {
-    const key = tenantConfigurationKey(tenantId);
-    const raw = await this.kv.get(key, { cacheTtl: this.cacheTtl });
-    if (!raw) return null;
-    const config = parseTenantConfigurationV1(raw, tenantId);
+  async getTenantConfiguration(tenantId: string): Promise<TenantConfiguration | null> {
+    const v2Key = tenantConfigurationKeyV2(tenantId);
+    const v2Raw = await this.kv.get(v2Key, { cacheTtl: this.cacheTtl });
+    if (v2Raw) {
+      const config = parseTenantConfigurationV2(v2Raw, tenantId);
+      return config.status === "active" ? config : null;
+    }
+
+    const v1Key = tenantConfigurationKey(tenantId);
+    const v1Raw = await this.kv.get(v1Key, { cacheTtl: this.cacheTtl });
+    if (!v1Raw) return null;
+    const config = parseTenantConfigurationV1(v1Raw, tenantId);
     return config.status === "active" ? config : null;
   }
 }
