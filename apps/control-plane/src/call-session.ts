@@ -45,6 +45,7 @@ type CallSessionStartBody = {
 const IDLE_TIMEOUT_MS = 10_000;
 const AMBIGUOUS_LIMIT = 3;
 const FINAL_FAREWELL_WATCHDOG_MS = 7_000;
+const WAITING_PLAYBACK_WATCHDOG_MS = 5_000;
 const HANGUP_RETRY_DELAY_MS = 300;
 const HANGUP_MAX_ATTEMPTS = 2;
 
@@ -190,6 +191,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
   private pendingExternalRequirement: DataRequirement | null = null;
   private waitingResponseId: string | null = null;
   private waitingPhraseStarted = false;
+  private waitingPlaybackWatchdog: ReturnType<typeof setTimeout> | null = null;
   private greetingSent = false;
   private state: ClosingState = "active";
   private ambiguousCount = 0;
@@ -270,7 +272,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         state: this.state,
         ambiguous_count: this.ambiguousCount,
         sideband: "durable_object",
-        intent_policy: "semantic_v12_serial_waiting",
+        intent_policy: "semantic_v13_waiting_playback_guard",
         tool_gateway: "tenant_allowlist_v2",
         business_data_provider: "supabase",
         tenant_config_source: "bootstrap+kv_waiting_phrases",
@@ -322,13 +324,14 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       tenant_id: this.tenantId,
       elapsed_ms: Date.now() - startedAt,
       lifecycle: "durable_object_outbound_websocket",
-      intent_policy: "semantic_v12_serial_waiting",
+      intent_policy: "semantic_v13_waiting_playback_guard",
       allowed_tools: this.allowedTools,
       waiting_phrases: this.waitingPhrases.length,
     });
     socket.addEventListener("message", (event) => { void this.handleRealtimeMessage(event.data); });
     socket.addEventListener("close", () => {
       this.clearFinalFarewellWatchdog();
+      this.clearWaitingPlaybackWatchdog();
       this.socket = null;
       log("info", "realtime_sideband_closed", { call_id: this.callId, tenant_id: this.tenantId, state: this.state, ambiguous_count: this.ambiguousCount, hangup_started: this.hangupStarted });
     });
@@ -357,6 +360,13 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     if (this.finalFarewellWatchdog !== null) {
       clearTimeout(this.finalFarewellWatchdog);
       this.finalFarewellWatchdog = null;
+    }
+  }
+
+  private clearWaitingPlaybackWatchdog(): void {
+    if (this.waitingPlaybackWatchdog !== null) {
+      clearTimeout(this.waitingPlaybackWatchdog);
+      this.waitingPlaybackWatchdog = null;
     }
   }
 
@@ -409,6 +419,24 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     });
   }
 
+  private finishWaitingPhrase(trigger: "output_audio_buffer.stopped" | "playback_watchdog"): void {
+    const requirement = this.pendingExternalRequirement;
+    if (!requirement || !this.waitingPhraseStarted) return;
+    this.clearWaitingPlaybackWatchdog();
+    this.pendingExternalRequirement = null;
+    this.waitingResponseId = null;
+    this.waitingPhraseStarted = false;
+    log(trigger === "playback_watchdog" ? "error" : "info", "business_data_waiting_phrase_completed", {
+      call_id: this.callId,
+      tenant_id: this.tenantId,
+      data_requirement: requirement,
+      trigger,
+      diagnosis: trigger === "playback_watchdog" ? "WAITING_PHRASE_PLAYBACK_STALLED" : undefined,
+      recovery: trigger === "playback_watchdog" ? "fallback_external_query_started" : undefined,
+    });
+    this.forceToolForRequirement(requirement);
+  }
+
   private startWaitingPhrase(requirement: DataRequirement): void {
     const waitingPhrase = this.nextWaitingPhrase();
     if (!waitingPhrase) {
@@ -419,6 +447,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       return;
     }
 
+    this.clearWaitingPlaybackWatchdog();
     this.waitingPhraseStarted = true;
     this.waitingResponseId = null;
     this.createSpokenResponse(`Pronuncia exactamente esta frase de espera y nada más: ${JSON.stringify(waitingPhrase)}`);
@@ -452,6 +481,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.pendingExternalRequirement = requirement;
     this.waitingResponseId = null;
     this.waitingPhraseStarted = false;
+    this.clearWaitingPlaybackWatchdog();
     log("info", "business_data_waiting_phrase_queued", {
       call_id: this.callId,
       tenant_id: this.tenantId,
@@ -573,6 +603,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
   private beginClosing(reason: string, source: string): void {
     if (this.state === "closing" || this.hangupStarted) return;
+    this.clearWaitingPlaybackWatchdog();
     this.pendingExternalRequirement = null;
     this.waitingResponseId = null;
     this.waitingPhraseStarted = false;
@@ -588,6 +619,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
 
   private armHangupAfterCurrentAudio(reason: string, source: string): void {
     if (this.state === "closing" || this.hangupStarted) return;
+    this.clearWaitingPlaybackWatchdog();
     this.pendingExternalRequirement = null;
     this.waitingResponseId = null;
     this.waitingPhraseStarted = false;
@@ -603,6 +635,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     if (this.hangupStarted || !this.callId) return;
     this.hangupStarted = true;
     this.clearFinalFarewellWatchdog();
+    this.clearWaitingPlaybackWatchdog();
     log("info", "end_call_hangup_triggered", { call_id: this.callId, tenant_id: this.tenantId, trigger, state: this.state, ambiguous_count: this.ambiguousCount, closing_response_id: this.closingResponseId });
     let lastError: unknown;
     for (let attempt = 1; attempt <= HANGUP_MAX_ATTEMPTS; attempt += 1) {
@@ -754,16 +787,25 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       }
 
       if (!this.waitingResponseId || !responseId || responseId === this.waitingResponseId) {
-        this.pendingExternalRequirement = null;
-        this.waitingResponseId = null;
-        this.waitingPhraseStarted = false;
-        log("info", "business_data_waiting_phrase_completed", {
+        this.clearWaitingPlaybackWatchdog();
+        this.waitingPlaybackWatchdog = setTimeout(() => {
+          this.finishWaitingPhrase("playback_watchdog");
+        }, WAITING_PLAYBACK_WATCHDOG_MS);
+        log("info", "business_data_waiting_phrase_generated", {
           call_id: this.callId,
           tenant_id: this.tenantId,
           data_requirement: requirement,
-          trigger: "response.done",
+          response_id: responseId,
+          expected_next: "output_audio_buffer.stopped",
+          watchdog_ms: WAITING_PLAYBACK_WATCHDOG_MS,
         });
-        this.forceToolForRequirement(requirement);
+        return;
+      }
+    }
+
+    if (event.type === "output_audio_buffer.stopped" && this.pendingExternalRequirement && this.waitingPhraseStarted) {
+      if (!this.waitingResponseId || !event.response_id || event.response_id === this.waitingResponseId) {
+        this.finishWaitingPhrase("output_audio_buffer.stopped");
         return;
       }
     }
