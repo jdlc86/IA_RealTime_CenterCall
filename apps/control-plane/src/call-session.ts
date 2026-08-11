@@ -245,7 +245,30 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       this.initialGreeting = initialGreeting;
       this.allowedTools = allowedTools;
       this.businessFacts = businessFacts;
-      this.diagnostics.configure(isDebugEnabled(this.env.DEBUG_KEY), callId, tenantId);
+      const debugEnabled = isDebugEnabled(this.env.DEBUG_KEY);
+      this.diagnostics.configure(debugEnabled, callId, tenantId, debugEnabled ? async (entry, snapshot) => {
+        const details = entry.details ?? {};
+        const dataRequirement = typeof details.data_requirement === "string" ? details.data_requirement : null;
+        const toolName = typeof details.tool === "string"
+          ? details.tool
+          : typeof details.required_tool === "string"
+            ? details.required_tool
+            : null;
+        await this.getSupabaseAdapter().writeDiagnosticEvent({
+          call_id: snapshot.call_id ?? callId,
+          tenant_id: snapshot.tenant_id,
+          component: "CallSession",
+          stage: entry.stage,
+          event: "call_diagnostic",
+          severity: entry.level,
+          data_requirement: dataRequirement,
+          tool_name: toolName,
+          elapsed_ms: entry.elapsed_ms,
+          recovery: snapshot.recovery,
+          diagnosis: snapshot.diagnosis,
+          details,
+        });
+      } : null);
       this.diagnostics.checkpoint("CALL_SESSION_STARTED", { allowed_tools_count: allowedTools.length });
 
       try {
