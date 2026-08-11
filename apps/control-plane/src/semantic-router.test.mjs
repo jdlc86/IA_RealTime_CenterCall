@@ -6,6 +6,10 @@ test("valid services route", () => {
   assert.deepEqual(parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "SERVICES", reason: "service query" })), { intent: "CONTINUE", dataRequirement: "SERVICES", reason: "service query", degraded: false });
 });
 
+test("valid restaurant menu route", () => {
+  assert.deepEqual(parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "MENU", reason: "menu query" })), { intent: "CONTINUE", dataRequirement: "MENU", reason: "menu query", degraded: false });
+});
+
 test("missing data requirement fails closed to business info", () => {
   const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", reason: "partial" }));
   assert.equal(result.intent, "CONTINUE"); assert.equal(result.dataRequirement, "BUSINESS_INFO"); assert.equal(result.degraded, true);
@@ -42,6 +46,14 @@ test("NONE with catalog reason recovers SERVICES", () => {
 
 test("NONE with botox price reason recovers SERVICES", () => {
   const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "NONE", reason: "Quiere saber el precio del botox" })); assert.equal(result.dataRequirement, "SERVICES"); assert.equal(result.degraded, true);
+});
+
+test("NONE with restaurant menu reason recovers MENU", () => {
+  const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "NONE", reason: "Quiere consultar la carta y los platos del restaurante" })); assert.equal(result.dataRequirement, "MENU"); assert.equal(result.degraded, true);
+});
+
+test("restaurant allergens recover MENU", () => {
+  const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "BUSINESS_INFO", reason: "Pregunta por alérgenos de un plato" })); assert.equal(result.dataRequirement, "MENU"); assert.equal(result.degraded, true);
 });
 
 test("ordinary conversation remains NONE", () => {
