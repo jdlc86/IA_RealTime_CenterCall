@@ -4,10 +4,7 @@ import { parseSemanticDecision } from "../.test-dist/semantic-router.js";
 
 test("valid services route", () => {
   assert.deepEqual(parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "SERVICES", reason: "service query" })), {
-    intent: "CONTINUE",
-    dataRequirement: "SERVICES",
-    reason: "service query",
-    degraded: false,
+    intent: "CONTINUE", dataRequirement: "SERVICES", reason: "service query", degraded: false,
   });
 });
 
@@ -49,4 +46,28 @@ test("end intent always forces NONE", () => {
   const result = parseSemanticDecision(JSON.stringify({ intent: "END_CLEAR", data_requirement: "SERVICES" }));
   assert.equal(result.intent, "END_CLEAR");
   assert.equal(result.dataRequirement, "NONE");
+});
+
+test("contradictory NONE recovers treatments as SERVICES", () => {
+  const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "NONE", reason: "El usuario pregunta qué tratamientos ofrece la clínica" }));
+  assert.equal(result.dataRequirement, "SERVICES");
+  assert.equal(result.degraded, true);
+});
+
+test("contradictory NONE recovers service catalog as SERVICES", () => {
+  const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "NONE", reason: "Pregunta por el catálogo de servicios disponibles" }));
+  assert.equal(result.dataRequirement, "SERVICES");
+  assert.equal(result.degraded, true);
+});
+
+test("contradictory NONE recovers botox price as SERVICES", () => {
+  const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "NONE", reason: "Quiere saber el precio del botox" }));
+  assert.equal(result.dataRequirement, "SERVICES");
+  assert.equal(result.degraded, true);
+});
+
+test("ordinary conversation remains NONE", () => {
+  const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "NONE", reason: "El usuario saluda y quiere continuar conversando" }));
+  assert.equal(result.dataRequirement, "NONE");
+  assert.equal(result.degraded, false);
 });
