@@ -19,12 +19,16 @@ function normalize(value: string): string {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
 
-function recoverRequirementFromReason(reason: string): DataRequirement | null {
-  const text = normalize(reason);
-  if (/\b(tratamiento|tratamientos|servicio|servicios|procedimiento|procedimientos|terapia|terapias|catalogo|precio|precios|coste|cuesta|duracion|botox)\b/.test(text)) return "SERVICES";
+export function inferRequirementFromText(value: string): DataRequirement | null {
+  const text = normalize(value);
+  if (/\b(tratamiento|tratamientos|servicio|servicios|procedimiento|procedimientos|terapia|terapias|catalogo|precio|precios|coste|costes|cuesta|cuestan|duracion|botox)\b/.test(text)) return "SERVICES";
   if (/\b(profesional|profesionales|especialista|especialistas|medico|medicos|personal)\b/.test(text)) return "PROFESSIONALS";
   if (/\b(horario|horarios|apertura|cierre|abre|abren|cierra|cierran)\b/.test(text)) return "HOURS";
   return null;
+}
+
+function recoverRequirementFromReason(reason: string): DataRequirement | null {
+  return inferRequirementFromText(reason);
 }
 
 export function parseSemanticDecision(argumentsJson: string | undefined): SemanticDecision {
