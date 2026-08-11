@@ -10,6 +10,10 @@ La arquitectura normativa vigente está en:
 
 - [`docs/architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md)
 
+La decisión de verticales de negocio `CLINIC | RESTAURANT` está en:
+
+- [`docs/architecture/BUSINESS_VERTICALS.md`](./architecture/BUSINESS_VERTICALS.md)
+
 El estado operativo actual de fases está en:
 
 - [`docs/PROJECT_STATUS.md`](./PROJECT_STATUS.md)
@@ -28,8 +32,10 @@ El estado detallado y autoritativo permanece en `PROJECT_STATUS.md`. Como resume
 
 - Cloudflare KV es la fuente de configuración rápida por tenant, incluido prompt/persona, allowlist y `assistant.waitingPhrases`.
 - `ToolGateway` aplica allowlist y contexto de tenant antes de acceder a datos empresariales.
+- Se adopta formalmente el concepto de **vertical de negocio**: un Core común y agnóstico con `businessType = CLINIC | RESTAURANT`. Clínica y restaurante comparten infraestructura, seguridad, tenant context y ToolGateway, pero no se fuerzan a compartir el mismo modelo operacional.
+- El vertical `CLINIC` evoluciona hacia tratamientos/servicios, profesionales, citas y pacientes. El vertical `RESTAURANT` evoluciona prioritariamente hacia menú, disponibilidad, capacidad/party size y reservas. `AppointmentModule` y `ReservationModule` se mantienen separados.
 - Supabase ya está integrado mediante `SupabaseAdapter` para lecturas iniciales de servicios/tratamientos, profesionales y horarios; por tanto la persistencia empresarial ya está EN CURSO.
-- El router semántico clasifica `NONE | BUSINESS_INFO | SERVICES | PROFESSIONALS | HOURS` y ha sido endurecido para que consultas de tratamientos/servicios/catálogo/precio/duración se enruten a `SERVICES` incluso ante clasificaciones genéricas recuperables.
+- El router semántico actual clasifica `NONE | BUSINESS_INFO | SERVICES | PROFESSIONALS | HOURS`; su evolución deberá separar dominios comunes de dominios habilitados por vertical para evitar un clasificador global acoplado a todos los sectores.
 - Las frases de espera para consultas externas están implementadas y la llamada E2E de validación confirmó el flujo `SERVICES → get_services → resultado externo → respuesta final` sin errores diagnósticos.
 - El autodiagnóstico activable mediante `DEBUG_KEY=true|false` está **VALIDADO E2E EN LLAMADA REAL**. `DEBUG_KEY` se controla desde Cloudflare Dashboard; `wrangler.jsonc` usa `keep_vars: true` y no impone el flag.
 - La persistencia diagnóstica en `public.call_diagnostic_events` está validada con eventos reales correlacionados por `call_id`. La llamada de validación `rtc_u7_EBmNR0PocXNS4T49HKewE` registró, entre otros, `DEBUG_CONFIGURED(enabled=true)`, `CALL_SESSION_STARTED`, `USER_TURN_RECEIVED`, `INTENT_CLASSIFIED(SERVICES)`, `BACKEND_QUERY_STARTED`, `BACKEND_QUERY_COMPLETED(get_services, 406 ms)`, `EXTERNAL_RESULT_READY_FOR_SPEECH`, `FINAL_RESPONSE_REQUESTED` y `SIDEBAND_CLOSED`, sin eventos de severidad `error`.
@@ -39,7 +45,7 @@ El estado detallado y autoritativo permanece en `PROJECT_STATUS.md`. Como resume
 
 ## Roadmap canónico
 
-Según `SYSTEM_ARCHITECTURE.md` v2.1:
+Según `SYSTEM_ARCHITECTURE.md` v2.2:
 
 ```text
 F0 Voz E2E
@@ -52,16 +58,18 @@ F3 ToolGateway
   ↓
 F4 Clínica + validación multi-negocio
   ↓
-F5 Persistencia/post-call
+F5 Persistencia empresarial + Supabase + post-call
   ↓
 F6 Handoff humano
   ↓
 F7 Concurrencia
   ↓
 F8 Hardening producción
+  ↓
+F9 App de gestión web/escritorio
 ```
 
-La fase de producto `F9 App de gestión web/escritorio` está registrada en `PROJECT_STATUS.md` como extensión de roadmap y debe mantenerse coherente con la arquitectura canónica cuando se actualice su siguiente versión.
+La separación por vertical debe quedar estable antes de ampliar F5 con operaciones WRITE: clínica avanzará hacia citas/pacientes y restaurante hacia disponibilidad/reservas, compartiendo Core, autorización, auditoría y persistencia común cuando corresponda.
 
 ## Regla de mantenimiento
 
@@ -69,5 +77,6 @@ La fase de producto `F9 App de gestión web/escritorio` está registrada en `PRO
 2. Si cambia la ubicación de la arquitectura canónica, se actualiza únicamente el enlace de este archivo.
 3. Las definiciones de fases se toman de `SYSTEM_ARCHITECTURE.md`.
 4. El progreso/cierre de fases se toma de `PROJECT_STATUS.md` y de la evidencia en `docs/tests/`.
-5. Una guía de implementación puede ampliar una fase, pero no redefinir el roadmap sin actualizar la arquitectura canónica o un ADR posterior.
+5. Una guía de implementación puede ampliar una fase, pero no redefinir el roadmap sin actualizar la arquitectura canónica o una decisión arquitectónica posterior.
 6. No marcar una funcionalidad como validada únicamente porque exista código: debe distinguirse entre IMPLEMENTADA, VALIDADA y PENDIENTE DE EVIDENCIA E2E.
+7. Las diferencias entre sectores se modelan mediante `businessType`, configuración, módulos y allowlists; nunca mediante forks del Core o condicionales específicos por tenant.
