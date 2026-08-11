@@ -53,6 +53,7 @@ const HANGUP_MAX_ATTEMPTS = 2;
 
 const GET_BUSINESS_INFORMATION = "get_business_information";
 const GET_SERVICES = "get_services";
+const GET_MENU = "get_menu";
 const GET_PROFESSIONALS = "get_professionals";
 const GET_BUSINESS_HOURS = "get_business_hours";
 
@@ -67,6 +68,13 @@ const SERVICES_REALTIME_TOOL: RealtimeFunctionTool = {
   type: "function",
   name: GET_SERVICES,
   description: "Obtiene el catálogo activo de servicios o tratamientos, incluidos precio y duración cuando estén registrados.",
+  parameters: { type: "object", properties: {}, additionalProperties: false },
+};
+
+const MENU_REALTIME_TOOL: RealtimeFunctionTool = {
+  type: "function",
+  name: GET_MENU,
+  description: "Obtiene la carta activa del restaurante, incluidos categoría, descripción, precio y alérgenos cuando estén registrados.",
   parameters: { type: "object", properties: {}, additionalProperties: false },
 };
 
@@ -87,6 +95,7 @@ const BUSINESS_HOURS_REALTIME_TOOL: RealtimeFunctionTool = {
 const TOOL_BY_REQUIREMENT: Partial<Record<DataRequirement, RealtimeFunctionTool>> = {
   BUSINESS_INFO: BUSINESS_INFORMATION_REALTIME_TOOL,
   SERVICES: SERVICES_REALTIME_TOOL,
+  MENU: MENU_REALTIME_TOOL,
   PROFESSIONALS: PROFESSIONALS_REALTIME_TOOL,
   HOURS: BUSINESS_HOURS_REALTIME_TOOL,
 };
@@ -175,7 +184,7 @@ function emptyObjectValidator(value: unknown): Record<string, never> {
 }
 
 function isExternalRequirement(requirement: DataRequirement): boolean {
-  return requirement === "SERVICES" || requirement === "PROFESSIONALS" || requirement === "HOURS";
+  return requirement === "SERVICES" || requirement === "MENU" || requirement === "PROFESSIONALS" || requirement === "HOURS";
 }
 
 export class CallSession extends DurableObject<CallSessionEnv> {
@@ -505,6 +514,13 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         description: SERVICES_REALTIME_TOOL.description,
         validate: emptyObjectValidator,
         execute: async (_args, context) => ({ services: await this.getSupabaseAdapter().listServices(context.tenantId), source: "supabase" }),
+      },
+      {
+        name: GET_MENU,
+        access: "READ",
+        description: MENU_REALTIME_TOOL.description,
+        validate: emptyObjectValidator,
+        execute: async (_args, context) => ({ menu_items: await this.getSupabaseAdapter().listMenuItems(context.tenantId), source: "supabase" }),
       },
       {
         name: GET_PROFESSIONALS,
