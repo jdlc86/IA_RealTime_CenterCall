@@ -92,7 +92,6 @@ export class SupabaseAdapter {
       method: "POST",
       headers: {
         apikey: this.secretKey,
-        Authorization: `Bearer ${this.secretKey}`,
         "Content-Type": "application/json",
         Prefer: "return=minimal",
       },
