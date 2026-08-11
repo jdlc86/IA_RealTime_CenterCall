@@ -10,7 +10,8 @@
     "ENVIRONMENT": "dev",
     "REALTIME_MODEL": "gpt-realtime",
     "REALTIME_VOICE": "marin",
-    "OPENAI_PROJECT_ID": "proj_sRULdPh5pWmKIg59z6J01QI9"
+    "OPENAI_PROJECT_ID": "proj_sRULdPh5pWmKIg59z6J01QI9",
+    "DEBUG_KEY": "false"
   },
   "kv_namespaces": [
     {
