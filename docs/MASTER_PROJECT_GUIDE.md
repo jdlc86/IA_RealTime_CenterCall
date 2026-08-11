@@ -32,7 +32,7 @@ El estado detallado y autoritativo permanece en `PROJECT_STATUS.md`. Como resume
 - El router semántico clasifica `NONE | BUSINESS_INFO | SERVICES | PROFESSIONALS | HOURS` y ha sido endurecido para que consultas de tratamientos/servicios/catálogo/precio/duración se enruten a `SERVICES` incluso ante clasificaciones genéricas recuperables.
 - Las frases de espera para consultas externas están implementadas; la sincronización fue corregida para evitar cortes y debe revalidarse E2E junto con el último cambio del router.
 - El autodiagnóstico activable mediante `DEBUG_KEY=true|false` ya está IMPLEMENTADO EN CÓDIGO: tracker de estado por llamada, checkpoints/logs estructurados, preservación de contexto de recuperación y persistencia del timeline diagnóstico en Supabase desde `CallSession`. Sigue PENDIENTE DE VALIDACIÓN E2E EN LLAMADA REAL.
-- Queda pendiente verificar operativamente que el acceso Supabase disponible para soporte permite leer esos eventos diagnósticos persistidos y reconstruir una llamada por `call_id` sin exponer datos sensibles.
+- Acceso de soporte a Supabase VERIFICADO el 2026-08-11: el proyecto `IA_RealTime_CenterCall` y la tabla `public.call_diagnostic_events` son legibles. En el momento de la verificación la tabla contenía 0 eventos, por lo que todavía falta generar una llamada con `DEBUG_KEY=true` y comprobar la lectura/reconstrucción de un timeline real por `call_id`.
 - Las ramas de trabajo ya absorbidas se consolidan contra `main`; ramas divergentes antiguas se conservan como histórico y no se fuerzan sobre la arquitectura vigente.
 
 ## Roadmap canónico
