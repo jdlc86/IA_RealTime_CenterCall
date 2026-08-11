@@ -116,15 +116,34 @@ export class CallDiagnostics {
   }
 
   private push(level: DiagnosticLevel, stage: string, details?: Record<string, unknown>): void {
-    this.timeline.push({
+    const entry: DiagnosticEntry = {
       at_ms: Date.now(),
       stage,
       level,
       elapsed_ms: Date.now() - this.startedAt,
       details: sanitizeDetails(details),
-    });
+    };
+    this.timeline.push(entry);
     if (this.timeline.length > MAX_TIMELINE_ENTRIES) {
       this.timeline.splice(0, this.timeline.length - MAX_TIMELINE_ENTRIES);
     }
+
+    const logEntry = {
+      level,
+      event: "call_diagnostic",
+      component: "CallDiagnostics",
+      call_id: this.callId,
+      tenant_id: this.tenantId,
+      current_stage: this.currentStage,
+      last_success: this.lastSuccess,
+      last_error: this.lastError,
+      diagnosis: this.diagnosis,
+      recovery: this.recovery,
+      elapsed_ms: entry.elapsed_ms,
+      details: entry.details,
+    };
+    const serialized = JSON.stringify(logEntry);
+    if (level === "error") console.error(serialized);
+    else console.log(serialized);
   }
 }
