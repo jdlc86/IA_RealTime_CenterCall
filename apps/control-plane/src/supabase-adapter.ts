@@ -25,6 +25,21 @@ export type BusinessHours = {
   closes_at: string;
 };
 
+export type CallDiagnosticEvent = {
+  call_id: string;
+  tenant_id: string | null;
+  component: string;
+  stage: string;
+  event: string;
+  severity: "info" | "error";
+  data_requirement?: string | null;
+  tool_name?: string | null;
+  elapsed_ms?: number | null;
+  recovery?: string | null;
+  diagnosis?: string | null;
+  details?: Record<string, unknown>;
+};
+
 function requireNonEmpty(value: string, name: string): string {
   if (!value?.trim()) throw new Error(`Missing runtime configuration: ${name}`);
   return value.trim();
@@ -70,6 +85,35 @@ export class SupabaseAdapter {
     }
     if (!Array.isArray(parsed)) throw new Error(`Supabase ${table} returned invalid payload`);
     return parsed as T[];
+  }
+
+  async writeDiagnosticEvent(event: CallDiagnosticEvent): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/rest/v1/call_diagnostic_events`, {
+      method: "POST",
+      headers: {
+        apikey: this.secretKey,
+        Authorization: `Bearer ${this.secretKey}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify({
+        call_id: event.call_id,
+        tenant_id: event.tenant_id,
+        component: event.component,
+        stage: event.stage,
+        event: event.event,
+        severity: event.severity,
+        data_requirement: event.data_requirement ?? null,
+        tool_name: event.tool_name ?? null,
+        elapsed_ms: event.elapsed_ms ?? null,
+        recovery: event.recovery ?? null,
+        diagnosis: event.diagnosis ?? null,
+        details: event.details ?? {},
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`Supabase call_diagnostic_events write failed with HTTP ${response.status}`);
+    }
   }
 
   async listServices(tenantId: string): Promise<BusinessService[]> {
