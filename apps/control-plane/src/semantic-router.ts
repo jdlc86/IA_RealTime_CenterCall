@@ -1,5 +1,5 @@
 export type SemanticIntent = "CONTINUE" | "END_AMBIGUOUS" | "END_CLEAR";
-export type DataRequirement = "NONE" | "BUSINESS_INFO" | "SERVICES" | "PROFESSIONALS" | "HOURS";
+export type DataRequirement = "NONE" | "BUSINESS_INFO" | "SERVICES" | "PROFESSIONALS" | "HOURS" | "MENU";
 
 export type SemanticDecision = {
   intent: SemanticIntent;
@@ -9,7 +9,7 @@ export type SemanticDecision = {
 };
 
 const INTENTS = new Set<SemanticIntent>(["CONTINUE", "END_AMBIGUOUS", "END_CLEAR"]);
-const REQUIREMENTS = new Set<DataRequirement>(["NONE", "BUSINESS_INFO", "SERVICES", "PROFESSIONALS", "HOURS"]);
+const REQUIREMENTS = new Set<DataRequirement>(["NONE", "BUSINESS_INFO", "SERVICES", "PROFESSIONALS", "HOURS", "MENU"]);
 
 function safeReason(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, 300) : fallback;
@@ -21,6 +21,9 @@ function normalize(value: string): string {
 
 export function inferRequirementFromText(value: string): DataRequirement | null {
   const text = normalize(value);
+  // Strong restaurant-specific vocabulary is checked before the legacy generic
+  // service vocabulary so "carta de platos" cannot be recovered as SERVICES.
+  if (/\b(menu|menus|carta|cartas|plato|platos|entrante|entrantes|postre|postres|bebida|bebidas|alergeno|alergenos|alergia|alergias)\b/.test(text)) return "MENU";
   if (/\b(tratamiento|tratamientos|servicio|servicios|procedimiento|procedimientos|terapia|terapias|catalogo|precio|precios|coste|costes|cuesta|cuestan|duracion|botox|ofrece|ofrecen|ofreceis|disponible|disponibles)\b/.test(text)) return "SERVICES";
   if (/\b(profesional|profesionales|especialista|especialistas|medico|medicos|personal)\b/.test(text)) return "PROFESSIONALS";
   if (/\b(horario|horarios|apertura|cierre|abre|abren|cierra|cierran)\b/.test(text)) return "HOURS";
