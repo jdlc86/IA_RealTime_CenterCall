@@ -21,6 +21,8 @@ export type DiagnosticSnapshot = {
   timeline: DiagnosticEntry[];
 };
 
+export type DiagnosticSink = (entry: DiagnosticEntry, snapshot: DiagnosticSnapshot) => void | Promise<void>;
+
 const MAX_TIMELINE_ENTRIES = 80;
 
 function sanitizeDetails(details: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
@@ -65,15 +67,17 @@ export class CallDiagnostics {
   private diagnosis: string | null = null;
   private recovery: string | null = null;
   private timeline: DiagnosticEntry[] = [];
+  private sink: DiagnosticSink | null = null;
 
   constructor(enabled: boolean) {
     this.enabled = enabled;
   }
 
-  configure(enabled: boolean, callId?: string | null, tenantId?: string | null): void {
+  configure(enabled: boolean, callId?: string | null, tenantId?: string | null, sink?: DiagnosticSink | null): void {
     this.enabled = enabled;
     if (callId) this.callId = callId;
     if (tenantId) this.tenantId = tenantId;
+    if (sink !== undefined) this.sink = sink;
     this.checkpoint("DEBUG_CONFIGURED", { enabled });
   }
 
@@ -128,6 +132,7 @@ export class CallDiagnostics {
       this.timeline.splice(0, this.timeline.length - MAX_TIMELINE_ENTRIES);
     }
 
+    const snapshot = this.snapshot();
     const logEntry = {
       level,
       event: "call_diagnostic",
@@ -145,5 +150,29 @@ export class CallDiagnostics {
     const serialized = JSON.stringify(logEntry);
     if (level === "error") console.error(serialized);
     else console.log(serialized);
+
+    if (this.sink) {
+      try {
+        void Promise.resolve(this.sink(entry, snapshot)).catch((error) => {
+          console.error(JSON.stringify({
+            level: "error",
+            event: "call_diagnostic_sink_failed",
+            component: "CallDiagnostics",
+            call_id: this.callId,
+            tenant_id: this.tenantId,
+            error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
+          }));
+        });
+      } catch (error) {
+        console.error(JSON.stringify({
+          level: "error",
+          event: "call_diagnostic_sink_failed",
+          component: "CallDiagnostics",
+          call_id: this.callId,
+          tenant_id: this.tenantId,
+          error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
+        }));
+      }
+    }
   }
 }
