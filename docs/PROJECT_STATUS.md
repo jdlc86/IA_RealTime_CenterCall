@@ -127,7 +127,7 @@ Pendiente:
 - escrituras autorizadas de negocio;
 - auditoría y post-call completos;
 - pruebas cross-tenant de persistencia;
-- verificar desde soporte que los eventos diagnósticos persistidos pueden leerse y correlacionarse por `call_id` sin exponer payload sensible.
+- lectura de un timeline diagnóstico real después de generar una llamada con `DEBUG_KEY=true`.
 
 ## Router semántico de datos empresariales — estado 2026-08-11
 
@@ -193,12 +193,20 @@ Restricciones de seguridad:
 - no almacenar teléfonos o datos clínicos innecesarios;
 - no exponer endpoints diagnósticos públicos sin autenticación.
 
-**Estado actual:** IMPLEMENTADO EN CÓDIGO / PENDIENTE DE VALIDACIÓN E2E.
+**Estado actual:** IMPLEMENTADO EN CÓDIGO / ACCESO SUPABASE VERIFICADO / PENDIENTE DE VALIDACIÓN E2E CON EVENTOS REALES.
 
-Para considerar esta capacidad VALIDADA faltan dos evidencias operativas:
+Verificación de soporte realizada el 2026-08-11:
+
+- proyecto Supabase `IA_RealTime_CenterCall` accesible y saludable;
+- tabla `public.call_diagnostic_events` accesible por consulta SQL;
+- esquema confirmado con `call_id`, `tenant_id`, `component`, `stage`, `event`, `severity`, `data_requirement`, `tool_name`, `elapsed_ms`, `recovery`, `details` y `diagnosis`;
+- lectura de la tabla confirmada;
+- en el momento de la verificación existían `0` eventos, por lo que aún no puede demostrarse la reconstrucción de un timeline real.
+
+Para considerar esta capacidad VALIDADA falta:
 
 1. ejecutar una llamada real con `DEBUG_KEY=true` y comprobar que el flujo normal no se degrada y que el timeline esperado se persiste;
-2. verificar que el acceso Supabase utilizado para soporte permite leer los eventos persistidos, correlacionarlos por `call_id` y reconstruir el diagnóstico sin depender de acceso manual al servidor ni exponer información sensible.
+2. leer posteriormente esos eventos desde Supabase, correlacionarlos por `call_id` y reconstruir el diagnóstico sin depender de acceso manual al servidor ni exponer información sensible.
 
 ## Decisión arquitectónica de datos
 
@@ -259,8 +267,8 @@ Se preservan sin forzar integración:
 
 ## Próximo paso
 
-1. Verificar desde soporte que se pueden leer en Supabase los eventos diagnósticos persistidos y localizar/reconstruir una llamada por `call_id`.
-2. Ejecutar una llamada real con `DEBUG_KEY=true` y validar E2E el timeline diagnóstico persistido.
+1. Ejecutar una llamada real con `DEBUG_KEY=true` para generar eventos diagnósticos.
+2. Leer esos eventos desde Supabase y reconstruir la llamada por `call_id`; esto cerrará la verificación de logs reales.
 3. Revalidar E2E el router con preguntas de catálogo: “¿Qué tratamientos tenéis?”, “¿Qué servicios ofrecéis?”, “¿Tenéis botox?” y variantes.
 4. Después cargar datos empresariales reales en Supabase y validar lectura por tenant.
 5. Completar el gate F4 con segundo negocio y número desconocido E2E fail-closed.
