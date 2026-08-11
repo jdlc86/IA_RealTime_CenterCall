@@ -15,7 +15,7 @@ F4 Clínica + validación multi-negocio        🟡 EN CURSO — base KV multi-t
 F5 Persistencia empresarial + Supabase + post-call 🟡 EN CURSO — lecturas empresariales iniciales integradas
 F6 Handoff humano                            ⬜ NO INICIADA
 F7 Concurrencia                              ⬜ NO INICIADA
-F8 Hardening producción                      🟡 PREPARACIÓN — autodiagnóstico de producción definido como prioridad
+F8 Hardening producción                      🟡 EN CURSO — autodiagnóstico DEBUG_KEY implementado; validación E2E pendiente
 F9 App de gestión web/escritorio             ⬜ NO INICIADA
 ```
 
@@ -116,16 +116,18 @@ Implementado:
 - consultas filtradas por `tenant_id` impuesto por backend;
 - tablas/dominios iniciales consumibles: servicios/tratamientos, profesionales y horarios;
 - listas vacías tratadas como ausencia de información verificada, no como permiso para inventar;
-- futura app y Carolina diseñadas para compartir la misma fuente de verdad empresarial.
+- futura app y Carolina diseñadas para compartir la misma fuente de verdad empresarial;
+- persistencia de eventos del timeline de autodiagnóstico desde `CallSession` mediante `SupabaseAdapter` cuando `DEBUG_KEY=true`.
 
 Pendiente:
 
 - carga/validación de datos empresariales reales;
 - pacientes;
 - citas/agenda;
-- escrituras autorizadas;
-- auditoría y post-call;
-- pruebas cross-tenant de persistencia.
+- escrituras autorizadas de negocio;
+- auditoría y post-call completos;
+- pruebas cross-tenant de persistencia;
+- verificar desde soporte que los eventos diagnósticos persistidos pueden leerse y correlacionarse por `call_id` sin exponer payload sensible.
 
 ## Router semántico de datos empresariales — estado 2026-08-11
 
@@ -161,9 +163,9 @@ Validación actual:
 - se detectó previamente corte de frase por sincronización y se corrigió la secuencia;
 - queda pendiente repetir validación E2E sobre catálogo/tratamientos tras el endurecimiento del router.
 
-## Prioridad de hardening — autodiagnóstico activable en producción
+## F8 — Hardening: autodiagnóstico activable en producción
 
-Se define como prioridad de F8 implementar un modo de autodiagnóstico controlado por variable de runtime:
+El modo de autodiagnóstico está controlado por variable de runtime:
 
 ```text
 DEBUG_KEY=false  → operación normal / telemetría mínima
@@ -172,18 +174,17 @@ DEBUG_KEY=true   → diagnóstico estructurado ampliado
 
 `DEBUG_KEY` es un flag booleano, no una credencial.
 
-Objetivo del modo diagnóstico:
+Implementado en código en `main`:
 
-- timeline/checkpoints por `call_id`;
-- etapa actual y último estado correcto;
-- latencias por transición;
-- router/data requirement seleccionado;
-- estado de frase de espera;
-- tool forzada;
-- inicio/fin/error de consulta externa;
-- resultado de ToolGateway sin payload sensible;
-- watchdogs y recuperación segura;
-- diagnóstico final como `WAITING_PHRASE_PLAYBACK_STALLED`, `TOOL_TIMEOUT`, `SUPABASE_FAILED`, etc.
+- tracker de estado/timeline por `call_id`;
+- checkpoints y logs estructurados condicionados por `DEBUG_KEY`;
+- `tenant_id`, etapa, severidad y latencia por evento;
+- captura de `data_requirement` y tool asociada cuando están disponibles;
+- preservación del contexto de recuperación/diagnóstico;
+- persistencia asíncrona de eventos diagnósticos en Supabase desde `CallSession` mediante `SupabaseAdapter`;
+- operación desactivable con `DEBUG_KEY=false`.
+
+El diseño cubre diagnóstico de situaciones como `WAITING_PHRASE_PLAYBACK_STALLED`, `TOOL_TIMEOUT`, `SUPABASE_FAILED` y otros estados de recuperación definidos por el tracker.
 
 Restricciones de seguridad:
 
@@ -192,7 +193,12 @@ Restricciones de seguridad:
 - no almacenar teléfonos o datos clínicos innecesarios;
 - no exponer endpoints diagnósticos públicos sin autenticación.
 
-**Estado:** DISEÑADO / PENDIENTE DE IMPLEMENTACIÓN. No debe marcarse como disponible todavía.
+**Estado actual:** IMPLEMENTADO EN CÓDIGO / PENDIENTE DE VALIDACIÓN E2E.
+
+Para considerar esta capacidad VALIDADA faltan dos evidencias operativas:
+
+1. ejecutar una llamada real con `DEBUG_KEY=true` y comprobar que el flujo normal no se degrada y que el timeline esperado se persiste;
+2. verificar que el acceso Supabase utilizado para soporte permite leer los eventos persistidos, correlacionarlos por `call_id` y reconstruir el diagnóstico sin depender de acceso manual al servidor ni exponer información sensible.
 
 ## Decisión arquitectónica de datos
 
@@ -253,7 +259,8 @@ Se preservan sin forzar integración:
 
 ## Próximo paso
 
-1. Revalidar E2E el router con preguntas de catálogo: “¿Qué tratamientos tenéis?”, “¿Qué servicios ofrecéis?”, “¿Tenéis botox?” y variantes.
-2. Implementar el modo de autodiagnóstico `DEBUG_KEY=true|false` antes de continuar con más complejidad de producción.
-3. Después cargar datos empresariales reales en Supabase y validar lectura por tenant.
-4. Completar el gate F4 con segundo negocio y número desconocido E2E fail-closed.
+1. Verificar desde soporte que se pueden leer en Supabase los eventos diagnósticos persistidos y localizar/reconstruir una llamada por `call_id`.
+2. Ejecutar una llamada real con `DEBUG_KEY=true` y validar E2E el timeline diagnóstico persistido.
+3. Revalidar E2E el router con preguntas de catálogo: “¿Qué tratamientos tenéis?”, “¿Qué servicios ofrecéis?”, “¿Tenéis botox?” y variantes.
+4. Después cargar datos empresariales reales en Supabase y validar lectura por tenant.
+5. Completar el gate F4 con segundo negocio y número desconocido E2E fail-closed.
