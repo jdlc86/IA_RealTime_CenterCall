@@ -63,14 +63,21 @@ export function parseSemanticDecision(argumentsJson: string | undefined): Semant
   let degraded = !(typeof rawIntent === "string" && INTENTS.has(rawIntent as SemanticIntent)) || !(typeof rawRequirement === "string" && REQUIREMENTS.has(rawRequirement as DataRequirement));
   const reason = safeReason(parsed.reason, degraded ? "classifier_partial_output_fallback" : "semantic_intent_classifier");
 
+  const recovered = recoverRequirementFromReason(reason);
+
   // If the classifier describes a concrete external domain but returns a generic
   // NONE/BUSINESS_INFO requirement, prefer the domain evidence and fail closed.
-  if (requirement === "NONE" || requirement === "BUSINESS_INFO") {
-    const recovered = recoverRequirementFromReason(reason);
-    if (recovered) {
-      requirement = recovered;
-      degraded = true;
-    }
+  if ((requirement === "NONE" || requirement === "BUSINESS_INFO") && recovered) {
+    requirement = recovered;
+    degraded = true;
+  }
+
+  // Transitional compatibility while the Realtime classifier schema still has
+  // the legacy clinical enum. Strong restaurant evidence must never be executed
+  // through get_services simply because the classifier selected SERVICES.
+  if (requirement === "SERVICES" && recovered === "MENU") {
+    requirement = "MENU";
+    degraded = true;
   }
 
   return { intent, dataRequirement: requirement, reason, degraded };
