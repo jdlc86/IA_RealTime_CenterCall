@@ -15,6 +15,24 @@ function safeReason(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, 300) : fallback;
 }
 
+function normalize(value: string): string {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
+/**
+ * Secondary fail-safe for a contradictory classifier result. The model often
+ * explains the requested business domain correctly in `reason` even if it
+ * emits data_requirement=NONE. In that case we recover the grounded route
+ * instead of allowing an ungrounded conversational answer.
+ */
+function recoverRequirementFromReason(reason: string): DataRequirement | null {
+  const text = normalize(reason);
+  if (/\b(tratamiento|tratamientos|servicio|servicios|procedimiento|procedimientos|terapia|terapias|catalogo|precio|precios|coste|cuesta|duracion|botox)\b/.test(text)) return "SERVICES";
+  if (/\b(profesional|profesionales|especialista|especialistas|medico|medicos|personal)\b/.test(text)) return "PROFESSIONALS";
+  if (/\b(horario|horarios|apertura|cierre|abre|abren|cierra|cierran)\b/.test(text)) return "HOURS";
+  return null;
+}
+
 /**
  * Parses the model's semantic-routing tool arguments without ever leaving the
  * call without a deterministic next action.
@@ -22,16 +40,12 @@ function safeReason(value: unknown, fallback: string): string {
  * Fail-safe policy:
  * - malformed/unknown intent => CONTINUE + BUSINESS_INFO (grounded, fail-closed)
  * - valid CONTINUE + missing/unknown data requirement => BUSINESS_INFO
+ * - contradictory NONE + business-domain reason => recover grounded domain
  * - any end intent => data requirement is forced to NONE
  */
 export function parseSemanticDecision(argumentsJson: string | undefined): SemanticDecision {
   if (!argumentsJson?.trim()) {
-    return {
-      intent: "CONTINUE",
-      dataRequirement: "BUSINESS_INFO",
-      reason: "classifier_empty_output_fallback",
-      degraded: true,
-    };
+    return { intent: "CONTINUE", dataRequirement: "BUSINESS_INFO", reason: "classifier_empty_output_fallback", degraded: true };
   }
 
   let parsed: Record<string, unknown>;
@@ -40,19 +54,11 @@ export function parseSemanticDecision(argumentsJson: string | undefined): Semant
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not_object");
     parsed = value as Record<string, unknown>;
   } catch {
-    return {
-      intent: "CONTINUE",
-      dataRequirement: "BUSINESS_INFO",
-      reason: "classifier_invalid_json_fallback",
-      degraded: true,
-    };
+    return { intent: "CONTINUE", dataRequirement: "BUSINESS_INFO", reason: "classifier_invalid_json_fallback", degraded: true };
   }
 
   const rawIntent = parsed.intent;
-  const intent: SemanticIntent =
-    typeof rawIntent === "string" && INTENTS.has(rawIntent as SemanticIntent)
-      ? (rawIntent as SemanticIntent)
-      : "CONTINUE";
+  const intent: SemanticIntent = typeof rawIntent === "string" && INTENTS.has(rawIntent as SemanticIntent) ? (rawIntent as SemanticIntent) : "CONTINUE";
 
   if (intent !== "CONTINUE") {
     return {
@@ -64,19 +70,17 @@ export function parseSemanticDecision(argumentsJson: string | undefined): Semant
   }
 
   const rawRequirement = parsed.data_requirement ?? parsed.dataRequirement;
-  const requirement: DataRequirement =
-    typeof rawRequirement === "string" && REQUIREMENTS.has(rawRequirement as DataRequirement)
-      ? (rawRequirement as DataRequirement)
-      : "BUSINESS_INFO";
+  let requirement: DataRequirement = typeof rawRequirement === "string" && REQUIREMENTS.has(rawRequirement as DataRequirement) ? (rawRequirement as DataRequirement) : "BUSINESS_INFO";
+  let degraded = !(typeof rawIntent === "string" && INTENTS.has(rawIntent as SemanticIntent)) || !(typeof rawRequirement === "string" && REQUIREMENTS.has(rawRequirement as DataRequirement));
+  const reason = safeReason(parsed.reason, degraded ? "classifier_partial_output_fallback" : "semantic_intent_classifier");
 
-  const degraded =
-    !(typeof rawIntent === "string" && INTENTS.has(rawIntent as SemanticIntent)) ||
-    !(typeof rawRequirement === "string" && REQUIREMENTS.has(rawRequirement as DataRequirement));
+  if (requirement === "NONE") {
+    const recovered = recoverRequirementFromReason(reason);
+    if (recovered) {
+      requirement = recovered;
+      degraded = true;
+    }
+  }
 
-  return {
-    intent,
-    dataRequirement: requirement,
-    reason: safeReason(parsed.reason, degraded ? "classifier_partial_output_fallback" : "semantic_intent_classifier"),
-    degraded,
-  };
+  return { intent, dataRequirement: requirement, reason, degraded };
 }
