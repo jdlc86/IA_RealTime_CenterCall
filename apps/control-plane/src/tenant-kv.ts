@@ -224,7 +224,7 @@ export function parseTenantConfigurationV2(raw: string, expectedTenantId?: strin
   if (record.schemaVersion !== TENANT_KV_SCHEMA_VERSION_V2) {
     throw new Error(`Unsupported tenant configuration schemaVersion: ${String(record.schemaVersion)}`);
   }
-  const verticalConfig = requireRecord(record.verticalConfig ?? {}, "verticalConfig");
+  const verticalConfig = requireRecord(record.verticalConfig, "verticalConfig");
   return {
     schemaVersion: 2,
     ...parseCommon(record, expectedTenantId),

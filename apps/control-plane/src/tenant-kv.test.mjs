@@ -151,3 +151,12 @@ test("F4-KV11 disabled v2 does not silently fall back to active v1", async () =>
   });
   assert.equal(await new KvTenantRepository(kv).getTenantConfiguration("restaurante-centro"), null);
 });
+
+test("F4-KV12 v2 rejects missing verticalConfig instead of normalizing it", () => {
+  const value = JSON.parse(tenantConfigV2("restaurante-centro", "Restaurante Centro", "Lucía", "RESTAURANT"));
+  delete value.verticalConfig;
+  assert.throws(
+    () => parseTenantConfigurationV2(JSON.stringify(value), "restaurante-centro"),
+    /verticalConfig/,
+  );
+});
