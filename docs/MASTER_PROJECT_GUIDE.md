@@ -41,15 +41,38 @@ El estado detallado y autoritativo permanece en `PROJECT_STATUS.md`. Como resume
 - El tenant sintético `restaurante-centro` fue migrado a V2 y **VALIDADO EN RUNTIME** mediante el endpoint diagnóstico: `schemaVersion=2` y `businessType=RESTAURANT`. La clínica permanece temporalmente compatible con V1 para reducir riesgo durante la transición.
 - El vertical `CLINIC` evoluciona hacia tratamientos/servicios, profesionales, citas y pacientes. El vertical `RESTAURANT` evoluciona prioritariamente hacia menú, disponibilidad, capacidad/party size y reservas. `AppointmentModule` y `ReservationModule` se mantienen separados.
 - **Human handoff es transversal:** tanto clínica como restaurante podrán escalar a una persona mediante una capacidad común del Core. Su implementación queda expresamente diferida a F6; el desarrollo actual no debe simular transferencias inexistentes ni asumir que la IA será siempre el único canal de resolución.
-- El endpoint `GET /debug/tenant/<tenantId>` está integrado y protegido por `DEBUG_KEY`; solo devuelve metadatos no sensibles. Existe una deuda técnica P2 conocida: `verticalConfigPresent` se deriva actualmente de `schemaVersion===2` y no demuestra por sí solo que el campo estuviera presente en el KV original. Esto debe corregirse antes de usar ese indicador como evidencia de configuración vertical completa.
-- Supabase ya está integrado mediante `SupabaseAdapter` para lecturas iniciales de servicios/tratamientos, profesionales y horarios; por tanto la persistencia empresarial ya está EN CURSO.
-- El router semántico evoluciona por dominios comunes y dominios habilitados por vertical, evitando acoplar todos los sectores a un único modelo operacional.
-- Las frases de espera para consultas externas están implementadas y la llamada E2E de validación confirmó el flujo `SERVICES → get_services → resultado externo → respuesta final` sin errores diagnósticos.
-- El autodiagnóstico activable mediante `DEBUG_KEY=true|false` está **VALIDADO E2E EN LLAMADA REAL**. `DEBUG_KEY` se controla desde Cloudflare Dashboard; `wrangler.jsonc` usa `keep_vars: true` y no impone el flag.
+- El endpoint `GET /debug/tenant/<tenantId>` está integrado y protegido por `DEBUG_KEY`; solo devuelve metadatos no sensibles.
+- Supabase está integrado mediante `SupabaseAdapter` para persistencia/lecturas empresariales. La aplicación continúa operativa con su `SUPABASE_SECRET_KEY`; el conector Supabase de ChatGPT presenta una incidencia externa de autorización/disponibilidad y no debe confundirse con el acceso del Worker a producción.
+- Las frases de espera para consultas externas están implementadas y la clínica validó el patrón de consulta en paralelo con voz.
+- El autodiagnóstico activable mediante `DEBUG_KEY=true|false` está **VALIDADO E2E EN LLAMADA REAL**.
 - La persistencia diagnóstica en `public.call_diagnostic_events` está validada con eventos reales correlacionados por `call_id`.
-- El acceso backend a Supabase requiere `SUPABASE_SECRET_KEY` presente en runtime; la escritura diagnóstica usa la clave moderna mediante `apikey`, sin tratar `sb_secret_...` como JWT Bearer.
 - CI de `control-plane` está activo en GitHub Actions y valida tests + Wrangler dry-run en PRs que afectan al Worker.
-- Las ramas de trabajo ya absorbidas se consolidan contra `main`; ramas divergentes antiguas se conservan como histórico y no se fuerzan sobre la arquitectura vigente.
+
+## Checkpoint RESTAURANT — reservas y caller ID confiable
+
+A 2026-08-12, el flujo de reserva del restaurante ha pasado de “en desarrollo protegido” a **VALIDADO E2E en llamada real**. El detalle completo está en `docs/PROJECT_STATUS.md`.
+
+Resumen:
+
+- inventario de prueba: 3 mesas de 4 plazas + 2 mesas de 2 plazas;
+- `check_reservation_availability` ejecuta READ en paralelo mientras Lucía continúa recogiendo datos;
+- el estado de reserva se mantiene en backend y ya no depende del patrón fallido de un segundo `response.create` forzando `manage_reservation`;
+- si no hay disponibilidad, el diseño busca alternativas verificadas cercanas;
+- antes del WRITE se hace revalidación final de disponibilidad;
+- Lucía solo puede decir “reserva confirmada” si el backend devuelve evidencia `BOOKED`;
+- llamada real validada con `RESERVATION_AVAILABILITY_COMPLETED`, recheck final y `RESERVATION_BACKEND_BOOKED`;
+- se corrigió la identidad telefónica: el número llamado del restaurante nunca puede reutilizarse como `caller_phone`;
+- `payload.from` del webhook Telnyx, una vez verificada su firma, se propaga explícitamente como identidad confiable hasta Realtime/CallSession;
+- una llamada real posterior almacenó manualmente verificado el número real del llamante como `customer_phone`.
+
+Commits de referencia:
+
+- `b74e05645702ffbea9ed8ac303498e1a7a1f2f1d` — backend reservation orchestrator + disponibilidad paralela;
+- `8c830bd06cea0fcf1d1cf498069f126268b50153` — `session.type=realtime`;
+- `dd0a173af6cc56562cf4e8f558e64483797b4de2` — fail-closed contra DID del tenant;
+- `c61bdafe8aba7828660bbcea8080b3063cdb3e8d` — propagación confiable de `payload.from` Telnyx.
+
+**Siguiente bloque funcional:** consentimiento comercial conversacional usando `CALLER_ID_MATCH`. La regla central ya está fijada: solo el `caller_phone` confiable puede autorizar o revocar automáticamente promociones para ese mismo número. El número dictado verbalmente no sirve como evidencia para este mecanismo. Handoff humano sigue diferido a F6.
 
 ## Roadmap canónico
 
@@ -79,7 +102,7 @@ F9 App de gestión web/escritorio
 
 F6 implementará el handoff humano transversal mediante contratos del Core/CallOrchestrator y `TelephonyProvider`, con configuración por tenant. Hasta entonces se mantiene como decisión arquitectónica documentada, no como capacidad activa.
 
-La separación por vertical ya tiene base de configuración V2 y evidencia runtime para `RESTAURANT`. La evolución de F5 continúa con dominios separados: clínica hacia citas/pacientes y restaurante hacia disponibilidad/reservas, compartiendo Core, autorización, auditoría y persistencia común cuando corresponda.
+La separación por vertical ya tiene base de configuración V2 y evidencia runtime para `RESTAURANT`. La evolución de F5 continúa con dominios separados: clínica hacia citas/pacientes y restaurante hacia consentimiento/post-call después de haber validado el núcleo de reservas, compartiendo Core, autorización, auditoría y persistencia común cuando corresponda.
 
 ## Regla de mantenimiento
 
