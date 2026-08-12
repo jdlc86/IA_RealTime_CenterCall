@@ -5,9 +5,11 @@ export type MarketingConsentStoreEnv = {
   SUPABASE_SECRET_KEY: string;
 };
 
+export type MarketingConsentStatus = "VERIFIED" | "DECLINED" | "REVOKED";
+
 export type MarketingConsentEvent = {
   id: string;
-  status: "VERIFIED" | "DECLINED" | "REVOKED";
+  status: MarketingConsentStatus;
 };
 
 export type RecordMarketingConsentInput = {
@@ -30,6 +32,13 @@ function assertTenantId(tenantId: string): string {
   return value;
 }
 
+function parseStatus(value: unknown): MarketingConsentStatus {
+  if (value !== "VERIFIED" && value !== "DECLINED" && value !== "REVOKED") {
+    throw new Error("Supabase marketing_consents returned invalid status");
+  }
+  return value;
+}
+
 export class SupabaseMarketingConsentStore {
   private readonly baseUrl: string;
   private readonly secretKey: string;
@@ -37,6 +46,36 @@ export class SupabaseMarketingConsentStore {
   constructor(env: MarketingConsentStoreEnv) {
     this.baseUrl = requireNonEmpty(env.SUPABASE_URL, "SUPABASE_URL").replace(/\/+$/, "");
     this.secretKey = requireNonEmpty(env.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY");
+  }
+
+  async getLatestStatus(tenantId: string, phoneValue: string): Promise<MarketingConsentStatus | null> {
+    const tenant = assertTenantId(tenantId);
+    const phone = normalizeE164(phoneValue);
+    const query = new URLSearchParams({
+      select: "status",
+      tenant_id: `eq.${tenant}`,
+      phone: `eq.${phone}`,
+      order: "created_at.desc",
+      limit: "1",
+    });
+    const response = await fetch(`${this.baseUrl}/rest/v1/marketing_consents?${query.toString()}`, {
+      method: "GET",
+      headers: {
+        apikey: this.secretKey,
+        Accept: "application/json",
+      },
+    });
+    const raw = await response.text();
+    if (!response.ok) throw new Error(`Supabase marketing_consents read failed with HTTP ${response.status}`);
+
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); } catch { throw new Error("Supabase marketing_consents returned invalid JSON"); }
+    if (!Array.isArray(parsed)) throw new Error("Supabase marketing_consents returned invalid read payload");
+    if (parsed.length === 0) return null;
+    if (parsed.length !== 1 || !parsed[0] || typeof parsed[0] !== "object") {
+      throw new Error("Supabase marketing_consents returned invalid read payload");
+    }
+    return parseStatus((parsed[0] as { status?: unknown }).status);
   }
 
   async record(tenantId: string, input: RecordMarketingConsentInput): Promise<MarketingConsentEvent> {
@@ -83,6 +122,8 @@ export class SupabaseMarketingConsentStore {
     let parsed: unknown;
     try { parsed = JSON.parse(raw); } catch { throw new Error("Supabase marketing_consents returned invalid JSON"); }
     if (!Array.isArray(parsed) || parsed.length !== 1) throw new Error("Supabase marketing_consents returned invalid insert payload");
-    return parsed[0] as MarketingConsentEvent;
+    const event = parsed[0] as { id?: unknown; status?: unknown };
+    if (typeof event?.id !== "string") throw new Error("Supabase marketing_consents returned invalid insert payload");
+    return { id: event.id, status: parseStatus(event.status) };
   }
 }
