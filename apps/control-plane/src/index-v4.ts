@@ -1,7 +1,7 @@
 import baseHandler from "./index-v3";
 import { KvTenantRepository, type TenantKvNamespace, type TenantResolutionV1 } from "./tenant-kv";
 import { buildTrustedCallerTransferHeaders, normalizeTrustedCallerNumber } from "./trusted-caller-propagation";
-export { CallSession } from "./call-session-v7";
+export { CallSession } from "./call-session-v8";
 
 type WorkerEnv = {
   ENVIRONMENT: string;
@@ -136,11 +136,7 @@ async function handleTelnyxWebhook(request: Request, env: WorkerEnv, ctx: Execut
 
   const callerPhone = normalizeTrustedCallerNumber(payload.from, calledNumber);
   if (!callerPhone) {
-    console.error(JSON.stringify({
-      level: "error",
-      event: "trusted_caller_number_missing",
-      called_number: calledNumber,
-    }));
+    console.error(JSON.stringify({ level: "error", event: "trusted_caller_number_missing", called_number: calledNumber }));
     return json({ ok: false, error: "missing_trusted_caller_number" }, 409);
   }
 
@@ -156,22 +152,13 @@ async function handleTelnyxWebhook(request: Request, env: WorkerEnv, ctx: Execut
   const eventId = event.data?.id ?? crypto.randomUUID();
   ctx.waitUntil(transferToRealtime(callControlId, eventId, resolution, callerPhone, env));
 
-  return json({
-    ok: true,
-    accepted: true,
-    action: "transfer_to_realtime",
-    tenant_id: resolution.tenantId,
-    called_number: resolution.calledNumber,
-    caller_number_propagated: true,
-  });
+  return json({ ok: true, accepted: true, action: "transfer_to_realtime", tenant_id: resolution.tenantId, called_number: resolution.calledNumber, caller_number_propagated: true });
 }
 
 export default {
   async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    if (request.method === "POST" && url.pathname === "/webhooks/telnyx") {
-      return handleTelnyxWebhook(request, env, ctx);
-    }
+    if (request.method === "POST" && url.pathname === "/webhooks/telnyx") return handleTelnyxWebhook(request, env, ctx);
     return baseHandler.fetch(request, env as never, ctx);
   },
 } satisfies ExportedHandler<WorkerEnv>;
