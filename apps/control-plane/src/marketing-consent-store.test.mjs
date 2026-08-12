@@ -10,6 +10,39 @@ function withFetch(handler, fn) {
 
 const env = { SUPABASE_URL: "https://example.supabase.co", SUPABASE_SECRET_KEY: "secret" };
 
+test("latest VERIFIED consent is read before prompting again", async () => {
+  await withFetch(async (url, options) => {
+    const parsed = new URL(String(url));
+    assert.equal(parsed.pathname, "/rest/v1/marketing_consents");
+    assert.equal(parsed.searchParams.get("select"), "status");
+    assert.equal(parsed.searchParams.get("tenant_id"), "eq.restaurante-centro");
+    assert.equal(parsed.searchParams.get("phone"), "eq.+34612345678");
+    assert.equal(parsed.searchParams.get("order"), "created_at.desc");
+    assert.equal(parsed.searchParams.get("limit"), "1");
+    assert.equal(options.method, "GET");
+    return new Response(JSON.stringify([{ status: "VERIFIED" }]), { status: 200 });
+  }, async () => {
+    const result = await new SupabaseMarketingConsentStore(env).getLatestStatus("restaurante-centro", "+34612345678");
+    assert.equal(result, "VERIFIED");
+  });
+});
+
+test("no marketing history returns null", async () => {
+  await withFetch(async () => new Response("[]", { status: 200 }), async () => {
+    const result = await new SupabaseMarketingConsentStore(env).getLatestStatus("restaurante-centro", "+34612345678");
+    assert.equal(result, null);
+  });
+});
+
+test("invalid latest marketing state fails closed", async () => {
+  await withFetch(async () => new Response(JSON.stringify([{ status: "UNKNOWN" }]), { status: 200 }), async () => {
+    await assert.rejects(
+      () => new SupabaseMarketingConsentStore(env).getLatestStatus("restaurante-centro", "+34612345678"),
+      /invalid status/,
+    );
+  });
+});
+
 test("grant persists VERIFIED with caller match evidence", async () => {
   await withFetch(async (url, options) => {
     assert.match(String(url), /\/rest\/v1\/marketing_consents$/);
