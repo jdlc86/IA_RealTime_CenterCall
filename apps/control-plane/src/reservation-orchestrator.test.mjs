@@ -30,6 +30,26 @@ test("classifier reservation payload defaults to CREATE without changing legacy 
   assert.equal(turn.confirm, true);
 });
 
+test("classifier can express QUERY without requiring creation fields", () => {
+  const turn = parseReservationTurn(JSON.stringify({
+    intent: "CONTINUE",
+    data_requirement: "RESERVATION",
+    reason: "quiere consultar sus reservas",
+    reservation: { operation: "QUERY" },
+  }));
+  assert.equal(turn.operation, "QUERY");
+  assert.deepEqual(turn.patch, {
+    partySize: undefined,
+    startsAt: undefined,
+    customerName: undefined,
+    customerPhone: undefined,
+    useCallerPhone: undefined,
+    durationMinutes: undefined,
+    notes: undefined,
+  });
+  assert.equal(turn.confirm, false);
+});
+
 test("classifier can express CANCEL and a numbered selection explicitly", () => {
   const turn = parseReservationTurn(JSON.stringify({
     intent: "CONTINUE",
