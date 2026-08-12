@@ -14,6 +14,10 @@ test("valid restaurant reservation route", () => {
   assert.deepEqual(parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "RESERVATION", reason: "quiere reservar una mesa" })), { intent: "CONTINUE", dataRequirement: "RESERVATION", reason: "quiere reservar una mesa", degraded: false });
 });
 
+test("valid marketing consent route", () => {
+  assert.deepEqual(parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "MARKETING_CONSENT", reason: "acepta recibir promociones" })), { intent: "CONTINUE", dataRequirement: "MARKETING_CONSENT", reason: "acepta recibir promociones", degraded: false });
+});
+
 test("missing data requirement fails closed to business info", () => {
   const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", reason: "partial" }));
   assert.equal(result.intent, "CONTINUE"); assert.equal(result.dataRequirement, "BUSINESS_INFO"); assert.equal(result.degraded, true);
@@ -70,6 +74,18 @@ test("legacy BUSINESS_INFO with reservation evidence is promoted to RESERVATION"
 
 test("legacy SERVICES with reservation evidence is promoted to RESERVATION", () => {
   const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "SERVICES", reason: "Consulta disponibilidad para reservar mesa esta noche" })); assert.equal(result.dataRequirement, "RESERVATION"); assert.equal(result.degraded, true);
+});
+
+test("marketing opt-out language recovers MARKETING_CONSENT", () => {
+  const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "NONE", reason: "El usuario quiere darse de baja de promociones" }));
+  assert.equal(result.dataRequirement, "MARKETING_CONSENT");
+  assert.equal(result.degraded, true);
+});
+
+test("marketing opt-in language recovers MARKETING_CONSENT", () => {
+  const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "BUSINESS_INFO", reason: "Acepta recibir ofertas en su número" }));
+  assert.equal(result.dataRequirement, "MARKETING_CONSENT");
+  assert.equal(result.degraded, true);
 });
 
 test("ordinary conversation remains NONE", () => {
