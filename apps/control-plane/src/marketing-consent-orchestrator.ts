@@ -2,6 +2,7 @@ import {
   validateMarketingConsentFlowArgs,
   type MarketingConsentFlowArgs,
 } from "./marketing-consent-flow.js";
+import { parseSemanticDecision } from "./semantic-router.js";
 import { requireObject } from "./tool-gateway.js";
 
 export type MarketingConsentClassifierTurn = {
@@ -20,8 +21,9 @@ export function parseMarketingConsentClassifierTurn(argumentsJson: string | unde
   }
 
   const root = requireObject(parsed);
-  if (root.data_requirement !== "MARKETING_CONSENT") {
-    throw new Error("Classifier data_requirement is not MARKETING_CONSENT");
+  const semantic = parseSemanticDecision(argumentsJson);
+  if (semantic.intent !== "CONTINUE" || semantic.dataRequirement !== "MARKETING_CONSENT") {
+    throw new Error("Classifier semantic requirement is not MARKETING_CONSENT");
   }
 
   const marketing = requireObject(root.marketing_consent);
