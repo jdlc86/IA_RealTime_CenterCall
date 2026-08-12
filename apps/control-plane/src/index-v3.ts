@@ -1,6 +1,6 @@
 import baseHandler from "./index-v2";
 import { isDebugEnabled } from "./call-diagnostics";
-import { extractTrustedCallerPhone, type SipHeader } from "./caller-id";
+import { extractE164FromSipIdentity, extractTrustedCallerPhone, type SipHeader } from "./caller-id";
 import { KvTenantRepository, type TenantKvNamespace } from "./tenant-kv";
 export { CallSession } from "./call-session-v6";
 
@@ -33,6 +33,11 @@ function parseDebugTenantId(pathname: string): string | null {
   return /^[a-z0-9][a-z0-9-]{0,63}$/.test(tenantId) ? tenantId : null;
 }
 
+function getHeader(headers: SipHeader[], name: string): string | null {
+  const normalized = name.trim().toLowerCase();
+  return headers.find((header) => header.name.trim().toLowerCase() === normalized)?.value?.trim() || null;
+}
+
 async function inspectIncomingCallerContext(request: Request): Promise<IncomingCallerContext | null> {
   let parsed: unknown;
   try {
@@ -54,7 +59,9 @@ async function inspectIncomingCallerContext(request: Request): Promise<IncomingC
       ? [{ name: record.name, value: record.value }]
       : [];
   });
-  const callerPhone = extractTrustedCallerPhone(headers);
+
+  const calledPhone = extractE164FromSipIdentity(getHeader(headers, "x-ia-called-number"));
+  const callerPhone = extractTrustedCallerPhone(headers, calledPhone ? [calledPhone] : []);
   return callerPhone ? { callId: data.call_id.trim(), callerPhone } : null;
 }
 

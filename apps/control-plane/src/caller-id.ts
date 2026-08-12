@@ -10,13 +10,14 @@ export function extractE164FromSipIdentity(value: string | null | undefined): st
   return match?.[0] ?? null;
 }
 
-export function extractTrustedCallerPhone(headers: SipHeader[] | undefined): string | null {
+export function extractTrustedCallerPhone(headers: SipHeader[] | undefined, excludedPhones: string[] = []): string | null {
   if (!headers?.length) return null;
-  const priorities = ["p-asserted-identity", "remote-party-id", "from"];
+  const excluded = new Set(excludedPhones.filter(Boolean));
+  const priorities = ["x-ia-caller-number", "p-asserted-identity", "remote-party-id", "from"];
   for (const headerName of priorities) {
     const value = headers.find((header) => normalizeHeaderName(header.name) === headerName)?.value;
     const phone = extractE164FromSipIdentity(value);
-    if (phone) return phone;
+    if (phone && !excluded.has(phone)) return phone;
   }
   return null;
 }
