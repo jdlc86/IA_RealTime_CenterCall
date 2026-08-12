@@ -1,5 +1,5 @@
 export type SemanticIntent = "CONTINUE" | "END_AMBIGUOUS" | "END_CLEAR";
-export type DataRequirement = "NONE" | "BUSINESS_INFO" | "SERVICES" | "PROFESSIONALS" | "HOURS" | "MENU";
+export type DataRequirement = "NONE" | "BUSINESS_INFO" | "SERVICES" | "PROFESSIONALS" | "HOURS" | "MENU" | "RESERVATION";
 
 export type SemanticDecision = {
   intent: SemanticIntent;
@@ -9,7 +9,7 @@ export type SemanticDecision = {
 };
 
 const INTENTS = new Set<SemanticIntent>(["CONTINUE", "END_AMBIGUOUS", "END_CLEAR"]);
-const REQUIREMENTS = new Set<DataRequirement>(["NONE", "BUSINESS_INFO", "SERVICES", "PROFESSIONALS", "HOURS", "MENU"]);
+const REQUIREMENTS = new Set<DataRequirement>(["NONE", "BUSINESS_INFO", "SERVICES", "PROFESSIONALS", "HOURS", "MENU", "RESERVATION"]);
 
 function safeReason(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, 300) : fallback;
@@ -21,8 +21,7 @@ function normalize(value: string): string {
 
 export function inferRequirementFromText(value: string): DataRequirement | null {
   const text = normalize(value);
-  // Strong restaurant-specific vocabulary is checked before the legacy generic
-  // service vocabulary so "carta de platos" cannot be recovered as SERVICES.
+  if (/\b(reservar|reserva|reservas|mesa|mesas|comensal|comensales|personas|disponibilidad para cenar|disponibilidad para comer)\b/.test(text)) return "RESERVATION";
   if (/\b(menu|menus|carta|cartas|plato|platos|entrante|entrantes|postre|postres|bebida|bebidas|alergeno|alergenos|alergia|alergias)\b/.test(text)) return "MENU";
   if (/\b(tratamiento|tratamientos|servicio|servicios|procedimiento|procedimientos|terapia|terapias|catalogo|precio|precios|coste|costes|cuesta|cuestan|duracion|botox|ofrece|ofrecen|ofreceis|disponible|disponibles)\b/.test(text)) return "SERVICES";
   if (/\b(profesional|profesionales|especialista|especialistas|medico|medicos|personal)\b/.test(text)) return "PROFESSIONALS";
@@ -65,18 +64,13 @@ export function parseSemanticDecision(argumentsJson: string | undefined): Semant
 
   const recovered = recoverRequirementFromReason(reason);
 
-  // If the classifier describes a concrete external domain but returns a generic
-  // NONE/BUSINESS_INFO requirement, prefer the domain evidence and fail closed.
   if ((requirement === "NONE" || requirement === "BUSINESS_INFO") && recovered) {
     requirement = recovered;
     degraded = true;
   }
 
-  // Transitional compatibility while the Realtime classifier schema still has
-  // the legacy clinical enum. Strong restaurant evidence must never be executed
-  // through get_services simply because the classifier selected SERVICES.
-  if (requirement === "SERVICES" && recovered === "MENU") {
-    requirement = "MENU";
+  if (requirement === "SERVICES" && (recovered === "MENU" || recovered === "RESERVATION")) {
+    requirement = recovered;
     degraded = true;
   }
 
