@@ -1,5 +1,5 @@
 export type SemanticIntent = "CONTINUE" | "END_AMBIGUOUS" | "END_CLEAR";
-export type DataRequirement = "NONE" | "BUSINESS_INFO" | "SERVICES" | "PROFESSIONALS" | "HOURS" | "MENU" | "RESERVATION";
+export type DataRequirement = "NONE" | "BUSINESS_INFO" | "SERVICES" | "PROFESSIONALS" | "HOURS" | "MENU" | "RESERVATION" | "MARKETING_CONSENT";
 
 export type SemanticDecision = {
   intent: SemanticIntent;
@@ -9,7 +9,7 @@ export type SemanticDecision = {
 };
 
 const INTENTS = new Set<SemanticIntent>(["CONTINUE", "END_AMBIGUOUS", "END_CLEAR"]);
-const REQUIREMENTS = new Set<DataRequirement>(["NONE", "BUSINESS_INFO", "SERVICES", "PROFESSIONALS", "HOURS", "MENU", "RESERVATION"]);
+const REQUIREMENTS = new Set<DataRequirement>(["NONE", "BUSINESS_INFO", "SERVICES", "PROFESSIONALS", "HOURS", "MENU", "RESERVATION", "MARKETING_CONSENT"]);
 
 function safeReason(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, 300) : fallback;
@@ -21,6 +21,7 @@ function normalize(value: string): string {
 
 export function inferRequirementFromText(value: string): DataRequirement | null {
   const text = normalize(value);
+  if (/\b(promocion|promociones|oferta|ofertas|publicidad|marketing|recibir ofertas|recibir promociones|dar de baja|darse de baja|dejar de recibir|no quiero recibir)\b/.test(text)) return "MARKETING_CONSENT";
   if (/\b(reservar|reserva|reservas|mesa|mesas|comensal|comensales|personas|disponibilidad para cenar|disponibilidad para comer)\b/.test(text)) return "RESERVATION";
   if (/\b(menu|menus|carta|cartas|plato|platos|entrante|entrantes|postre|postres|bebida|bebidas|alergeno|alergenos|alergia|alergias)\b/.test(text)) return "MENU";
   if (/\b(tratamiento|tratamientos|servicio|servicios|procedimiento|procedimientos|terapia|terapias|catalogo|precio|precios|coste|costes|cuesta|cuestan|duracion|botox|ofrece|ofrecen|ofreceis|disponible|disponibles)\b/.test(text)) return "SERVICES";
@@ -69,7 +70,7 @@ export function parseSemanticDecision(argumentsJson: string | undefined): Semant
     degraded = true;
   }
 
-  if (requirement === "SERVICES" && (recovered === "MENU" || recovered === "RESERVATION")) {
+  if (requirement === "SERVICES" && (recovered === "MENU" || recovered === "RESERVATION" || recovered === "MARKETING_CONSENT")) {
     requirement = recovered;
     degraded = true;
   }

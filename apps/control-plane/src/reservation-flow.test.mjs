@@ -5,6 +5,8 @@ import {
   missingAvailabilityFields,
   missingContactFields,
   reservationFingerprint,
+  resolveReservationContactPhone,
+  withResolvedReservationContact,
 } from "../.test-dist/reservation-flow.js";
 
 test("reservation flow accepts partial collection state", () => {
@@ -36,8 +38,37 @@ test("reservation fingerprint excludes confirm and is stable", () => {
   assert.equal(reservationFingerprint(base), reservationFingerprint(confirmed));
 });
 
-test("reservation flow validates ranges and confirm type", () => {
+test("reservation can use inbound caller number after explicit agreement", () => {
+  const args = validateReservationFlowArgs({
+    party_size: 2,
+    starts_at: "2026-08-15T20:30:00+02:00",
+    customer_name: "Ana",
+    use_caller_phone: true,
+  });
+  const resolved = withResolvedReservationContact(args, "+34600111222");
+  assert.equal(resolved.customerPhone, "+34600111222");
+  assert.deepEqual(missingContactFields(resolved), []);
+});
+
+test("use caller phone fails closed when inbound caller number is unavailable", () => {
+  const args = validateReservationFlowArgs({ use_caller_phone: true });
+  assert.equal(resolveReservationContactPhone(args, null), undefined);
+});
+
+test("explicit different reservation phone remains allowed", () => {
+  const args = validateReservationFlowArgs({ customer_phone: "+34600999888" });
+  assert.equal(resolveReservationContactPhone(args, "+34600111222"), "+34600999888");
+});
+
+test("conflicting explicit phone and use-caller selection is rejected", () => {
+  const args = validateReservationFlowArgs({ customer_phone: "+34600999888", use_caller_phone: true });
+  assert.throws(() => resolveReservationContactPhone(args, "+34600111222"), /Conflicting reservation phone selection/);
+});
+
+test("reservation flow validates E.164 ranges and boolean fields", () => {
   assert.throws(() => validateReservationFlowArgs({ party_size: 0 }), /Invalid party_size/);
   assert.throws(() => validateReservationFlowArgs({ duration_minutes: 10 }), /Invalid duration_minutes/);
   assert.throws(() => validateReservationFlowArgs({ confirm: "yes" }), /Invalid confirm/);
+  assert.throws(() => validateReservationFlowArgs({ use_caller_phone: "yes" }), /Invalid use_caller_phone/);
+  assert.throws(() => validateReservationFlowArgs({ customer_phone: "600111222" }), /Invalid customer_phone/);
 });

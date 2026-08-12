@@ -5,6 +5,7 @@ export type ReservationFlowArgs = {
   startsAt?: string;
   customerName?: string;
   customerPhone?: string;
+  useCallerPhone?: boolean;
   durationMinutes?: number;
   notes?: string;
   confirm?: boolean;
@@ -24,23 +25,52 @@ function optionalInteger(record: Record<string, unknown>, key: string, min: numb
   return value as number;
 }
 
+function optionalBoolean(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "boolean") throw new Error(`Invalid ${key}`);
+  return value;
+}
+
+function normalizeE164(value: string): string {
+  const phone = value.trim();
+  if (!/^\+[1-9]\d{7,14}$/.test(phone)) throw new Error("Invalid customer_phone");
+  return phone;
+}
+
 export function validateReservationFlowArgs(value: unknown): ReservationFlowArgs {
   const record = requireObject(value);
-  const allowed = new Set(["party_size", "starts_at", "customer_name", "customer_phone", "duration_minutes", "notes", "confirm"]);
+  const allowed = new Set(["party_size", "starts_at", "customer_name", "customer_phone", "use_caller_phone", "duration_minutes", "notes", "confirm"]);
   for (const key of Object.keys(record)) if (!allowed.has(key)) throw new Error(`Unexpected reservation field: ${key}`);
 
-  const confirm = record.confirm;
-  if (confirm !== undefined && typeof confirm !== "boolean") throw new Error("Invalid confirm");
+  const customerPhoneRaw = optionalString(record, "customer_phone", 32);
+  const customerPhone = customerPhoneRaw ? normalizeE164(customerPhoneRaw) : undefined;
 
   return {
     partySize: optionalInteger(record, "party_size", 1, 100),
     startsAt: optionalString(record, "starts_at", 64),
     customerName: optionalString(record, "customer_name", 160),
-    customerPhone: optionalString(record, "customer_phone", 32),
+    customerPhone,
+    useCallerPhone: optionalBoolean(record, "use_caller_phone"),
     durationMinutes: optionalInteger(record, "duration_minutes", 15, 480),
     notes: optionalString(record, "notes", 1000),
-    confirm: confirm as boolean | undefined,
+    confirm: optionalBoolean(record, "confirm"),
   };
+}
+
+export function resolveReservationContactPhone(args: ReservationFlowArgs, callerPhone: string | null | undefined): string | undefined {
+  const normalizedCaller = callerPhone ? normalizeE164(callerPhone) : undefined;
+  if (args.customerPhone && args.useCallerPhone === true && normalizedCaller && args.customerPhone !== normalizedCaller) {
+    throw new Error("Conflicting reservation phone selection");
+  }
+  if (args.customerPhone) return args.customerPhone;
+  if (args.useCallerPhone === true) return normalizedCaller;
+  return undefined;
+}
+
+export function withResolvedReservationContact(args: ReservationFlowArgs, callerPhone: string | null | undefined): ReservationFlowArgs {
+  const phone = resolveReservationContactPhone(args, callerPhone);
+  return { ...args, customerPhone: phone };
 }
 
 export function missingAvailabilityFields(args: ReservationFlowArgs): string[] {
