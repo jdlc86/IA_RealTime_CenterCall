@@ -42,7 +42,7 @@ function reservationAndMarketingAwareIntentTool(): Record<string, unknown> {
   return {
     type: "function",
     name: CONVERSATION_INTENT,
-    description: `Clasifica cada turno. Para RESERVATION incluye reservation con TODOS los datos inequívocamente conocidos. Para MARKETING_CONSENT incluye marketing_consent únicamente cuando el usuario expresa de forma explícita en el turno actual que acepta, rechaza o revoca promociones. Referencia temporal actual en Madrid: ${currentMadridReference()}. Nunca inventes fecha, hora, personas, nombre, teléfono ni consentimiento. confirm=true solo si el usuario acaba de confirmar explícitamente un resumen de reserva presentado por el asistente en un turno anterior. use_caller_phone=true solo si el usuario acepta explícitamente usar el mismo número desde el que llama. Para marketing, explicit=true solo ante una manifestación inequívoca del usuario; un número dictado verbalmente puede ser target_phone pero NUNCA demuestra identidad ni CALLER_ID_MATCH.`,
+    description: `Clasifica cada turno. Para RESERVATION incluye reservation con TODOS los datos inequívocamente conocidos. Distingue operation=CREATE para crear una reserva y operation=CANCEL cuando el usuario quiere cancelar una reserva existente. Durante CANCEL no inventes datos de una reserva: selection_index solo puede usarse cuando el asistente acaba de presentar una lista numerada y el usuario elige una opción. confirm=true solo si el usuario acaba de confirmar explícitamente el resumen de creación o cancelación presentado por el asistente en un turno anterior. Para MARKETING_CONSENT incluye marketing_consent únicamente cuando el usuario expresa de forma explícita en el turno actual que acepta, rechaza o revoca promociones. Referencia temporal actual en Madrid: ${currentMadridReference()}. Nunca inventes fecha, hora, personas, nombre, teléfono ni consentimiento. use_caller_phone=true solo si el usuario acepta explícitamente usar el mismo número desde el que llama. Para marketing, explicit=true solo ante una manifestación inequívoca del usuario; un número dictado verbalmente puede ser target_phone pero NUNCA demuestra identidad ni CALLER_ID_MATCH.`,
     parameters: {
       type: "object",
       properties: {
@@ -51,8 +51,9 @@ function reservationAndMarketingAwareIntentTool(): Record<string, unknown> {
         reason: { type: "string" },
         reservation: {
           type: "object",
-          description: "Solo para RESERVATION. Incluye los datos ya conocidos de toda la conversación; omite los desconocidos.",
+          description: "Solo para RESERVATION. Incluye operation y los datos inequívocamente conocidos; omite los desconocidos.",
           properties: {
+            operation: { type: "string", enum: ["CREATE", "CANCEL"], description: "CREATE para una nueva reserva; CANCEL para cancelar una existente." },
             party_size: { type: "integer", minimum: 1, maximum: 100 },
             starts_at: { type: "string", description: "ISO 8601 con zona horaria. Omite si fecha u hora siguen siendo ambiguas." },
             customer_name: { type: "string" },
@@ -60,6 +61,7 @@ function reservationAndMarketingAwareIntentTool(): Record<string, unknown> {
             use_caller_phone: { type: "boolean" },
             duration_minutes: { type: "integer", minimum: 15, maximum: 480 },
             notes: { type: "string" },
+            selection_index: { type: "integer", minimum: 1, maximum: 20, description: "Solo para CANCEL después de que el asistente presente una lista numerada de reservas." },
             confirm: { type: "boolean" },
           },
           additionalProperties: false,
@@ -89,7 +91,6 @@ export class CallSession extends BaseConstructor {
     const url = new URL(request.url);
     const isStart = request.method === "POST" && url.pathname === "/start";
 
-    // v7 replaces only the classifier schema update. Reservation orchestration itself remains in v5/v6 unchanged.
     if (isStart) (this as any).reservationSessionUpdateV6Sent = true;
 
     const response = await super.fetch(request);
@@ -108,6 +109,7 @@ export class CallSession extends BaseConstructor {
         (this as any).diagnostics?.checkpoint?.("MARKETING_CONSENT_CLASSIFIER_SCHEMA_UPDATED", {
           strategy: "backend_orchestrator_v1",
           reservation_strategy_unchanged: true,
+          reservation_operations: ["CREATE", "CANCEL"],
           session_type: "realtime",
         });
       } catch (error) {
