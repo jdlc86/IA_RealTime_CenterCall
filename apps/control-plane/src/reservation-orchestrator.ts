@@ -1,6 +1,6 @@
 import { requireObject } from "./tool-gateway.js";
 
-export type ReservationOperation = "CREATE" | "CANCEL";
+export type ReservationOperation = "CREATE" | "QUERY" | "CANCEL";
 
 export type ReservationDraft = {
   partySize?: number;
@@ -43,7 +43,7 @@ function optionalBoolean(record: Record<string, unknown>, key: string): boolean 
 function optionalOperation(record: Record<string, unknown>): ReservationOperation {
   const value = record.operation;
   if (value === undefined || value === null) return "CREATE";
-  if (value !== "CREATE" && value !== "CANCEL") throw new Error("Invalid reservation.operation");
+  if (value !== "CREATE" && value !== "QUERY" && value !== "CANCEL") throw new Error("Invalid reservation.operation");
   return value;
 }
 
