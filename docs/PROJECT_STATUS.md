@@ -12,21 +12,123 @@ F1 Baseline + observabilidad + TenantResolver ✅ CERRADA — PASS con baseline 
 F2 Latencia + barge-in                       ✅ CERRADA SIN CAMBIOS DE OPTIMIZACIÓN — comportamiento actual aceptado
 F3 ToolGateway                               🟡 EN CURSO — integración E2E activa
 F4 Clínica + validación multi-negocio        🟡 EN CURSO — RESTAURANT validado con número/routing independiente
-F5 Persistencia empresarial + Supabase + post-call 🟡 EN CURSO — reservas RESTAURANT en desarrollo protegido
+F5 Persistencia empresarial + Supabase + post-call 🟡 EN CURSO — reserva RESTAURANT E2E validada; consentimiento comercial pendiente
 F6 Handoff humano                            ⬜ NO INICIADA — decisión transversal documentada
 F7 Concurrencia                              ⬜ NO INICIADA
 F8 Hardening producción                      🟡 EN CURSO
 F9 App de gestión web/escritorio             ⬜ NO INICIADA
 ```
 
+## Checkpoint operativo RESTAURANT — 2026-08-12
+
+### Estado validado E2E
+
+El vertical `restaurante-centro` ha alcanzado un checkpoint funcional relevante:
+
+- routing telefónico independiente y persona conversacional Lucía: VALIDADO;
+- `businessType=RESTAURANT` en configuración V2: VALIDADO EN RUNTIME;
+- inventario de prueba cargado: tres mesas de 4 plazas y dos mesas de 2 plazas;
+- `check_reservation_availability` habilitada como operación READ gobernada por allowlist;
+- reserva gestionada mediante orquestador backend, evitando depender de `tool forcing` de Realtime;
+- consulta de disponibilidad lanzada en paralelo mientras Lucía continúa recogiendo datos;
+- revalidación final antes del WRITE;
+- confirmación verbal protegida: Lucía solo puede afirmar una reserva cuando existe evidencia backend `BOOKED`;
+- llamada real validada con secuencia `RESERVATION_AVAILABILITY_STARTED → RESERVATION_AVAILABILITY_COMPLETED → RESERVATION_CONFIRMATION_ARMED_BACKEND → RESERVATION_FINAL_RECHECK_STARTED → RESERVATION_BOOKED_EVIDENCE → RESERVATION_BACKEND_BOOKED`;
+- reserva real persistida en Supabase con mesa compatible;
+- propagación del número real del llamante desde el webhook firmado de Telnyx hasta Realtime/CallSession: VALIDADA manualmente en una reserva real, almacenando el número de origen correcto.
+
+### Diseño vigente de reservas
+
+El flujo anterior basado en un segundo `response.create` forzando `manage_reservation` produjo `FORCED_TOOL_RESPONSE_DONE_WITHOUT_CALL` y queda descartado como patrón principal.
+
+El diseño vigente es backend-orchestrated:
+
+```text
+usuario habla
+  ↓
+conversation_intent clasifica RESERVATION y extrae datos conocidos
+  ↓
+ReservationState acumulado en backend
+  ↓
+cuando existen party_size + fecha/hora
+  ├────────────→ check_reservation_availability (READ, en paralelo)
+  │
+  └→ Lucía continúa recogiendo nombre/contacto
+  ↓
+si no hay disponibilidad
+  → buscar alternativas verificadas cercanas (±30 / ±60 min)
+  ↓
+si hay disponibilidad
+  → resumen explícito
+  → confirmación del usuario
+  → recheck final
+  → manage_reservation (WRITE)
+  → BOOKED
+  → solo entonces confirmación verbal
+```
+
+La disponibilidad se calcula sobre inventario/capacidad real de mesas y reservas existentes. La consulta anticipada nunca sustituye la revalidación inmediatamente anterior al WRITE.
+
+### Propagación confiable del caller ID
+
+Se detectó que, tras la transferencia Telnyx → OpenAI, las cabeceras SIP podían presentar el DID del restaurante como identidad. Una reserva llegó a almacenar el número llamado del restaurante como `customer_phone`; este caso se corrigió en dos etapas:
+
+1. fail-closed: el número llamado del tenant queda excluido como candidato a `caller_phone`;
+2. propagación determinista: el Worker toma `payload.from` únicamente después de verificar la firma Ed25519 del webhook de Telnyx, lo normaliza y lo propaga en la transferencia como `from` y `X-IA-Caller-Number`.
+
+Resultado validado manualmente: una llamada posterior almacenó como `customer_phone` el número real desde el que llamó el usuario.
+
+Commits de referencia del checkpoint:
+
+- `b74e05645702ffbea9ed8ac303498e1a7a1f2f1d` — orquestador backend de reservas y disponibilidad paralela;
+- `8c830bd06cea0fcf1d1cf498069f126268b50153` — corrección `session.type=realtime`;
+- `dd0a173af6cc56562cf4e8f558e64483797b4de2` — exclusión del DID del tenant como caller identity;
+- `c61bdafe8aba7828660bbcea8080b3063cdb3e8d` — propagación explícita y confiable de `payload.from` Telnyx.
+
+### Consentimiento comercial — siguiente bloque funcional
+
+Reserva y marketing siguen siendo dominios separados. Rechazar marketing nunca debe impedir reservar.
+
+La infraestructura de persistencia y reglas para `CALLER_ID_MATCH` existe, pero el flujo conversacional de consentimiento todavía no debe considerarse cerrado E2E.
+
+Reglas fijadas:
+
+- `reservation_phone` y `marketing_phone` pueden ser distintos;
+- para alta automática por voz, `marketing_phone` debe coincidir exactamente con el `caller_phone` confiable;
+- una persona que llama desde A no puede autorizar promociones para B;
+- el número dictado verbalmente no sirve como evidencia para `CALLER_ID_MATCH`;
+- consentimiento explícito y verificación del canal son hechos distintos y deben persistirse por separado;
+- para baja automática por voz se actúa únicamente sobre el mismo número desde el que se llama;
+- una petición sobre otro número debe fallar cerrada y ofrecer canal alternativo seguro;
+- el futuro handoff humano podrá resolver casos no automatizables, pero pertenece a F6 y todavía no está activo.
+
+### Incidencia externa actual: conector Supabase de ChatGPT
+
+El acceso de la aplicación a Supabase y el acceso de ChatGPT mediante su conector son independientes.
+
+Estado observado al cerrar este checkpoint:
+
+```text
+Cloudflare Worker → Supabase
+✅ operativo; las reservas reales continúan persistiendo
+
+ChatGPT → conector/plugin Supabase
+❌ no operativo en esta sesión tras una secuencia de errores de autorización/disponibilidad
+```
+
+Se observaron primero errores MCP `-32600: You do not have permission to perform this action`; posteriormente, tras reinstalar/reconectar el plugin, la herramienta quedó no disponible/deshabilitada para la sesión. Incluso `SELECT 1` no pudo ejecutarse desde ChatGPT.
+
+No se debe modificar `SUPABASE_SECRET_KEY`, tablas ni configuración de producción para intentar resolver este problema: la aplicación ha demostrado que sigue escribiendo correctamente. Mientras el conector de ChatGPT no se recupere, las verificaciones de datos deberán hacerse manualmente en Supabase o mediante otros observables disponibles.
+
 ## Estado relevante actual
 
 - `clinica-estetica-madrid` y `restaurante-centro` disponen de routing telefónico independiente hacia la misma plataforma multi-tenant.
 - El número del restaurante resuelve correctamente `tenant_id=restaurante-centro` y la persona conversacional Lucía.
-- `MENU` y `RESERVATION` forman parte del contrato nativo del clasificador semántico tras la PR #13.
+- `MENU` y `RESERVATION` forman parte del contrato nativo del clasificador semántico.
 - La base de persistencia de restaurante incluye mesas, reservas, asignación de mesas, consentimiento comercial y verificación de teléfono.
-- El flujo de reserva está protegido: la escritura requiere confirmación previa coherente y `manage_reservation` permanece gobernada por allowlist.
-- Las pruebas anteriores verificaron que, sin autorización de la tool, `RESERVATION` se detecta pero no produce escrituras accidentales.
+- `manage_reservation` y `check_reservation_availability` permanecen gobernadas por allowlist.
+- El flujo de reserva backend-orchestrated está VALIDADO E2E en llamada real.
+- La identidad telefónica confiable procedente de Telnyx está VALIDADA manualmente en una reserva real.
 
 ## F3 — ToolGateway
 
@@ -34,53 +136,13 @@ Continúa como frontera única de acciones empresariales. Mantiene `tenant_id` o
 
 ## F4 — Multi-negocio
 
-La configuración V2 soporta `BusinessType = CLINIC | RESTAURANT`, con routing telefónico independiente y configuración por tenant. El segundo negocio ya dispone de número propio y evidencia conversacional real, por lo que la validación multi-negocio ha avanzado más allá del estado histórico reflejado en versiones anteriores de este documento.
+La configuración V2 soporta `BusinessType = CLINIC | RESTAURANT`, con routing telefónico independiente y configuración por tenant. El segundo negocio ya dispone de número propio y evidencia conversacional real.
 
 La clínica debe permanecer estable mientras evoluciona el vertical restaurante; no se permiten forks del Core ni condicionales específicos por tenant.
 
 ## F5 — Restaurante: reservas y consentimiento
 
-Arquitectura del flujo objetivo:
-
-```text
-RESERVATION
-   ↓
-recoger fecha/hora + party size
-   ↓
-consultar disponibilidad/capacidad real
-   ↓
-recoger contacto necesario
-   ↓
-resumen explícito
-   ↓
-CONFIRM_RESERVATION
-   ↓
-confirmación posterior coherente
-   ↓
-WRITE transaccional
-   ↓
-BOOKED
-```
-
-La disponibilidad debe modelarse sobre inventario/capacidad real de mesas y reservas existentes; no como una simple franja horaria desconectada del inventario.
-
-### Consentimiento comercial
-
-Reserva y marketing son dominios separados. Rechazar marketing nunca debe impedir reservar.
-
-Para altas automáticas de marketing por llamada entrante se adopta `CALLER_ID_MATCH` como mecanismo principal de vinculación del canal cuando el número receptor de promociones coincide con el número llamante normalizado.
-
-Principios:
-
-- `reservation_phone` y `marketing_phone` pueden ser distintos;
-- para alta automática por voz, `marketing_phone` debe coincidir con `caller_phone`;
-- una persona que llama desde A no puede autorizar promociones para B mediante este mecanismo;
-- `CALLER_ID_MATCH` verifica coherencia/control del canal de esa interacción, no titularidad contractual;
-- verificación del canal y consentimiento explícito son hechos distintos y deben persistirse por separado;
-- para baja automática por voz se puede actuar sobre el mismo número llamante cuando exista consentimiento asociado;
-- si se solicita modificar el consentimiento de otro número, no se ejecuta automáticamente mediante `CALLER_ID_MATCH` y se ofrece un canal alternativo seguro.
-
-El flujo conversacional debe ser amable, breve y evitar pedir información ya conocida de forma confiable.
+La parte de reservas ya dispone de evidencia E2E positiva. F5 continúa abierta porque todavía quedan consentimiento comercial, post-call y otros dominios de persistencia por cerrar.
 
 ## F6 — Handoff humano
 
@@ -89,8 +151,6 @@ El flujo conversacional debe ser amable, breve y evitar pedir información ya co
 La transferencia a una persona será una **capacidad transversal del sistema**, reutilizable por `CLINIC`, `RESTAURANT` y futuros verticales. No se implementará como lógica específica de Lucía/restaurante ni de Carolina/clínica.
 
 Casos previstos incluyen solicitud explícita de humano, imposibilidad de completar una operación de forma segura, políticas que requieran intervención humana, fallos repetidos y casos administrativos que no deban resolverse automáticamente.
-
-La futura app será otro canal para gestiones administrativas, pero no sustituye el derecho operativo del usuario a solicitar atención humana cuando el tenant ofrezca ese servicio.
 
 Hasta F6:
 
@@ -125,8 +185,8 @@ F9 App de gestión
 
 ## Próximo paso operativo
 
-1. Mantener F6 únicamente documentada por ahora.
-2. Continuar el flujo `RESTAURANT` de reservas de forma protegida por allowlist y confirmación explícita.
-3. Validar `MENU`/`RESERVATION` nativos en llamada real tras el despliegue correspondiente.
-4. Activar escrituras de reserva solo después de disponer de datos de mesas/disponibilidad suficientes para una prueba controlada.
-5. Implementar consentimiento comercial con separación estricta entre `caller_phone`, `reservation_phone` y `marketing_phone`, usando `CALLER_ID_MATCH` para el alta automática por voz.
+1. Mantener estable el flujo de reservas ya validado y no volver al patrón de `manage_reservation` forzada mediante un segundo `response.create`.
+2. Implementar y validar E2E el consentimiento comercial conversacional usando el `caller_phone` confiable ya propagado desde Telnyx y las reglas `CALLER_ID_MATCH`.
+3. Mantener F6 únicamente documentada por ahora.
+4. Recuperar cuando sea posible el acceso del conector Supabase de ChatGPT; no bloquear el desarrollo de código por esta incidencia externa.
+5. Después del consentimiento, continuar F5 con los siguientes dominios de persistencia/post-call definidos por arquitectura.
