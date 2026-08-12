@@ -32,7 +32,7 @@ test("missing marketing consent payload fails closed", () => {
       data_requirement: "MARKETING_CONSENT",
       reason: "Falta el payload",
     })),
-    /Expected object/,
+    /Tool arguments must be a JSON object/,
   );
 });
 
