@@ -1,5 +1,7 @@
 import { requireObject } from "./tool-gateway.js";
 
+export type ReservationOperation = "CREATE" | "CANCEL";
+
 export type ReservationDraft = {
   partySize?: number;
   startsAt?: string;
@@ -11,8 +13,10 @@ export type ReservationDraft = {
 };
 
 export type ReservationTurn = {
+  operation: ReservationOperation;
   patch: ReservationDraft;
   confirm: boolean;
+  selectionIndex?: number;
 };
 
 function optionalString(record: Record<string, unknown>, key: string, maxLength: number): string | undefined {
@@ -36,6 +40,13 @@ function optionalBoolean(record: Record<string, unknown>, key: string): boolean 
   return value;
 }
 
+function optionalOperation(record: Record<string, unknown>): ReservationOperation {
+  const value = record.operation;
+  if (value === undefined || value === null) return "CREATE";
+  if (value !== "CREATE" && value !== "CANCEL") throw new Error("Invalid reservation.operation");
+  return value;
+}
+
 function normalizeE164(value: string): string {
   if (!/^\+[1-9]\d{7,14}$/.test(value)) throw new Error("Invalid reservation.customer_phone");
   return value;
@@ -48,13 +59,13 @@ function normalizeIso(value: string): string {
 }
 
 export function parseReservationTurn(argumentsJson: string | undefined): ReservationTurn {
-  if (!argumentsJson?.trim()) return { patch: {}, confirm: false };
+  if (!argumentsJson?.trim()) return { operation: "CREATE", patch: {}, confirm: false };
   const root = requireObject(JSON.parse(argumentsJson));
-  if (root.data_requirement !== "RESERVATION") return { patch: {}, confirm: false };
-  if (root.reservation === undefined || root.reservation === null) return { patch: {}, confirm: false };
+  if (root.data_requirement !== "RESERVATION") return { operation: "CREATE", patch: {}, confirm: false };
+  if (root.reservation === undefined || root.reservation === null) return { operation: "CREATE", patch: {}, confirm: false };
 
   const reservation = requireObject(root.reservation);
-  const allowed = new Set(["party_size", "starts_at", "customer_name", "customer_phone", "use_caller_phone", "duration_minutes", "notes", "confirm"]);
+  const allowed = new Set(["operation", "party_size", "starts_at", "customer_name", "customer_phone", "use_caller_phone", "duration_minutes", "notes", "confirm", "selection_index"]);
   for (const key of Object.keys(reservation)) if (!allowed.has(key)) throw new Error(`Unexpected reservation field: ${key}`);
 
   const startsAtRaw = optionalString(reservation, "starts_at", 64);
@@ -62,6 +73,7 @@ export function parseReservationTurn(argumentsJson: string | undefined): Reserva
   const confirm = optionalBoolean(reservation, "confirm") ?? false;
 
   return {
+    operation: optionalOperation(reservation),
     patch: {
       partySize: optionalInteger(reservation, "party_size", 1, 100),
       startsAt: startsAtRaw ? normalizeIso(startsAtRaw) : undefined,
@@ -72,6 +84,7 @@ export function parseReservationTurn(argumentsJson: string | undefined): Reserva
       notes: optionalString(reservation, "notes", 1000),
     },
     confirm,
+    selectionIndex: optionalInteger(reservation, "selection_index", 1, 20),
   };
 }
 
