@@ -1,9 +1,13 @@
-import { extractE164FromSipIdentity } from "./caller-id";
+function extractE164(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const match = value.match(/\+[1-9]\d{7,14}/);
+  return match?.[0] ?? null;
+}
 
 export function normalizeTrustedCallerNumber(value: string | null | undefined, calledNumber?: string | null): string | null {
-  const caller = extractE164FromSipIdentity(value);
+  const caller = extractE164(value);
   if (!caller) return null;
-  const called = extractE164FromSipIdentity(calledNumber);
+  const called = extractE164(calledNumber);
   if (called && caller === called) return null;
   return caller;
 }
