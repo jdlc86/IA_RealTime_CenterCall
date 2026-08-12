@@ -1,7 +1,7 @@
 import baseHandler from "./index-v2";
 import { isDebugEnabled } from "./call-diagnostics";
 import { KvTenantRepository, type TenantKvNamespace } from "./tenant-kv";
-export { CallSession } from "./call-session";
+export { CallSession } from "./call-session-v2";
 
 type DebugWorkerEnv = {
   DEBUG_KEY?: string;
