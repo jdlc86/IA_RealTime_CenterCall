@@ -124,11 +124,7 @@ export class CallSession extends BaseConstructor {
       }
     }
 
-    await BasePrototype.handleRealtimeMessage.call(this, data);
-
-    if (!event) return;
-
-    if (event.type === "response.done") {
+    if (event?.type === "response.done") {
       const recovered = this.recoverFunctionCallFromResponseDone(event);
       if (recovered?.call_id && recovered.arguments) {
         this.recoveredFunctionCallIds.add(recovered.call_id);
@@ -144,6 +140,10 @@ export class CallSession extends BaseConstructor {
         await BasePrototype.handleRealtimeMessage.call(this, synthetic);
       }
     }
+
+    await BasePrototype.handleRealtimeMessage.call(this, data);
+
+    if (!event) return;
 
     if (event.type === "response.output_audio_transcript.done" && typeof event.transcript === "string") {
       this.assistantTranscriptBuffer = event.transcript;
