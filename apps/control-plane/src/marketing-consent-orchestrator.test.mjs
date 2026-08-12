@@ -13,6 +13,28 @@ test("explicit grant is parsed as a separate marketing consent fact", () => {
   assert.deepEqual(turn.flow, { action: "GRANT", targetPhone: undefined });
 });
 
+test("semantic-router recovered marketing requirement is accepted", () => {
+  const turn = parseMarketingConsentClassifierTurn(JSON.stringify({
+    intent: "CONTINUE",
+    data_requirement: "SERVICES",
+    reason: "El usuario acepta recibir promociones en este mismo número",
+    marketing_consent: { action: "GRANT", explicit: true },
+  }));
+  assert.deepEqual(turn.flow, { action: "GRANT", targetPhone: undefined });
+});
+
+test("genuinely non-marketing requirement still fails closed", () => {
+  assert.throws(
+    () => parseMarketingConsentClassifierTurn(JSON.stringify({
+      intent: "CONTINUE",
+      data_requirement: "SERVICES",
+      reason: "El usuario pregunta por tratamientos disponibles",
+      marketing_consent: { action: "GRANT", explicit: true },
+    })),
+    /Classifier semantic requirement is not MARKETING_CONSENT/,
+  );
+});
+
 test("marketing consent without explicit confirmation fails closed", () => {
   assert.throws(
     () => parseMarketingConsentClassifierTurn(JSON.stringify({
