@@ -1,4 +1,4 @@
-import { requireObject } from "./tool-gateway";
+import { requireObject } from "./tool-gateway.js";
 
 export type ReservationFlowArgs = {
   partySize?: number;
