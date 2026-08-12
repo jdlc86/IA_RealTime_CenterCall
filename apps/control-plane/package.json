@@ -8,7 +8,7 @@
     "deploy:dry": "wrangler deploy --dry-run",
     "types": "wrangler types",
     "check": "wrangler deploy --dry-run",
-    "test": "rm -rf .test-dist && tsc src/tool-gateway.ts src/tenant-kv.ts src/business-types.ts src/semantic-router.ts src/supabase-adapter.ts src/reservation-flow.ts src/reservation-orchestrator.ts src/marketing-consent-flow.ts src/marketing-consent-store.ts src/caller-id.ts --target ES2022 --module ES2022 --moduleResolution bundler --outDir .test-dist --skipLibCheck && node --experimental-specifier-resolution=node --test src/*.test.mjs"
+    "test": "rm -rf .test-dist && tsc src/tool-gateway.ts src/tenant-kv.ts src/business-types.ts src/semantic-router.ts src/supabase-adapter.ts src/reservation-flow.ts src/reservation-orchestrator.ts src/marketing-consent-flow.ts src/marketing-consent-store.ts src/caller-id.ts src/trusted-caller-propagation.ts --target ES2022 --module ES2022 --moduleResolution bundler --outDir .test-dist --skipLibCheck && node --experimental-specifier-resolution=node --test src/*.test.mjs"
   },
   "dependencies": {
     "openai": "^7.1.0"
