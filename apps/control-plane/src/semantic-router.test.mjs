@@ -10,6 +10,10 @@ test("valid restaurant menu route", () => {
   assert.deepEqual(parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "MENU", reason: "menu query" })), { intent: "CONTINUE", dataRequirement: "MENU", reason: "menu query", degraded: false });
 });
 
+test("valid restaurant reservation route", () => {
+  assert.deepEqual(parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "RESERVATION", reason: "quiere reservar una mesa" })), { intent: "CONTINUE", dataRequirement: "RESERVATION", reason: "quiere reservar una mesa", degraded: false });
+});
+
 test("missing data requirement fails closed to business info", () => {
   const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", reason: "partial" }));
   assert.equal(result.intent, "CONTINUE"); assert.equal(result.dataRequirement, "BUSINESS_INFO"); assert.equal(result.degraded, true);
@@ -58,6 +62,14 @@ test("restaurant allergens recover MENU", () => {
 
 test("legacy SERVICES with restaurant evidence is promoted to MENU", () => {
   const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "SERVICES", reason: "El usuario quiere ver la carta y preguntar por platos" })); assert.equal(result.dataRequirement, "MENU"); assert.equal(result.degraded, true);
+});
+
+test("legacy BUSINESS_INFO with reservation evidence is promoted to RESERVATION", () => {
+  const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "BUSINESS_INFO", reason: "El usuario quiere reservar una mesa para cuatro personas" })); assert.equal(result.dataRequirement, "RESERVATION"); assert.equal(result.degraded, true);
+});
+
+test("legacy SERVICES with reservation evidence is promoted to RESERVATION", () => {
+  const result = parseSemanticDecision(JSON.stringify({ intent: "CONTINUE", data_requirement: "SERVICES", reason: "Consulta disponibilidad para reservar mesa esta noche" })); assert.equal(result.dataRequirement, "RESERVATION"); assert.equal(result.degraded, true);
 });
 
 test("ordinary conversation remains NONE", () => {
