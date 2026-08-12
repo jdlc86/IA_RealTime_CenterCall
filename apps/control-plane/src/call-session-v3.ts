@@ -13,12 +13,21 @@ import { ToolGateway, type ToolDefinition, type ToolRequest, type ToolResult } f
 const MANAGE_RESERVATION = "manage_reservation";
 const MANAGE_MARKETING_CONSENT = "manage_marketing_consent";
 const CONSENT_TEXT_VERSION = "voice-marketing-v2";
+const CLASSIFIER_DONE_WATCHDOG_MS = 4_000;
+const FORCED_TOOL_CALL_WATCHDOG_MS = 4_000;
 
 type RealtimeFunctionTool = {
   type: "function";
   name: string;
   description: string;
   parameters: Record<string, unknown>;
+};
+
+type RealtimeLifecycleEvent = {
+  type?: string;
+  name?: string;
+  response_id?: string;
+  response?: { id?: string; status?: string };
 };
 
 const RESERVATION_TOOL_V2: RealtimeFunctionTool = {
@@ -64,8 +73,21 @@ function requireRuntimeString(value: unknown, name: string): string {
   return value.trim();
 }
 
+function readRealtimeText(data: unknown): string | null {
+  if (typeof data === "string") return data;
+  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
+  if (ArrayBuffer.isView(data)) {
+    return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+  }
+  return null;
+}
+
 export class CallSession extends BaseConstructor {
   private callerPhone: string | null = null;
+  private pendingForcedRequirement: DataRequirement | null = null;
+  private awaitingForcedToolName: string | null = null;
+  private classifierDoneWatchdog: ReturnType<typeof setTimeout> | null = null;
+  private forcedToolCallWatchdog: ReturnType<typeof setTimeout> | null = null;
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -97,6 +119,82 @@ export class CallSession extends BaseConstructor {
     }
 
     return super.fetch(request);
+  }
+
+  private clearClassifierDoneWatchdog(): void {
+    if (this.classifierDoneWatchdog !== null) {
+      clearTimeout(this.classifierDoneWatchdog);
+      this.classifierDoneWatchdog = null;
+    }
+  }
+
+  private clearForcedToolCallWatchdog(): void {
+    if (this.forcedToolCallWatchdog !== null) {
+      clearTimeout(this.forcedToolCallWatchdog);
+      this.forcedToolCallWatchdog = null;
+    }
+  }
+
+  private getToolForRequirement(requirement: DataRequirement): RealtimeFunctionTool | null {
+    if (requirement === "RESERVATION") return RESERVATION_TOOL_V2;
+    if (requirement === "MARKETING_CONSENT") return MARKETING_CONSENT_TOOL;
+    return null;
+  }
+
+  private dispatchForcedTool(requirement: DataRequirement, trigger: "classifier_response_done" | "classifier_done_watchdog"): void {
+    const tool = this.getToolForRequirement(requirement);
+    if (!tool) return;
+
+    this.clearClassifierDoneWatchdog();
+    this.pendingForcedRequirement = null;
+    this.awaitingForcedToolName = tool.name;
+
+    (this as any).send({
+      type: "response.create",
+      response: {
+        tool_choice: { type: "function", name: tool.name },
+        tools: [tool],
+        instructions: requirement === "RESERVATION"
+          ? "Gestiona la reserva exclusivamente mediante manage_reservation. Si el usuario acepta usar como contacto el mismo número desde el que llama, usa use_caller_phone=true y no le pidas que lo dicte. Si proporciona otro número, usa customer_phone. Pasa solo datos proporcionados o confirmados y no marques confirm=true salvo confirmación explícita posterior."
+          : "Gestiona exclusivamente mediante manage_marketing_consent. Usa GRANT solo después de un sí explícito a recibir promociones, DECLINE tras un no explícito y REVOKE cuando pide darse de baja. Para el mismo número de la llamada omite target_phone; nunca inventes ni deduzcas otro número.",
+      },
+    });
+
+    const diagnostics = (this as any).diagnostics;
+    diagnostics?.checkpoint?.("TOOL_FORCED", { data_requirement: requirement, tool: tool.name, trigger });
+    if (trigger === "classifier_done_watchdog") {
+      diagnostics?.recovered?.("TOOL_FORCE_DEFERRED_RECOVERY", "classifier_response_done_missing_force_after_watchdog", {
+        data_requirement: requirement,
+        tool: tool.name,
+      });
+    }
+
+    this.clearForcedToolCallWatchdog();
+    this.forcedToolCallWatchdog = setTimeout(() => {
+      if (this.awaitingForcedToolName !== tool.name) return;
+      this.awaitingForcedToolName = null;
+      diagnostics?.fail?.("FORCED_TOOL_CALL_STALLED", "FORCED_TOOL_FUNCTION_EVENT_MISSING", {
+        data_requirement: requirement,
+        tool: tool.name,
+        watchdog_ms: FORCED_TOOL_CALL_WATCHDOG_MS,
+      });
+      (this as any).sendBestEffortCancel?.();
+      setTimeout(() => {
+        try {
+          (this as any).createSpokenResponse(
+            requirement === "RESERVATION"
+              ? "He tenido un problema al consultar la disponibilidad. Discúlpate brevemente e indica que no se ha creado ninguna reserva. Pide al usuario que repita la fecha, hora y número de personas para intentarlo de nuevo."
+              : "He tenido un problema al gestionar las preferencias de promociones. Indica brevemente que no se ha realizado ningún cambio y ofrece intentarlo de nuevo.",
+          );
+          diagnostics?.recovered?.("FORCED_TOOL_SILENCE_RECOVERY", "cancel_stalled_tool_response_and_speak_fallback", {
+            data_requirement: requirement,
+            tool: tool.name,
+          });
+        } catch {
+          // Best-effort recovery: never turn the watchdog itself into a call failure.
+        }
+      }, 100);
+    }, FORCED_TOOL_CALL_WATCHDOG_MS);
   }
 
   private async executeReservationFlow(args: ReservationFlowArgs, tenantId: string): Promise<Record<string, unknown>> {
@@ -189,7 +287,7 @@ export class CallSession extends BaseConstructor {
       return;
     }
 
-    const tool = requirement === "RESERVATION" ? RESERVATION_TOOL_V2 : MARKETING_CONSENT_TOOL;
+    const tool = this.getToolForRequirement(requirement)!;
     const allowedTools = Array.isArray((this as any).allowedTools) ? (this as any).allowedTools as string[] : [];
     const diagnostics = (this as any).diagnostics;
 
@@ -203,16 +301,75 @@ export class CallSession extends BaseConstructor {
       return;
     }
 
-    (this as any).send({
-      type: "response.create",
-      response: {
-        tool_choice: { type: "function", name: tool.name },
-        tools: [tool],
-        instructions: requirement === "RESERVATION"
-          ? "Gestiona la reserva exclusivamente mediante manage_reservation. Si el usuario acepta usar como contacto el mismo número desde el que llama, usa use_caller_phone=true y no le pidas que lo dicte. Si proporciona otro número, usa customer_phone. Pasa solo datos proporcionados o confirmados y no marques confirm=true salvo confirmación explícita posterior."
-          : "Gestiona exclusivamente mediante manage_marketing_consent. Usa GRANT solo después de un sí explícito a recibir promociones, DECLINE tras un no explícito y REVOKE cuando pide darse de baja. Para el mismo número de la llamada omite target_phone; nunca inventes ni deduzcas otro número.",
-      },
+    this.clearClassifierDoneWatchdog();
+    this.clearForcedToolCallWatchdog();
+    this.awaitingForcedToolName = null;
+    this.pendingForcedRequirement = requirement;
+    diagnostics?.checkpoint?.("TOOL_FORCE_DEFERRED", {
+      data_requirement: requirement,
+      tool: tool.name,
+      waiting_for: "classifier_response_done",
     });
-    diagnostics?.checkpoint?.("TOOL_FORCED", { data_requirement: requirement, tool: tool.name });
+
+    this.classifierDoneWatchdog = setTimeout(() => {
+      if (this.pendingForcedRequirement !== requirement) return;
+      diagnostics?.fail?.("CLASSIFIER_RESPONSE_DONE_STALLED", "CLASSIFIER_RESPONSE_DONE_EVENT_MISSING", {
+        data_requirement: requirement,
+        tool: tool.name,
+        watchdog_ms: CLASSIFIER_DONE_WATCHDOG_MS,
+      });
+      this.dispatchForcedTool(requirement, "classifier_done_watchdog");
+    }, CLASSIFIER_DONE_WATCHDOG_MS);
+  }
+
+  private async handleRealtimeMessage(data: unknown): Promise<void> {
+    const text = readRealtimeText(data);
+    let lifecycleEvent: RealtimeLifecycleEvent | null = null;
+    if (text) {
+      try {
+        lifecycleEvent = JSON.parse(text) as RealtimeLifecycleEvent;
+      } catch {
+        lifecycleEvent = null;
+      }
+    }
+
+    await BasePrototype.handleRealtimeMessage.call(this, data);
+
+    if (!lifecycleEvent) return;
+
+    if (
+      lifecycleEvent.type === "response.function_call_arguments.done" &&
+      lifecycleEvent.name &&
+      lifecycleEvent.name === this.awaitingForcedToolName
+    ) {
+      this.awaitingForcedToolName = null;
+      this.clearForcedToolCallWatchdog();
+      (this as any).diagnostics?.checkpoint?.("FORCED_TOOL_CALL_RECEIVED", { tool: lifecycleEvent.name });
+      return;
+    }
+
+    if (lifecycleEvent.type === "response.done" && this.pendingForcedRequirement) {
+      const requirement = this.pendingForcedRequirement;
+      this.dispatchForcedTool(requirement, "classifier_response_done");
+      return;
+    }
+
+    if (lifecycleEvent.type === "response.done" && this.awaitingForcedToolName) {
+      const stalledTool = this.awaitingForcedToolName;
+      this.awaitingForcedToolName = null;
+      this.clearForcedToolCallWatchdog();
+      (this as any).diagnostics?.fail?.("FORCED_TOOL_RESPONSE_DONE_WITHOUT_CALL", "FORCED_TOOL_FUNCTION_EVENT_MISSING", {
+        tool: stalledTool,
+        response_status: lifecycleEvent.response?.status ?? null,
+      });
+      (this as any).createSpokenResponse(
+        stalledTool === MANAGE_RESERVATION
+          ? "He tenido un problema al consultar la reserva. Discúlpate brevemente, deja claro que no se ha creado ninguna reserva y pide repetir los datos para intentarlo de nuevo."
+          : "He tenido un problema al gestionar las promociones. Indica que no se ha realizado ningún cambio y ofrece intentarlo de nuevo.",
+      );
+      (this as any).diagnostics?.recovered?.("FORCED_TOOL_SILENCE_RECOVERY", "speak_fallback_after_response_done_without_function_call", {
+        tool: stalledTool,
+      });
+    }
   }
 }
