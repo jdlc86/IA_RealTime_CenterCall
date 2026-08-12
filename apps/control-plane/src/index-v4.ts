@@ -1,7 +1,7 @@
 import baseHandler from "./index-v3";
 import { KvTenantRepository, type TenantKvNamespace, type TenantResolutionV1 } from "./tenant-kv";
 import { buildTrustedCallerTransferHeaders, normalizeTrustedCallerNumber } from "./trusted-caller-propagation";
-export { CallSession } from "./call-session-v10";
+export { CallSession } from "./call-session-v11";
 
 type WorkerEnv = {
   ENVIRONMENT: string;
