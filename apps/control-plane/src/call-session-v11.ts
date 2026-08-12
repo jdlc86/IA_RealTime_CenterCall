@@ -1,12 +1,61 @@
 import { CallSession as CallSessionV10 } from "./call-session-v10";
+import { publicReservationQueryResults } from "./reservation-query";
 import { parseSemanticDecision } from "./semantic-router";
-import { SupabaseAdapter, type BookedReservationSummary } from "./supabase-adapter";
+import { SupabaseAdapter } from "./supabase-adapter";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV10 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV10.prototype as any;
 
 type RealtimeEvent = { type?: string; name?: string; call_id?: string; arguments?: string; };
+
+function currentMadridReference(): string {
+  return new Intl.DateTimeFormat("es-ES", { timeZone: "Europe/Madrid", dateStyle: "full", timeStyle: "long" }).format(new Date());
+}
+
+function queryAwareIntentTool(): Record<string, unknown> {
+  return {
+    type: "function",
+    name: CONVERSATION_INTENT,
+    description: `Clasifica cada turno. Para RESERVATION incluye reservation y distingue operation=CREATE para crear, operation=QUERY para consultar reservas existentes y operation=CANCEL para cancelar. QUERY y CANCEL identifican siempre las reservas inicialmente mediante el caller_phone confiable del backend; nunca uses un número dictado verbalmente como prueba de identidad. Durante CANCEL selection_index solo puede usarse tras presentar opciones numeradas. confirm=true solo tras confirmación explícita de creación o cancelación presentada en un turno anterior. Para MARKETING_CONSENT incluye marketing_consent únicamente ante aceptación, rechazo o revocación explícita. Referencia temporal actual en Madrid: ${currentMadridReference()}. Nunca inventes datos.`,
+    parameters: {
+      type: "object",
+      properties: {
+        intent: { type: "string", enum: ["CONTINUE", "END_AMBIGUOUS", "END_CLEAR"] },
+        data_requirement: { type: "string", enum: ["NONE", "BUSINESS_INFO", "SERVICES", "MENU", "RESERVATION", "MARKETING_CONSENT", "PROFESSIONALS", "HOURS"] },
+        reason: { type: "string" },
+        reservation: {
+          type: "object",
+          properties: {
+            operation: { type: "string", enum: ["CREATE", "QUERY", "CANCEL"] },
+            party_size: { type: "integer", minimum: 1, maximum: 100 },
+            starts_at: { type: "string" },
+            customer_name: { type: "string" },
+            customer_phone: { type: "string" },
+            use_caller_phone: { type: "boolean" },
+            duration_minutes: { type: "integer", minimum: 15, maximum: 480 },
+            notes: { type: "string" },
+            selection_index: { type: "integer", minimum: 1, maximum: 20 },
+            confirm: { type: "boolean" },
+          },
+          additionalProperties: false,
+        },
+        marketing_consent: {
+          type: "object",
+          properties: {
+            action: { type: "string", enum: ["GRANT", "DECLINE", "REVOKE"] },
+            explicit: { type: "boolean" },
+            target_phone: { type: "string" },
+          },
+          required: ["action", "explicit"],
+          additionalProperties: false,
+        },
+      },
+      required: ["intent", "data_requirement", "reason"],
+      additionalProperties: false,
+    },
+  };
+}
 
 function readRealtimeText(data: unknown): string | null {
   if (typeof data === "string") return data;
@@ -33,18 +82,20 @@ function rawReservationOperation(argumentsJson: string | undefined): "CREATE" | 
   }
 }
 
-export function publicReservationQueryResults(rows: BookedReservationSummary[]): Array<Record<string, unknown>> {
-  return rows.map((row, index) => ({
-    option: index + 1,
-    starts_at: row.starts_at,
-    ends_at: row.ends_at,
-    party_size: row.party_size,
-    customer_name: row.customer_name,
-    status: row.status,
-  }));
-}
-
 export class CallSession extends BaseConstructor {
+  private querySessionUpdateV11Sent = false;
+
+  async fetch(request: Request): Promise<Response> {
+    const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
+    const response = await super.fetch(request);
+    if (isStart && response.ok && !this.querySessionUpdateV11Sent) {
+      this.querySessionUpdateV11Sent = true;
+      (this as any).send({ type: "session.update", session: { type: "realtime", tools: [queryAwareIntentTool()], tool_choice: "required" } });
+      (this as any).diagnostics?.checkpoint?.("RESERVATION_QUERY_CLASSIFIER_SCHEMA_UPDATED", { reservation_operations: ["CREATE", "QUERY", "CANCEL"], identity_policy: "TRUSTED_CALLER_PHONE" });
+    }
+    return response;
+  }
+
   private getQueryAdapter(): SupabaseAdapter {
     return new SupabaseAdapter({
       SUPABASE_URL: requireRuntimeString((this as any).env?.SUPABASE_URL, "SUPABASE_URL"),
@@ -54,14 +105,7 @@ export class CallSession extends BaseConstructor {
 
   private sendQueryClassifierOutput(callId: string | undefined, stage: string): void {
     if (!callId) return;
-    (this as any).send({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify({ ok: true, action: "continue", data_requirement: "RESERVATION", reservation_operation: "QUERY", stage }),
-      },
-    });
+    (this as any).send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: JSON.stringify({ ok: true, action: "continue", data_requirement: "RESERVATION", reservation_operation: "QUERY", stage }) } });
   }
 
   private async handleReservationQuery(callId: string | undefined): Promise<void> {
@@ -93,9 +137,7 @@ export class CallSession extends BaseConstructor {
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const text = readRealtimeText(data);
     let event: RealtimeEvent | null = null;
-    if (text) {
-      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
-    }
+    if (text) { try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; } }
 
     if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
       if ((this as any).state === "closing" || (this as any).hangupStarted === true) {
@@ -104,7 +146,7 @@ export class CallSession extends BaseConstructor {
       }
       const semantic = parseSemanticDecision(event.arguments);
       if (semantic.intent === "CONTINUE" && semantic.dataRequirement === "RESERVATION" && rawReservationOperation(event.arguments) === "QUERY") {
-        (this as any).diagnostics?.checkpoint?.("RESERVATION_OPERATION_ROUTED", { operation: "QUERY", source: "classifier" });
+        (this as any).diagnostics?.checkpoint?.("RESERVATION_OPERATION_ROUTED", { operation: "QUERY", source: "classifier", identity_source: "CALLER_ID" });
         await this.handleReservationQuery(event.call_id);
         return;
       }
