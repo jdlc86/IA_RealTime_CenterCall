@@ -2,7 +2,7 @@ import baseHandler from "./index-v2";
 import { isDebugEnabled } from "./call-diagnostics";
 import { extractTrustedCallerPhone, type SipHeader } from "./caller-id";
 import { KvTenantRepository, type TenantKvNamespace } from "./tenant-kv";
-export { CallSession } from "./call-session-v4";
+export { CallSession } from "./call-session-v5";
 
 type DebugWorkerEnv = {
   DEBUG_KEY?: string;
