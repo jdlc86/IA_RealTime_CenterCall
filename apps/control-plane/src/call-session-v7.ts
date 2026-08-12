@@ -1,10 +1,13 @@
 import { CallSession as CallSessionV6 } from "./call-session-v6";
 import { parseMarketingConsentClassifierTurn } from "./marketing-consent-orchestrator";
+import { decideMarketingPrompt } from "./marketing-consent-prompt-policy";
+import { SupabaseMarketingConsentStore } from "./marketing-consent-store";
 import { parseSemanticDecision } from "./semantic-router";
 import type { ToolResult } from "./tool-gateway";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const MANAGE_MARKETING_CONSENT = "manage_marketing_consent";
+const POST_BOOKING_MARKETING_PROMPT = "Después pregunta, de forma separada y opcional, si desea recibir ofertas y promociones en este mismo número.";
 const BaseConstructor = CallSessionV6 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV6.prototype as any;
 
@@ -28,6 +31,11 @@ function readRealtimeText(data: unknown): string | null {
   if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
   if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
   return null;
+}
+
+function requireRuntimeString(value: unknown, name: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`Missing runtime configuration: ${name}`);
+  return value.trim();
 }
 
 function reservationAndMarketingAwareIntentTool(): Record<string, unknown> {
@@ -110,6 +118,59 @@ export class CallSession extends BaseConstructor {
     }
 
     return response;
+  }
+
+  private getMarketingConsentStoreV7(): SupabaseMarketingConsentStore {
+    return new SupabaseMarketingConsentStore({
+      SUPABASE_URL: requireRuntimeString((this as any).env?.SUPABASE_URL, "SUPABASE_URL"),
+      SUPABASE_SECRET_KEY: requireRuntimeString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
+    });
+  }
+
+  private createSpokenResponse(instructions: string): void {
+    if (instructions.includes(POST_BOOKING_MARKETING_PROMPT)) {
+      void this.createPostBookingResponse(instructions);
+      return;
+    }
+    BasePrototype.createSpokenResponse.call(this, instructions);
+  }
+
+  private async createPostBookingResponse(instructions: string): Promise<void> {
+    const tenantId = (this as any).tenantId as string | null | undefined;
+    const callerPhone = (this as any).callerPhone as string | null | undefined;
+    const marketingEnabled = Array.isArray((this as any).allowedTools) && ((this as any).allowedTools as string[]).includes(MANAGE_MARKETING_CONSENT);
+
+    const suppressPrompt = (reason: string, status: string | null = null): void => {
+      (this as any).diagnostics?.checkpoint?.("MARKETING_CONSENT_PROMPT_SUPPRESSED", { reason, status });
+      BasePrototype.createSpokenResponse.call(
+        this,
+        instructions.replace(
+          POST_BOOKING_MARKETING_PROMPT,
+          "No preguntes por promociones en este turno. La reserva ya está confirmada y debe comunicarse con normalidad.",
+        ),
+      );
+    };
+
+    if (!marketingEnabled || !tenantId || !callerPhone) {
+      suppressPrompt(!marketingEnabled ? "tool_not_allowed" : !tenantId ? "tenant_unavailable" : "caller_phone_unavailable");
+      return;
+    }
+
+    try {
+      const latestStatus = await this.getMarketingConsentStoreV7().getLatestStatus(tenantId, callerPhone);
+      const decision = decideMarketingPrompt(latestStatus);
+      if (!decision.ask) {
+        suppressPrompt("existing_decision", decision.status);
+        return;
+      }
+      (this as any).diagnostics?.checkpoint?.("MARKETING_CONSENT_PROMPT_ELIGIBLE", { reason: decision.reason });
+      BasePrototype.createSpokenResponse.call(this, instructions);
+    } catch (error) {
+      (this as any).diagnostics?.fail?.("MARKETING_CONSENT_STATUS_READ_FAILED", "MARKETING_CONSENT_STATUS_UNAVAILABLE", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      suppressPrompt("status_read_failed");
+    }
   }
 
   private sendMarketingClassifierOutput(callId: string | undefined, ok: boolean, stage: string): void {
