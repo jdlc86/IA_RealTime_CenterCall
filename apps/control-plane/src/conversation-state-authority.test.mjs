@@ -1,14 +1,6 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import ts from "typescript";
-import fs from "node:fs";
-import vm from "node:vm";
-
-const source = fs.readFileSync(new URL("./conversation-state-authority.ts", import.meta.url), "utf8");
-const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
-const module = { exports: {} };
-vm.runInNewContext(`(function(exports,module,require){${js}\n})(module.exports,module,require)`, { module, require: () => ({}) });
-const { authorizeSpecializedFlow } = module.exports;
+import { test } from "node:test";
+import { authorizeSpecializedFlow } from "../.test-dist/conversation-state-authority.js";
 
 const semantic = (dataRequirement, degraded = false, intent = "CONTINUE") => ({ intent, dataRequirement, degraded, reason: "test" });
 const ctx = (overrides = {}) => ({ lifecycleState: "active", hangupStarted: false, reservationInProgress: false, ...overrides });
