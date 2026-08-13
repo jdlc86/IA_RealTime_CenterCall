@@ -7,14 +7,24 @@ import {
   rewriteReservationClassifierOutput,
   type ReservationOutputStage,
 } from "./reservation-output-policy";
+import { parseCoreIntentRequest } from "./core-intent-router";
 
 const BaseConstructor = CallSessionV14 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV14.prototype as any;
+const CONVERSATION_INTENT = "conversation_intent";
+
+type RealtimeEvent = { type?: string; name?: string; call_id?: string; arguments?: string; };
+
+function readRealtimeText(data: unknown): string | null {
+  if (typeof data === "string") return data;
+  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
+  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+  return null;
+}
 
 /**
- * v15 is the spoken-output boundary. It keeps the already validated business
- * executors intact, but prevents Realtime from receiving an open-ended
- * reservation classifier output before the backend has decided what may be said.
+ * v15 is the final conversation boundary. It keeps validated business executors
+ * intact while enforcing backend-authoritative reservation speech and domain scope.
  */
 export class CallSession extends BaseConstructor {
   private pendingReservationClassifierOutputsV15: unknown[] = [];
@@ -68,5 +78,45 @@ export class CallSession extends BaseConstructor {
     }
 
     BasePrototype.createSpokenResponse.call(this, governed);
+  }
+
+  private async handleRealtimeMessage(data: unknown): Promise<void> {
+    const text = readRealtimeText(data);
+    let event: RealtimeEvent | null = null;
+    if (text) {
+      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
+    }
+
+    if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
+      try {
+        const request = parseCoreIntentRequest(event.arguments);
+        if (request.intent === "OUT_OF_SCOPE") {
+          if (event.call_id) {
+            BasePrototype.send.call(this, {
+              type: "conversation.item.create",
+              item: {
+                type: "function_call_output",
+                call_id: event.call_id,
+                output: JSON.stringify({ ok: true, action: "out_of_scope", tool_execution: false }),
+              },
+            });
+          }
+          (this as any).diagnostics?.checkpoint?.("CORE_OUT_OF_SCOPE_REJECTED", {
+            tool_execution: false,
+            business_info_execution: false,
+            state_preserved: true,
+          });
+          BasePrototype.createSpokenResponse.call(
+            this,
+            "La petición está fuera del ámbito del negocio. No uses conocimiento general, no ejecutes herramientas y no intentes responder al contenido. Di brevemente: Solo puedo ayudarte con cuestiones relacionadas con el restaurante. ¿Necesitas algo más en lo que pueda ayudarte?",
+          );
+          return;
+        }
+      } catch {
+        // Let the existing Core parser own invalid classifier payload recovery.
+      }
+    }
+
+    await BasePrototype.handleRealtimeMessage.call(this, data);
   }
 }

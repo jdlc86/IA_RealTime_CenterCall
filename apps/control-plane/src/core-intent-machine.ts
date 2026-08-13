@@ -14,7 +14,7 @@ export type BusinessInfoTopic =
   | "SERVICES"
   | "GENERAL_INFO";
 
-export type CoreIntent = Exclude<CoreWorkflow, "ROUTING">;
+export type CoreIntent = Exclude<CoreWorkflow, "ROUTING"> | "OUT_OF_SCOPE";
 export type ClosingResponse = "CONFIRM" | "REJECT";
 
 export type CoreIntentRequest = {
@@ -36,6 +36,7 @@ export type CoreTransitionReason =
   | "WORKFLOW_SWITCH"
   | "AUXILIARY_INFO_ENTER"
   | "AUXILIARY_INFO_RETURN"
+  | "OUT_OF_SCOPE"
   | "CLOSE";
 
 export type CoreTransition = {
@@ -73,6 +74,10 @@ export function transitionCoreIntent(
 ): CoreTransition {
   if (current.workflow === "CLOSING") {
     return { previous: current, next: current, reason: "CLOSE" };
+  }
+
+  if (request.intent === "OUT_OF_SCOPE") {
+    return { previous: current, next: current, reason: "OUT_OF_SCOPE" };
   }
 
   if (request.intent === "CLOSING") {
