@@ -9,8 +9,8 @@ export type BusinessHours = { weekday: number; opens_at: string; closes_at: stri
 export type RestaurantMenuItem = { id: string; code: string | null; name: string; description: string | null; category: string | null; price_cents: number | null; currency: string; allergens: string[]; };
 export type RestaurantTable = { id: string; code: string; display_name: string; min_capacity: number; max_capacity: number; };
 export type RestaurantAvailability = { table_id: string; table_code: string; table_name: string; max_capacity: number; starts_at: string; ends_at: string; };
-export type RestaurantReservation = { reservation_id: string; table_id: string; table_code: string; table_name: string; starts_at: string; ends_at: string; status: string; };
-export type BookedReservationSummary = { id: string; starts_at: string; ends_at: string; party_size: number; customer_name: string; customer_phone: string; status: "BOOKED"; };
+export type RestaurantReservation = { reservation_code: string; table_id: string; table_code: string; table_name: string; starts_at: string; ends_at: string; status: string; };
+export type BookedReservationSummary = { id: string; reservation_code: string; starts_at: string; ends_at: string; party_size: number; customer_name: string; customer_phone: string; status: "BOOKED"; };
 export type CreateRestaurantReservationInput = { customerName: string; customerPhone: string; partySize: number; startsAt: string; durationMinutes?: number; notes?: string | null; source?: "voice" | "web" | "manual" | "api"; };
 export type MarketingConsentStatus = "PENDING_VERIFICATION" | "VERIFIED" | "DECLINED" | "REVOKED" | "EXPIRED";
 export type CallDiagnosticEvent = { call_id: string; tenant_id: string | null; component: string; stage: string; event: string; severity: "info" | "error"; data_requirement?: string | null; tool_name?: string | null; elapsed_ms?: number | null; recovery?: string | null; diagnosis?: string | null; details?: Record<string, unknown>; };
@@ -90,7 +90,7 @@ export class SupabaseAdapter {
 
   async listBookedReservationsByPhone(tenantId: string, callerPhone: string, nowIso = new Date().toISOString()): Promise<BookedReservationSummary[]> {
     const tenant = assertTenantId(tenantId); const phone = assertE164(callerPhone); const now = assertIsoDateTime(nowIso);
-    return this.select<BookedReservationSummary>("reservations", new URLSearchParams({ select: "id,starts_at,ends_at,party_size,customer_name,customer_phone,status", tenant_id: `eq.${tenant}`, customer_phone: `eq.${phone}`, status: "eq.BOOKED", starts_at: `gte.${now}`, order: "starts_at.asc", limit: "20" }));
+    return this.select<BookedReservationSummary>("reservations", new URLSearchParams({ select: "id,reservation_code,starts_at,ends_at,party_size,customer_name,customer_phone,status", tenant_id: `eq.${tenant}`, customer_phone: `eq.${phone}`, status: "eq.BOOKED", starts_at: `gte.${now}`, order: "starts_at.asc", limit: "20" }));
   }
 
   async cancelBookedReservation(tenantId: string, reservationId: string, callerPhone: string): Promise<BookedReservationSummary | null> {
