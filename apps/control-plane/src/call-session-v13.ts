@@ -1,0 +1,276 @@
+import { CallSession as CallSessionV12 } from "./call-session-v12";
+import {
+  initialCoreIntentState,
+  returnFromAuxiliaryBusinessInfo,
+  transitionCoreIntent,
+  type BusinessInfoTopic,
+  type CoreIntentState,
+  type CoreWorkflow,
+} from "./core-intent-machine";
+import { adaptHierarchicalIntentToLegacy } from "./core-intent-legacy-adapter";
+import { coreIntentClassifierTool, parseCoreIntentRequest } from "./core-intent-router";
+import type { ToolResult } from "./tool-gateway";
+
+const CONVERSATION_INTENT = "conversation_intent";
+const BaseConstructor = CallSessionV12 as unknown as new (...args: any[]) => any;
+const BasePrototype = CallSessionV12.prototype as any;
+
+type RealtimeEvent = { type?: string; name?: string; call_id?: string; arguments?: string; };
+
+type TopicResult = {
+  topic: BusinessInfoTopic;
+  ok: boolean;
+  result?: unknown;
+  error?: string;
+};
+
+const TOOL_BY_TOPIC: Record<BusinessInfoTopic, string> = {
+  MENU: "get_menu",
+  HOURS: "get_business_hours",
+  LOCATION: "get_business_information",
+  SERVICES: "get_services",
+  GENERAL_INFO: "get_business_information",
+};
+
+function readRealtimeText(data: unknown): string | null {
+  if (typeof data === "string") return data;
+  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
+  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+  return null;
+}
+
+function currentMadridReference(): string {
+  return new Intl.DateTimeFormat("es-ES", {
+    timeZone: "Europe/Madrid",
+    dateStyle: "full",
+    timeStyle: "long",
+  }).format(new Date());
+}
+
+function requireRuntimeString(value: unknown, name: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`Missing runtime configuration: ${name}`);
+  return value.trim();
+}
+
+/**
+ * v13 replaces the stack of classifier session.update calls with one hierarchical
+ * top-level state machine. Existing domain executors remain unchanged behind a
+ * pure compatibility adapter until their runtime implementations are migrated.
+ */
+export class CallSession extends BaseConstructor {
+  private coreIntentStateV13: CoreIntentState = initialCoreIntentState();
+  private coreIntentSessionUpdateV13Sent = false;
+
+  async fetch(request: Request): Promise<Response> {
+    const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
+
+    if (isStart) {
+      // Suppress every inherited classifier schema update. v13 publishes exactly
+      // one classifier contract after the inherited startup has completed.
+      (this as any).reservationSessionUpdateSent = true;
+      (this as any).reservationSessionUpdateV6Sent = true;
+      (this as any).marketingSessionUpdateV7Sent = true;
+      (this as any).querySessionUpdateV11Sent = true;
+    }
+
+    const response = await super.fetch(request);
+
+    if (isStart && response.ok && !this.coreIntentSessionUpdateV13Sent) {
+      this.coreIntentSessionUpdateV13Sent = true;
+      (this as any).send({
+        type: "session.update",
+        session: {
+          type: "realtime",
+          tools: [coreIntentClassifierTool(currentMadridReference())],
+          tool_choice: "required",
+        },
+      });
+      (this as any).diagnostics?.checkpoint?.("CORE_INTENT_CLASSIFIER_SCHEMA_UPDATED", {
+        strategy: "hierarchical_state_machine_v1",
+        classifier_count: 1,
+        business_info_multi_topic: true,
+        legacy_executor_adapter: true,
+      });
+    }
+
+    return response;
+  }
+
+  private sendCoreClassifierOutput(callId: string | undefined, payload: Record<string, unknown>): void {
+    if (!callId) return;
+    (this as any).send({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify({ ok: true, ...payload }),
+      },
+    });
+  }
+
+  private clearTransientStateForWorkflow(workflow: CoreWorkflow): void {
+    if (workflow === "CREATE_RESERVATION") {
+      (this as any).reservationDraft = {};
+      (this as any).reservationAvailabilityKey = null;
+      (this as any).reservationAvailabilityPromise = null;
+      (this as any).reservationConfirmationFingerprint = null;
+      (this as any).createReservationIntentActiveV9 = false;
+      return;
+    }
+    if (workflow === "CANCEL_RESERVATION") {
+      (this as any).cancellationStateV10 = null;
+    }
+  }
+
+  private applyWorkflowTransitionCleanup(previous: CoreIntentState, next: CoreIntentState, reason: string): void {
+    if (reason === "AUXILIARY_INFO_ENTER" || reason === "CONTINUE_CURRENT") return;
+    if (previous.workflow === next.workflow) return;
+    this.clearTransientStateForWorkflow(previous.workflow);
+  }
+
+  private async executeBusinessInfoTopics(topics: BusinessInfoTopic[]): Promise<TopicResult[]> {
+    const tenantId = requireRuntimeString((this as any).tenantId, "tenant_id");
+    const callId = requireRuntimeString((this as any).callId, "call_id");
+    const gateway = (this as any).createToolGateway();
+
+    const toolPromises = new Map<string, Promise<ToolResult>>();
+    for (const topic of topics) {
+      const tool = TOOL_BY_TOPIC[topic];
+      if (!toolPromises.has(tool)) {
+        toolPromises.set(tool, gateway.execute({ name: tool, arguments: {}, context: { tenantId, callId } }) as Promise<ToolResult>);
+      }
+    }
+
+    const toolResults = new Map<string, ToolResult>();
+    await Promise.all([...toolPromises.entries()].map(async ([tool, promise]) => {
+      try {
+        toolResults.set(tool, await promise);
+      } catch (error) {
+        toolResults.set(tool, {
+          ok: false,
+          tool,
+          tenantId,
+          error: "EXECUTION_FAILED",
+          message: error instanceof Error ? error.message : String(error),
+        } as ToolResult);
+      }
+    }));
+
+    return topics.map((topic) => {
+      const result = toolResults.get(TOOL_BY_TOPIC[topic]);
+      if (!result || !result.ok) {
+        return { topic, ok: false, error: result && !result.ok ? result.error : "NO_RESULT" };
+      }
+      return { topic, ok: true, result: result.result };
+    });
+  }
+
+  private async handleBusinessInfoTurn(callId: string | undefined, topics: BusinessInfoTopic[], auxiliary: boolean): Promise<void> {
+    (this as any).state = "active";
+    (this as any).ambiguousCount = 0;
+    (this as any).diagnostics?.checkpoint?.("BUSINESS_INFO_MULTI_TOPIC_STARTED", {
+      topics,
+      topic_count: topics.length,
+      auxiliary,
+    });
+
+    const results = await this.executeBusinessInfoTopics(topics);
+    const successful = results.filter((entry) => entry.ok).length;
+    (this as any).diagnostics?.checkpoint?.("BUSINESS_INFO_MULTI_TOPIC_COMPLETED", {
+      topics,
+      topic_count: topics.length,
+      successful_count: successful,
+      failed_count: results.length - successful,
+      execution: "parallel_by_unique_tool",
+    });
+
+    this.sendCoreClassifierOutput(callId, {
+      action: "business_info_completed",
+      topics,
+      successful_count: successful,
+      failed_count: results.length - successful,
+    });
+
+    const suspended = this.coreIntentStateV13.suspendedWorkflow;
+    const resumeInstruction = auxiliary && suspended
+      ? ` Después de responder a esta consulta, retoma brevemente el workflow ${suspended} desde el punto ya conocido. No repitas datos ya recogidos, no reinicies el workflow y no inventes ningún estado empresarial.`
+      : "";
+
+    (this as any).createSpokenResponse(
+      `Responde en una sola intervención usando exclusivamente estos resultados autorizados por topic: ${JSON.stringify(results)}. Contesta todos los topics solicitados que tengan resultado. Si un topic no tiene dato verificado, indícalo brevemente. No menciones herramientas, JSON ni procesos internos.${resumeInstruction}`,
+    );
+
+    if (auxiliary && this.coreIntentStateV13.suspendedWorkflow) {
+      const returned = returnFromAuxiliaryBusinessInfo(this.coreIntentStateV13);
+      this.coreIntentStateV13 = returned.next;
+      (this as any).diagnostics?.checkpoint?.("CORE_INTENT_TRANSITION", {
+        from: returned.previous.workflow,
+        to: returned.next.workflow,
+        reason: returned.reason,
+      });
+    }
+  }
+
+  private async handleRealtimeMessage(data: unknown): Promise<void> {
+    const text = readRealtimeText(data);
+    let event: RealtimeEvent | null = null;
+    if (text) {
+      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
+    }
+
+    if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
+      if ((this as any).state === "closing" || (this as any).hangupStarted === true) {
+        await BasePrototype.handleRealtimeMessage.call(this, data);
+        return;
+      }
+
+      let request;
+      try {
+        request = parseCoreIntentRequest(event.arguments);
+      } catch (error) {
+        this.sendCoreClassifierOutput(event.call_id, { action: "classifier_invalid", retry: true });
+        (this as any).diagnostics?.fail?.("CORE_INTENT_TURN_INVALID", "HIERARCHICAL_CLASSIFIER_PAYLOAD_INVALID", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        (this as any).createSpokenResponse("No inventes una intención ni una acción. Pide al usuario de forma breve que aclare qué necesita.");
+        return;
+      }
+
+      const transition = transitionCoreIntent(this.coreIntentStateV13, request);
+      this.applyWorkflowTransitionCleanup(transition.previous, transition.next, transition.reason);
+      this.coreIntentStateV13 = transition.next;
+      (this as any).diagnostics?.checkpoint?.("CORE_INTENT_TRANSITION", {
+        from: transition.previous.workflow,
+        to: transition.next.workflow,
+        reason: transition.reason,
+        business_info_topics: transition.next.businessInfoTopics,
+        suspended_workflow: transition.next.suspendedWorkflow,
+      });
+
+      if (request.intent === "BUSINESS_INFO") {
+        await this.handleBusinessInfoTurn(event.call_id, transition.next.businessInfoTopics, request.auxiliary === true);
+        return;
+      }
+
+      const legacy = adaptHierarchicalIntentToLegacy(event.arguments);
+      if (!legacy) {
+        this.sendCoreClassifierOutput(event.call_id, { action: "no_legacy_route" });
+        return;
+      }
+
+      const synthetic: RealtimeEvent = {
+        ...event,
+        name: CONVERSATION_INTENT,
+        arguments: JSON.stringify(legacy),
+      };
+      (this as any).diagnostics?.checkpoint?.("CORE_INTENT_EXECUTOR_DISPATCHED", {
+        workflow: transition.next.workflow,
+        adapter: "validated_legacy_executor",
+      });
+      await BasePrototype.handleRealtimeMessage.call(this, JSON.stringify(synthetic));
+      return;
+    }
+
+    await BasePrototype.handleRealtimeMessage.call(this, data);
+  }
+}
