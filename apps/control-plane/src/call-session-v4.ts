@@ -1,5 +1,6 @@
 import { CallSession as CallSessionV3 } from "./call-session-v3";
 import type { ReservationFlowArgs } from "./reservation-flow";
+import { classifyReservationTruthClaim } from "./reservation-truth";
 
 const MANAGE_RESERVATION = "manage_reservation";
 
@@ -27,8 +28,6 @@ type RealtimeTruthEvent = {
   };
 };
 
-export type ReservationTruthClaim = "BOOKED" | "CANCELLED" | null;
-
 function readRealtimeText(data: unknown): string | null {
   if (typeof data === "string") return data;
   if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
@@ -36,27 +35,6 @@ function readRealtimeText(data: unknown): string | null {
     return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
   }
   return null;
-}
-
-function normalizeSpeech(value: string): string {
-  return value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
-}
-
-export function classifyReservationTruthClaim(value: string): ReservationTruthClaim {
-  const text = normalizeSpeech(value);
-  const reservationWord = /\breserva(?:cion)?\b/.test(text);
-  if (!reservationWord) return null;
-
-  const cancelled = /\b(cancelad[ao]|cancelada correctamente|anulad[ao]|dada de baja)\b/.test(text)
-    && /\b(he|hemos|queda|quedo|esta|ya esta|acabo de|ha sido)\b/.test(text);
-  if (cancelled) return "CANCELLED";
-
-  const confirmationWord = /\b(confirmad[ao]|hecha|realizada|completada|registrada|reservad[ao]|lista)\b/.test(text);
-  const explicitVerb = /\b(he|hemos|queda|quedo|esta|ya esta|acabo de)\b/.test(text);
-  return confirmationWord && explicitVerb ? "BOOKED" : null;
 }
 
 export function soundsLikeReservationConfirmed(value: string): boolean {
