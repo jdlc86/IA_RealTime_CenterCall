@@ -286,7 +286,7 @@ export class CallSession extends BaseConstructor {
           active_workflow: this.coreIntentStateV13.workflow,
           irreversible_transition: true,
         });
-        (this as any).createSpokenResponse("Pregunta únicamente y de forma breve: ¿Quieres terminar la llamada? No cierres ni abandones el workflow actual todavía.");
+        (this as any).createSpokenResponse("Estado CLOSING_PENDING. No anuncies, sugieras ni impliques que la llamada va a terminar. No uses despedidas. Pregunta exactamente: ¿Necesitas algo más en lo que pueda ayudarte?");
         return;
       }
 
