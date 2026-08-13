@@ -7,6 +7,7 @@ import {
   type CoreIntentState,
   type CoreWorkflow,
 } from "./core-intent-machine";
+import { decideClosingTransition } from "./core-closing-policy";
 import { adaptHierarchicalIntentToLegacy } from "./core-intent-legacy-adapter";
 import { coreIntentClassifierTool, parseCoreIntentRequest } from "./core-intent-router";
 import type { ToolResult } from "./tool-gateway";
@@ -60,6 +61,7 @@ function requireRuntimeString(value: unknown, name: string): string {
 export class CallSession extends BaseConstructor {
   private coreIntentStateV13: CoreIntentState = initialCoreIntentState();
   private coreIntentSessionUpdateV13Sent = false;
+  private closingConfirmationPendingV13 = false;
 
   async fetch(request: Request): Promise<Response> {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
@@ -233,6 +235,23 @@ export class CallSession extends BaseConstructor {
           error: error instanceof Error ? error.message : String(error),
         });
         (this as any).createSpokenResponse("No inventes una intención ni una acción. Pide al usuario de forma breve que aclare qué necesita.");
+        return;
+      }
+
+      const closingDecision = decideClosingTransition(
+        this.coreIntentStateV13.workflow,
+        request.intent,
+        this.closingConfirmationPendingV13,
+      );
+      this.closingConfirmationPendingV13 = closingDecision.pending;
+
+      if (closingDecision.action === "ASK_CONFIRMATION") {
+        this.sendCoreClassifierOutput(event.call_id, { action: "closing_confirmation_required" });
+        (this as any).diagnostics?.checkpoint?.("CORE_CLOSING_CONFIRMATION_REQUIRED", {
+          active_workflow: this.coreIntentStateV13.workflow,
+          irreversible_transition: true,
+        });
+        (this as any).createSpokenResponse("Pregunta únicamente y de forma breve: ¿Quieres terminar la llamada? No cierres ni abandones el workflow actual todavía.");
         return;
       }
 
