@@ -26,8 +26,29 @@ test("classifier reservation payload defaults to CREATE without changing legacy 
   assert.equal(turn.operation, "CREATE");
   assert.equal(turn.patch.partySize, 4);
   assert.equal(turn.patch.startsAt, "2026-08-15T19:00:00.000Z");
+  assert.equal(turn.customerName, undefined);
   assert.equal(turn.patch.customerName, "Juan");
   assert.equal(turn.confirm, true);
+  assert.equal(turn.unresolvedStartsAt, false);
+});
+
+test("unresolved natural datetime does not invalidate the whole reservation turn", () => {
+  const turn = parseReservationTurn(JSON.stringify({
+    intent: "CONTINUE",
+    data_requirement: "RESERVATION",
+    reason: "usuario sigue concretando la fecha",
+    reservation: {
+      party_size: 2,
+      starts_at: "mañana a las nueve",
+      customer_name: "Juan",
+    },
+  }));
+  assert.equal(turn.operation, "CREATE");
+  assert.equal(turn.patch.partySize, 2);
+  assert.equal(turn.patch.customerName, "Juan");
+  assert.equal(turn.patch.startsAt, undefined);
+  assert.equal(turn.unresolvedStartsAt, true);
+  assert.deepEqual(missingReservationAvailability(turn.patch), ["starts_at"]);
 });
 
 test("classifier can express QUERY without requiring creation fields", () => {
