@@ -137,26 +137,26 @@ export class CallSession extends BaseConstructor {
     (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCEL_FINAL_RECHECK_STARTED", { selected_count: selected.length, reservation_ids: state.selectedIds });
     const latest = await this.loadCandidates();
     const adapter = this.getCancellationAdapter();
-    const results: Array<{ starts_at: string; party_size: number; status: "CANCELLED" | "NOT_CANCELLED"; reason?: string }> = [];
+    const results: Array<{ reservation_code: string; starts_at: string; party_size: number; status: "CANCELLED" | "NOT_CANCELLED"; reason?: string }> = [];
 
     for (const reservation of selected) {
       const current = latest.find((candidate) => candidate.id === reservation.id) ?? null;
       const expectedFingerprint = state.confirmationFingerprints[reservation.id];
       if (!current || !expectedFingerprint || cancellationFingerprint(current) !== expectedFingerprint) {
-        results.push({ starts_at: reservation.starts_at, party_size: reservation.party_size, status: "NOT_CANCELLED", reason: "changed_before_cancel" });
+        results.push({ reservation_code: reservation.reservation_code, starts_at: reservation.starts_at, party_size: reservation.party_size, status: "NOT_CANCELLED", reason: "changed_before_cancel" });
         (this as any).diagnostics?.fail?.("RESERVATION_CANCEL_RECHECK_FAILED", "RESERVATION_NO_LONGER_MATCHES_CONFIRMED_STATE", { reservation_id: reservation.id });
         continue;
       }
 
       const cancelled = await adapter.cancelBookedReservation(tenantId, reservation.id, callerPhone);
       if (!cancelled) {
-        results.push({ starts_at: reservation.starts_at, party_size: reservation.party_size, status: "NOT_CANCELLED", reason: "write_precondition_failed" });
+        results.push({ reservation_code: reservation.reservation_code, starts_at: reservation.starts_at, party_size: reservation.party_size, status: "NOT_CANCELLED", reason: "write_precondition_failed" });
         (this as any).diagnostics?.fail?.("RESERVATION_CANCEL_WRITE_FAILED", "BOOKED_ROW_NOT_FOUND_AT_WRITE", { reservation_id: reservation.id });
         continue;
       }
 
-      results.push({ starts_at: reservation.starts_at, party_size: reservation.party_size, status: "CANCELLED" });
-      (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCELLED_EVIDENCE", { reservation_id: reservation.id, identity_source: "CALLER_ID", previous_status: "BOOKED", new_status: "CANCELLED", batch_size: selected.length });
+      results.push({ reservation_code: reservation.reservation_code, starts_at: reservation.starts_at, party_size: reservation.party_size, status: "CANCELLED" });
+      (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCELLED_EVIDENCE", { reservation_id: reservation.id, reservation_code: reservation.reservation_code, identity_source: "CALLER_ID", previous_status: "BOOKED", new_status: "CANCELLED", batch_size: selected.length });
     }
 
     this.resetCancellation();
@@ -165,7 +165,7 @@ export class CallSession extends BaseConstructor {
     const failedCount = results.length - cancelledCount;
     this.sendCancellationClassifierOutput(callId, failedCount === 0 ? "CANCELLED" : cancelledCount > 0 ? "PARTIALLY_CANCELLED" : "NOT_CANCELLED", { cancelled_count: cancelledCount, failed_count: failedCount });
     (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCEL_BATCH_COMPLETED", { selected_count: selected.length, cancelled_count: cancelledCount, failed_count: failedCount });
-    (this as any).createSpokenResponse(`Usa únicamente este resultado autorizado de cancelación: ${JSON.stringify(results)}. Informa claramente cuáles quedaron canceladas y, si alguna no pudo cancelarse, cuál no cambió. No afirmes atomicidad ni rollback. No preguntes por promociones como consecuencia de una cancelación.`);
+    (this as any).createSpokenResponse(`Usa únicamente este resultado autorizado de cancelación: ${JSON.stringify(results)}. Informa claramente cuáles quedaron canceladas y, si alguna no pudo cancelarse, cuál no cambió. Usa solo reservation_code como referencia pública; nunca pronuncies ni muestres identificadores internos. No afirmes atomicidad ni rollback. No preguntes por promociones como consecuencia de una cancelación.`);
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
