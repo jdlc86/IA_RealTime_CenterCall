@@ -6,6 +6,7 @@ const CORE_INTENTS = new Set([
   "QUERY_RESERVATION",
   "BUSINESS_INFO",
   "MARKETING_CONSENT",
+  "OUT_OF_SCOPE",
   "CLOSING",
 ]);
 
@@ -46,6 +47,10 @@ export function parseCoreIntentRequest(argumentsJson: string | undefined): CoreI
   if (typeof intent !== "string" || !CORE_INTENTS.has(intent)) throw new Error("Invalid core intent");
   const closingResponse = normalizeClosingResponse(root.closing_response);
 
+  if (intent === "OUT_OF_SCOPE") {
+    return { intent: "OUT_OF_SCOPE", ...(closingResponse ? { closingResponse } : {}) };
+  }
+
   if (intent !== "BUSINESS_INFO") {
     return {
       intent: intent as CoreIntentRequest["intent"],
@@ -79,13 +84,13 @@ export function coreIntentClassifierTool(currentMadridReference?: string): Recor
   return {
     type: "function",
     name: "conversation_intent",
-    description: `Clasifica la intención operativa ACTUAL del usuario y, en la MISMA llamada, incluye los datos inequívocamente conocidos del dominio. Elige exactamente una intención principal. Para CREATE_RESERVATION conserva en reservation todos los datos inequívocamente conocidos de la reserva. Si el asistente acaba de presentar un resumen completo de reserva y pide confirmación explícita, una respuesta inequívoca del usuario como "sí", "confirmo", "adelante" o equivalente debe producir intent=CREATE_RESERVATION y reservation.confirm=true. No uses confirm=true para aceptación de promociones, respuestas vagas ni antes de un resumen de reserva. BUSINESS_INFO puede contener varios topics. Usa auxiliary=true solo cuando BUSINESS_INFO es una pregunta temporal dentro de un workflow operativo que debe reanudarse. Si el turno responde directamente a la pregunta del asistente sobre terminar la llamada, incluye closing_response=CONFIRM si acepta terminar o closing_response=REJECT si rechaza terminar. Un rechazo puro del cierre no es una nueva intención empresarial: conserva como intent el workflow operativo que estaba activo; si no había uno, usa BUSINESS_INFO con GENERAL_INFO solo como valor neutro y closing_response=REJECT. Si el usuario rechaza cerrar y además expresa una nueva intención, incluye closing_response=REJECT junto con esa nueva intención. Nunca decidas estados empresariales como BOOKED o CANCELLED: pertenecen exclusivamente al backend.${temporalReference}`,
+    description: `Clasifica la intención operativa ACTUAL del usuario y, en la MISMA llamada, incluye los datos inequívocamente conocidos del dominio. Elige exactamente una intención principal. Este asistente atiende exclusivamente asuntos del negocio actual. Usa BUSINESS_INFO solo cuando la pregunta se refiere explícita o contextualmente al negocio, por ejemplo carta, horarios, ubicación, servicios o información general del establecimiento. Si la pregunta es conocimiento general o no guarda relación con el negocio, como "qué es un barco", "quién descubrió América" o equivalente, usa OUT_OF_SCOPE. Nunca conviertas una pregunta fuera de dominio en BUSINESS_INFO y no intentes responderla con conocimiento general. Para CREATE_RESERVATION conserva en reservation todos los datos inequívocamente conocidos de la reserva. Si el asistente acaba de presentar un resumen completo de reserva y pide confirmación explícita, una respuesta inequívoca del usuario como "sí", "confirmo", "adelante" o equivalente debe producir intent=CREATE_RESERVATION y reservation.confirm=true. No uses confirm=true para aceptación de promociones, respuestas vagas ni antes de un resumen de reserva. BUSINESS_INFO puede contener varios topics. Usa auxiliary=true solo cuando BUSINESS_INFO es una pregunta temporal dentro de un workflow operativo que debe reanudarse. Si el turno responde directamente a la pregunta del asistente sobre terminar la llamada, incluye closing_response=CONFIRM si acepta terminar o closing_response=REJECT si rechaza terminar. Un rechazo puro del cierre no es una nueva intención empresarial: conserva como intent el workflow operativo que estaba activo; si no había uno, usa BUSINESS_INFO con GENERAL_INFO solo como valor neutro y closing_response=REJECT. Si el usuario rechaza cerrar y además expresa una nueva intención, incluye closing_response=REJECT junto con esa nueva intención. Nunca decidas estados empresariales como BOOKED o CANCELLED: pertenecen exclusivamente al backend.${temporalReference}`,
     parameters: {
       type: "object",
       properties: {
         intent: {
           type: "string",
-          enum: ["CREATE_RESERVATION", "CANCEL_RESERVATION", "QUERY_RESERVATION", "BUSINESS_INFO", "MARKETING_CONSENT", "CLOSING"],
+          enum: ["CREATE_RESERVATION", "CANCEL_RESERVATION", "QUERY_RESERVATION", "BUSINESS_INFO", "MARKETING_CONSENT", "OUT_OF_SCOPE", "CLOSING"],
         },
         closing_response: {
           type: "string",

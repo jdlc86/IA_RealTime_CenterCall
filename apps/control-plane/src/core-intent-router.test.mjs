@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseCoreIntentRequest } from "../.test-dist/core-intent-router.js";
+import { parseCoreIntentRequest, coreIntentClassifierTool } from "../.test-dist/core-intent-router.js";
 
 test("parses reservation create as one top-level workflow", () => {
   assert.deepEqual(parseCoreIntentRequest(JSON.stringify({ intent: "CREATE_RESERVATION" })), {
@@ -26,6 +26,20 @@ test("business info without topic defaults to general info", () => {
     auxiliary: false,
     businessInfoTopics: ["GENERAL_INFO"],
   });
+});
+
+test("parses out of scope as a dedicated non-business intent", () => {
+  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({ intent: "OUT_OF_SCOPE" })), {
+    intent: "OUT_OF_SCOPE",
+  });
+});
+
+test("classifier contract exposes out of scope and restricts business info to the business", () => {
+  const tool = coreIntentClassifierTool();
+  const intent = tool.parameters.properties.intent;
+  assert.ok(intent.enum.includes("OUT_OF_SCOPE"));
+  assert.match(tool.description, /qué es un barco/);
+  assert.match(tool.description, /Nunca conviertas una pregunta fuera de dominio en BUSINESS_INFO/);
 });
 
 test("parses explicit rejection of a pending close without changing workflow intent", () => {
