@@ -28,6 +28,33 @@ test("business info without topic defaults to general info", () => {
   });
 });
 
+test("parses explicit rejection of a pending close without changing workflow intent", () => {
+  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({
+    intent: "CREATE_RESERVATION",
+    closing_response: "REJECT",
+  })), {
+    intent: "CREATE_RESERVATION",
+    closingResponse: "REJECT",
+  });
+});
+
+test("parses explicit confirmation of close", () => {
+  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({
+    intent: "CLOSING",
+    closing_response: "CONFIRM",
+  })), {
+    intent: "CLOSING",
+    closingResponse: "CONFIRM",
+  });
+});
+
+test("rejects unknown closing response fail closed", () => {
+  assert.throws(() => parseCoreIntentRequest(JSON.stringify({
+    intent: "CREATE_RESERVATION",
+    closing_response: "MAYBE",
+  })));
+});
+
 test("rejects unknown top-level intents fail closed", () => {
   assert.throws(() => parseCoreIntentRequest(JSON.stringify({ intent: "BOOKED" })));
 });
