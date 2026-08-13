@@ -5,7 +5,8 @@ import { SupabaseMarketingConsentStore } from "./marketing-consent-store";
 const MANAGE_MARKETING_CONSENT = "manage_marketing_consent";
 const POST_BOOKING_MARKETING_PROMPT = "Después pregunta, de forma separada y opcional, si desea recibir ofertas y promociones en este mismo número.";
 const OFFER_POLICY_VERSION = "post-booking-offer-v1";
-const SAFE_POST_BOOKING_PROMPT = "Después, de forma separada y opcional, puedes preguntarle si desea recibir ofertas y promociones en este mismo número.";
+const SAFE_POST_BOOKING_PROMPT = "Pregunta ahora, de forma separada y opcional, si desea recibir ofertas y promociones en este mismo número. No digas que se hablará de promociones más tarde.";
+const SILENT_MARKETING_SUPPRESSION = "No menciones ofertas, promociones, marketing, altas comerciales ni futuras comunicaciones comerciales en este turno. No digas que hablarás de ello más tarde. Limítate a comunicar la reserva confirmada y continúa la conversación con normalidad.";
 
 const BaseConstructor = CallSessionV7 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV7.prototype as any;
@@ -41,10 +42,7 @@ export class CallSession extends BaseConstructor {
       (this as any).diagnostics?.checkpoint?.("MARKETING_CONSENT_PROMPT_SUPPRESSED", { reason, ...details });
       BasePrototype.createSpokenResponse.call(
         this,
-        instructions.replace(
-          POST_BOOKING_MARKETING_PROMPT,
-          "No preguntes por promociones en este turno. La reserva ya está confirmada y debe comunicarse con normalidad.",
-        ),
+        instructions.replace(POST_BOOKING_MARKETING_PROMPT, SILENT_MARKETING_SUPPRESSION),
       );
     };
 
