@@ -1,4 +1,4 @@
-import { parseCoreIntentRequest } from "./core-intent-router";
+import { parseCoreIntentRequest } from "./core-intent-router.js";
 
 export type LegacyIntentEventPayload = Record<string, unknown>;
 
