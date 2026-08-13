@@ -17,7 +17,7 @@ function queryAwareIntentTool(): Record<string, unknown> {
   return {
     type: "function",
     name: CONVERSATION_INTENT,
-    description: `Clasifica cada turno. Para RESERVATION incluye reservation y distingue operation=CREATE para crear, operation=QUERY para consultar reservas existentes y operation=CANCEL para cancelar. QUERY y CANCEL identifican siempre las reservas inicialmente mediante el caller_phone confiable del backend; nunca uses un número dictado verbalmente como prueba de identidad. Durante CANCEL selection_index solo puede usarse tras presentar opciones numeradas. confirm=true solo tras confirmación explícita de creación o cancelación presentada en un turno anterior. Para MARKETING_CONSENT incluye marketing_consent únicamente ante aceptación, rechazo o revocación explícita. Referencia temporal actual en Madrid: ${currentMadridReference()}. Nunca inventes datos.`,
+    description: `Clasifica cada turno. Para RESERVATION incluye reservation y distingue operation=CREATE para crear, operation=QUERY para consultar reservas existentes y operation=CANCEL para cancelar. QUERY y CANCEL identifican siempre las reservas inicialmente mediante el caller_phone confiable del backend; nunca uses un número dictado verbalmente como prueba de identidad. Durante CANCEL, selection_index representa una opción, selection_indexes varias opciones y select_all=true únicamente cuando el usuario pide inequívocamente cancelar todas las reservas mostradas. Nunca combines esos campos. confirm=true solo tras confirmación explícita del resumen exacto de creación o cancelación presentado en un turno anterior. Para MARKETING_CONSENT incluye marketing_consent únicamente ante aceptación, rechazo o revocación explícita. Referencia temporal actual en Madrid: ${currentMadridReference()}. Nunca inventes datos.`,
     parameters: {
       type: "object",
       properties: {
@@ -36,6 +36,8 @@ function queryAwareIntentTool(): Record<string, unknown> {
             duration_minutes: { type: "integer", minimum: 15, maximum: 480 },
             notes: { type: "string" },
             selection_index: { type: "integer", minimum: 1, maximum: 20 },
+            selection_indexes: { type: "array", items: { type: "integer", minimum: 1, maximum: 20 }, minItems: 1, maxItems: 20, uniqueItems: true },
+            select_all: { type: "boolean" },
             confirm: { type: "boolean" },
           },
           additionalProperties: false,
@@ -91,7 +93,7 @@ export class CallSession extends BaseConstructor {
     if (isStart && response.ok && !this.querySessionUpdateV11Sent) {
       this.querySessionUpdateV11Sent = true;
       (this as any).send({ type: "session.update", session: { type: "realtime", tools: [queryAwareIntentTool()], tool_choice: "required" } });
-      (this as any).diagnostics?.checkpoint?.("RESERVATION_QUERY_CLASSIFIER_SCHEMA_UPDATED", { reservation_operations: ["CREATE", "QUERY", "CANCEL"], identity_policy: "TRUSTED_CALLER_PHONE" });
+      (this as any).diagnostics?.checkpoint?.("RESERVATION_QUERY_CLASSIFIER_SCHEMA_UPDATED", { reservation_operations: ["CREATE", "QUERY", "CANCEL"], identity_policy: "TRUSTED_CALLER_PHONE", multi_cancel_supported: true });
     }
     return response;
   }

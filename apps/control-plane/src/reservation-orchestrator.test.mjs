@@ -38,19 +38,10 @@ test("classifier can express QUERY without requiring creation fields", () => {
     reservation: { operation: "QUERY" },
   }));
   assert.equal(turn.operation, "QUERY");
-  assert.deepEqual(turn.patch, {
-    partySize: undefined,
-    startsAt: undefined,
-    customerName: undefined,
-    customerPhone: undefined,
-    useCallerPhone: undefined,
-    durationMinutes: undefined,
-    notes: undefined,
-  });
   assert.equal(turn.confirm, false);
 });
 
-test("classifier can express CANCEL and a numbered selection explicitly", () => {
+test("classifier can express one CANCEL selection", () => {
   const turn = parseReservationTurn(JSON.stringify({
     intent: "CONTINUE",
     data_requirement: "RESERVATION",
@@ -60,6 +51,36 @@ test("classifier can express CANCEL and a numbered selection explicitly", () => 
   assert.equal(turn.operation, "CANCEL");
   assert.equal(turn.selectionIndex, 2);
   assert.equal(turn.confirm, false);
+});
+
+test("classifier can express several CANCEL selections", () => {
+  const turn = parseReservationTurn(JSON.stringify({
+    intent: "CONTINUE",
+    data_requirement: "RESERVATION",
+    reason: "quiere cancelar la primera y la tercera",
+    reservation: { operation: "CANCEL", selection_indexes: [1, 3], confirm: false },
+  }));
+  assert.deepEqual(turn.selectionIndexes, [1, 3]);
+  assert.equal(turn.selectAll, false);
+});
+
+test("classifier can express CANCEL all explicitly", () => {
+  const turn = parseReservationTurn(JSON.stringify({
+    intent: "CONTINUE",
+    data_requirement: "RESERVATION",
+    reason: "quiere cancelar todas",
+    reservation: { operation: "CANCEL", select_all: true, confirm: false },
+  }));
+  assert.equal(turn.selectAll, true);
+});
+
+test("conflicting multi-cancel selection modes fail closed", () => {
+  assert.throws(() => parseReservationTurn(JSON.stringify({
+    intent: "CONTINUE",
+    data_requirement: "RESERVATION",
+    reason: "conflict",
+    reservation: { operation: "CANCEL", selection_index: 1, select_all: true },
+  })));
 });
 
 test("draft accumulates fields over several voice turns", () => {

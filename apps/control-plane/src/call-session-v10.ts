@@ -1,5 +1,5 @@
 import { CallSession as CallSessionV9 } from "./call-session-v9";
-import { cancellationFingerprint, chooseCancellationCandidate, emptyCancellationState, publicCancellationOptions, type CancellationState } from "./reservation-cancellation";
+import { cancellationFingerprint, chooseCancellationCandidates, emptyCancellationState, publicCancellationOptions, publicSelectedReservations, type CancellationState } from "./reservation-cancellation";
 import { parseReservationTurn } from "./reservation-orchestrator";
 import { parseSemanticDecision } from "./semantic-router";
 import { SupabaseAdapter, type BookedReservationSummary } from "./supabase-adapter";
@@ -22,14 +22,14 @@ function requireRuntimeString(value: unknown, name: string): string {
   return value.trim();
 }
 
-function rawReservationOperation(argumentsJson: string | undefined): "CREATE" | "CANCEL" | null {
+function rawReservationOperation(argumentsJson: string | undefined): "CREATE" | "QUERY" | "CANCEL" | null {
   if (!argumentsJson?.trim()) return null;
   try {
     const root = JSON.parse(argumentsJson) as Record<string, unknown>;
     const reservation = root.reservation;
     if (!reservation || typeof reservation !== "object" || Array.isArray(reservation)) return null;
     const operation = (reservation as Record<string, unknown>).operation;
-    return operation === "CREATE" || operation === "CANCEL" ? operation : null;
+    return operation === "CREATE" || operation === "QUERY" || operation === "CANCEL" ? operation : null;
   } catch {
     return null;
   }
@@ -45,14 +45,14 @@ export class CallSession extends BaseConstructor {
     });
   }
 
-  private sendCancellationClassifierOutput(callId: string | undefined, stage: string): void {
+  private sendCancellationClassifierOutput(callId: string | undefined, stage: string, details: Record<string, unknown> = {}): void {
     if (!callId) return;
     (this as any).send({
       type: "conversation.item.create",
       item: {
         type: "function_call_output",
         call_id: callId,
-        output: JSON.stringify({ ok: true, action: "continue", data_requirement: "RESERVATION", reservation_operation: "CANCEL", stage }),
+        output: JSON.stringify({ ok: true, action: "continue", data_requirement: "RESERVATION", reservation_operation: "CANCEL", stage, ...details }),
       },
     });
   }
@@ -76,7 +76,7 @@ export class CallSession extends BaseConstructor {
     } catch (error) {
       this.sendCancellationClassifierOutput(callId, "INVALID_CANCEL_REQUEST");
       (this as any).diagnostics?.fail?.("RESERVATION_CANCEL_TURN_INVALID", "RESERVATION_CANCEL_CLASSIFIER_PAYLOAD_INVALID", { error: error instanceof Error ? error.message : String(error) });
-      (this as any).createSpokenResponse("No se ha cancelado ninguna reserva. Pide al usuario que indique de nuevo, brevemente, que desea cancelar una reserva existente.");
+      (this as any).createSpokenResponse("No se ha cancelado ninguna reserva. Pide al usuario que indique de nuevo qué reserva o reservas desea cancelar.");
       return;
     }
 
@@ -103,25 +103,25 @@ export class CallSession extends BaseConstructor {
     }
 
     const state = this.cancellationStateV10;
-    if (!state.selectedId) {
-      const selected = chooseCancellationCandidate(state.candidates, turn);
-      if (!selected) {
-        this.sendCancellationClassifierOutput(callId, "SELECT_RESERVATION");
+    if (state.selectedIds.length === 0) {
+      const selected = chooseCancellationCandidates(state.candidates, turn);
+      if (selected.length === 0) {
+        this.sendCancellationClassifierOutput(callId, "SELECT_RESERVATIONS");
         const options = publicCancellationOptions(state.candidates);
-        (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCEL_SELECTION_REQUIRED", { candidate_count: options.length });
-        (this as any).createSpokenResponse(`Hay varias reservas futuras verificadas asociadas a esta llamada. Presenta de forma breve y numerada únicamente estas opciones: ${JSON.stringify(options)}. No leas identificadores internos ni teléfonos. Pide que elija una opción; todavía no canceles nada.`);
+        (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCEL_SELECTION_REQUIRED", { candidate_count: options.length, multi_select_supported: true });
+        (this as any).createSpokenResponse(`Hay reservas futuras verificadas asociadas a esta llamada. Presenta de forma breve y numerada únicamente estas opciones: ${JSON.stringify(options)}. No leas identificadores internos ni teléfonos. El usuario puede elegir una, varias opciones o todas. Todavía no canceles nada.`);
         return;
       }
-      state.selectedId = selected.id;
-      state.confirmationFingerprint = cancellationFingerprint(selected);
-      this.sendCancellationClassifierOutput(callId, "CONFIRM_CANCEL_RESERVATION");
-      (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCEL_CONFIRMATION_ARMED", { reservation_id: selected.id });
-      (this as any).createSpokenResponse(`Resume brevemente esta reserva verificada: ${JSON.stringify({ starts_at: selected.starts_at, party_size: selected.party_size, customer_name: selected.customer_name })}. Pregunta de forma inequívoca si desea cancelar ESTA reserva. No la canceles hasta recibir una confirmación explícita en un turno posterior.`);
+      state.selectedIds = selected.map((reservation) => reservation.id);
+      state.confirmationFingerprints = Object.fromEntries(selected.map((reservation) => [reservation.id, cancellationFingerprint(reservation)]));
+      this.sendCancellationClassifierOutput(callId, "CONFIRM_CANCEL_RESERVATIONS", { selected_count: selected.length });
+      (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCEL_CONFIRMATION_ARMED", { selected_count: selected.length, reservation_ids: state.selectedIds });
+      (this as any).createSpokenResponse(`Resume brevemente estas reservas verificadas que se van a cancelar: ${JSON.stringify(publicSelectedReservations(selected))}. Pregunta de forma inequívoca si confirma cancelar exactamente ${selected.length === 1 ? "esta reserva" : "estas reservas"}. No canceles nada hasta recibir una confirmación explícita en un turno posterior.`);
       return;
     }
 
-    const selected = state.candidates.find((candidate) => candidate.id === state.selectedId) ?? null;
-    if (!selected || !state.confirmationFingerprint) {
+    const selected = state.selectedIds.map((id) => state.candidates.find((candidate) => candidate.id === id)).filter((value): value is BookedReservationSummary => Boolean(value));
+    if (selected.length !== state.selectedIds.length) {
       this.resetCancellation();
       this.sendCancellationClassifierOutput(callId, "CANCEL_STATE_INVALID");
       (this as any).createSpokenResponse("No se ha cancelado ninguna reserva. Indica que el proceso de cancelación debe iniciarse de nuevo.");
@@ -129,36 +129,43 @@ export class CallSession extends BaseConstructor {
     }
 
     if (turn.confirm !== true) {
-      this.sendCancellationClassifierOutput(callId, "CONFIRM_CANCEL_RESERVATION");
-      (this as any).createSpokenResponse(`La cancelación sigue pendiente. Vuelve a preguntar de forma breve si confirma cancelar la reserva de ${JSON.stringify({ starts_at: selected.starts_at, party_size: selected.party_size })}. No canceles sin un sí inequívoco.`);
+      this.sendCancellationClassifierOutput(callId, "CONFIRM_CANCEL_RESERVATIONS", { selected_count: selected.length });
+      (this as any).createSpokenResponse(`La cancelación sigue pendiente. Pregunta de forma breve si confirma cancelar exactamente estas reservas: ${JSON.stringify(publicSelectedReservations(selected))}. No canceles sin un sí inequívoco.`);
       return;
     }
 
-    (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCEL_FINAL_RECHECK_STARTED", { reservation_id: selected.id });
+    (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCEL_FINAL_RECHECK_STARTED", { selected_count: selected.length, reservation_ids: state.selectedIds });
     const latest = await this.loadCandidates();
-    const current = latest.find((candidate) => candidate.id === selected.id) ?? null;
-    if (!current || cancellationFingerprint(current) !== state.confirmationFingerprint) {
-      this.resetCancellation();
-      this.sendCancellationClassifierOutput(callId, "RESERVATION_CHANGED_BEFORE_CANCEL");
-      (this as any).diagnostics?.fail?.("RESERVATION_CANCEL_RECHECK_FAILED", "RESERVATION_NO_LONGER_MATCHES_CONFIRMED_STATE", { reservation_id: selected.id });
-      (this as any).createSpokenResponse("No se ha cancelado la reserva porque su estado cambió antes de completar la operación. Indica que es necesario iniciar de nuevo la consulta; no afirmes que está cancelada.");
-      return;
-    }
+    const adapter = this.getCancellationAdapter();
+    const results: Array<{ starts_at: string; party_size: number; status: "CANCELLED" | "NOT_CANCELLED"; reason?: string }> = [];
 
-    const cancelled = await this.getCancellationAdapter().cancelBookedReservation(tenantId, selected.id, callerPhone);
-    if (!cancelled) {
-      this.resetCancellation();
-      this.sendCancellationClassifierOutput(callId, "RESERVATION_NOT_CANCELLED");
-      (this as any).diagnostics?.fail?.("RESERVATION_CANCEL_WRITE_FAILED", "BOOKED_ROW_NOT_FOUND_AT_WRITE", { reservation_id: selected.id });
-      (this as any).createSpokenResponse("No se ha podido completar la cancelación porque la reserva ya no estaba disponible en el estado esperado. No digas que está cancelada.");
-      return;
+    for (const reservation of selected) {
+      const current = latest.find((candidate) => candidate.id === reservation.id) ?? null;
+      const expectedFingerprint = state.confirmationFingerprints[reservation.id];
+      if (!current || !expectedFingerprint || cancellationFingerprint(current) !== expectedFingerprint) {
+        results.push({ starts_at: reservation.starts_at, party_size: reservation.party_size, status: "NOT_CANCELLED", reason: "changed_before_cancel" });
+        (this as any).diagnostics?.fail?.("RESERVATION_CANCEL_RECHECK_FAILED", "RESERVATION_NO_LONGER_MATCHES_CONFIRMED_STATE", { reservation_id: reservation.id });
+        continue;
+      }
+
+      const cancelled = await adapter.cancelBookedReservation(tenantId, reservation.id, callerPhone);
+      if (!cancelled) {
+        results.push({ starts_at: reservation.starts_at, party_size: reservation.party_size, status: "NOT_CANCELLED", reason: "write_precondition_failed" });
+        (this as any).diagnostics?.fail?.("RESERVATION_CANCEL_WRITE_FAILED", "BOOKED_ROW_NOT_FOUND_AT_WRITE", { reservation_id: reservation.id });
+        continue;
+      }
+
+      results.push({ starts_at: reservation.starts_at, party_size: reservation.party_size, status: "CANCELLED" });
+      (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCELLED_EVIDENCE", { reservation_id: reservation.id, identity_source: "CALLER_ID", previous_status: "BOOKED", new_status: "CANCELLED", batch_size: selected.length });
     }
 
     this.resetCancellation();
     (this as any).reservationDraft = {};
-    this.sendCancellationClassifierOutput(callId, "CANCELLED");
-    (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCELLED_EVIDENCE", { reservation_id: selected.id, identity_source: "CALLER_ID", previous_status: "BOOKED", new_status: "CANCELLED" });
-    (this as any).createSpokenResponse(`La cancelación está confirmada por el backend. Comunícalo de forma breve usando estos datos: ${JSON.stringify({ starts_at: selected.starts_at, party_size: selected.party_size, status: "CANCELLED" })}. No preguntes por promociones como consecuencia de una cancelación.`);
+    const cancelledCount = results.filter((result) => result.status === "CANCELLED").length;
+    const failedCount = results.length - cancelledCount;
+    this.sendCancellationClassifierOutput(callId, failedCount === 0 ? "CANCELLED" : cancelledCount > 0 ? "PARTIALLY_CANCELLED" : "NOT_CANCELLED", { cancelled_count: cancelledCount, failed_count: failedCount });
+    (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCEL_BATCH_COMPLETED", { selected_count: selected.length, cancelled_count: cancelledCount, failed_count: failedCount });
+    (this as any).createSpokenResponse(`Usa únicamente este resultado autorizado de cancelación: ${JSON.stringify(results)}. Informa claramente cuáles quedaron canceladas y, si alguna no pudo cancelarse, cuál no cambió. No afirmes atomicidad ni rollback. No preguntes por promociones como consecuencia de una cancelación.`);
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
@@ -177,8 +184,8 @@ export class CallSession extends BaseConstructor {
       const semantic = parseSemanticDecision(event.arguments);
       if (semantic.intent === "CONTINUE" && semantic.dataRequirement === "RESERVATION") {
         const explicitOperation = rawReservationOperation(event.arguments);
-        if (explicitOperation === "CREATE" && this.cancellationStateV10) this.resetCancellation();
-        const cancellationOwned = explicitOperation === "CANCEL" || (this.cancellationStateV10 !== null && explicitOperation !== "CREATE");
+        if ((explicitOperation === "CREATE" || explicitOperation === "QUERY") && this.cancellationStateV10) this.resetCancellation();
+        const cancellationOwned = explicitOperation === "CANCEL" || (this.cancellationStateV10 !== null && explicitOperation !== "CREATE" && explicitOperation !== "QUERY");
         if (cancellationOwned) {
           (this as any).diagnostics?.checkpoint?.("RESERVATION_OPERATION_ROUTED", { operation: "CANCEL", source: explicitOperation === "CANCEL" ? "classifier" : "active_workflow" });
           await this.handleCancellationTurn(event.arguments, event.call_id);
