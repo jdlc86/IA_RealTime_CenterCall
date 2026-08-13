@@ -29,8 +29,6 @@ function normalizeTopics(value: unknown): BusinessInfoTopic[] | undefined {
   return topics;
 }
 
-/** Parses only the top-level routing decision. Domain-specific payloads are
- * intentionally left to their existing validated parsers/executors. */
 export function parseCoreIntentRequest(argumentsJson: string | undefined): CoreIntentRequest {
   if (!argumentsJson?.trim()) throw new Error("Missing core intent payload");
   const parsed = JSON.parse(argumentsJson) as unknown;
@@ -56,11 +54,14 @@ export function parseCoreIntentRequest(argumentsJson: string | undefined): CoreI
 /** Single classifier contract used by Realtime. It decides routing and carries
  * the already-known domain payload in the same function call, avoiding a second
  * classifier/forced-tool response. Backend executors remain the source of truth. */
-export function coreIntentClassifierTool(): Record<string, unknown> {
+export function coreIntentClassifierTool(currentMadridReference?: string): Record<string, unknown> {
+  const temporalReference = currentMadridReference?.trim()
+    ? ` Referencia temporal autoritativa actual en Europe/Madrid: ${currentMadridReference.trim()}. Usa esta referencia para resolver hoy/mañana; si fecha u hora siguen ambiguas, omite starts_at.`
+    : "";
   return {
     type: "function",
     name: "conversation_intent",
-    description: "Clasifica la intención operativa ACTUAL del usuario y, en la MISMA llamada, incluye los datos inequívocamente conocidos del dominio. Elige exactamente una intención principal. BUSINESS_INFO puede contener varios topics (por ejemplo HOURS y MENU). Usa auxiliary=true solo cuando BUSINESS_INFO es una pregunta temporal dentro de un workflow operativo que debe reanudarse. Un cambio explícito entre reservar, cancelar o consultar cambia el workflow. Nunca decidas estados empresariales como BOOKED o CANCELLED: pertenecen exclusivamente al backend.",
+    description: `Clasifica la intención operativa ACTUAL del usuario y, en la MISMA llamada, incluye los datos inequívocamente conocidos del dominio. Elige exactamente una intención principal. BUSINESS_INFO puede contener varios topics (por ejemplo HOURS y MENU). Usa auxiliary=true solo cuando BUSINESS_INFO es una pregunta temporal dentro de un workflow operativo que debe reanudarse. Un cambio explícito entre reservar, cancelar o consultar cambia el workflow. Nunca decidas estados empresariales como BOOKED o CANCELLED: pertenecen exclusivamente al backend.${temporalReference}`,
     parameters: {
       type: "object",
       properties: {
