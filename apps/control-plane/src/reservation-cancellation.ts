@@ -3,23 +3,30 @@ import type { ReservationTurn } from "./reservation-orchestrator.js";
 
 export type CancellationState = {
   candidates: BookedReservationSummary[];
-  selectedId: string | null;
-  confirmationFingerprint: string | null;
+  selectedIds: string[];
+  confirmationFingerprints: Record<string, string>;
 };
 
 export function emptyCancellationState(): CancellationState {
-  return { candidates: [], selectedId: null, confirmationFingerprint: null };
+  return { candidates: [], selectedIds: [], confirmationFingerprints: {} };
 }
 
 export function cancellationFingerprint(reservation: BookedReservationSummary): string {
   return JSON.stringify({ id: reservation.id, starts_at: reservation.starts_at, party_size: reservation.party_size, status: reservation.status });
 }
 
-export function chooseCancellationCandidate(candidates: BookedReservationSummary[], turn: ReservationTurn): BookedReservationSummary | null {
-  if (candidates.length === 0) return null;
-  if (candidates.length === 1 && turn.selectionIndex === undefined) return candidates[0];
-  if (turn.selectionIndex === undefined) return null;
-  return candidates[turn.selectionIndex - 1] ?? null;
+export function chooseCancellationCandidates(candidates: BookedReservationSummary[], turn: ReservationTurn): BookedReservationSummary[] {
+  if (candidates.length === 0) return [];
+  if (turn.selectAll === true) return [...candidates];
+  if (turn.selectionIndexes?.length) {
+    return turn.selectionIndexes.map((index) => candidates[index - 1]).filter((value): value is BookedReservationSummary => Boolean(value));
+  }
+  if (turn.selectionIndex !== undefined) {
+    const selected = candidates[turn.selectionIndex - 1];
+    return selected ? [selected] : [];
+  }
+  if (candidates.length === 1) return [candidates[0]];
+  return [];
 }
 
 export function publicCancellationOptions(candidates: BookedReservationSummary[]): Array<{ option: number; starts_at: string; party_size: number; customer_name: string }> {
@@ -29,4 +36,8 @@ export function publicCancellationOptions(candidates: BookedReservationSummary[]
     party_size: reservation.party_size,
     customer_name: reservation.customer_name,
   }));
+}
+
+export function publicSelectedReservations(candidates: BookedReservationSummary[]): Array<{ starts_at: string; party_size: number; customer_name: string }> {
+  return candidates.map((reservation) => ({ starts_at: reservation.starts_at, party_size: reservation.party_size, customer_name: reservation.customer_name }));
 }
