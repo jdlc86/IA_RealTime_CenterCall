@@ -25,6 +25,20 @@ function hasReservationDraft(value: unknown): boolean {
   return Object.keys(value as Record<string, unknown>).length > 0;
 }
 
+function rawReservationOperation(argumentsJson: string | undefined): "CREATE" | "QUERY" | "CANCEL" | null {
+  if (!argumentsJson?.trim()) return null;
+  try {
+    const root = JSON.parse(argumentsJson) as Record<string, unknown>;
+    const reservation = root.reservation;
+    if (!reservation || typeof reservation !== "object" || Array.isArray(reservation)) return null;
+    const operation = (reservation as Record<string, unknown>).operation;
+    if (operation === "QUERY" || operation === "CANCEL" || operation === "CREATE") return operation;
+    return "CREATE";
+  } catch {
+    return null;
+  }
+}
+
 /**
  * v9 is the session-boundary authority. Older workflow layers may implement how a
  * reservation or marketing action runs, but they no longer get to bypass call
@@ -32,6 +46,8 @@ function hasReservationDraft(value: unknown): boolean {
  * while making routing precedence explicit in one place.
  */
 export class CallSession extends BaseConstructor {
+  private createReservationIntentActiveV9 = false;
+
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const text = readRealtimeText(data);
     let event: RealtimeEvent | null = null;
@@ -41,7 +57,16 @@ export class CallSession extends BaseConstructor {
 
     if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
       const semantic = parseSemanticDecision(event.arguments);
-      const reservationInProgress = hasReservationDraft((this as any).reservationDraft) && (this as any).reservationBookedThisCall !== true;
+      const operation = semantic.dataRequirement === "RESERVATION" ? rawReservationOperation(event.arguments) : null;
+      if (semantic.intent === "CONTINUE" && semantic.dataRequirement === "RESERVATION" && operation !== "QUERY" && operation !== "CANCEL") {
+        this.createReservationIntentActiveV9 = true;
+      }
+      if ((this as any).reservationBookedThisCall === true || operation === "QUERY" || operation === "CANCEL") {
+        this.createReservationIntentActiveV9 = false;
+      }
+
+      const reservationInProgress = (this.createReservationIntentActiveV9 || hasReservationDraft((this as any).reservationDraft))
+        && (this as any).reservationBookedThisCall !== true;
       const authority = authorizeSpecializedFlow({
         lifecycleState: String((this as any).state ?? "active"),
         hangupStarted: (this as any).hangupStarted === true,
@@ -51,6 +76,7 @@ export class CallSession extends BaseConstructor {
       (this as any).diagnostics?.checkpoint?.("CONVERSATION_STATE_AUTHORITY", {
         lifecycle_state: String((this as any).state ?? "active"),
         reservation_in_progress: reservationInProgress,
+        reservation_intent_active: this.createReservationIntentActiveV9,
         classifier_requirement: semantic.dataRequirement,
         classifier_degraded: semantic.degraded,
         authorized_flow: authority.flow,
@@ -63,9 +89,6 @@ export class CallSession extends BaseConstructor {
       }
 
       if (authority.flow === "RESERVATION" && semantic.dataRequirement !== "RESERVATION") {
-        // Preserve the classifier payload and only correct routing ownership. The
-        // reservation parser can still recover reservation fields already present
-        // in the payload; no business facts are invented here.
         let parsed: Record<string, unknown> = {};
         try { parsed = JSON.parse(event.arguments ?? "{}") as Record<string, unknown>; } catch { parsed = {}; }
         const routed: RealtimeEvent = {

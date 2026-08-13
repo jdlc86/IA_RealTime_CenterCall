@@ -19,6 +19,7 @@ export type ReservationTurn = {
   selectionIndex?: number;
   selectionIndexes?: number[];
   selectAll?: boolean;
+  unresolvedStartsAt?: boolean;
 };
 
 function optionalString(record: Record<string, unknown>, key: string, maxLength: number): string | undefined {
@@ -65,9 +66,9 @@ function normalizeE164(value: string): string {
   return value;
 }
 
-function normalizeIso(value: string): string {
+function tryNormalizeIso(value: string): string | undefined {
   const parsed = Date.parse(value);
-  if (!Number.isFinite(parsed) || !/[zZ]|[+-]\d{2}:?\d{2}$/.test(value)) throw new Error("Invalid reservation.starts_at");
+  if (!Number.isFinite(parsed) || !/[zZ]|[+-]\d{2}:?\d{2}$/.test(value)) return undefined;
   return new Date(parsed).toISOString();
 }
 
@@ -82,6 +83,7 @@ export function parseReservationTurn(argumentsJson: string | undefined): Reserva
   for (const key of Object.keys(reservation)) if (!allowed.has(key)) throw new Error(`Unexpected reservation field: ${key}`);
 
   const startsAtRaw = optionalString(reservation, "starts_at", 64);
+  const startsAt = startsAtRaw ? tryNormalizeIso(startsAtRaw) : undefined;
   const phoneRaw = optionalString(reservation, "customer_phone", 32);
   const confirm = optionalBoolean(reservation, "confirm") ?? false;
   const selectionIndex = optionalInteger(reservation, "selection_index", 1, 20);
@@ -94,7 +96,7 @@ export function parseReservationTurn(argumentsJson: string | undefined): Reserva
     operation: optionalOperation(reservation),
     patch: {
       partySize: optionalInteger(reservation, "party_size", 1, 100),
-      startsAt: startsAtRaw ? normalizeIso(startsAtRaw) : undefined,
+      startsAt,
       customerName: optionalString(reservation, "customer_name", 160),
       customerPhone: phoneRaw ? normalizeE164(phoneRaw) : undefined,
       useCallerPhone: optionalBoolean(reservation, "use_caller_phone"),
@@ -105,6 +107,7 @@ export function parseReservationTurn(argumentsJson: string | undefined): Reserva
     selectionIndex,
     selectionIndexes,
     selectAll,
+    unresolvedStartsAt: Boolean(startsAtRaw && !startsAt),
   };
 }
 
