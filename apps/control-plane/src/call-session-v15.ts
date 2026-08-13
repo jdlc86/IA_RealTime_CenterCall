@@ -11,10 +11,46 @@ import {
 const BaseConstructor = CallSessionV14 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV14.prototype as any;
 
+type RealtimeEventV15 = {
+  type?: string;
+  transcript?: string;
+};
+
+function readRealtimeTextV15(data: unknown): string | null {
+  if (typeof data === "string") return data;
+  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
+  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+  return null;
+}
+
+function normalizeClosingTextV15(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9ñ\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isAssistantClosingCommitmentV15(raw: string): boolean {
+  const text = normalizeClosingTextV15(raw);
+  return [
+    /\bvoy a colgar(?: la llamada)?(?: ahora)?\b/,
+    /\bvoy a finalizar(?: la llamada)?(?: ahora)?\b/,
+    /\bvoy a terminar(?: la llamada)?(?: ahora)?\b/,
+    /\bprocedo a colgar(?: la llamada)?\b/,
+    /\bprocedo a finalizar(?: la llamada)?\b/,
+    /\bterminare la llamada(?: ahora)?\b/,
+    /\bfinalizare la llamada(?: ahora)?\b/,
+    /\bcolgare(?: la llamada)?(?: ahora)?\b/,
+  ].some((pattern) => pattern.test(text));
+}
+
 /**
- * v15 is the spoken-output boundary. It keeps the already validated business
- * executors intact, but prevents Realtime from receiving an open-ended
- * reservation classifier output before the backend has decided what may be said.
+ * v15 is the final spoken-output boundary. Business executors remain unchanged.
+ * It gates reservation speech on backend state and also enforces that only the
+ * Core state machine owns call termination: assistant wording is never authority.
  */
 export class CallSession extends BaseConstructor {
   private pendingReservationClassifierOutputsV15: unknown[] = [];
@@ -68,5 +104,32 @@ export class CallSession extends BaseConstructor {
     }
 
     BasePrototype.createSpokenResponse.call(this, governed);
+  }
+
+  private async handleRealtimeMessage(data: unknown): Promise<void> {
+    const text = readRealtimeTextV15(data);
+    let event: RealtimeEventV15 | null = null;
+    if (text) {
+      try { event = JSON.parse(text) as RealtimeEventV15; } catch { event = null; }
+    }
+
+    if (
+      event?.type === "response.output_audio_transcript.done"
+      && typeof event.transcript === "string"
+      && (this as any).state !== "closing"
+      && isAssistantClosingCommitmentV15(event.transcript)
+    ) {
+      (this as any).diagnostics?.fail?.("ASSISTANT_CLOSING_COMMITMENT_BLOCKED_BY_CORE", "ASSISTANT_WORDING_IS_NOT_CLOSE_AUTHORITY", {
+        state_preserved: String((this as any).state ?? "active"),
+        core_close_required: true,
+      });
+      BasePrototype.createSpokenResponse.call(
+        this,
+        "No termines ni anuncies que vas a terminar la llamada. El cierre todavía no está autorizado por la máquina de estados. Pregunta de forma natural si necesita algo más en lo que puedas ayudar y espera su respuesta.",
+      );
+      return;
+    }
+
+    await BasePrototype.handleRealtimeMessage.call(this, data);
   }
 }
