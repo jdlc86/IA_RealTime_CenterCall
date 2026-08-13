@@ -12,7 +12,7 @@ export function emptyCancellationState(): CancellationState {
 }
 
 export function cancellationFingerprint(reservation: BookedReservationSummary): string {
-  return JSON.stringify({ id: reservation.id, starts_at: reservation.starts_at, party_size: reservation.party_size, status: reservation.status });
+  return JSON.stringify({ id: reservation.id, reservation_code: reservation.reservation_code, starts_at: reservation.starts_at, party_size: reservation.party_size, status: reservation.status });
 }
 
 export function chooseCancellationCandidates(candidates: BookedReservationSummary[], turn: ReservationTurn): BookedReservationSummary[] {
@@ -29,15 +29,16 @@ export function chooseCancellationCandidates(candidates: BookedReservationSummar
   return [];
 }
 
-export function publicCancellationOptions(candidates: BookedReservationSummary[]): Array<{ option: number; starts_at: string; party_size: number; customer_name: string }> {
+export function publicCancellationOptions(candidates: BookedReservationSummary[]): Array<{ option: number; reservation_code: string; starts_at: string; party_size: number; customer_name: string }> {
   return candidates.map((reservation, index) => ({
     option: index + 1,
+    reservation_code: reservation.reservation_code,
     starts_at: reservation.starts_at,
     party_size: reservation.party_size,
     customer_name: reservation.customer_name,
   }));
 }
 
-export function publicSelectedReservations(candidates: BookedReservationSummary[]): Array<{ starts_at: string; party_size: number; customer_name: string }> {
-  return candidates.map((reservation) => ({ starts_at: reservation.starts_at, party_size: reservation.party_size, customer_name: reservation.customer_name }));
+export function publicSelectedReservations(candidates: BookedReservationSummary[]): Array<{ reservation_code: string; starts_at: string; party_size: number; customer_name: string }> {
+  return candidates.map((reservation) => ({ reservation_code: reservation.reservation_code, starts_at: reservation.starts_at, party_size: reservation.party_size, customer_name: reservation.customer_name }));
 }
