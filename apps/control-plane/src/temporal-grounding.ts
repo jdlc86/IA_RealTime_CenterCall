@@ -51,3 +51,16 @@ export function groundMadridDateTime(iso: string, now: Date = new Date()): Madri
 export function groundedReservationView<T extends { starts_at: string }>(row: T, now: Date = new Date()): T & { temporal: MadridTemporalLabel } {
   return { ...row, temporal: groundMadridDateTime(row.starts_at, now) };
 }
+
+const ISO_WITH_ZONE = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:?\d{2})\b/g;
+
+export function extractGroundedTemporalReferences(instruction: string, now: Date = new Date()): MadridTemporalLabel[] {
+  const unique = [...new Set(instruction.match(ISO_WITH_ZONE) ?? [])];
+  return unique.map((iso) => groundMadridDateTime(iso, now));
+}
+
+export function withAuthoritativeTemporalGrounding(instruction: string, now: Date = new Date()): string {
+  const references = extractGroundedTemporalReferences(instruction, now);
+  if (references.length === 0) return instruction;
+  return `${instruction}\n\nREFERENCIA TEMPORAL AUTORITATIVA DEL BACKEND (Europe/Madrid): ${JSON.stringify(references)}. Para cada fecha/hora mencionada usa exclusivamente spoken_date y clock_time de esta referencia. No derives ni cambies por tu cuenta hoy/mañana/ayer. Si relative_day=HOY, nunca digas mañana; si relative_day=MANANA, nunca digas hoy. Conserva también la fecha absoluta para evitar ambigüedad.`;
+}
