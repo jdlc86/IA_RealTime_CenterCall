@@ -20,11 +20,19 @@ test("parses business info with several topics", () => {
   });
 });
 
-test("business info without topic defaults to general info", () => {
-  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({ intent: "BUSINESS_INFO" })), {
+test("business info without an explicit topic fails closed", () => {
+  assert.throws(() => parseCoreIntentRequest(JSON.stringify({ intent: "BUSINESS_INFO" })), /requires explicit topics/);
+});
+
+test("pure close rejection may use topic-less business info only as neutral carrier", () => {
+  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({
+    intent: "BUSINESS_INFO",
+    closing_response: "REJECT",
+  })), {
     intent: "BUSINESS_INFO",
     auxiliary: false,
     businessInfoTopics: ["GENERAL_INFO"],
+    closingResponse: "REJECT",
   });
 });
 
@@ -34,12 +42,14 @@ test("parses out of scope as a dedicated non-business intent", () => {
   });
 });
 
-test("classifier contract exposes out of scope and restricts business info to the business", () => {
+test("classifier contract fails closed toward out of scope on domain ambiguity", () => {
   const tool = coreIntentClassifierTool();
   const intent = tool.parameters.properties.intent;
   assert.ok(intent.enum.includes("OUT_OF_SCOPE"));
   assert.match(tool.description, /qué es un barco/);
-  assert.match(tool.description, /Nunca conviertas una pregunta fuera de dominio en BUSINESS_INFO/);
+  assert.match(tool.description, /Ante duda entre BUSINESS_INFO y OUT_OF_SCOPE, elige OUT_OF_SCOPE/);
+  assert.match(tool.description, /GENERAL_INFO significa hechos del establecimiento actual, no conocimiento general/);
+  assert.deepEqual(tool.parameters.properties.business_info.required, ["topics"]);
 });
 
 test("parses explicit rejection of a pending close without changing workflow intent", () => {
@@ -78,4 +88,8 @@ test("rejects invalid business info topics", () => {
     intent: "BUSINESS_INFO",
     business_info: { topics: ["HOURS", "RESERVATION"] },
   })));
+});
+
+test("malformed classifier JSON is rejected deterministically", () => {
+  assert.throws(() => parseCoreIntentRequest('{"intent":"BUSINESS_INFO","business_info":{"topics":["MENU"]}'), SyntaxError);
 });

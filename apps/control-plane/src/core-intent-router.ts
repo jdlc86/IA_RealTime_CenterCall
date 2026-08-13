@@ -23,7 +23,7 @@ const CLOSING_RESPONSES = new Set<ClosingResponse>(["CONFIRM", "REJECT"]);
 function normalizeTopics(value: unknown): BusinessInfoTopic[] | undefined {
   if (value === undefined || value === null) return undefined;
   if (!Array.isArray(value)) throw new Error("Invalid business_info.topics");
-  if (value.length === 0 || value.length > 8) throw new Error("Invalid business_info.topics");
+  if (value.length === 0 || value.length > 5) throw new Error("Invalid business_info.topics");
   const topics: BusinessInfoTopic[] = [];
   for (const item of value) {
     if (typeof item !== "string" || !BUSINESS_TOPICS.has(item as BusinessInfoTopic)) throw new Error("Invalid business_info.topics");
@@ -60,17 +60,24 @@ export function parseCoreIntentRequest(argumentsJson: string | undefined): CoreI
 
   const businessInfo = root.business_info;
   if (!businessInfo || typeof businessInfo !== "object" || Array.isArray(businessInfo)) {
-    return {
-      intent: "BUSINESS_INFO",
-      businessInfoTopics: ["GENERAL_INFO"],
-      auxiliary: root.auxiliary === true,
-      ...(closingResponse ? { closingResponse } : {}),
-    };
+    // The only valid topic-less BUSINESS_INFO payload is the neutral carrier used
+    // for a pure rejection of a pending close while the Core is in ROUTING.
+    if (closingResponse === "REJECT") {
+      return {
+        intent: "BUSINESS_INFO",
+        businessInfoTopics: ["GENERAL_INFO"],
+        auxiliary: false,
+        closingResponse,
+      };
+    }
+    throw new Error("BUSINESS_INFO requires explicit topics");
   }
   const info = businessInfo as Record<string, unknown>;
+  const topics = normalizeTopics(info.topics);
+  if (!topics) throw new Error("BUSINESS_INFO requires explicit topics");
   return {
     intent: "BUSINESS_INFO",
-    businessInfoTopics: normalizeTopics(info.topics) ?? ["GENERAL_INFO"],
+    businessInfoTopics: topics,
     auxiliary: root.auxiliary === true,
     ...(closingResponse ? { closingResponse } : {}),
   };
@@ -84,36 +91,39 @@ export function coreIntentClassifierTool(currentMadridReference?: string): Recor
   return {
     type: "function",
     name: "conversation_intent",
-    description: `Clasifica la intención operativa ACTUAL del usuario y, en la MISMA llamada, incluye los datos inequívocamente conocidos del dominio. Elige exactamente una intención principal. Este asistente atiende exclusivamente asuntos del negocio actual. Usa BUSINESS_INFO solo cuando la pregunta se refiere explícita o contextualmente al negocio, por ejemplo carta, horarios, ubicación, servicios o información general del establecimiento. Si la pregunta es conocimiento general o no guarda relación con el negocio, como "qué es un barco", "quién descubrió América" o equivalente, usa OUT_OF_SCOPE. Nunca conviertas una pregunta fuera de dominio en BUSINESS_INFO y no intentes responderla con conocimiento general. Para CREATE_RESERVATION conserva en reservation todos los datos inequívocamente conocidos de la reserva. Si el asistente acaba de presentar un resumen completo de reserva y pide confirmación explícita, una respuesta inequívoca del usuario como "sí", "confirmo", "adelante" o equivalente debe producir intent=CREATE_RESERVATION y reservation.confirm=true. No uses confirm=true para aceptación de promociones, respuestas vagas ni antes de un resumen de reserva. BUSINESS_INFO puede contener varios topics. Usa auxiliary=true solo cuando BUSINESS_INFO es una pregunta temporal dentro de un workflow operativo que debe reanudarse. Si el turno responde directamente a la pregunta del asistente sobre terminar la llamada, incluye closing_response=CONFIRM si acepta terminar o closing_response=REJECT si rechaza terminar. Un rechazo puro del cierre no es una nueva intención empresarial: conserva como intent el workflow operativo que estaba activo; si no había uno, usa BUSINESS_INFO con GENERAL_INFO solo como valor neutro y closing_response=REJECT. Si el usuario rechaza cerrar y además expresa una nueva intención, incluye closing_response=REJECT junto con esa nueva intención. Nunca decidas estados empresariales como BOOKED o CANCELLED: pertenecen exclusivamente al backend.${temporalReference}`,
+    description: `Clasifica exclusivamente la intención ACTUAL del usuario. Elige exactamente una intención principal. REGLA DE DOMINIO: BUSINESS_INFO solo es válido cuando el turno pide información del restaurante/negocio actual. Debe poder señalarse qué dato del establecimiento se pide y por eso BUSINESS_INFO siempre debe incluir al menos un topic explícito: MENU, HOURS, LOCATION, SERVICES o GENERAL_INFO. GENERAL_INFO significa hechos del establecimiento actual, no conocimiento general. Si una pregunta puede responderse sin conocer este restaurante, o no existe una relación explícita/contextual clara con el establecimiento, clasifica OUT_OF_SCOPE. Ante duda entre BUSINESS_INFO y OUT_OF_SCOPE, elige OUT_OF_SCOPE. Ejemplos OUT_OF_SCOPE: "qué es un barco", "qué es un coche", "quién descubrió América", matemáticas, noticias o conocimiento general. Nunca uses una tool del negocio para intentar responder una pregunta fuera de dominio. Para CREATE_RESERVATION conserva en reservation solo los datos inequívocamente conocidos. Si el asistente acaba de presentar el resumen completo de reserva y pide confirmación explícita, una respuesta inequívoca como "sí", "confirmo" o "adelante" debe producir intent=CREATE_RESERVATION y reservation.confirm=true. No uses confirm=true fuera de ese contexto. BUSINESS_INFO puede contener varios topics y auxiliary=true solo cuando es una consulta del negocio temporal dentro de un workflow operativo que debe reanudarse. Si el turno responde directamente a una pregunta sobre terminar la llamada, incluye closing_response=CONFIRM o REJECT. Un rechazo puro del cierre conserva el workflow activo; solo si no había workflow usa BUSINESS_INFO sin business_info como carrier neutro con closing_response=REJECT. Nunca decidas estados backend como BOOKED o CANCELLED.${temporalReference}`,
     parameters: {
       type: "object",
       properties: {
         intent: {
           type: "string",
           enum: ["CREATE_RESERVATION", "CANCEL_RESERVATION", "QUERY_RESERVATION", "BUSINESS_INFO", "MARKETING_CONSENT", "OUT_OF_SCOPE", "CLOSING"],
+          description: "BUSINESS_INFO exige relación clara con el restaurante actual; ante duda usa OUT_OF_SCOPE.",
         },
         closing_response: {
           type: "string",
           enum: ["CONFIRM", "REJECT"],
-          description: "Solo cuando el turno responde directamente a una pregunta previa del asistente sobre terminar la llamada.",
+          description: "Solo cuando el turno responde directamente a una pregunta previa sobre terminar la llamada.",
         },
         auxiliary: { type: "boolean", description: "Solo para BUSINESS_INFO temporal que debe volver al workflow operativo anterior." },
         business_info: {
           type: "object",
+          description: "Obligatorio para BUSINESS_INFO salvo el carrier neutro de closing_response=REJECT. Los topics describen datos del restaurante actual, nunca conocimiento general.",
           properties: {
             topics: {
               type: "array",
               minItems: 1,
-              maxItems: 8,
+              maxItems: 5,
               uniqueItems: true,
               items: { type: "string", enum: ["MENU", "HOURS", "LOCATION", "SERVICES", "GENERAL_INFO"] },
             },
           },
+          required: ["topics"],
           additionalProperties: false,
         },
         reservation: {
           type: "object",
-          description: "Para CREATE_RESERVATION o CANCEL_RESERVATION. Incluye solo datos inequívocamente conocidos; omite los desconocidos. En CREATE_RESERVATION, si el turno actual confirma explícitamente el resumen completo de reserva presentado inmediatamente antes por el asistente, incluye confirm=true.",
+          description: "Para CREATE_RESERVATION o CANCEL_RESERVATION. Incluye solo datos inequívocamente conocidos; omite los desconocidos.",
           properties: {
             party_size: { type: "integer", minimum: 1, maximum: 100 },
             starts_at: { type: "string", description: "ISO 8601 con zona horaria; omite si sigue ambiguo." },
@@ -125,7 +135,7 @@ export function coreIntentClassifierTool(currentMadridReference?: string): Recor
             selection_index: { type: "integer", minimum: 1, maximum: 20 },
             selection_indexes: { type: "array", items: { type: "integer", minimum: 1, maximum: 20 }, minItems: 1, maxItems: 20, uniqueItems: true },
             select_all: { type: "boolean" },
-            confirm: { type: "boolean", description: "CREATE: true solo si el usuario acaba de confirmar explícitamente el resumen completo de reserva presentado por el asistente en el turno anterior. CANCEL: true solo si confirma explícitamente la cancelación presentada." },
+            confirm: { type: "boolean", description: "CREATE: true solo tras confirmar explícitamente el resumen completo del turno anterior. CANCEL: true solo tras confirmar explícitamente la cancelación presentada." },
           },
           additionalProperties: false,
         },
