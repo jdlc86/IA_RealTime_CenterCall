@@ -15,11 +15,13 @@ export type BusinessInfoTopic =
   | "GENERAL_INFO";
 
 export type CoreIntent = Exclude<CoreWorkflow, "ROUTING">;
+export type ClosingResponse = "CONFIRM" | "REJECT";
 
 export type CoreIntentRequest = {
   intent: CoreIntent;
   businessInfoTopics?: BusinessInfoTopic[];
   auxiliary?: boolean;
+  closingResponse?: ClosingResponse;
 };
 
 export type CoreIntentState = {
@@ -64,16 +66,7 @@ function isSuspendableWorkflow(
     || workflow === "MARKETING_CONSENT";
 }
 
-/**
- * Pure top-level conversation state machine.
- *
- * Rules:
- * - one authoritative workflow owns the call at a time;
- * - BUSINESS_INFO may be auxiliary and temporarily suspend an operational workflow;
- * - an explicit operational intent always switches authority immediately;
- * - CLOSING is terminal;
- * - BUSINESS_INFO may contain several topics in one turn.
- */
+/** Pure top-level conversation state machine. */
 export function transitionCoreIntent(
   current: CoreIntentState,
   request: CoreIntentRequest,
