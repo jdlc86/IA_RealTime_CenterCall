@@ -15,6 +15,7 @@ export class CallSession extends BaseConstructor {
   private createSpokenResponse(instructions: string): void {
     const reservationState = reservationSpeechTruthState({
       reservationBookedThisCall: (this as any).reservationBookedThisCall === true,
+      reservationIntentActive: (this as any).createReservationIntentActiveV9 === true,
       reservationDraft: (this as any).reservationDraft,
     });
     const truthBound = applyReservationSpeechTruth(instructions, reservationState);
@@ -23,6 +24,7 @@ export class CallSession extends BaseConstructor {
     (this as any).diagnostics?.checkpoint?.("RESERVATION_SPEECH_STATE_APPLIED", {
       state: reservationState,
       booked_evidence: (this as any).reservationBookedThisCall === true,
+      reservation_intent_active: (this as any).createReservationIntentActiveV9 === true,
     });
     (this as any).diagnostics?.checkpoint?.("TEMPORAL_GROUNDING_APPLIED", {
       applied: grounded !== truthBound,
