@@ -30,49 +30,152 @@ Las reglas no negociables de implementación están en:
 
 - [`docs/architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md)
 
-## Checkpoint operativo — 2026-08-12
+## Checkpoint operativo — 2026-08-13
 
-El estado detallado y autoritativo permanece en `PROJECT_STATUS.md`. Como resumen de navegación:
+El estado detallado y autoritativo permanece en `PROJECT_STATUS.md`. Resumen vigente:
 
-- Cloudflare KV es la fuente de configuración rápida por tenant, incluido prompt/persona, allowlist y `assistant.waitingPhrases`.
-- `ToolGateway` aplica allowlist y contexto de tenant antes de acceder a datos empresariales.
-- Se adopta formalmente el concepto de **vertical de negocio**: un Core común y agnóstico con `businessType = CLINIC | RESTAURANT`. Clínica y restaurante comparten infraestructura, seguridad, tenant context y ToolGateway, pero no se fuerzan a compartir el mismo modelo operacional.
-- `TenantConfigurationV2` está integrada en `main` con namespace `ia-rtcc:v2:tenant:<tenant_id>`, prioridad V2, fallback compatible a V1 cuando V2 no existe y fail-closed si una V2 existente es inválida/deshabilitada.
-- El tenant sintético `restaurante-centro` fue migrado a V2 y **VALIDADO EN RUNTIME** mediante el endpoint diagnóstico: `schemaVersion=2` y `businessType=RESTAURANT`. La clínica permanece temporalmente compatible con V1 para reducir riesgo durante la transición.
-- El vertical `CLINIC` evoluciona hacia tratamientos/servicios, profesionales, citas y pacientes. El vertical `RESTAURANT` evoluciona prioritariamente hacia menú, disponibilidad, capacidad/party size y reservas. `AppointmentModule` y `ReservationModule` se mantienen separados.
-- **Human handoff es transversal:** tanto clínica como restaurante podrán escalar a una persona mediante una capacidad común del Core. Su implementación queda expresamente diferida a F6; el desarrollo actual no debe simular transferencias inexistentes ni asumir que la IA será siempre el único canal de resolución.
-- El endpoint `GET /debug/tenant/<tenantId>` está integrado y protegido por `DEBUG_KEY`; solo devuelve metadatos no sensibles.
-- Supabase está integrado mediante `SupabaseAdapter` para persistencia/lecturas empresariales. La aplicación continúa operativa con su `SUPABASE_SECRET_KEY`; el conector Supabase de ChatGPT presenta una incidencia externa de autorización/disponibilidad y no debe confundirse con el acceso del Worker a producción.
-- Las frases de espera para consultas externas están implementadas y la clínica validó el patrón de consulta en paralelo con voz.
-- El autodiagnóstico activable mediante `DEBUG_KEY=true|false` está **VALIDADO E2E EN LLAMADA REAL**.
-- La persistencia diagnóstica en `public.call_diagnostic_events` está validada con eventos reales correlacionados por `call_id`.
-- CI de `control-plane` está activo en GitHub Actions y valida tests + Wrangler dry-run en PRs que afectan al Worker.
+- Cloudflare KV sigue siendo la fuente de configuración rápida por tenant, incluido prompt/persona, allowlist y `assistant.waitingPhrases`.
+- `ToolGateway` continúa como frontera de acceso a datos/acciones empresariales y aplica allowlist + tenant context.
+- El Core sigue siendo multi-tenant y multi-vertical con `businessType = CLINIC | RESTAURANT`; no se permiten forks del Core por tenant.
+- `TenantConfigurationV2` continúa integrada con fallback compatible a V1 y fail-closed cuando una V2 existente es inválida/deshabilitada.
+- `restaurante-centro` permanece validado en runtime como `businessType=RESTAURANT`; clínica debe mantenerse estable durante la evolución del vertical restaurante.
+- Human handoff sigue siendo transversal y diferido a F6; no debe simularse todavía.
+- Supabase sigue operativo desde el Worker y el conector Supabase de ChatGPT vuelve a estar disponible en esta sesión para consultas directas inocuas/verificación.
+- `DEBUG_KEY` + `public.call_diagnostic_events` continúan siendo la fuente de evidencia E2E correlacionada por `call_id`.
+- CI de `control-plane` sigue validando tests + Wrangler dry-run antes de integrar cambios que afectan al Worker.
 
-## Checkpoint RESTAURANT — reservas y caller ID confiable
+## Checkpoint RESTAURANT — reservas, identidad, consulta, cancelación y códigos públicos
 
-A 2026-08-12, el flujo de reserva del restaurante ha pasado de “en desarrollo protegido” a **VALIDADO E2E en llamada real**. El detalle completo está en `docs/PROJECT_STATUS.md`.
+A 2026-08-13, el dominio de reservas ha evolucionado desde un único flujo `RESERVATION` hacia operaciones explícitas:
 
-Resumen:
+```text
+RESERVATION / CREATE
+RESERVATION / QUERY
+RESERVATION / CANCEL
+```
 
-- inventario de prueba: 3 mesas de 4 plazas + 2 mesas de 2 plazas;
-- `check_reservation_availability` ejecuta READ en paralelo mientras Lucía continúa recogiendo datos;
-- el estado de reserva se mantiene en backend y ya no depende del patrón fallido de un segundo `response.create` forzando `manage_reservation`;
-- si no hay disponibilidad, el diseño busca alternativas verificadas cercanas;
-- antes del WRITE se hace revalidación final de disponibilidad;
-- Lucía solo puede decir “reserva confirmada” si el backend devuelve evidencia `BOOKED`;
-- llamada real validada con `RESERVATION_AVAILABILITY_COMPLETED`, recheck final y `RESERVATION_BACKEND_BOOKED`;
-- se corrigió la identidad telefónica: el número llamado del restaurante nunca puede reutilizarse como `caller_phone`;
-- `payload.from` del webhook Telnyx, una vez verificada su firma, se propaga explícitamente como identidad confiable hasta Realtime/CallSession;
-- una llamada real posterior almacenó manualmente verificado el número real del llamante como `customer_phone`.
+El clasificador propone intención/operación, pero el Core mantiene autoridad sobre el lifecycle y los workflows activos.
 
-Commits de referencia:
+### CREATE
 
-- `b74e05645702ffbea9ed8ac303498e1a7a1f2f1d` — backend reservation orchestrator + disponibilidad paralela;
-- `8c830bd06cea0fcf1d1cf498069f126268b50153` — `session.type=realtime`;
-- `dd0a173af6cc56562cf4e8f558e64483797b4de2` — fail-closed contra DID del tenant;
-- `c61bdafe8aba7828660bbcea8080b3063cdb3e8d` — propagación confiable de `payload.from` Telnyx.
+El flujo principal sigue siendo backend-orchestrated:
 
-**Siguiente bloque funcional:** consentimiento comercial conversacional usando `CALLER_ID_MATCH`. La regla central ya está fijada: solo el `caller_phone` confiable puede autorizar o revocar automáticamente promociones para ese mismo número. El número dictado verbalmente no sirve como evidencia para este mecanismo. Handoff humano sigue diferido a F6.
+```text
+usuario habla
+  ↓
+conversation_intent clasifica RESERVATION/CREATE
+  ↓
+ReservationState incremental en backend
+  ↓
+party_size + starts_at normalizado
+  → check_reservation_availability (READ, en paralelo)
+  ↓
+completar datos restantes
+  ↓
+resumen
+  ↓
+confirmación explícita
+  ↓
+recheck final
+  ↓
+manage_reservation (WRITE)
+  ↓
+BOOKED
+  ↓
+solo entonces Lucía puede afirmar que está confirmada
+```
+
+Reglas añadidas/fortalecidas:
+
+- el workflow CREATE pasa a considerarse activo desde la primera intención inequívoca de reservar, aunque todavía no exista un draft completo;
+- un `starts_at` todavía no normalizado no invalida todo el turno: se preservan los demás datos válidos y `starts_at` queda pendiente;
+- un fallback degradado del clasificador no puede sacar una reserva activa hacia un flujo ajeno como `BUSINESS_INFO`;
+- el `caller_phone` confiable proveniente de Telnyx es el contacto por defecto de la reserva para minimizar interacción; Lucía no debe pedir que el usuario repita ese mismo número;
+- el usuario puede proporcionar explícitamente otro `reservation_phone`; esto no altera la identidad confiable ni autoriza marketing;
+- la disponibilidad paralela nunca sustituye el recheck inmediatamente anterior al WRITE.
+
+### QUERY
+
+`QUERY` es una operación READ-only independiente. La búsqueda se inicia siempre por:
+
+```text
+tenant_id + caller_phone confiable
+```
+
+No se usa un número dictado como prueba de identidad. La respuesta pública no expone teléfonos ni UUID internos.
+
+### CANCEL
+
+`CANCEL` tiene workflow propio y soporta una, varias o todas las reservas verificadas del mismo caller:
+
+```text
+lookup por tenant + caller_phone
+  ↓
+mostrar candidatas BOOKED
+  ↓
+selección: una | varias | ALL
+  ↓
+resumen exacto
+  ↓
+confirmación explícita única
+  ↓
+recheck individual
+  ↓
+BOOKED → CANCELLED condicionado por reserva
+  ↓
+resultado por reserva
+```
+
+La cancelación múltiple fue validada en llamada real: 6 reservas del mismo `caller_phone` fueron canceladas con `failed_count=0`; una reserva de otro número quedó correctamente intacta.
+
+### Truth Guard y lifecycle
+
+El Truth Guard distingue evidencia por operación:
+
+- afirmación de creación confirmada → requiere `BOOKED`;
+- afirmación de cancelación confirmada → requiere `CANCELLED`.
+
+El estado `CLOSING` es terminal: una vez iniciado el cierre no puede reactivarse marketing ni otro workflow.
+
+### Códigos públicos de reserva
+
+Las reservas disponen ahora de dos identificadores separados:
+
+- `id` UUID interno: solo backend, joins, precondiciones y diagnósticos;
+- `reservation_code` público: formato corto `R-######`, apto para voz y atención al cliente.
+
+El UUID no debe formar parte del contrato conversacional. CREATE/QUERY/CANCEL exponen únicamente el código público cuando necesitan referenciar una reserva al usuario.
+
+### Grounding temporal
+
+La verbalización de fechas usa una política centralizada en `Europe/Madrid`. El backend determina si un timestamp corresponde a `HOY`, `MANANA` o fecha absoluta; Lucía no debe recalcular por su cuenta relativos como hoy/mañana.
+
+## Checkpoint marketing conversacional
+
+Marketing y reservas siguen siendo procesos independientes.
+
+Reglas vigentes:
+
+- rechazar marketing nunca bloquea una reserva;
+- `reservation_phone` y `marketing_phone` pueden ser distintos;
+- para alta/baja automática por voz, `marketing_phone` debe coincidir exactamente con `caller_phone` confiable;
+- un número dictado verbalmente no sirve como prueba para `CALLER_ID_MATCH`;
+- consentimiento explícito y verificación del canal son hechos distintos y se persisten por separado;
+- una persona A llamando desde A no puede modificar automáticamente marketing para B;
+- el backend mantiene historial de ofertas para evitar propuestas repetitivas; una decisión existente/cooldown puede suprimir la propuesta;
+- en una llamada real se validó `MARKETING_GRANTED` mediante `CALLER_ID_MATCH` y se verificó la supresión posterior por decisión existente;
+- una llamada nueva falló antes de BOOKED por problemas de reserva incremental; por tanto, la revalidación E2E del post-booking con número nuevo queda pendiente después de los últimos fixes de CREATE/contacto.
+
+## Commits recientes relevantes
+
+- `0f17d37083dbb7c6d7ff7cfe65005325e5afc6f4` — autoridad única de estado conversacional;
+- `eb2db0cdfba78ca4e32bba3c83e5d0165622d137` — operación CANCEL independiente;
+- `7d978454e57c653876999ef992be1982782d975b` — operación QUERY por caller_phone;
+- `4a7b9751266b57f842f9f8d370d2bc402c5d2abd` — cancelación múltiple + Truth Guard sensible a operación;
+- `47d7834ab94b73629768ff2219d07d27ce7f8f20` — grounding temporal centralizado;
+- `0f81cb0e9cfe248be8f2acf47a3182ec34d76ccd` — `reservation_code` público persistido;
+- `4a422c6cdc3a35087d3589b949c3334954eab3ae` — ReservationState incremental/sticky;
+- `cb4c569b76cdf14ef2096930e4f46880fcf99226` — `caller_phone` confiable como contacto por defecto de CREATE.
 
 ## Roadmap canónico
 
@@ -101,8 +204,6 @@ F9 App de gestión web/escritorio
 ```
 
 F6 implementará el handoff humano transversal mediante contratos del Core/CallOrchestrator y `TelephonyProvider`, con configuración por tenant. Hasta entonces se mantiene como decisión arquitectónica documentada, no como capacidad activa.
-
-La separación por vertical ya tiene base de configuración V2 y evidencia runtime para `RESTAURANT`. La evolución de F5 continúa con dominios separados: clínica hacia citas/pacientes y restaurante hacia consentimiento/post-call después de haber validado el núcleo de reservas, compartiendo Core, autorización, auditoría y persistencia común cuando corresponda.
 
 ## Regla de mantenimiento
 
