@@ -5,29 +5,23 @@ export type ClosingDecision =
   | { action: "ASK_CONFIRMATION"; pending: true }
   | { action: "CONTINUE"; pending: false };
 
-function hasActiveOperationalWorkflow(workflow: CoreWorkflow): boolean {
-  return workflow === "CREATE_RESERVATION"
-    || workflow === "CANCEL_RESERVATION"
-    || workflow === "QUERY_RESERVATION"
-    || workflow === "MARKETING_CONSENT";
-}
-
 /**
- * Closing is irreversible, so while an operational workflow is active it needs
- * one explicit confirmation turn. This protects against a single classifier
- * mistake without adding guards to normal workflow execution.
+ * A semantic CLOSING decision is model-derived and the transition is irreversible.
+ * Therefore one classifier decision is never sufficient to terminate a call.
+ *
+ * First CLOSING -> ask the user for explicit confirmation and preserve state.
+ * Second consecutive CLOSING -> allow terminal transition.
+ * Any other intent -> clear the pending close request.
+ *
+ * A physical caller hangup bypasses this policy naturally.
  */
 export function decideClosingTransition(
-  currentWorkflow: CoreWorkflow,
+  _currentWorkflow: CoreWorkflow,
   requestedWorkflow: CoreWorkflow,
   closingPending: boolean,
 ): ClosingDecision {
   if (requestedWorkflow !== "CLOSING") {
     return { action: "CONTINUE", pending: false };
-  }
-
-  if (!hasActiveOperationalWorkflow(currentWorkflow)) {
-    return { action: "ALLOW_CLOSE", pending: false };
   }
 
   if (closingPending) {
