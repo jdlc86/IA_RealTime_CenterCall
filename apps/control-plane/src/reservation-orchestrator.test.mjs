@@ -104,6 +104,24 @@ test("conflicting multi-cancel selection modes fail closed", () => {
   })));
 });
 
+test("draft defaults reservation contact to trusted caller without an extra voice turn", () => {
+  const draft = mergeReservationDraft({}, { partySize: 2 }, "+34600111222");
+  assert.equal(draft.customerPhone, "+34600111222");
+  assert.equal(draft.useCallerPhone, true);
+});
+
+test("explicit alternate reservation contact overrides the trusted caller", () => {
+  const draft = mergeReservationDraft({}, { customerPhone: "+34600999888" }, "+34600111222");
+  assert.equal(draft.customerPhone, "+34600999888");
+  assert.equal(draft.useCallerPhone, false);
+});
+
+test("untrusted caller format is never copied into reservation contact", () => {
+  const draft = mergeReservationDraft({}, { customerName: "Juan" }, "anonymous");
+  assert.equal(draft.customerPhone, undefined);
+  assert.deepEqual(missingReservationContact(draft), ["customer_phone"]);
+});
+
 test("draft accumulates fields over several voice turns", () => {
   let draft = mergeReservationDraft({}, { partySize: 4 });
   draft = mergeReservationDraft(draft, { startsAt: "2026-08-15T19:00:00.000Z" });
