@@ -79,7 +79,7 @@ export function coreIntentClassifierTool(currentMadridReference?: string): Recor
   return {
     type: "function",
     name: "conversation_intent",
-    description: `Clasifica la intención operativa ACTUAL del usuario y, en la MISMA llamada, incluye los datos inequívocamente conocidos del dominio. Elige exactamente una intención principal. BUSINESS_INFO puede contener varios topics. Usa auxiliary=true solo cuando BUSINESS_INFO es una pregunta temporal dentro de un workflow operativo que debe reanudarse. Si el turno responde directamente a la pregunta del asistente sobre terminar la llamada, incluye closing_response=CONFIRM si acepta terminar o closing_response=REJECT si rechaza terminar. Un rechazo puro del cierre no es una nueva intención empresarial: conserva como intent el workflow operativo que estaba activo; si no había uno, usa BUSINESS_INFO con GENERAL_INFO solo como valor neutro y closing_response=REJECT. Si el usuario rechaza cerrar y además expresa una nueva intención, incluye closing_response=REJECT junto con esa nueva intención. Nunca decidas estados empresariales como BOOKED o CANCELLED: pertenecen exclusivamente al backend.${temporalReference}`,
+    description: `Clasifica la intención operativa ACTUAL del usuario y, en la MISMA llamada, incluye los datos inequívocamente conocidos del dominio. Elige exactamente una intención principal. Para CREATE_RESERVATION conserva en reservation todos los datos inequívocamente conocidos de la reserva. Si el asistente acaba de presentar un resumen completo de reserva y pide confirmación explícita, una respuesta inequívoca del usuario como "sí", "confirmo", "adelante" o equivalente debe producir intent=CREATE_RESERVATION y reservation.confirm=true. No uses confirm=true para aceptación de promociones, respuestas vagas ni antes de un resumen de reserva. BUSINESS_INFO puede contener varios topics. Usa auxiliary=true solo cuando BUSINESS_INFO es una pregunta temporal dentro de un workflow operativo que debe reanudarse. Si el turno responde directamente a la pregunta del asistente sobre terminar la llamada, incluye closing_response=CONFIRM si acepta terminar o closing_response=REJECT si rechaza terminar. Un rechazo puro del cierre no es una nueva intención empresarial: conserva como intent el workflow operativo que estaba activo; si no había uno, usa BUSINESS_INFO con GENERAL_INFO solo como valor neutro y closing_response=REJECT. Si el usuario rechaza cerrar y además expresa una nueva intención, incluye closing_response=REJECT junto con esa nueva intención. Nunca decidas estados empresariales como BOOKED o CANCELLED: pertenecen exclusivamente al backend.${temporalReference}`,
     parameters: {
       type: "object",
       properties: {
@@ -108,7 +108,7 @@ export function coreIntentClassifierTool(currentMadridReference?: string): Recor
         },
         reservation: {
           type: "object",
-          description: "Para CREATE_RESERVATION o CANCEL_RESERVATION. Incluye solo datos inequívocamente conocidos; omite los desconocidos.",
+          description: "Para CREATE_RESERVATION o CANCEL_RESERVATION. Incluye solo datos inequívocamente conocidos; omite los desconocidos. En CREATE_RESERVATION, si el turno actual confirma explícitamente el resumen completo de reserva presentado inmediatamente antes por el asistente, incluye confirm=true.",
           properties: {
             party_size: { type: "integer", minimum: 1, maximum: 100 },
             starts_at: { type: "string", description: "ISO 8601 con zona horaria; omite si sigue ambiguo." },
@@ -120,7 +120,7 @@ export function coreIntentClassifierTool(currentMadridReference?: string): Recor
             selection_index: { type: "integer", minimum: 1, maximum: 20 },
             selection_indexes: { type: "array", items: { type: "integer", minimum: 1, maximum: 20 }, minItems: 1, maxItems: 20, uniqueItems: true },
             select_all: { type: "boolean" },
-            confirm: { type: "boolean" },
+            confirm: { type: "boolean", description: "CREATE: true solo si el usuario acaba de confirmar explícitamente el resumen completo de reserva presentado por el asistente en el turno anterior. CANCEL: true solo si confirma explícitamente la cancelación presentada." },
           },
           additionalProperties: false,
         },

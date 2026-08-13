@@ -14,6 +14,18 @@ test("CREATE maps to legacy reservation CREATE without losing fields", () => {
   });
 });
 
+test("explicit CREATE confirmation survives hierarchical adapter unchanged", () => {
+  assert.deepEqual(adaptHierarchicalIntentToLegacy(JSON.stringify({
+    intent: "CREATE_RESERVATION",
+    reservation: { confirm: true },
+  })), {
+    intent: "CONTINUE",
+    data_requirement: "RESERVATION",
+    reason: "core_intent_create",
+    reservation: { confirm: true, operation: "CREATE" },
+  });
+});
+
 test("CANCEL maps to existing multi-cancel contract", () => {
   assert.deepEqual(adaptHierarchicalIntentToLegacy(JSON.stringify({
     intent: "CANCEL_RESERVATION",
