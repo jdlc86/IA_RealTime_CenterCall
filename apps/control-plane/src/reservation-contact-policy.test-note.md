@@ -1,1 +1,0 @@
-The active CallSession version chain imports reservation-orchestrator through the existing reservation workflow. No new Durable Object class/version or Worker export is required for this policy change.
