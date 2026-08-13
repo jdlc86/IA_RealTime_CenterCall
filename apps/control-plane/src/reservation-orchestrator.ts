@@ -17,6 +17,8 @@ export type ReservationTurn = {
   patch: ReservationDraft;
   confirm: boolean;
   selectionIndex?: number;
+  selectionIndexes?: number[];
+  selectAll?: boolean;
 };
 
 function optionalString(record: Record<string, unknown>, key: string, maxLength: number): string | undefined {
@@ -31,6 +33,17 @@ function optionalInteger(record: Record<string, unknown>, key: string, min: numb
   if (value === undefined || value === null) return undefined;
   if (!Number.isInteger(value) || (value as number) < min || (value as number) > max) throw new Error(`Invalid reservation.${key}`);
   return value as number;
+}
+
+function optionalIntegerArray(record: Record<string, unknown>, key: string, min: number, max: number): number[] | undefined {
+  const value = record[key];
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.length === 0 || value.length > 20) throw new Error(`Invalid reservation.${key}`);
+  const parsed = value.map((item) => {
+    if (!Number.isInteger(item) || item < min || item > max) throw new Error(`Invalid reservation.${key}`);
+    return item as number;
+  });
+  return [...new Set(parsed)];
 }
 
 function optionalBoolean(record: Record<string, unknown>, key: string): boolean | undefined {
@@ -65,12 +78,17 @@ export function parseReservationTurn(argumentsJson: string | undefined): Reserva
   if (root.reservation === undefined || root.reservation === null) return { operation: "CREATE", patch: {}, confirm: false };
 
   const reservation = requireObject(root.reservation);
-  const allowed = new Set(["operation", "party_size", "starts_at", "customer_name", "customer_phone", "use_caller_phone", "duration_minutes", "notes", "confirm", "selection_index"]);
+  const allowed = new Set(["operation", "party_size", "starts_at", "customer_name", "customer_phone", "use_caller_phone", "duration_minutes", "notes", "confirm", "selection_index", "selection_indexes", "select_all"]);
   for (const key of Object.keys(reservation)) if (!allowed.has(key)) throw new Error(`Unexpected reservation field: ${key}`);
 
   const startsAtRaw = optionalString(reservation, "starts_at", 64);
   const phoneRaw = optionalString(reservation, "customer_phone", 32);
   const confirm = optionalBoolean(reservation, "confirm") ?? false;
+  const selectionIndex = optionalInteger(reservation, "selection_index", 1, 20);
+  const selectionIndexes = optionalIntegerArray(reservation, "selection_indexes", 1, 20);
+  const selectAll = optionalBoolean(reservation, "select_all") ?? false;
+  if (selectionIndex !== undefined && selectionIndexes !== undefined) throw new Error("Conflicting reservation selection fields");
+  if (selectAll && (selectionIndex !== undefined || selectionIndexes !== undefined)) throw new Error("Conflicting reservation select_all");
 
   return {
     operation: optionalOperation(reservation),
@@ -84,7 +102,9 @@ export function parseReservationTurn(argumentsJson: string | undefined): Reserva
       notes: optionalString(reservation, "notes", 1000),
     },
     confirm,
-    selectionIndex: optionalInteger(reservation, "selection_index", 1, 20),
+    selectionIndex,
+    selectionIndexes,
+    selectAll,
   };
 }
 
