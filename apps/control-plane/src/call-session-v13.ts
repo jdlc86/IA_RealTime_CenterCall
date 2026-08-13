@@ -67,8 +67,6 @@ export class CallSession extends BaseConstructor {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
 
     if (isStart) {
-      // Suppress every inherited classifier schema update. v13 publishes exactly
-      // one classifier contract after the inherited startup has completed.
       (this as any).reservationSessionUpdateSent = true;
       (this as any).reservationSessionUpdateV6Sent = true;
       (this as any).marketingSessionUpdateV7Sent = true;
@@ -238,9 +236,46 @@ export class CallSession extends BaseConstructor {
         return;
       }
 
+      if (this.closingConfirmationPendingV13 && request.closingResponse === "REJECT") {
+        this.closingConfirmationPendingV13 = false;
+        (this as any).state = "active";
+        (this as any).ambiguousCount = 0;
+        const currentWorkflow = this.coreIntentStateV13.workflow;
+        const pureRejection = request.intent === currentWorkflow
+          || (currentWorkflow === "ROUTING"
+            && request.intent === "BUSINESS_INFO"
+            && request.businessInfoTopics?.length === 1
+            && request.businessInfoTopics[0] === "GENERAL_INFO");
+
+        this.sendCoreClassifierOutput(event.call_id, {
+          action: "closing_rejected",
+          resumed_workflow: currentWorkflow,
+          has_new_intent: !pureRejection,
+        });
+        (this as any).diagnostics?.checkpoint?.("CORE_CLOSING_REJECTED_RESUMED", {
+          resumed_workflow: currentWorkflow,
+          state_preserved: true,
+          has_new_intent: !pureRejection,
+        });
+
+        if (pureRejection) {
+          (this as any).createSpokenResponse(
+            currentWorkflow === "ROUTING"
+              ? "Responde brevemente: De acuerdo. ¿Necesitas algo más en lo que pueda ayudarte?"
+              : `El usuario ha rechazado terminar la llamada. No cierres la llamada ni reinicies nada. Retoma el workflow ${currentWorkflow} exactamente desde el punto anterior, conservando todos los datos ya recogidos. Si ese workflow ya estaba completado, pregunta brevemente: ¿Necesitas algo más en lo que pueda ayudarte?`,
+          );
+          return;
+        }
+        // The user rejected closing and expressed another clear intent in the
+        // same turn. Closing is cancelled, then normal routing handles that intent.
+      }
+
+      const requestedIntent = this.closingConfirmationPendingV13 && request.closingResponse === "CONFIRM"
+        ? "CLOSING"
+        : request.intent;
       const closingDecision = decideClosingTransition(
         this.coreIntentStateV13.workflow,
-        request.intent,
+        requestedIntent,
         this.closingConfirmationPendingV13,
       );
       this.closingConfirmationPendingV13 = closingDecision.pending;
@@ -255,7 +290,8 @@ export class CallSession extends BaseConstructor {
         return;
       }
 
-      const transition = transitionCoreIntent(this.coreIntentStateV13, request);
+      const effectiveRequest = requestedIntent === request.intent ? request : { ...request, intent: requestedIntent };
+      const transition = transitionCoreIntent(this.coreIntentStateV13, effectiveRequest);
       this.applyWorkflowTransitionCleanup(transition.previous, transition.next, transition.reason);
       this.coreIntentStateV13 = transition.next;
       (this as any).diagnostics?.checkpoint?.("CORE_INTENT_TRANSITION", {
@@ -266,12 +302,15 @@ export class CallSession extends BaseConstructor {
         suspended_workflow: transition.next.suspendedWorkflow,
       });
 
-      if (request.intent === "BUSINESS_INFO") {
-        await this.handleBusinessInfoTurn(event.call_id, transition.next.businessInfoTopics, request.auxiliary === true);
+      if (effectiveRequest.intent === "BUSINESS_INFO") {
+        await this.handleBusinessInfoTurn(event.call_id, transition.next.businessInfoTopics, effectiveRequest.auxiliary === true);
         return;
       }
 
-      const legacy = adaptHierarchicalIntentToLegacy(event.arguments);
+      const legacyArguments = requestedIntent === request.intent
+        ? event.arguments
+        : JSON.stringify({ ...(event.arguments ? JSON.parse(event.arguments) : {}), intent: requestedIntent });
+      const legacy = adaptHierarchicalIntentToLegacy(legacyArguments);
       if (!legacy) {
         this.sendCoreClassifierOutput(event.call_id, { action: "no_legacy_route" });
         return;
