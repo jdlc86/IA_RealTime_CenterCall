@@ -1,4 +1,4 @@
-import type { BusinessInfoTopic, CoreIntentRequest } from "./core-intent-machine";
+import type { BusinessInfoTopic, ClosingResponse, CoreIntentRequest } from "./core-intent-machine";
 
 const CORE_INTENTS = new Set([
   "CREATE_RESERVATION",
@@ -17,6 +17,8 @@ const BUSINESS_TOPICS = new Set<BusinessInfoTopic>([
   "GENERAL_INFO",
 ]);
 
+const CLOSING_RESPONSES = new Set<ClosingResponse>(["CONFIRM", "REJECT"]);
+
 function normalizeTopics(value: unknown): BusinessInfoTopic[] | undefined {
   if (value === undefined || value === null) return undefined;
   if (!Array.isArray(value)) throw new Error("Invalid business_info.topics");
@@ -29,6 +31,12 @@ function normalizeTopics(value: unknown): BusinessInfoTopic[] | undefined {
   return topics;
 }
 
+function normalizeClosingResponse(value: unknown): ClosingResponse | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string" || !CLOSING_RESPONSES.has(value as ClosingResponse)) throw new Error("Invalid closing_response");
+  return value as ClosingResponse;
+}
+
 export function parseCoreIntentRequest(argumentsJson: string | undefined): CoreIntentRequest {
   if (!argumentsJson?.trim()) throw new Error("Missing core intent payload");
   const parsed = JSON.parse(argumentsJson) as unknown;
@@ -36,24 +44,34 @@ export function parseCoreIntentRequest(argumentsJson: string | undefined): CoreI
   const root = parsed as Record<string, unknown>;
   const intent = root.intent;
   if (typeof intent !== "string" || !CORE_INTENTS.has(intent)) throw new Error("Invalid core intent");
+  const closingResponse = normalizeClosingResponse(root.closing_response);
 
-  if (intent !== "BUSINESS_INFO") return { intent: intent as CoreIntentRequest["intent"] };
+  if (intent !== "BUSINESS_INFO") {
+    return {
+      intent: intent as CoreIntentRequest["intent"],
+      ...(closingResponse ? { closingResponse } : {}),
+    };
+  }
 
   const businessInfo = root.business_info;
   if (!businessInfo || typeof businessInfo !== "object" || Array.isArray(businessInfo)) {
-    return { intent: "BUSINESS_INFO", businessInfoTopics: ["GENERAL_INFO"], auxiliary: root.auxiliary === true };
+    return {
+      intent: "BUSINESS_INFO",
+      businessInfoTopics: ["GENERAL_INFO"],
+      auxiliary: root.auxiliary === true,
+      ...(closingResponse ? { closingResponse } : {}),
+    };
   }
   const info = businessInfo as Record<string, unknown>;
   return {
     intent: "BUSINESS_INFO",
     businessInfoTopics: normalizeTopics(info.topics) ?? ["GENERAL_INFO"],
     auxiliary: root.auxiliary === true,
+    ...(closingResponse ? { closingResponse } : {}),
   };
 }
 
-/** Single classifier contract used by Realtime. It decides routing and carries
- * the already-known domain payload in the same function call, avoiding a second
- * classifier/forced-tool response. Backend executors remain the source of truth. */
+/** Single classifier contract used by Realtime. */
 export function coreIntentClassifierTool(currentMadridReference?: string): Record<string, unknown> {
   const temporalReference = currentMadridReference?.trim()
     ? ` Referencia temporal autoritativa actual en Europe/Madrid: ${currentMadridReference.trim()}. Usa esta referencia para resolver hoy/mañana; si fecha u hora siguen ambiguas, omite starts_at.`
@@ -61,13 +79,18 @@ export function coreIntentClassifierTool(currentMadridReference?: string): Recor
   return {
     type: "function",
     name: "conversation_intent",
-    description: `Clasifica la intención operativa ACTUAL del usuario y, en la MISMA llamada, incluye los datos inequívocamente conocidos del dominio. Elige exactamente una intención principal. BUSINESS_INFO puede contener varios topics (por ejemplo HOURS y MENU). Usa auxiliary=true solo cuando BUSINESS_INFO es una pregunta temporal dentro de un workflow operativo que debe reanudarse. Un cambio explícito entre reservar, cancelar o consultar cambia el workflow. Nunca decidas estados empresariales como BOOKED o CANCELLED: pertenecen exclusivamente al backend.${temporalReference}`,
+    description: `Clasifica la intención operativa ACTUAL del usuario y, en la MISMA llamada, incluye los datos inequívocamente conocidos del dominio. Elige exactamente una intención principal. BUSINESS_INFO puede contener varios topics. Usa auxiliary=true solo cuando BUSINESS_INFO es una pregunta temporal dentro de un workflow operativo que debe reanudarse. Si el turno responde directamente a la pregunta del asistente sobre terminar la llamada, incluye closing_response=CONFIRM si acepta terminar o closing_response=REJECT si rechaza terminar. Un rechazo puro del cierre no es una nueva intención empresarial: conserva como intent el workflow operativo que estaba activo; si no había uno, usa BUSINESS_INFO con GENERAL_INFO solo como valor neutro y closing_response=REJECT. Si el usuario rechaza cerrar y además expresa una nueva intención, incluye closing_response=REJECT junto con esa nueva intención. Nunca decidas estados empresariales como BOOKED o CANCELLED: pertenecen exclusivamente al backend.${temporalReference}`,
     parameters: {
       type: "object",
       properties: {
         intent: {
           type: "string",
           enum: ["CREATE_RESERVATION", "CANCEL_RESERVATION", "QUERY_RESERVATION", "BUSINESS_INFO", "MARKETING_CONSENT", "CLOSING"],
+        },
+        closing_response: {
+          type: "string",
+          enum: ["CONFIRM", "REJECT"],
+          description: "Solo cuando el turno responde directamente a una pregunta previa del asistente sobre terminar la llamada.",
         },
         auxiliary: { type: "boolean", description: "Solo para BUSINESS_INFO temporal que debe volver al workflow operativo anterior." },
         business_info: {
