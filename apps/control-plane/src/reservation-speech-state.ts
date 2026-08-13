@@ -2,12 +2,17 @@ export type ReservationSpeechTruthState = "NO_ACTIVE_CREATE" | "PENDING_NOT_BOOK
 
 export function reservationSpeechTruthState(input: {
   reservationBookedThisCall: boolean;
+  reservationIntentActive: boolean;
   reservationDraft: unknown;
 }): ReservationSpeechTruthState {
   if (input.reservationBookedThisCall) return "BOOKED";
-  if (input.reservationDraft && typeof input.reservationDraft === "object" && !Array.isArray(input.reservationDraft) && Object.keys(input.reservationDraft as Record<string, unknown>).length > 0) {
-    return "PENDING_NOT_BOOKED";
-  }
+  const hasDraft = Boolean(
+    input.reservationDraft
+    && typeof input.reservationDraft === "object"
+    && !Array.isArray(input.reservationDraft)
+    && Object.keys(input.reservationDraft as Record<string, unknown>).length > 0,
+  );
+  if (input.reservationIntentActive || hasDraft) return "PENDING_NOT_BOOKED";
   return "NO_ACTIVE_CREATE";
 }
 
