@@ -66,6 +66,11 @@ function normalizeE164(value: string): string {
   return value;
 }
 
+function trustedCallerPhone(value?: string | null): string | undefined {
+  if (!value || !/^\+[1-9]\d{7,14}$/.test(value)) return undefined;
+  return value;
+}
+
 function tryNormalizeIso(value: string): string | undefined {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed) || !/[zZ]|[+-]\d{2}:?\d{2}$/.test(value)) return undefined;
@@ -116,10 +121,19 @@ export function mergeReservationDraft(current: ReservationDraft, patch: Reservat
   for (const [key, value] of Object.entries(patch)) {
     if (value !== undefined) (next as Record<string, unknown>)[key] = value;
   }
-  if (patch.useCallerPhone === true && callerPhone && /^\+[1-9]\d{7,14}$/.test(callerPhone)) {
-    next.customerPhone = callerPhone;
+
+  const trustedCaller = trustedCallerPhone(callerPhone);
+  if (patch.customerPhone) {
+    // An explicitly supplied reservation contact is allowed to differ from caller identity.
+    // It is contact data only and must never become proof for caller identity or marketing.
+    next.customerPhone = patch.customerPhone;
+    next.useCallerPhone = patch.useCallerPhone === true && patch.customerPhone === trustedCaller;
+  } else if (patch.useCallerPhone !== false && trustedCaller && !next.customerPhone) {
+    // Voice efficiency policy: when CREATE has a trustworthy Telnyx caller identity,
+    // use it as the reservation contact without asking the caller to repeat the number.
+    next.customerPhone = trustedCaller;
+    next.useCallerPhone = true;
   }
-  if (patch.customerPhone) next.useCallerPhone = patch.useCallerPhone === true && patch.customerPhone === callerPhone;
   return next;
 }
 
