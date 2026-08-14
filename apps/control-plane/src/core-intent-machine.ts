@@ -1,6 +1,7 @@
 export type CoreWorkflow =
   | "ROUTING"
   | "CREATE_RESERVATION"
+  | "MODIFY_RESERVATION"
   | "CANCEL_RESERVATION"
   | "QUERY_RESERVATION"
   | "BUSINESS_INFO"
@@ -58,11 +59,7 @@ export type CoreTransition = {
 };
 
 export function initialCoreIntentState(): CoreIntentState {
-  return {
-    workflow: "ROUTING",
-    suspendedWorkflow: null,
-    businessInfoTopics: [],
-  };
+  return { workflow: "ROUTING", suspendedWorkflow: null, businessInfoTopics: [] };
 }
 
 function uniqueTopics(topics: BusinessInfoTopic[] | undefined): BusinessInfoTopic[] {
@@ -74,73 +71,35 @@ function isSuspendableWorkflow(
   workflow: CoreWorkflow,
 ): workflow is Exclude<CoreWorkflow, "ROUTING" | "BUSINESS_INFO" | "CLOSING"> {
   return workflow === "CREATE_RESERVATION"
+    || workflow === "MODIFY_RESERVATION"
     || workflow === "CANCEL_RESERVATION"
     || workflow === "QUERY_RESERVATION"
     || workflow === "MARKETING_CONSENT";
 }
 
-/** Pure top-level conversation state machine. */
-export function transitionCoreIntent(
-  current: CoreIntentState,
-  request: CoreIntentRequest,
-): CoreTransition {
-  if (current.workflow === "CLOSING") {
-    return { previous: current, next: current, reason: "CLOSE" };
-  }
-
-  if (request.intent === "OUT_OF_SCOPE") {
-    return { previous: current, next: current, reason: "OUT_OF_SCOPE" };
-  }
-
+export function transitionCoreIntent(current: CoreIntentState, request: CoreIntentRequest): CoreTransition {
+  if (current.workflow === "CLOSING") return { previous: current, next: current, reason: "CLOSE" };
+  if (request.intent === "OUT_OF_SCOPE") return { previous: current, next: current, reason: "OUT_OF_SCOPE" };
   if (request.intent === "CLOSING") {
-    return {
-      previous: current,
-      next: { workflow: "CLOSING", suspendedWorkflow: null, businessInfoTopics: [] },
-      reason: "CLOSE",
-    };
+    return { previous: current, next: { workflow: "CLOSING", suspendedWorkflow: null, businessInfoTopics: [] }, reason: "CLOSE" };
   }
-
   if (request.intent === "BUSINESS_INFO") {
     const topics = uniqueTopics(request.businessInfoTopics);
     if (request.auxiliary === true && isSuspendableWorkflow(current.workflow)) {
-      return {
-        previous: current,
-        next: {
-          workflow: "BUSINESS_INFO",
-          suspendedWorkflow: current.workflow,
-          businessInfoTopics: topics,
-        },
-        reason: "AUXILIARY_INFO_ENTER",
-      };
+      return { previous: current, next: { workflow: "BUSINESS_INFO", suspendedWorkflow: current.workflow, businessInfoTopics: topics }, reason: "AUXILIARY_INFO_ENTER" };
     }
-
     if (current.workflow === "BUSINESS_INFO" && current.suspendedWorkflow !== null) {
-      return {
-        previous: current,
-        next: {
-          workflow: "BUSINESS_INFO",
-          suspendedWorkflow: current.suspendedWorkflow,
-          businessInfoTopics: topics,
-        },
-        reason: "CONTINUE_CURRENT",
-      };
+      return { previous: current, next: { workflow: "BUSINESS_INFO", suspendedWorkflow: current.suspendedWorkflow, businessInfoTopics: topics }, reason: "CONTINUE_CURRENT" };
     }
-
     return {
       previous: current,
       next: { workflow: "BUSINESS_INFO", suspendedWorkflow: null, businessInfoTopics: topics },
       reason: current.workflow === "ROUTING" ? "INITIAL_ROUTE" : current.workflow === "BUSINESS_INFO" ? "CONTINUE_CURRENT" : "WORKFLOW_SWITCH",
     };
   }
-
   if (current.workflow === request.intent) {
-    return {
-      previous: current,
-      next: { ...current, businessInfoTopics: [] },
-      reason: "CONTINUE_CURRENT",
-    };
+    return { previous: current, next: { ...current, businessInfoTopics: [] }, reason: "CONTINUE_CURRENT" };
   }
-
   return {
     previous: current,
     next: { workflow: request.intent, suspendedWorkflow: null, businessInfoTopics: [] },
@@ -152,14 +111,9 @@ export function returnFromAuxiliaryBusinessInfo(current: CoreIntentState): CoreT
   if (current.workflow !== "BUSINESS_INFO" || current.suspendedWorkflow === null) {
     return { previous: current, next: current, reason: "CONTINUE_CURRENT" };
   }
-
   return {
     previous: current,
-    next: {
-      workflow: current.suspendedWorkflow,
-      suspendedWorkflow: null,
-      businessInfoTopics: [],
-    },
+    next: { workflow: current.suspendedWorkflow, suspendedWorkflow: null, businessInfoTopics: [] },
     reason: "AUXILIARY_INFO_RETURN",
   };
 }
