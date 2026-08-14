@@ -1,1 +1,0 @@
-Only coherent Lucia reaction validates a user turn; VAD/noise alone does not reset inactivity.
