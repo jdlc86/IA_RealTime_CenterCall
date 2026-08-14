@@ -1,0 +1,317 @@
+import { CallSession as CallSessionV18 } from "./call-session-v18";
+import type { ToolGateway, ToolResult } from "./tool-gateway";
+
+const BaseConstructor = CallSessionV18 as unknown as new (...args: any[]) => any;
+const BasePrototype = CallSessionV18.prototype as any;
+
+const CREATE_RESERVATION = "restaurant_reservation_create";
+const CHECK_AVAILABILITY = "check_reservation_availability";
+const MANAGE_RESERVATION = "manage_reservation";
+const LUCIA_PROCESSING_MAX_MS = 12_000;
+
+type RealtimeEvent = {
+  type?: string;
+  name?: string;
+  call_id?: string;
+  arguments?: string;
+};
+
+type ReservationDraft = {
+  party_size?: number;
+  starts_at?: string;
+  customer_name?: string;
+  customer_phone?: string;
+  use_caller_phone?: boolean;
+  duration_minutes?: number;
+  notes?: string;
+  confirm?: boolean;
+  separate_tables_acceptable?: boolean;
+  tables_must_be_close?: boolean;
+};
+
+function readRealtimeText(data: unknown): string | null {
+  if (typeof data === "string") return data;
+  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
+  if (ArrayBuffer.isView(data)) {
+    return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+  }
+  return null;
+}
+
+function parseObject(argumentsJson: string | undefined): Record<string, unknown> {
+  if (!argumentsJson?.trim()) return {};
+  const parsed = JSON.parse(argumentsJson) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Tool arguments must be a JSON object");
+  return parsed as Record<string, unknown>;
+}
+
+function publicToolOutput(result: ToolResult): Record<string, unknown> {
+  if (!result.ok) return { ok: false, status: "ERROR", error: result.error, message: result.message };
+  const payload = result.result && typeof result.result === "object" && !Array.isArray(result.result)
+    ? result.result as Record<string, unknown>
+    : { value: result.result };
+  return { ok: true, ...payload };
+}
+
+export class CallSession extends BaseConstructor {
+  private reservationDraftV19: ReservationDraft = {};
+  private reservationAvailabilityFingerprintV19: string | null = null;
+  private reservationAvailabilityResultV19: Record<string, unknown> | null = null;
+  private luciaProcessingTimerV19: ReturnType<typeof setTimeout> | null = null;
+
+  private clearLuciaProcessingTimerV19(): void {
+    if (this.luciaProcessingTimerV19 !== null) {
+      clearTimeout(this.luciaProcessingTimerV19);
+      this.luciaProcessingTimerV19 = null;
+    }
+  }
+
+  private suspendPresenceWhileLuciaProcessesV19(): void {
+    this.clearLuciaProcessingTimerV19();
+    // Reuse the v18 relative-suspension flag WITHOUT resetting inactivityStartedAtV18.
+    // This prevents presence prompts while Lucia is processing a real transcript while
+    // preserving the original absolute unanswered deadline and the 15-minute call cap.
+    (this as any).toolExecutionActiveV18 = true;
+    (this as any).diagnostics?.checkpoint?.("USER_PRESENCE_SUSPENDED_WHILE_LUCIA_PROCESSING", {
+      max_processing_ms: LUCIA_PROCESSING_MAX_MS,
+      absolute_deadline_preserved: true,
+    });
+    this.luciaProcessingTimerV19 = setTimeout(() => {
+      this.luciaProcessingTimerV19 = null;
+      if ((this as any).state === "closing" || (this as any).hangupStarted) return;
+      (this as any).toolExecutionActiveV18 = false;
+      (this as any).diagnostics?.checkpoint?.("LUCIA_PROCESSING_WATCHDOG_RELEASED", {
+        max_processing_ms: LUCIA_PROCESSING_MAX_MS,
+      });
+      (this as any).scheduleNextInactivityCheckV18?.();
+    }, LUCIA_PROCESSING_MAX_MS);
+  }
+
+  private mergeReservationDraftV19(args: Record<string, unknown>): ReservationDraft {
+    const allowed = [
+      "party_size", "starts_at", "customer_name", "customer_phone", "use_caller_phone",
+      "duration_minutes", "notes", "confirm", "separate_tables_acceptable", "tables_must_be_close",
+    ] as const;
+    for (const key of allowed) {
+      if (args[key] !== undefined) (this.reservationDraftV19 as Record<string, unknown>)[key] = args[key];
+    }
+    if (this.reservationDraftV19.use_caller_phone === true && !this.reservationDraftV19.customer_phone) {
+      const caller = (this as any).callerPhone;
+      if (typeof caller === "string" && caller.trim()) this.reservationDraftV19.customer_phone = caller.trim();
+    }
+    return { ...this.reservationDraftV19 };
+  }
+
+  private reservationAvailabilityFingerprint(draft: ReservationDraft): string | null {
+    if (!Number.isInteger(draft.party_size) || !draft.starts_at) return null;
+    return JSON.stringify({
+      party_size: draft.party_size,
+      starts_at: draft.starts_at,
+      duration_minutes: draft.duration_minutes ?? 90,
+      separate_tables_acceptable: draft.separate_tables_acceptable ?? null,
+      tables_must_be_close: draft.tables_must_be_close ?? null,
+    });
+  }
+
+  private sendFunctionOutputV19(callId: string | undefined, output: Record<string, unknown>): void {
+    (this as any).send({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(output),
+      },
+    });
+    (this as any).send({ type: "response.create" });
+  }
+
+  private async executeDirectCreateV19(callId: string | undefined, args: Record<string, unknown>): Promise<void> {
+    const draft = this.mergeReservationDraftV19(args);
+    const tenantId = (this as any).tenantId as string | null | undefined;
+    if (!tenantId) {
+      this.sendFunctionOutputV19(callId, { ok: false, status: "ERROR", error: "TENANT_REQUIRED" });
+      return;
+    }
+
+    // Keep v16 multi-table preference state synchronized, but do not route execution
+    // through conversation_intent / CoreIntent / legacy reservation collection.
+    (this as any).captureStructuredTurnV16?.(JSON.stringify({
+      intent: "CREATE_RESERVATION",
+      reservation: draft,
+    }));
+
+    const missingAvailability: string[] = [];
+    if (!Number.isInteger(draft.party_size)) missingAvailability.push("party_size");
+    if (!draft.starts_at) missingAvailability.push("starts_at");
+    if (missingAvailability.length) {
+      this.sendFunctionOutputV19(callId, {
+        ok: true,
+        status: "MISSING_INFORMATION",
+        missing: missingAvailability,
+        draft,
+      });
+      return;
+    }
+
+    const gateway = (this as any).createToolGateway?.() as ToolGateway | undefined;
+    if (!gateway) {
+      this.sendFunctionOutputV19(callId, { ok: false, status: "ERROR", error: "TOOL_GATEWAY_UNAVAILABLE" });
+      return;
+    }
+
+    const fingerprint = this.reservationAvailabilityFingerprint(draft)!;
+    if (this.reservationAvailabilityFingerprintV19 !== fingerprint || !this.reservationAvailabilityResultV19) {
+      const started = Date.now();
+      (this as any).diagnostics?.checkpoint?.("DIRECT_RESERVATION_AVAILABILITY_STARTED", {
+        party_size: draft.party_size,
+        starts_at: draft.starts_at,
+      });
+      const availability = await gateway.execute({
+        name: CHECK_AVAILABILITY,
+        arguments: {
+          party_size: draft.party_size,
+          starts_at: draft.starts_at,
+          duration_minutes: draft.duration_minutes ?? 90,
+        },
+        context: { tenantId, callId: (this as any).callId ?? undefined },
+      });
+      (this as any).diagnostics?.checkpoint?.("DIRECT_RESERVATION_AVAILABILITY_COMPLETED", {
+        elapsed_ms: Date.now() - started,
+        ok: availability.ok,
+      });
+      if (!availability.ok) {
+        this.sendFunctionOutputV19(callId, publicToolOutput(availability));
+        return;
+      }
+      this.reservationAvailabilityFingerprintV19 = fingerprint;
+      this.reservationAvailabilityResultV19 = availability.result as Record<string, unknown>;
+    }
+
+    const availabilityResult = this.reservationAvailabilityResultV19 ?? {};
+    if (availabilityResult.requested_available !== true) {
+      this.sendFunctionOutputV19(callId, {
+        ok: true,
+        status: "UNAVAILABLE",
+        ...availabilityResult,
+      });
+      return;
+    }
+
+    const missingContact: string[] = [];
+    if (!draft.customer_name) missingContact.push("customer_name");
+    if (!draft.customer_phone) missingContact.push("customer_phone");
+    if (missingContact.length) {
+      this.sendFunctionOutputV19(callId, {
+        ok: true,
+        status: "AVAILABLE_NEEDS_CONTACT",
+        missing: missingContact,
+        availability: availabilityResult,
+        draft,
+      });
+      return;
+    }
+
+    if (draft.confirm !== true) {
+      this.sendFunctionOutputV19(callId, {
+        ok: true,
+        status: "READY_TO_CONFIRM",
+        availability: availabilityResult,
+        reservation: {
+          party_size: draft.party_size,
+          starts_at: draft.starts_at,
+          customer_name: draft.customer_name,
+          duration_minutes: draft.duration_minutes ?? 90,
+          separate_tables_acceptable: draft.separate_tables_acceptable ?? false,
+        },
+      });
+      return;
+    }
+
+    const started = Date.now();
+    (this as any).diagnostics?.checkpoint?.("DIRECT_RESERVATION_BOOKING_STARTED", {
+      party_size: draft.party_size,
+      starts_at: draft.starts_at,
+    });
+    const booking = await gateway.execute({
+      name: MANAGE_RESERVATION,
+      arguments: {
+        party_size: draft.party_size,
+        starts_at: draft.starts_at,
+        customer_name: draft.customer_name,
+        customer_phone: draft.customer_phone,
+        duration_minutes: draft.duration_minutes ?? 90,
+        notes: draft.notes,
+        confirm: true,
+      },
+      context: { tenantId, callId: (this as any).callId ?? undefined },
+    });
+    (this as any).diagnostics?.checkpoint?.("DIRECT_RESERVATION_BOOKING_COMPLETED", {
+      elapsed_ms: Date.now() - started,
+      ok: booking.ok,
+      stage: booking.ok && booking.result && typeof booking.result === "object"
+        ? (booking.result as Record<string, unknown>).stage
+        : null,
+    });
+
+    if (booking.ok && booking.result && typeof booking.result === "object" && (booking.result as Record<string, unknown>).stage === "BOOKED") {
+      this.reservationDraftV19 = {};
+      this.reservationAvailabilityFingerprintV19 = null;
+      this.reservationAvailabilityResultV19 = null;
+    }
+    this.sendFunctionOutputV19(callId, publicToolOutput(booking));
+  }
+
+  private async handleRealtimeMessage(data: unknown): Promise<void> {
+    const text = readRealtimeText(data);
+    let event: RealtimeEvent | null = null;
+    if (text) {
+      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
+    }
+
+    if (event?.type === "conversation.item.input_audio_transcription.completed") {
+      this.suspendPresenceWhileLuciaProcessesV19();
+    }
+
+    if (event?.type === "response.function_call_arguments.done" && event.name === CREATE_RESERVATION) {
+      this.clearLuciaProcessingTimerV19();
+      (this as any).toolExecutionActiveV18 = true;
+      let args: Record<string, unknown>;
+      try {
+        args = parseObject(event.arguments);
+      } catch (error) {
+        this.sendFunctionOutputV19(event.call_id, {
+          ok: false,
+          status: "ERROR",
+          error: "INVALID_ARGUMENTS",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+
+      (this as any).diagnostics?.checkpoint?.("LUCIA_AGENT_TOOL_SELECTED", {
+        tool: CREATE_RESERVATION,
+        compatibility_executor: "direct_reservation_controller_v19",
+      });
+      try {
+        await this.executeDirectCreateV19(event.call_id, args);
+      } catch (error) {
+        (this as any).diagnostics?.fail?.("DIRECT_RESERVATION_FAILED", "DIRECT_RESERVATION_EXECUTION_FAILED", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.sendFunctionOutputV19(event.call_id, {
+          ok: false,
+          status: "ERROR",
+          error: "EXECUTION_FAILED",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+
+    if (event?.type === "response.output_audio_transcript.done" || event?.type === "response.function_call_arguments.done") {
+      this.clearLuciaProcessingTimerV19();
+    }
+
+    await BasePrototype.handleRealtimeMessage.call(this, data);
+  }
+}
