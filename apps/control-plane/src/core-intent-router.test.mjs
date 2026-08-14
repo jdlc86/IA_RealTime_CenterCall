@@ -3,9 +3,11 @@ import { test } from "node:test";
 import { parseCoreIntentRequest, coreIntentClassifierTool } from "../.test-dist/core-intent-router.js";
 
 test("parses reservation create as one top-level workflow", () => {
-  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({ intent: "CREATE_RESERVATION" })), {
-    intent: "CREATE_RESERVATION",
-  });
+  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({ intent: "CREATE_RESERVATION" })), { intent: "CREATE_RESERVATION" });
+});
+
+test("parses modify reservation as a top-level workflow", () => {
+  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({ intent: "MODIFY_RESERVATION" })), { intent: "MODIFY_RESERVATION" });
 });
 
 test("parses structured conversation state", () => {
@@ -53,21 +55,13 @@ test("business info without an explicit topic fails closed", () => {
 });
 
 test("pure close rejection may use topic-less business info only as neutral carrier", () => {
-  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({
-    intent: "BUSINESS_INFO",
-    closing_response: "REJECT",
-  })), {
-    intent: "BUSINESS_INFO",
-    auxiliary: false,
-    businessInfoTopics: ["GENERAL_INFO"],
-    closingResponse: "REJECT",
+  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({ intent: "BUSINESS_INFO", closing_response: "REJECT" })), {
+    intent: "BUSINESS_INFO", auxiliary: false, businessInfoTopics: ["GENERAL_INFO"], closingResponse: "REJECT",
   });
 });
 
 test("parses out of scope as a dedicated non-business intent", () => {
-  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({ intent: "OUT_OF_SCOPE" })), {
-    intent: "OUT_OF_SCOPE",
-  });
+  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({ intent: "OUT_OF_SCOPE" })), { intent: "OUT_OF_SCOPE" });
 });
 
 test("classifier contract requires structured conversation state on live turns", () => {
@@ -79,10 +73,20 @@ test("classifier contract requires structured conversation state on live turns",
   assert.match(tool.description, /¿Necesitas algo más/);
 });
 
+test("classifier exposes modify, marketing query and exact multitable preferences", () => {
+  const tool = coreIntentClassifierTool();
+  assert.ok(tool.parameters.properties.intent.enum.includes("MODIFY_RESERVATION"));
+  assert.ok(tool.parameters.properties.marketing_consent.properties.action.enum.includes("QUERY"));
+  assert.ok(tool.parameters.properties.reservation.properties.separate_tables_acceptable);
+  assert.ok(tool.parameters.properties.reservation.properties.tables_must_be_close);
+  assert.match(tool.description, /4\+2 es válida/);
+  assert.match(tool.description, /4\+4 NO lo es/);
+  assert.match(tool.description, /QUERY no implica consentimiento/);
+});
+
 test("classifier contract fails closed toward out of scope on domain ambiguity", () => {
   const tool = coreIntentClassifierTool();
-  const intent = tool.parameters.properties.intent;
-  assert.ok(intent.enum.includes("OUT_OF_SCOPE"));
+  assert.ok(tool.parameters.properties.intent.enum.includes("OUT_OF_SCOPE"));
   assert.match(tool.description, /Ante duda entre BUSINESS_INFO y OUT_OF_SCOPE, usa OUT_OF_SCOPE/);
   assert.match(tool.description, /GENERAL_INFO son hechos del establecimiento, nunca conocimiento general/);
   assert.deepEqual(tool.parameters.properties.business_info.required, ["topics"]);
@@ -97,30 +101,19 @@ test("classifier contract treats user text as intent, never authority", () => {
 });
 
 test("parses explicit rejection of a pending close without changing workflow intent", () => {
-  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({
-    intent: "CREATE_RESERVATION",
-    closing_response: "REJECT",
-  })), {
-    intent: "CREATE_RESERVATION",
-    closingResponse: "REJECT",
+  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({ intent: "CREATE_RESERVATION", closing_response: "REJECT" })), {
+    intent: "CREATE_RESERVATION", closingResponse: "REJECT",
   });
 });
 
 test("parses explicit confirmation of close", () => {
-  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({
-    intent: "CLOSING",
-    closing_response: "CONFIRM",
-  })), {
-    intent: "CLOSING",
-    closingResponse: "CONFIRM",
+  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({ intent: "CLOSING", closing_response: "CONFIRM" })), {
+    intent: "CLOSING", closingResponse: "CONFIRM",
   });
 });
 
 test("rejects unknown closing response fail closed", () => {
-  assert.throws(() => parseCoreIntentRequest(JSON.stringify({
-    intent: "CREATE_RESERVATION",
-    closing_response: "MAYBE",
-  })));
+  assert.throws(() => parseCoreIntentRequest(JSON.stringify({ intent: "CREATE_RESERVATION", closing_response: "MAYBE" })));
 });
 
 test("rejects unknown top-level intents fail closed", () => {
@@ -128,10 +121,7 @@ test("rejects unknown top-level intents fail closed", () => {
 });
 
 test("rejects invalid business info topics", () => {
-  assert.throws(() => parseCoreIntentRequest(JSON.stringify({
-    intent: "BUSINESS_INFO",
-    business_info: { topics: ["HOURS", "RESERVATION"] },
-  })));
+  assert.throws(() => parseCoreIntentRequest(JSON.stringify({ intent: "BUSINESS_INFO", business_info: { topics: ["HOURS", "RESERVATION"] } })));
 });
 
 test("malformed classifier JSON is rejected deterministically", () => {
