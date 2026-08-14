@@ -1,0 +1,1 @@
+v18 presence watchdog: VAD does not reset inactivity; coherent Lucia response/tool selection does. Recovery at 8s/16s; inactivity close around 26s; max call duration 15m.
