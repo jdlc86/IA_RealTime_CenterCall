@@ -8,6 +8,13 @@ import {
   type ReservationOutputStage,
 } from "./reservation-output-policy";
 import { parseCoreIntentRequest } from "./core-intent-router";
+import {
+  armFunctionResponse,
+  initialRealtimeResponseSerializationState,
+  releaseAfterResponseDone,
+  requestSpokenResponse,
+  type RealtimeResponseSerializationState,
+} from "./realtime-response-serialization";
 
 const BaseConstructor = CallSessionV14 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV14.prototype as any;
@@ -25,10 +32,12 @@ function readRealtimeText(data: unknown): string | null {
 
 /**
  * v15 is the final conversation boundary. It keeps validated business executors
- * intact while enforcing backend-authoritative reservation speech and domain scope.
+ * intact while enforcing backend-authoritative speech, domain scope and strict
+ * Realtime response serialization.
  */
 export class CallSession extends BaseConstructor {
   private pendingReservationClassifierOutputsV15: unknown[] = [];
+  private realtimeResponseSerializationV15: RealtimeResponseSerializationState = initialRealtimeResponseSerializationState();
 
   private send(data: unknown): void {
     if (isLegacyReservationContinueOutput(data)) {
@@ -56,28 +65,23 @@ export class CallSession extends BaseConstructor {
 
   private createSpokenResponse(instructions: string): void {
     const structuredNextAction = (this as any).conversationNextActionV13 as string | undefined;
+    let governed = instructions;
 
     // Closing is the one place where speech and machine state must be identical.
-    // While Core is waiting for confirmation, no downstream prompt may paraphrase
-    // that state as a farewell or claim that the call is already finished.
     if (structuredNextAction === "ASK_CLOSE_CONFIRMATION") {
       (this as any).diagnostics?.checkpoint?.("CLOSING_SPEECH_STRUCTURED_STATE_ENFORCED", {
         next_action: structuredNextAction,
         farewell_allowed: false,
       });
-      BasePrototype.createSpokenResponse.call(
-        this,
-        "Di exactamente: ¿Quieres terminar la llamada? No añadas despedidas, no digas que la llamada ha terminado y no anuncies que vas a colgar.",
-      );
-      return;
-    }
-
-    let governed = applyTerminalConversationPolicy(instructions);
-    if (governed !== instructions) {
-      (this as any).diagnostics?.checkpoint?.("TERMINAL_CONVERSATION_PROACTIVE_PROMPT_APPLIED", {
-        proactive_next_intent: true,
-        silence_after_terminal_result_forbidden: true,
-      });
+      governed = "Di exactamente: ¿Quieres terminar la llamada? No añadas despedidas, no digas que la llamada ha terminado y no anuncies que vas a colgar.";
+    } else {
+      governed = applyTerminalConversationPolicy(governed);
+      if (governed !== instructions) {
+        (this as any).diagnostics?.checkpoint?.("TERMINAL_CONVERSATION_PROACTIVE_PROMPT_APPLIED", {
+          proactive_next_intent: true,
+          silence_after_terminal_result_forbidden: true,
+        });
+      }
     }
 
     if (this.pendingReservationClassifierOutputsV15.length > 0) {
@@ -95,6 +99,15 @@ export class CallSession extends BaseConstructor {
       });
     }
 
+    const requested = requestSpokenResponse(this.realtimeResponseSerializationV15, governed);
+    this.realtimeResponseSerializationV15 = requested.next;
+    if (!requested.sendNow) {
+      (this as any).diagnostics?.checkpoint?.("SPOKEN_RESPONSE_DEFERRED_UNTIL_RESPONSE_DONE", {
+        replaced_pending: requested.replacedPending,
+      });
+      return;
+    }
+
     BasePrototype.createSpokenResponse.call(this, governed);
   }
 
@@ -103,6 +116,26 @@ export class CallSession extends BaseConstructor {
     let event: RealtimeEvent | null = null;
     if (text) {
       try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
+    }
+
+    if (event?.type === "response.function_call_arguments.done") {
+      this.realtimeResponseSerializationV15 = armFunctionResponse(this.realtimeResponseSerializationV15);
+      (this as any).diagnostics?.checkpoint?.("REALTIME_FUNCTION_RESPONSE_SERIALIZATION_ARMED", {
+        tool: event.name ?? null,
+      });
+    }
+
+    if (event?.type === "response.done") {
+      const released = releaseAfterResponseDone(this.realtimeResponseSerializationV15);
+      this.realtimeResponseSerializationV15 = released.next;
+      await BasePrototype.handleRealtimeMessage.call(this, data);
+      if (released.releasedInstructions) {
+        BasePrototype.createSpokenResponse.call(this, released.releasedInstructions);
+        (this as any).diagnostics?.checkpoint?.("SPOKEN_RESPONSE_RELEASED_AFTER_RESPONSE_DONE", {
+          serialized: true,
+        });
+      }
+      return;
     }
 
     if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
@@ -124,8 +157,7 @@ export class CallSession extends BaseConstructor {
             business_info_execution: false,
             state_preserved: true,
           });
-          BasePrototype.createSpokenResponse.call(
-            this,
+          this.createSpokenResponse(
             `${DOMAIN_AUTHORITY_INVARIANT} La petición está fuera del ámbito del negocio. No uses conocimiento general, no ejecutes herramientas y no intentes responder al contenido. Di brevemente: Solo puedo ayudarte con cuestiones relacionadas con el restaurante. ¿Necesitas algo más en lo que pueda ayudarte?`,
           );
           return;
