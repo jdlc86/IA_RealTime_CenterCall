@@ -24,6 +24,20 @@ export type ConversationNextAction =
   | "HANGUP_AFTER_SPEECH";
 export type ConversationClosingSignal = "NONE" | "REQUESTED" | "CONFIRMED" | "REJECTED";
 
+export type IntentReasonCode =
+  | "RESERVATION_CREATE"
+  | "RESERVATION_QUERY"
+  | "RESERVATION_MODIFY"
+  | "RESERVATION_CANCEL"
+  | "BUSINESS_INFO_REQUEST"
+  | "MARKETING_REQUEST"
+  | "OUT_OF_SCOPE_REQUEST"
+  | "CONTINUE_CURRENT_WORKFLOW"
+  | "EXPLICIT_FAREWELL"
+  | "EXPLICIT_END_REQUEST"
+  | "ANSWER_TO_CLOSE_PROMPT"
+  | "UNKNOWN";
+
 export type StructuredConversationState = {
   nextAction: ConversationNextAction;
   closingSignal: ConversationClosingSignal;
@@ -31,6 +45,8 @@ export type StructuredConversationState = {
 
 export type CoreIntentRequest = {
   intent: CoreIntent;
+  intentConfidence?: number;
+  intentReasonCode?: IntentReasonCode;
   businessInfoTopics?: BusinessInfoTopic[];
   auxiliary?: boolean;
   closingResponse?: ClosingResponse;
