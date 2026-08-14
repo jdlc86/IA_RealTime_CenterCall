@@ -84,6 +84,14 @@ test("classifier exposes modify, marketing query and exact multitable preference
   assert.match(tool.description, /QUERY no implica consentimiento/);
 });
 
+test("classifier treats closing as explicit opt-in and a no consumes the pending close", () => {
+  const tool = coreIntentClassifierTool();
+  assert.match(tool.description, /REGLA ESTRICTA DE CIERRE/);
+  assert.match(tool.description, /únicamente cuando el usuario expresa de forma inequívoca/);
+  assert.match(tool.description, /closing_signal=REJECTED/);
+  assert.match(tool.description, /no vuelve a solicitarlo/);
+});
+
 test("classifier contract fails closed toward out of scope on domain ambiguity", () => {
   const tool = coreIntentClassifierTool();
   assert.ok(tool.parameters.properties.intent.enum.includes("OUT_OF_SCOPE"));

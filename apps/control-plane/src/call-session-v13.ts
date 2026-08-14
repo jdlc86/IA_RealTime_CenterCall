@@ -257,7 +257,8 @@ export class CallSession extends BaseConstructor {
         (this as any).state = "active";
         (this as any).ambiguousCount = 0;
         const currentWorkflow = this.coreIntentStateV13.workflow;
-        const pureRejection = request.intent === currentWorkflow
+        const pureRejection = request.intent === "CLOSING"
+          || request.intent === currentWorkflow
           || (currentWorkflow === "ROUTING"
             && request.intent === "BUSINESS_INFO"
             && request.businessInfoTopics?.length === 1
