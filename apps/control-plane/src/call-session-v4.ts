@@ -1,6 +1,5 @@
 import { CallSession as CallSessionV3 } from "./call-session-v3";
 import type { ReservationFlowArgs } from "./reservation-flow";
-import { classifyReservationTruthClaim } from "./reservation-truth";
 
 const MANAGE_RESERVATION = "manage_reservation";
 
@@ -16,14 +15,7 @@ type RealtimeOutputItem = {
 
 type RealtimeTruthEvent = {
   type?: string;
-  name?: string;
-  call_id?: string;
-  arguments?: string;
-  delta?: string;
-  transcript?: string;
   response?: {
-    id?: string;
-    status?: string;
     output?: RealtimeOutputItem[];
   };
 };
@@ -37,14 +29,15 @@ function readRealtimeText(data: unknown): string | null {
   return null;
 }
 
-export function soundsLikeReservationConfirmed(value: string): boolean {
-  return classifyReservationTruthClaim(value) === "BOOKED";
-}
-
+/**
+ * v4 no interprets assistant speech. Business truth comes only from structured
+ * backend evidence. This layer keeps two mechanical responsibilities:
+ *  - remember that CREATE actually returned BOOKED;
+ *  - recover a manage_reservation function call when Realtime omitted the
+ *    function_call_arguments.done event but included it in response.done.
+ */
 export class CallSession extends BaseConstructor {
   private reservationBookedThisCall = false;
-  private assistantTranscriptBuffer = "";
-  private truthGuardRecoveryActive = false;
   private recoveredFunctionCallIds = new Set<string>();
 
   private async executeReservationFlow(args: ReservationFlowArgs, tenantId: string): Promise<Record<string, unknown>> {
@@ -53,6 +46,7 @@ export class CallSession extends BaseConstructor {
       this.reservationBookedThisCall = true;
       (this as any).diagnostics?.checkpoint?.("RESERVATION_BOOKED_EVIDENCE", {
         source: "authorized_backend_result",
+        evidence_model: "structured_backend_v2",
       });
     }
     return result;
@@ -72,47 +66,11 @@ export class CallSession extends BaseConstructor {
     return item;
   }
 
-  private triggerReservationTruthCorrection(reason: string): void {
-    if (this.truthGuardRecoveryActive) return;
-    this.truthGuardRecoveryActive = true;
-    (this as any).diagnostics?.fail?.("RESERVATION_FALSE_CONFIRMATION_BLOCKED", "BOOKED_EVIDENCE_MISSING", {
-      reason,
-      claim_type: "BOOKED",
-    });
-    (this as any).sendBestEffortCancel?.();
-    setTimeout(() => {
-      try {
-        (this as any).createSpokenResponse(
-          "Corrige inmediatamente cualquier impresión anterior: indica de forma breve y clara que la reserva NO está confirmada porque todavía no has recibido confirmación del sistema. No digas que está hecha, registrada o confirmada. Ofrece continuar intentándolo."
-        );
-        (this as any).diagnostics?.recovered?.("RESERVATION_TRUTH_CORRECTION_SPOKEN", "correct_false_confirmation_without_booked_evidence");
-      } finally {
-        setTimeout(() => { this.truthGuardRecoveryActive = false; }, 1500);
-      }
-    }, 100);
-  }
-
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const text = readRealtimeText(data);
     let event: RealtimeTruthEvent | null = null;
     if (text) {
-      try {
-        event = JSON.parse(text) as RealtimeTruthEvent;
-      } catch {
-        event = null;
-      }
-    }
-
-    if (event?.type === "response.created") {
-      this.assistantTranscriptBuffer = "";
-    }
-
-    if (event?.type === "response.output_audio_transcript.delta" && typeof event.delta === "string") {
-      this.assistantTranscriptBuffer += event.delta;
-      if (!this.reservationBookedThisCall && classifyReservationTruthClaim(this.assistantTranscriptBuffer) === "BOOKED") {
-        this.triggerReservationTruthCorrection("assistant_audio_transcript_delta");
-        return;
-      }
+      try { event = JSON.parse(text) as RealtimeTruthEvent; } catch { event = null; }
     }
 
     if (event?.type === "response.done") {
@@ -133,14 +91,5 @@ export class CallSession extends BaseConstructor {
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
-
-    if (!event) return;
-
-    if (event.type === "response.output_audio_transcript.done" && typeof event.transcript === "string") {
-      this.assistantTranscriptBuffer = event.transcript;
-      if (!this.reservationBookedThisCall && classifyReservationTruthClaim(event.transcript) === "BOOKED") {
-        this.triggerReservationTruthCorrection("assistant_audio_transcript_done");
-      }
-    }
   }
 }

@@ -1,22 +1,38 @@
-export type ReservationTruthClaim = "BOOKED" | "CANCELLED" | null;
+export type ReservationClaim = "RESERVATION_CREATED" | "RESERVATION_IS_BOOKED" | "RESERVATION_CANCELLED";
 
-function normalizeSpeech(value: string): string {
-  return value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
-}
+export type ReservationEvidence =
+  | { source: "CREATE_RESULT"; status: "BOOKED" }
+  | { source: "QUERY_RESULT"; status: "BOOKED" }
+  | { source: "CANCEL_RESULT"; status: "CANCELLED" };
 
-export function classifyReservationTruthClaim(value: string): ReservationTruthClaim {
-  const text = normalizeSpeech(value);
-  const reservationWord = /\breserva(?:cion)?\b/.test(text);
-  if (!reservationWord) return null;
+export type ReservationClaimDecision = {
+  allowed: boolean;
+  reason: "EVIDENCE_MATCH" | "EVIDENCE_MISSING" | "EVIDENCE_MISMATCH";
+};
 
-  const cancelled = /\b(cancelad[ao]|anulad[ao]|dada de baja)\b/.test(text)
-    && /\b(he|hemos|queda|quedo|esta|ya esta|acabo de|ha sido)\b/.test(text);
-  if (cancelled) return "CANCELLED";
+/**
+ * Deterministic assertion guard. It never reads or interprets natural language.
+ * A claim is allowed only when an authoritative backend result supports it.
+ */
+export function authorizeReservationClaim(
+  claim: ReservationClaim,
+  evidence: ReservationEvidence | null | undefined,
+): ReservationClaimDecision {
+  if (!evidence) return { allowed: false, reason: "EVIDENCE_MISSING" };
 
-  const bookedWord = /\b(confirmad[ao]|hecha|realizada|completada|registrada|reservad[ao]|lista)\b/.test(text);
-  const explicitVerb = /\b(he|hemos|queda|quedo|esta|ya esta|acabo de)\b/.test(text);
-  return bookedWord && explicitVerb ? "BOOKED" : null;
+  if (claim === "RESERVATION_CREATED") {
+    return evidence.source === "CREATE_RESULT" && evidence.status === "BOOKED"
+      ? { allowed: true, reason: "EVIDENCE_MATCH" }
+      : { allowed: false, reason: "EVIDENCE_MISMATCH" };
+  }
+
+  if (claim === "RESERVATION_IS_BOOKED") {
+    return evidence.status === "BOOKED" && (evidence.source === "CREATE_RESULT" || evidence.source === "QUERY_RESULT")
+      ? { allowed: true, reason: "EVIDENCE_MATCH" }
+      : { allowed: false, reason: "EVIDENCE_MISMATCH" };
+  }
+
+  return evidence.source === "CANCEL_RESULT" && evidence.status === "CANCELLED"
+    ? { allowed: true, reason: "EVIDENCE_MATCH" }
+    : { allowed: false, reason: "EVIDENCE_MISMATCH" };
 }
