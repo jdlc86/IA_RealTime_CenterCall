@@ -59,8 +59,13 @@ test("marketing payload remains independent", () => {
   });
 });
 
-test("closing maps to existing terminal semantic path", () => {
-  assert.deepEqual(adaptHierarchicalIntentToLegacy(JSON.stringify({ intent: "CLOSING" })), {
+test("closing maps to existing terminal semantic path only with structured evidence", () => {
+  assert.deepEqual(adaptHierarchicalIntentToLegacy(JSON.stringify({
+    intent: "CLOSING",
+    intent_confidence: 0.99,
+    intent_reason_code: "ANSWER_TO_CLOSE_PROMPT",
+    conversation: { next_action: "HANGUP_AFTER_SPEECH", closing_signal: "CONFIRMED" },
+  })), {
     intent: "END_CLEAR",
     data_requirement: "NONE",
     reason: "core_intent_closing",

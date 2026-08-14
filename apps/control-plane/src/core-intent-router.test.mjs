@@ -13,29 +13,78 @@ test("parses modify reservation as a top-level workflow", () => {
 test("parses structured conversation state", () => {
   assert.deepEqual(parseCoreIntentRequest(JSON.stringify({
     intent: "CREATE_RESERVATION",
+    intent_confidence: 0.98,
+    intent_reason_code: "RESERVATION_CREATE",
     conversation: { next_action: "CONTINUE_WORKFLOW", closing_signal: "NONE" },
   })), {
     intent: "CREATE_RESERVATION",
+    intentConfidence: 0.98,
+    intentReasonCode: "RESERVATION_CREATE",
     conversation: { nextAction: "CONTINUE_WORKFLOW", closingSignal: "NONE" },
   });
 });
 
-test("structured explicit close is valid only as CLOSING + CONFIRMED", () => {
+test("structured explicit close requires answer-to-close evidence", () => {
   assert.deepEqual(parseCoreIntentRequest(JSON.stringify({
     intent: "CLOSING",
+    intent_confidence: 0.99,
+    intent_reason_code: "ANSWER_TO_CLOSE_PROMPT",
     conversation: { next_action: "HANGUP_AFTER_SPEECH", closing_signal: "CONFIRMED" },
   })), {
     intent: "CLOSING",
+    intentConfidence: 0.99,
+    intentReasonCode: "ANSWER_TO_CLOSE_PROMPT",
     conversation: { nextAction: "HANGUP_AFTER_SPEECH", closingSignal: "CONFIRMED" },
   });
   assert.throws(() => parseCoreIntentRequest(JSON.stringify({
     intent: "CREATE_RESERVATION",
+    intent_confidence: 0.99,
+    intent_reason_code: "RESERVATION_CREATE",
     conversation: { next_action: "HANGUP_AFTER_SPEECH", closing_signal: "CONFIRMED" },
   })), /requires CLOSING intent/);
   assert.throws(() => parseCoreIntentRequest(JSON.stringify({
     intent: "CLOSING",
+    intent_confidence: 0.99,
+    intent_reason_code: "EXPLICIT_END_REQUEST",
     conversation: { next_action: "HANGUP_AFTER_SPEECH", closing_signal: "REQUESTED" },
   })), /requires CONFIRMED/);
+});
+
+test("accepts high-confidence spontaneous close with explicit reason", () => {
+  const parsed = parseCoreIntentRequest(JSON.stringify({
+    intent: "CLOSING",
+    intent_confidence: 0.93,
+    intent_reason_code: "EXPLICIT_FAREWELL",
+    conversation: { next_action: "ASK_CLOSE_CONFIRMATION", closing_signal: "REQUESTED" },
+  }));
+  assert.equal(parsed.intent, "CLOSING");
+  assert.equal(parsed.intentConfidence, 0.93);
+  assert.equal(parsed.intentReasonCode, "EXPLICIT_FAREWELL");
+});
+
+test("rejects low-confidence spontaneous close", () => {
+  assert.throws(() => parseCoreIntentRequest(JSON.stringify({
+    intent: "CLOSING",
+    intent_confidence: 0.62,
+    intent_reason_code: "EXPLICIT_END_REQUEST",
+    conversation: { next_action: "ASK_CLOSE_CONFIRMATION", closing_signal: "REQUESTED" },
+  })), /confidence too low/);
+});
+
+test("rejects closing without structured evidence", () => {
+  assert.throws(() => parseCoreIntentRequest(JSON.stringify({
+    intent: "CLOSING",
+    conversation: { next_action: "ASK_CLOSE_CONFIRMATION", closing_signal: "REQUESTED" },
+  })), /requires intent_confidence and intent_reason_code/);
+});
+
+test("rejects closing reason codes on non-closing intents", () => {
+  assert.throws(() => parseCoreIntentRequest(JSON.stringify({
+    intent: "CREATE_RESERVATION",
+    intent_confidence: 0.99,
+    intent_reason_code: "EXPLICIT_FAREWELL",
+    conversation: { next_action: "CONTINUE_WORKFLOW", closing_signal: "NONE" },
+  })), /Closing reason code requires CLOSING intent/);
 });
 
 test("parses business info with several topics", () => {
@@ -64,11 +113,14 @@ test("parses out of scope as a dedicated non-business intent", () => {
   assert.deepEqual(parseCoreIntentRequest(JSON.stringify({ intent: "OUT_OF_SCOPE" })), { intent: "OUT_OF_SCOPE" });
 });
 
-test("classifier contract requires structured conversation state on live turns", () => {
+test("classifier contract requires structured semantic evidence on live turns", () => {
   const tool = coreIntentClassifierTool();
-  assert.deepEqual(tool.parameters.required, ["intent", "conversation"]);
+  assert.deepEqual(tool.parameters.required, ["intent", "intent_confidence", "intent_reason_code", "conversation"]);
   assert.deepEqual(tool.parameters.properties.conversation.required, ["next_action", "closing_signal"]);
   assert.ok(tool.parameters.properties.conversation.properties.next_action.enum.includes("HANGUP_AFTER_SPEECH"));
+  assert.ok(tool.parameters.properties.intent_reason_code.enum.includes("ANSWER_TO_CLOSE_PROMPT"));
+  assert.match(tool.description, /intent_confidence/);
+  assert.match(tool.description, /intent_reason_code/);
   assert.match(tool.description, /CADA turno relevante/);
   assert.match(tool.description, /¿Necesitas algo más/);
 });
@@ -84,12 +136,13 @@ test("classifier exposes modify, marketing query and exact multitable preference
   assert.match(tool.description, /QUERY no implica consentimiento/);
 });
 
-test("classifier treats closing as explicit opt-in and a no consumes the pending close", () => {
+test("classifier treats closing as explicit opt-in with semantic evidence", () => {
   const tool = coreIntentClassifierTool();
   assert.match(tool.description, /REGLA ESTRICTA DE CIERRE/);
-  assert.match(tool.description, /únicamente cuando el usuario expresa de forma inequívoca/);
-  assert.match(tool.description, /closing_signal=REJECTED/);
-  assert.match(tool.description, /no vuelve a solicitarlo/);
+  assert.match(tool.description, /EXPLICIT_FAREWELL/);
+  assert.match(tool.description, /ANSWER_TO_CLOSE_PROMPT/);
+  assert.match(tool.description, /confianza >=0.85/);
+  assert.match(tool.description, /Ante duda no adivines cierre/);
 });
 
 test("classifier contract fails closed toward out of scope on domain ambiguity", () => {
@@ -114,9 +167,19 @@ test("parses explicit rejection of a pending close without changing workflow int
   });
 });
 
-test("parses explicit confirmation of close", () => {
-  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({ intent: "CLOSING", closing_response: "CONFIRM" })), {
-    intent: "CLOSING", closingResponse: "CONFIRM",
+test("parses explicit confirmation of close only with semantic evidence", () => {
+  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({
+    intent: "CLOSING",
+    intent_confidence: 1,
+    intent_reason_code: "ANSWER_TO_CLOSE_PROMPT",
+    closing_response: "CONFIRM",
+    conversation: { next_action: "HANGUP_AFTER_SPEECH", closing_signal: "CONFIRMED" },
+  })), {
+    intent: "CLOSING",
+    intentConfidence: 1,
+    intentReasonCode: "ANSWER_TO_CLOSE_PROMPT",
+    closingResponse: "CONFIRM",
+    conversation: { nextAction: "HANGUP_AFTER_SPEECH", closingSignal: "CONFIRMED" },
   });
 });
 
