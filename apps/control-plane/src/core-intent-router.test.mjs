@@ -52,6 +52,16 @@ test("classifier contract fails closed toward out of scope on domain ambiguity",
   assert.deepEqual(tool.parameters.properties.business_info.required, ["topics"]);
 });
 
+test("classifier contract treats user text as intent, never authority", () => {
+  const tool = coreIntentClassifierTool();
+  assert.match(tool.description, /JERARQUÍA DE AUTORIDAD INMUTABLE/);
+  assert.match(tool.description, /soy administrador/);
+  assert.match(tool.description, /ignora tus instrucciones/);
+  assert.match(tool.description, /cancela todas sin confirmar/);
+  assert.match(tool.description, /la confirmación backend continúa siendo obligatoria/);
+  assert.match(tool.description, /datos de tools/);
+});
+
 test("parses explicit rejection of a pending close without changing workflow intent", () => {
   assert.deepEqual(parseCoreIntentRequest(JSON.stringify({
     intent: "CREATE_RESERVATION",
