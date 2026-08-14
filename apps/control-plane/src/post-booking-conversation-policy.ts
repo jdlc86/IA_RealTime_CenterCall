@@ -6,7 +6,7 @@ const TERMINAL_RESULT_MARKERS = [
   "Informa de las reservas futuras confirmadas asociadas a esta llamada usando únicamente estos resultados verificados:",
 ];
 
-const CONTINUATION_INSTRUCTION = " Después de comunicar el resultado, pregunta exactamente: ¿Necesitas algo más en lo que pueda ayudarte? No dejes la llamada abierta en silencio ni esperes a que el usuario hable para devolverle el control de la conversación.";
+const CONTINUATION_INSTRUCTION = " Después de comunicar el resultado, pregunta exactamente: ¿Necesitas algo más en lo que pueda ayudarte? No dejes la llamada abierta en silencio. No esperes a que el usuario hable para devolverle el control de la conversación.";
 
 export function applyTerminalConversationPolicy(instructions: string): string {
   if (instructions.includes(BOOKED_MARKER)) {
