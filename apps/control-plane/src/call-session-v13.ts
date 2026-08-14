@@ -4,6 +4,7 @@ import {
   returnFromAuxiliaryBusinessInfo,
   transitionCoreIntent,
   type BusinessInfoTopic,
+  type ConversationNextAction,
   type CoreIntentState,
   type CoreWorkflow,
 } from "./core-intent-machine";
@@ -54,14 +55,15 @@ function requireRuntimeString(value: unknown, name: string): string {
 }
 
 /**
- * v13 replaces the stack of classifier session.update calls with one hierarchical
- * top-level state machine. Existing domain executors remain unchanged behind a
- * pure compatibility adapter until their runtime implementations are migrated.
+ * v13 owns the top-level structured conversation state. Lucia provides semantic
+ * intent + next conversational action every relevant turn; backend executors stay
+ * authoritative for business facts and mutations.
  */
 export class CallSession extends BaseConstructor {
   private coreIntentStateV13: CoreIntentState = initialCoreIntentState();
   private coreIntentSessionUpdateV13Sent = false;
   private closingConfirmationPendingV13 = false;
+  private conversationNextActionV13: ConversationNextAction = "CONTINUE_WORKFLOW";
 
   async fetch(request: Request): Promise<Response> {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
@@ -86,10 +88,12 @@ export class CallSession extends BaseConstructor {
         },
       });
       (this as any).diagnostics?.checkpoint?.("CORE_INTENT_CLASSIFIER_SCHEMA_UPDATED", {
-        strategy: "hierarchical_state_machine_v1",
+        strategy: "structured_conversation_state_v2",
         classifier_count: 1,
         business_info_multi_topic: true,
         legacy_executor_adapter: true,
+        structured_next_action_required: true,
+        structured_closing_signal_required: true,
       });
     }
 
@@ -236,8 +240,20 @@ export class CallSession extends BaseConstructor {
         return;
       }
 
-      if (this.closingConfirmationPendingV13 && request.closingResponse === "REJECT") {
+      this.conversationNextActionV13 = request.conversation?.nextAction ?? "CONTINUE_WORKFLOW";
+      const closingSignal = request.conversation?.closingSignal ?? "NONE";
+      (this as any).diagnostics?.checkpoint?.("CORE_STRUCTURED_CONVERSATION_STATE", {
+        intent: request.intent,
+        next_action: this.conversationNextActionV13,
+        closing_signal: closingSignal,
+        workflow_before: this.coreIntentStateV13.workflow,
+        closing_pending_before: this.closingConfirmationPendingV13,
+      });
+
+      const rejectedClosing = request.closingResponse === "REJECT" || closingSignal === "REJECTED";
+      if (this.closingConfirmationPendingV13 && rejectedClosing) {
         this.closingConfirmationPendingV13 = false;
+        this.conversationNextActionV13 = "CONTINUE_WORKFLOW";
         (this as any).state = "active";
         (this as any).ambiguousCount = 0;
         const currentWorkflow = this.coreIntentStateV13.workflow;
@@ -266,28 +282,36 @@ export class CallSession extends BaseConstructor {
           );
           return;
         }
-        // The user rejected closing and expressed another clear intent in the
-        // same turn. Closing is cancelled, then normal routing handles that intent.
       }
 
-      const requestedIntent = this.closingConfirmationPendingV13 && request.closingResponse === "CONFIRM"
+      const explicitStructuredClose = request.intent === "CLOSING"
+        && closingSignal === "CONFIRMED"
+        && this.conversationNextActionV13 === "HANGUP_AFTER_SPEECH";
+      const requestedIntent = (this.closingConfirmationPendingV13 && request.closingResponse === "CONFIRM") || explicitStructuredClose
         ? "CLOSING"
         : request.intent;
       const closingDecision = decideClosingTransition(
         this.coreIntentStateV13.workflow,
         requestedIntent,
         this.closingConfirmationPendingV13,
+        explicitStructuredClose,
       );
       this.closingConfirmationPendingV13 = closingDecision.pending;
 
       if (closingDecision.action === "ASK_CONFIRMATION") {
+        this.conversationNextActionV13 = "ASK_CLOSE_CONFIRMATION";
         this.sendCoreClassifierOutput(event.call_id, { action: "closing_confirmation_required" });
         (this as any).diagnostics?.checkpoint?.("CORE_CLOSING_CONFIRMATION_REQUIRED", {
           active_workflow: this.coreIntentStateV13.workflow,
           irreversible_transition: true,
+          structured_next_action: this.conversationNextActionV13,
         });
-        (this as any).createSpokenResponse("Pregunta únicamente y de forma breve: ¿Quieres terminar la llamada? No cierres ni abandones el workflow actual todavía.");
+        (this as any).createSpokenResponse("Pregunta únicamente y de forma breve: ¿Quieres terminar la llamada? No te despidas, no afirmes que la llamada ha terminado y no abandones el workflow actual todavía.");
         return;
+      }
+
+      if (closingDecision.action === "ALLOW_CLOSE") {
+        this.conversationNextActionV13 = "HANGUP_AFTER_SPEECH";
       }
 
       const effectiveRequest = requestedIntent === request.intent ? request : { ...request, intent: requestedIntent };
@@ -300,6 +324,7 @@ export class CallSession extends BaseConstructor {
         reason: transition.reason,
         business_info_topics: transition.next.businessInfoTopics,
         suspended_workflow: transition.next.suspendedWorkflow,
+        structured_next_action: this.conversationNextActionV13,
       });
 
       if (effectiveRequest.intent === "BUSINESS_INFO") {
@@ -324,6 +349,7 @@ export class CallSession extends BaseConstructor {
       (this as any).diagnostics?.checkpoint?.("CORE_INTENT_EXECUTOR_DISPATCHED", {
         workflow: transition.next.workflow,
         adapter: "validated_legacy_executor",
+        structured_next_action: this.conversationNextActionV13,
       });
       await BasePrototype.handleRealtimeMessage.call(this, JSON.stringify(synthetic));
       return;

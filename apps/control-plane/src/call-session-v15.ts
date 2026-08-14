@@ -55,6 +55,23 @@ export class CallSession extends BaseConstructor {
   }
 
   private createSpokenResponse(instructions: string): void {
+    const structuredNextAction = (this as any).conversationNextActionV13 as string | undefined;
+
+    // Closing is the one place where speech and machine state must be identical.
+    // While Core is waiting for confirmation, no downstream prompt may paraphrase
+    // that state as a farewell or claim that the call is already finished.
+    if (structuredNextAction === "ASK_CLOSE_CONFIRMATION") {
+      (this as any).diagnostics?.checkpoint?.("CLOSING_SPEECH_STRUCTURED_STATE_ENFORCED", {
+        next_action: structuredNextAction,
+        farewell_allowed: false,
+      });
+      BasePrototype.createSpokenResponse.call(
+        this,
+        "Di exactamente: ¿Quieres terminar la llamada? No añadas despedidas, no digas que la llamada ha terminado y no anuncies que vas a colgar.",
+      );
+      return;
+    }
+
     let governed = applyTerminalConversationPolicy(instructions);
     if (governed !== instructions) {
       (this as any).diagnostics?.checkpoint?.("TERMINAL_CONVERSATION_PROACTIVE_PROMPT_APPLIED", {

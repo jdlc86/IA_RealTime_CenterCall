@@ -7,24 +7,24 @@ export type ClosingDecision =
 
 /**
  * A semantic CLOSING decision is model-derived and the transition is irreversible.
- * Therefore one classifier decision is never sufficient to terminate a call.
+ * Therefore an unconfirmed closing request still requires one explicit confirmation.
  *
- * First CLOSING -> ask the user for explicit confirmation and preserve state.
- * Second consecutive CLOSING -> allow terminal transition.
- * Any other intent -> clear the pending close request.
- *
- * A physical caller hangup bypasses this policy naturally.
+ * The structured conversation contract may mark a turn as explicitly confirmed
+ * only when the user directly answers a prior continuation/closing question with
+ * an unequivocal end-of-call response. That pair (CLOSING + explicit confirmation)
+ * is enough to close without asking a redundant second question.
  */
 export function decideClosingTransition(
   _currentWorkflow: CoreWorkflow,
   requestedWorkflow: CoreWorkflow,
   closingPending: boolean,
+  explicitClosingConfirmed = false,
 ): ClosingDecision {
   if (requestedWorkflow !== "CLOSING") {
     return { action: "CONTINUE", pending: false };
   }
 
-  if (closingPending) {
+  if (explicitClosingConfirmed || closingPending) {
     return { action: "ALLOW_CLOSE", pending: false };
   }
 

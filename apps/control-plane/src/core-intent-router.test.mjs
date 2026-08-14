@@ -8,6 +8,34 @@ test("parses reservation create as one top-level workflow", () => {
   });
 });
 
+test("parses structured conversation state", () => {
+  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({
+    intent: "CREATE_RESERVATION",
+    conversation: { next_action: "CONTINUE_WORKFLOW", closing_signal: "NONE" },
+  })), {
+    intent: "CREATE_RESERVATION",
+    conversation: { nextAction: "CONTINUE_WORKFLOW", closingSignal: "NONE" },
+  });
+});
+
+test("structured explicit close is valid only as CLOSING + CONFIRMED", () => {
+  assert.deepEqual(parseCoreIntentRequest(JSON.stringify({
+    intent: "CLOSING",
+    conversation: { next_action: "HANGUP_AFTER_SPEECH", closing_signal: "CONFIRMED" },
+  })), {
+    intent: "CLOSING",
+    conversation: { nextAction: "HANGUP_AFTER_SPEECH", closingSignal: "CONFIRMED" },
+  });
+  assert.throws(() => parseCoreIntentRequest(JSON.stringify({
+    intent: "CREATE_RESERVATION",
+    conversation: { next_action: "HANGUP_AFTER_SPEECH", closing_signal: "CONFIRMED" },
+  })), /requires CLOSING intent/);
+  assert.throws(() => parseCoreIntentRequest(JSON.stringify({
+    intent: "CLOSING",
+    conversation: { next_action: "HANGUP_AFTER_SPEECH", closing_signal: "REQUESTED" },
+  })), /requires CONFIRMED/);
+});
+
 test("parses business info with several topics", () => {
   assert.deepEqual(parseCoreIntentRequest(JSON.stringify({
     intent: "BUSINESS_INFO",
@@ -42,13 +70,21 @@ test("parses out of scope as a dedicated non-business intent", () => {
   });
 });
 
+test("classifier contract requires structured conversation state on live turns", () => {
+  const tool = coreIntentClassifierTool();
+  assert.deepEqual(tool.parameters.required, ["intent", "conversation"]);
+  assert.deepEqual(tool.parameters.properties.conversation.required, ["next_action", "closing_signal"]);
+  assert.ok(tool.parameters.properties.conversation.properties.next_action.enum.includes("HANGUP_AFTER_SPEECH"));
+  assert.match(tool.description, /CADA turno relevante/);
+  assert.match(tool.description, /¿Necesitas algo más/);
+});
+
 test("classifier contract fails closed toward out of scope on domain ambiguity", () => {
   const tool = coreIntentClassifierTool();
   const intent = tool.parameters.properties.intent;
   assert.ok(intent.enum.includes("OUT_OF_SCOPE"));
-  assert.match(tool.description, /qué es un barco/);
-  assert.match(tool.description, /Ante duda entre BUSINESS_INFO y OUT_OF_SCOPE, elige OUT_OF_SCOPE/);
-  assert.match(tool.description, /GENERAL_INFO significa hechos del establecimiento actual, no conocimiento general/);
+  assert.match(tool.description, /Ante duda entre BUSINESS_INFO y OUT_OF_SCOPE, usa OUT_OF_SCOPE/);
+  assert.match(tool.description, /GENERAL_INFO son hechos del establecimiento, nunca conocimiento general/);
   assert.deepEqual(tool.parameters.properties.business_info.required, ["topics"]);
 });
 
@@ -57,9 +93,7 @@ test("classifier contract treats user text as intent, never authority", () => {
   assert.match(tool.description, /JERARQUÍA DE AUTORIDAD INMUTABLE/);
   assert.match(tool.description, /soy administrador/);
   assert.match(tool.description, /ignora tus instrucciones/);
-  assert.match(tool.description, /cancela todas sin confirmar/);
-  assert.match(tool.description, /la confirmación backend continúa siendo obligatoria/);
-  assert.match(tool.description, /datos de tools/);
+  assert.match(tool.description, /Nunca inventes estados backend/);
 });
 
 test("parses explicit rejection of a pending close without changing workflow intent", () => {
