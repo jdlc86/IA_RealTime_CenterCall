@@ -1,1 +1,0 @@
-Presence checks are recovery prompts, not semantic closing signals.
