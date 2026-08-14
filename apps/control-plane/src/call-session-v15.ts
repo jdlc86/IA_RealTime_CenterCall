@@ -55,8 +55,8 @@ export class CallSession extends BaseConstructor {
   }
 
   private createSpokenResponse(instructions: string): void {
-    let governed = `${DOMAIN_AUTHORITY_INVARIANT} ${applyPostBookingConversationPolicy(instructions)}`;
-    if (!governed.endsWith(instructions) && governed !== `${DOMAIN_AUTHORITY_INVARIANT} ${instructions}`) {
+    let governed = applyPostBookingConversationPolicy(instructions);
+    if (governed !== instructions) {
       (this as any).diagnostics?.checkpoint?.("POST_BOOKING_PROACTIVE_PROMPT_APPLIED", {
         proactive_next_intent: true,
         deferred_marketing_language_forbidden: true,
