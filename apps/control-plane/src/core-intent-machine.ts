@@ -16,12 +16,24 @@ export type BusinessInfoTopic =
 
 export type CoreIntent = Exclude<CoreWorkflow, "ROUTING"> | "OUT_OF_SCOPE";
 export type ClosingResponse = "CONFIRM" | "REJECT";
+export type ConversationNextAction =
+  | "CONTINUE_WORKFLOW"
+  | "ASK_MORE_HELP"
+  | "ASK_CLOSE_CONFIRMATION"
+  | "HANGUP_AFTER_SPEECH";
+export type ConversationClosingSignal = "NONE" | "REQUESTED" | "CONFIRMED" | "REJECTED";
+
+export type StructuredConversationState = {
+  nextAction: ConversationNextAction;
+  closingSignal: ConversationClosingSignal;
+};
 
 export type CoreIntentRequest = {
   intent: CoreIntent;
   businessInfoTopics?: BusinessInfoTopic[];
   auxiliary?: boolean;
   closingResponse?: ClosingResponse;
+  conversation?: StructuredConversationState;
 };
 
 export type CoreIntentState = {
