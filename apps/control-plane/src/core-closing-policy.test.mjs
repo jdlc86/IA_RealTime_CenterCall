@@ -18,6 +18,10 @@ test("second consecutive closing intent is allowed after confirmation prompt", (
   assert.deepEqual(decideClosingTransition("ROUTING", "CLOSING", true), { action: "ALLOW_CLOSE", pending: false });
 });
 
+test("structured explicit close confirmation avoids redundant second question", () => {
+  assert.deepEqual(decideClosingTransition("CREATE_RESERVATION", "CLOSING", false, true), { action: "ALLOW_CLOSE", pending: false });
+});
+
 test("non closing turn clears a pending close and continues", () => {
   assert.deepEqual(decideClosingTransition("CREATE_RESERVATION", "CREATE_RESERVATION", true), { action: "CONTINUE", pending: false });
 });
