@@ -1,5 +1,5 @@
 import { CallSession as CallSessionV14 } from "./call-session-v14";
-import { applyPostBookingConversationPolicy } from "./post-booking-conversation-policy";
+import { applyTerminalConversationPolicy } from "./post-booking-conversation-policy";
 import {
   applyReservationOutputPolicy,
   deriveReservationOutputStage,
@@ -55,11 +55,11 @@ export class CallSession extends BaseConstructor {
   }
 
   private createSpokenResponse(instructions: string): void {
-    let governed = applyPostBookingConversationPolicy(instructions);
+    let governed = applyTerminalConversationPolicy(instructions);
     if (governed !== instructions) {
-      (this as any).diagnostics?.checkpoint?.("POST_BOOKING_PROACTIVE_PROMPT_APPLIED", {
+      (this as any).diagnostics?.checkpoint?.("TERMINAL_CONVERSATION_PROACTIVE_PROMPT_APPLIED", {
         proactive_next_intent: true,
-        deferred_marketing_language_forbidden: true,
+        silence_after_terminal_result_forbidden: true,
       });
     }
 
