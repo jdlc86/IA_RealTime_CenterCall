@@ -45,6 +45,7 @@ function readRealtimeText(data: unknown): string | null {
  * - A user turn becomes valid only when Lucia reacts coherently (speech) or selects
  *   a concrete agent tool.
  * - Recovery prompts never reset the original inactivity deadline.
+ * - Presence recovery speech is out-of-band and never enters Lucia's conversation.
  * - Tool execution suspends the relative user-turn watchdog; the absolute call
  *   duration limit remains armed.
  */
@@ -74,6 +75,7 @@ export class CallSession extends BaseConstructor {
         max_call_duration_ms: MAX_CALL_DURATION_MS,
         vad_resets_inactivity: false,
         coherent_lucia_reaction_required: true,
+        presence_recovery_conversation: "none",
       });
     }
 
@@ -182,7 +184,6 @@ export class CallSession extends BaseConstructor {
       return;
     }
 
-    // Never talk over actual detected speech, but do not reset the absolute clock.
     if (this.userAudioActiveV18) {
       (this as any).diagnostics?.checkpoint?.("USER_TURN_WATCHDOG_DEFERRED_ACTIVE_AUDIO", {
         elapsed_ms: elapsed,
@@ -198,28 +199,57 @@ export class CallSession extends BaseConstructor {
 
     if (this.presenceStageV18 === 0) {
       this.presenceStageV18 = 1;
-      this.issuePresenceRecoveryV18("Di exactamente: ¿Sigues ahí?");
+      this.issuePresenceRecoveryV18("¿Sigues ahí?");
       return;
     }
 
     if (this.presenceStageV18 === 1) {
       this.presenceStageV18 = 2;
-      this.issuePresenceRecoveryV18("Di exactamente: ¿Me escuchas?");
+      this.issuePresenceRecoveryV18("¿Me escuchas?");
       return;
     }
 
     this.scheduleNextInactivityCheckV18();
   }
 
-  private issuePresenceRecoveryV18(instructions: string): void {
+  private issuePresenceRecoveryV18(phrase: string): void {
     this.recoverySpeechInFlightV18 = true;
     this.recoveryResponseIdV18 = null;
     (this as any).diagnostics?.checkpoint?.("USER_PRESENCE_RECOVERY_REQUESTED", {
       stage: this.presenceStageV18,
       resets_inactivity: false,
+      conversation: "none",
+      isolated_from_agent_context: true,
     });
-    (this as any).createSpokenResponse?.(`${instructions} No añadas nada más. Esto es una comprobación de presencia, no una intención de cierre.`);
-    // Keep the original absolute clock alive even if playback callbacks are delayed.
+
+    // Generate the presence check out-of-band. The user hears it, but it is not
+    // written to the default conversation and therefore cannot become context that
+    // Lucia later interprets/responds to as though it were a caller turn.
+    (this as any).send?.({
+      type: "response.create",
+      response: {
+        conversation: "none",
+        tool_choice: "none",
+        metadata: {
+          purpose: "presence_recovery_v18",
+          presence_stage: String(this.presenceStageV18),
+        },
+        instructions: `Pronuncia exactamente esta frase y nada más: ${JSON.stringify(phrase)}. No respondas al historial de conversación, no añadas explicaciones y no llames herramientas.`,
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `Pronuncia exactamente: ${phrase}`,
+              },
+            ],
+          },
+        ],
+      },
+    });
+
     this.scheduleNextInactivityCheckV18();
   }
 
@@ -249,7 +279,6 @@ export class CallSession extends BaseConstructor {
     }
 
     if (event?.type === "response.function_call_arguments.done" && event.name && AGENT_BUSINESS_TOOLS.has(event.name)) {
-      // Tool selection is Lucia's semantic decision, so it validates the turn.
       this.validateUserTurnV18("agent_tool");
       this.suspendForToolV18(event.name);
     }
@@ -262,7 +291,6 @@ export class CallSession extends BaseConstructor {
       const isRecovery = this.recoverySpeechInFlightV18
         && (!this.recoveryResponseIdV18 || !event.response_id || event.response_id === this.recoveryResponseIdV18);
       if (!isRecovery && this.userTurnObservedV18) {
-        // Lucia chose to produce a coherent conversational answer to the detected turn.
         this.validateUserTurnV18("lucia_spoken_response");
       }
     }
@@ -277,7 +305,6 @@ export class CallSession extends BaseConstructor {
         this.recoveryResponseIdV18 = null;
         this.scheduleNextInactivityCheckV18();
       } else if ((this as any).state !== "closing" && !(this as any).hangupStarted) {
-        // Any completed non-recovery Lucia turn hands control back to the caller.
         this.toolExecutionActiveV18 = false;
         this.armWaitingForUserV18("assistant_audio_completed");
       }
