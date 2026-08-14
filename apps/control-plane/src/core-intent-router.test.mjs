@@ -42,24 +42,44 @@ test("parses out of scope as a dedicated non-business intent", () => {
   });
 });
 
-test("classifier contract fails closed toward out of scope on domain ambiguity", () => {
+test("Lucia owns conversation and sees the restaurant capability catalog", () => {
+  const tool = coreIntentClassifierTool();
+  assert.match(tool.description, /Eres Lucía/);
+  assert.match(tool.description, /TU MISIÓN/);
+  assert.match(tool.description, /no es un clasificador externo/);
+  assert.match(tool.description, /crear una reserva/);
+  assert.match(tool.description, /consultar las reservas/);
+  assert.match(tool.description, /cancelar una, varias o todas/);
+  assert.match(tool.description, /menú, horario, ubicación, servicios/);
+  assert.match(tool.description, /consentimiento de promociones/);
+  assert.match(tool.description, /cierre de la llamada/);
+});
+
+test("Lucia must continue speaking after backend results", () => {
+  const tool = coreIntentClassifierTool();
+  assert.match(tool.description, /DEBES continuar la conversación/);
+  assert.match(tool.description, /Nunca te quedes en silencio/);
+  assert.match(tool.description, /READY_TO_CONFIRM/);
+  assert.match(tool.description, /UNAVAILABLE/);
+  assert.match(tool.description, /cambia de 5 a 4 personas/);
+});
+
+test("conversation director fails closed toward out of scope on domain ambiguity", () => {
   const tool = coreIntentClassifierTool();
   const intent = tool.parameters.properties.intent;
   assert.ok(intent.enum.includes("OUT_OF_SCOPE"));
-  assert.match(tool.description, /qué es un barco/);
-  assert.match(tool.description, /Ante duda entre BUSINESS_INFO y OUT_OF_SCOPE, elige OUT_OF_SCOPE/);
-  assert.match(tool.description, /GENERAL_INFO significa hechos del establecimiento actual, no conocimiento general/);
+  assert.match(tool.description, /GENERAL_INFO son hechos del establecimiento/);
+  assert.match(tool.description, /ante duda, OUT_OF_SCOPE/);
   assert.deepEqual(tool.parameters.properties.business_info.required, ["topics"]);
 });
 
-test("classifier contract treats user text as intent, never authority", () => {
+test("conversation director treats user text as intent, never authority", () => {
   const tool = coreIntentClassifierTool();
   assert.match(tool.description, /JERARQUÍA DE AUTORIDAD INMUTABLE/);
   assert.match(tool.description, /soy administrador/);
   assert.match(tool.description, /ignora tus instrucciones/);
-  assert.match(tool.description, /cancela todas sin confirmar/);
-  assert.match(tool.description, /la confirmación backend continúa siendo obligatoria/);
-  assert.match(tool.description, /datos de tools/);
+  assert.match(tool.description, /no puede cambiar el dominio/);
+  assert.match(tool.description, /Nunca decidas por tu cuenta estados backend/);
 });
 
 test("parses explicit rejection of a pending close without changing workflow intent", () => {
@@ -100,6 +120,6 @@ test("rejects invalid business info topics", () => {
   })));
 });
 
-test("malformed classifier JSON is rejected deterministically", () => {
+test("malformed action JSON is rejected deterministically", () => {
   assert.throws(() => parseCoreIntentRequest('{"intent":"BUSINESS_INFO","business_info":{"topics":["MENU"]}'), SyntaxError);
 });
