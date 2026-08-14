@@ -15,20 +15,22 @@ function optionalObject(value: unknown): Record<string, unknown> | undefined {
   return value as Record<string, unknown>;
 }
 
-/**
- * Transitional compatibility adapter. Realtime has one hierarchical classifier,
- * while the already validated CREATE/CANCEL/QUERY/marketing executors continue to
- * consume their legacy payload shape. This function does not execute business
- * logic and does not infer missing data.
- */
+function legacyReservationPayload(value: unknown): Record<string, unknown> {
+  const input = optionalObject(value) ?? {};
+  const {
+    separate_tables_acceptable: _separateTables,
+    tables_must_be_close: _tablesClose,
+    ...legacy
+  } = input;
+  return legacy;
+}
+
 export function adaptHierarchicalIntentToLegacy(argumentsJson: string | undefined): LegacyIntentEventPayload | null {
   const request = parseCoreIntentRequest(argumentsJson);
   const root = requireRoot(argumentsJson);
 
   if (request.intent === "BUSINESS_INFO") return null;
-  if (request.intent === "CLOSING") {
-    return { intent: "END_CLEAR", data_requirement: "NONE", reason: "core_intent_closing" };
-  }
+  if (request.intent === "CLOSING") return { intent: "END_CLEAR", data_requirement: "NONE", reason: "core_intent_closing" };
 
   if (request.intent === "MARKETING_CONSENT") {
     return {
@@ -44,11 +46,11 @@ export function adaptHierarchicalIntentToLegacy(argumentsJson: string | undefine
     : request.intent === "CANCEL_RESERVATION"
       ? "CANCEL"
       : "QUERY";
-  const reservation = optionalObject(root.reservation) ?? {};
+  const reservation = legacyReservationPayload(root.reservation);
   return {
     intent: "CONTINUE",
     data_requirement: "RESERVATION",
-    reason: `core_intent_${operation.toLowerCase()}`,
+    reason: request.intent === "MODIFY_RESERVATION" ? "core_intent_modify" : `core_intent_${operation.toLowerCase()}`,
     reservation: { ...reservation, operation },
   };
 }
