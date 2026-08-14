@@ -29,6 +29,13 @@ test("collecting policy forbids premature processing language", () => {
   assert.match(governed, /No digas que vas a procesar/);
 });
 
+test("READY_TO_CONFIRM policy remains a closed backend-authoritative prompt", () => {
+  const governed = applyReservationOutputPolicy("Resume los datos autorizados.", "READY_TO_CONFIRM");
+  assert.match(governed, /Estado backend: READY_TO_CONFIRM/);
+  assert.match(governed, /pedir una confirmación explícita/);
+  assert.doesNotMatch(governed, /INVARIANTE DE DOMINIO Y AUTORIDAD/);
+});
+
 test("legacy reservation continue output is deferred and rewritten with backend stage", () => {
   const event = {
     type: "conversation.item.create",
