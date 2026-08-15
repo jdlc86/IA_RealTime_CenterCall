@@ -43,7 +43,7 @@ function normalizeForSecurity(value: string): string {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
-    .replace(/[^a-z0-9ñáéíóúü\s_\-]/gi, " ")
+    .replace(/[^a-z0-9ñ\s_\-]/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -52,7 +52,7 @@ const HIGH_CONFIDENCE_RULES: Array<{ id: string; re: RegExp; event: string }> = 
   { id: "IGNORE_INSTRUCTIONS_ES", re: /\b(?:ignora|omite|desobedece|saltate)\b.{0,45}\b(?:tus|las|mis)?\s*(?:instrucciones|reglas|directrices)\b/i, event: "PROMPT_INJECTION_HIGH" },
   { id: "FORGET_INSTRUCTIONS_ES", re: /\b(?:olvida|descarta|borra)\b.{0,45}\b(?:tus|las)?\s*(?:instrucciones|reglas|directrices)\b/i, event: "PROMPT_INJECTION_HIGH" },
   { id: "IGNORE_INSTRUCTIONS_EN", re: /\b(?:ignore|forget|disregard|override)\b.{0,45}\b(?:previous|prior|system|developer)?\s*(?:instructions|rules|prompt)\b/i, event: "PROMPT_INJECTION_HIGH" },
-  { id: "SYSTEM_PROMPT_EXFIL", re: /\b(?:muestra|revela|dime|ensename|imprime|lee)\b.{0,50}\b(?:system prompt|prompt del sistema|instrucciones internas|mensaje del sistema)\b/i, event: "PROMPT_EXFILTRATION_HIGH" },
+  { id: "SYSTEM_PROMPT_EXFIL", re: /\b(?:muestra|muestrame|revela|revelame|dime|ensename|imprime|lee)\b.{0,50}\b(?:system prompt|prompt del sistema|instrucciones internas|mensaje del sistema)\b/i, event: "PROMPT_EXFILTRATION_HIGH" },
   { id: "SYSTEM_PROMPT_EXFIL_EN", re: /\b(?:show|reveal|print|repeat|tell me)\b.{0,50}\b(?:system prompt|hidden instructions|developer message|internal instructions)\b/i, event: "PROMPT_EXFILTRATION_HIGH" },
   { id: "ROLE_ESCALATION", re: /\b(?:actua|comportate|haz de cuenta)\b.{0,35}\b(?:administrador|admin|developer|desarrollador|sistema|root)\b/i, event: "ROLE_ESCALATION_HIGH" },
   { id: "TOOL_MANIPULATION", re: /\b(?:ejecuta|llama|invoca|usa)\b.{0,35}\b(?:tool|function|funcion|function_call|tool_choice|json)\b/i, event: "TOOL_MANIPULATION_HIGH" },
