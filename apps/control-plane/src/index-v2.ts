@@ -78,7 +78,7 @@ type RealtimeSessionConfiguration = {
     output: { format: { type: "audio/pcmu" }; voice: string };
   };
   tools: RealtimeFunctionTool[];
-  tool_choice: "required";
+  tool_choice: "auto";
 };
 
 const IDLE_TIMEOUT_MS = 10_000;
@@ -224,27 +224,12 @@ async function handleTelnyxWebhook(request: Request, env: WorkerEnv, ctx: Execut
 function buildRealtimeSessionConfiguration(env: WorkerEnv, tenantConfig: TenantConfigurationV1): RealtimeSessionConfiguration {
   const vad = tenantConfig.realtime.vad ?? {};
   const instructions = [
-    `Atiendes llamadas para ${tenantConfig.business.displayName}.`,
-    `Tu nombre de asistente es ${tenantConfig.assistant.name}.`,
+    `Eres la agente telefónica de ${tenantConfig.business.displayName}.`,
+    `Tu nombre es ${tenantConfig.assistant.name}.`,
     "Habla en español de forma amable, natural, breve y profesional.",
-    "Antes de responder a CADA turno real del usuario invoca exactamente una vez conversation_intent.",
-    "conversation_intent debe clasificar tanto la intención de cierre como si la respuesta necesita datos empresariales verificables.",
-    "data_requirement=NONE cuando el turno puede responderse sin consultar hechos específicos del negocio.",
-    "data_requirement=BUSINESS_INFO para identidad, antigüedad u otros hechos generales del negocio almacenados en su configuración.",
-    "data_requirement=SERVICES para cualquier consulta sobre tratamientos, servicios clínicos, procedimientos, terapias, disponibilidad de un tratamiento concreto, precios, costes o duración.",
-    "REGLA OBLIGATORIA: si el usuario pregunta qué tratamientos/servicios clínicos/procedimientos/terapias se ofrecen, aunque no mencione precio ni un tratamiento concreto, usa siempre data_requirement=SERVICES.",
-    "data_requirement=MENU para consultas sobre carta, menú, platos, bebidas, precios de platos o bebidas y alérgenos del restaurante.",
-    "data_requirement=RESERVATION cuando el usuario quiera reservar, consultar disponibilidad de mesa, modificar datos de una reserva en curso o aportar fecha, hora, número de personas, nombre o teléfono para una reserva.",
-    "REGLA OBLIGATORIA: una intención explícita de reservar mesa se clasifica como RESERVATION, nunca como NONE, BUSINESS_INFO, SERVICES ni MENU.",
-    "data_requirement=PROFESSIONALS para profesionales, especialistas, médicos o personal que presta servicios.",
-    "data_requirement=HOURS para horarios de apertura o cierre.",
-    "No inventes información empresarial. CallSession decidirá si debe consultar una fuente autorizada y qué herramienta exacta utilizar.",
-    "Usa CONTINUE cuando el usuario quiere seguir conversando o formula una consulta.",
-    "Usa END_CLEAR cuando la intención de finalizar la llamada es clara.",
-    "Usa END_AMBIGUOUS cuando parece estar terminando pero el contexto no permite afirmarlo con suficiente seguridad.",
-    "No anuncies por tu cuenta que vas a colgar; CallSession controla el cierre y hangup.",
-    "Después de conversation_intent espera el resultado de la herramienta.",
-    ...(tenantConfig.assistant.systemPrompt ? [tenantConfig.assistant.systemPrompt] : tenantConfig.assistant.instructions ? [tenantConfig.assistant.instructions] : []),
+    "Esta es solo la configuración de arranque. CallSession instalará inmediatamente la superficie pública de herramientas y las reglas conversacionales autoritativas.",
+    "No clasifiques intenciones mediante conversation_intent: esa herramienta legacy no existe en esta sesión.",
+    "No inventes información ni ejecutes acciones sin una herramienta pública instalada por CallSession.",
   ].join("\n");
 
   return {
@@ -268,22 +253,8 @@ function buildRealtimeSessionConfiguration(env: WorkerEnv, tenantConfig: TenantC
       },
       output: { format: { type: "audio/pcmu" }, voice: tenantConfig.realtime.voice ?? requireEnvString(env.REALTIME_VOICE, "REALTIME_VOICE") },
     },
-    tools: [{
-      type: "function",
-      name: "conversation_intent",
-      description: "Clasifica semánticamente la intención de conversación y el dominio de datos requerido. Usa SERVICES para servicios clínicos, MENU para carta/platos/alérgenos y RESERVATION para reservar o gestionar disponibilidad y datos de una reserva.",
-      parameters: {
-        type: "object",
-        properties: {
-          intent: { type: "string", enum: ["CONTINUE", "END_AMBIGUOUS", "END_CLEAR"] },
-          data_requirement: { type: "string", enum: ["NONE", "BUSINESS_INFO", "SERVICES", "MENU", "RESERVATION", "PROFESSIONALS", "HOURS"], description: "Dominio de datos verificables requerido. SERVICES=servicios clínicos; MENU=carta/platos/bebidas/alérgenos; RESERVATION=reservar mesa, disponibilidad o datos de la reserva. Para END_CLEAR/END_AMBIGUOUS usa NONE." },
-          reason: { type: "string", description: "Explicación breve basada en el contexto conversacional y coherente con el data_requirement elegido." },
-        },
-        required: ["intent", "data_requirement", "reason"],
-        additionalProperties: false,
-      },
-    }],
-    tool_choice: "required",
+    tools: [],
+    tool_choice: "auto",
   };
 }
 
@@ -387,7 +358,7 @@ async function handleOpenAIWebhook(request: Request, env: WorkerEnv): Promise<Re
     allowed_tools: tenantConfig.tools.allowed,
     tenant_config_source: "kv",
     business_data_provider: "supabase",
-    semantic_data_router: true,
+    semantic_data_router: false,
     call_session_started: callSessionStarted,
   });
 }
@@ -407,10 +378,9 @@ export default {
         tool_gateway: true,
         tool_gateway_policy: "tenant_allowlist_fail_closed",
         business_data_provider: "supabase",
-        semantic_data_router: "conversation_intent_v15_native_verticals",
-        data_requirements: ["NONE", "BUSINESS_INFO", "SERVICES", "MENU", "RESERVATION", "PROFESSIONALS", "HOURS"],
+        semantic_data_router: "lucia_direct_tools",
+        bootstrap_conversation_intent: false,
         supabase_tenant_scope: "server_imposed",
-        intent_values: ["CONTINUE", "END_AMBIGUOUS", "END_CLEAR"],
         ambiguous_limit: AMBIGUOUS_LIMIT,
         runtime_config: {
           tenant_config_binding: Boolean(env.TENANT_CONFIG && typeof env.TENANT_CONFIG.get === "function"),
