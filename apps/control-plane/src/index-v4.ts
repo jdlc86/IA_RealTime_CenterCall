@@ -1,6 +1,7 @@
 import baseHandler from "./index-v3";
 import { KvTenantRepository, type TenantKvNamespace, type TenantResolutionV1 } from "./tenant-kv";
 import { buildTrustedCallerTransferHeaders, normalizeTrustedCallerNumber } from "./trusted-caller-propagation";
+import { CallerSecurityService } from "./caller-security";
 export { CallSession } from "./call-session-v13";
 
 type WorkerEnv = {
@@ -9,6 +10,8 @@ type WorkerEnv = {
   OPENAI_PROJECT_ID: string;
   TELNYX_API_KEY: string;
   TELNYX_PUBLIC_KEY: string;
+  SUPABASE_URL: string;
+  SUPABASE_SECRET_KEY: string;
 };
 
 type TelnyxVoiceEvent = {
@@ -36,6 +39,19 @@ async function transferToRealtime(callControlId: string, eventId: string, resolu
   if (!response.ok) { const body = await response.text(); console.error(JSON.stringify({ level: "error", event: "telnyx_transfer_with_caller_failed", tenant_id: resolution.tenantId, status: response.status, response: body.slice(0, 1000) })); throw new Error(`Telnyx transfer failed with HTTP ${response.status}`); }
 }
 
+async function rejectSecurityBlockedCall(callControlId: string, eventId: string, env: WorkerEnv): Promise<void> {
+  const response = await fetch(`https://api.telnyx.com/v2/calls/${encodeURIComponent(callControlId)}/actions/reject`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${requireEnvString(env.TELNYX_API_KEY, "TELNYX_API_KEY")}`, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ cause: "CALL_REJECTED", command_id: `${eventId}-security-reject` }),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    console.error(JSON.stringify({ level: "error", event: "telnyx_security_reject_failed", status: response.status, response: body.slice(0, 500) }));
+    throw new Error(`Telnyx reject failed with HTTP ${response.status}`);
+  }
+}
+
 async function handleTelnyxWebhook(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
   const rawBody = await request.text();
   const valid = await verifyTelnyxSignature(rawBody, request, requireEnvString(env.TELNYX_PUBLIC_KEY, "TELNYX_PUBLIC_KEY"));
@@ -51,8 +67,38 @@ async function handleTelnyxWebhook(request: Request, env: WorkerEnv, ctx: Execut
   const repository = new KvTenantRepository(env.TENANT_CONFIG); let resolution: TenantResolutionV1 | null;
   try { resolution = await repository.resolveByCalledNumber(calledNumber); } catch { return json({ ok: false, error: "tenant_kv_configuration_invalid" }, 500); }
   if (!resolution) return json({ ok: false, error: "tenant_not_found" }, 404);
-  const eventId = event.data?.id ?? crypto.randomUUID(); ctx.waitUntil(transferToRealtime(callControlId, eventId, resolution, callerPhone, env));
-  return json({ ok: true, accepted: true, action: "transfer_to_realtime", tenant_id: resolution.tenantId, called_number: resolution.calledNumber, caller_number_propagated: true });
+
+  const eventId = event.data?.id ?? crypto.randomUUID();
+  try {
+    const security = new CallerSecurityService({ SUPABASE_URL: env.SUPABASE_URL, SUPABASE_SECRET_KEY: env.SUPABASE_SECRET_KEY });
+    const decision = await security.evaluateInbound(resolution.tenantId, callerPhone);
+    console.log(JSON.stringify({
+      level: decision.decision === "BLOCK" ? "warn" : "info",
+      event: "caller_security_inbound_evaluated",
+      tenant_id: resolution.tenantId,
+      decision: decision.decision,
+      reason: decision.reason,
+      calls_1m: decision.calls_1m,
+      calls_5m: decision.calls_5m,
+      calls_1h: decision.calls_1h,
+      risk_score: decision.risk_score,
+      security_strikes: decision.security_strikes,
+      rate_limit_blocks: decision.rate_limit_blocks,
+      permanent_block: decision.permanent_block,
+      blocked_until: decision.blocked_until,
+    }));
+    if (decision.decision === "BLOCK") {
+      ctx.waitUntil(rejectSecurityBlockedCall(callControlId, eventId, env));
+      return json({ ok: true, accepted: false, action: "security_reject", reason: decision.reason, blocked_until: decision.blocked_until, permanent_block: decision.permanent_block });
+    }
+  } catch (error) {
+    // Availability of the security store must not become a global denial-of-service vector.
+    // Fail open for this call, but emit a high visibility event for operations.
+    console.error(JSON.stringify({ level: "error", event: "caller_security_inbound_check_failed_open", tenant_id: resolution.tenantId, error: error instanceof Error ? error.message : String(error) }));
+  }
+
+  ctx.waitUntil(transferToRealtime(callControlId, eventId, resolution, callerPhone, env));
+  return json({ ok: true, accepted: true, action: "transfer_to_realtime", tenant_id: resolution.tenantId, called_number: resolution.calledNumber, caller_number_propagated: true, caller_security_checked: true });
 }
 
 export default { async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> { const url = new URL(request.url); if (request.method === "POST" && url.pathname === "/webhooks/telnyx") return handleTelnyxWebhook(request, env, ctx); return baseHandler.fetch(request, env as never, ctx); } } satisfies ExportedHandler<WorkerEnv>;
