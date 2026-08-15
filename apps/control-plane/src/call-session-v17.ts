@@ -5,6 +5,7 @@ const BasePrototype = CallSessionV16.prototype as any;
 
 const AGENT_TOOL_NAMES = new Set([
   "restaurant_reservation_create",
+  "restaurant_reservation_search",
   "restaurant_reservation_query",
   "restaurant_reservation_modify",
   "restaurant_reservation_cancel",
@@ -41,6 +42,27 @@ const RESERVATION_PROPERTIES = {
 
 const AGENT_TOOLS: RealtimeFunctionTool[] = [
   { type: "function", name: "restaurant_reservation_create", description: "Crea o continúa una reserva. Si faltan datos, pregunta de forma natural. Cuando tengas fecha/hora y personas, llama a esta tool antes de afirmar que compruebas disponibilidad. El backend es la única autoridad sobre disponibilidad y BOOKED.", parameters: { type: "object", properties: RESERVATION_PROPERTIES, additionalProperties: false } },
+  {
+    type: "function",
+    name: "restaurant_reservation_search",
+    description: "Busca y sugiere los turnos disponibles más cercanos para un grupo sin crear ninguna reserva. Úsala cuando el cliente no tenga una fecha/hora cerrada, pida alternativas o la hora solicitada no esté disponible. Respeta la política de asignación de mesas del backend.",
+    parameters: {
+      type: "object",
+      properties: {
+        party_size: { type: "integer", minimum: 1, maximum: 100 },
+        preferred_starts_at: { type: "string", description: "Fecha/hora preferida ISO 8601 si existe." },
+        from: { type: "string", description: "Inicio del rango ISO 8601. Si se omite se usa preferred_starts_at." },
+        to: { type: "string", description: "Fin del rango ISO 8601. Si se omite se buscan hasta 7 días." },
+        time_from: { type: "string", description: "Hora local mínima HH:MM, por ejemplo 19:00." },
+        time_to: { type: "string", description: "Hora local máxima HH:MM, por ejemplo 22:30." },
+        duration_minutes: { type: "integer", minimum: 15, maximum: 480 },
+        step_minutes: { type: "integer", minimum: 15, maximum: 120, description: "Separación entre candidatos; normalmente 30." },
+        max_results: { type: "integer", minimum: 1, maximum: 10 },
+      },
+      required: ["party_size"],
+      additionalProperties: false,
+    },
+  },
   { type: "function", name: "restaurant_reservation_query", description: "Consulta las reservas futuras confirmadas asociadas de forma segura al número llamante.", parameters: { type: "object", properties: {}, additionalProperties: false } },
   { type: "function", name: "restaurant_reservation_modify", description: "Modifica una reserva existente. El backend identifica las reservas del caller, revalida disponibilidad y exige confirmación antes de escribir.", parameters: { type: "object", properties: { ...RESERVATION_PROPERTIES, selection_index: { type: "integer", minimum: 1, maximum: 20 } }, additionalProperties: false } },
   { type: "function", name: "restaurant_reservation_cancel", description: "Cancela una, varias o todas las reservas futuras del caller. Usa confirm=true solo después de confirmación explícita del usuario a una propuesta concreta de cancelación.", parameters: { type: "object", properties: { selection_index: { type: "integer", minimum: 1, maximum: 20 }, selection_indexes: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: { type: "integer", minimum: 1, maximum: 20 } }, select_all: { type: "boolean" }, confirm: { type: "boolean" } }, additionalProperties: false } },
@@ -55,7 +77,7 @@ const AGENT_TOOLS: RealtimeFunctionTool[] = [
 function agentInstructions(session: any): string {
   const assistantName = typeof session.assistantName === "string" && session.assistantName.trim() ? session.assistantName.trim() : "Lucía";
   const businessName = typeof session.businessName === "string" && session.businessName.trim() ? session.businessName.trim() : "el restaurante";
-  return `Eres ${assistantName}, agente telefónica de ${businessName}. Tú eres la inteligencia que interpreta el lenguaje natural y eliges las tools; ninguna señal acústica por sí sola representa intención.\n\nREGLA CENTRAL: toda interacción significativa dirigida a ti debe quedar representada por una tool antes de responder. Si una transcripción parece TV, eco, conversación de fondo, ruido o no está claramente dirigida a ti, usa restaurant_input_ignored. Ante duda entre una mutación y ruido/fondo, elige siempre restaurant_input_ignored y no realices ninguna acción.\n\nÁMBITO: atiende únicamente cuestiones relacionadas con ${businessName}. Para una petición claramente dirigida a ti pero externa usa restaurant_out_of_scope. Para asuntos legítimos del restaurante que requieren una persona usa restaurant_human_assistance.\n\nAUTORIDAD: disponibilidad, reservas, cancelaciones, modificaciones, marketing e identidad solo pueden afirmarse tras la tool correspondiente. Nunca inventes acciones ni confirmaciones.\n\nCIERRE: usa restaurant_end_call para intención real de cierre; nunca deduzcas cierre del silencio o de audio de fondo.`;
+  return `Eres ${assistantName}, agente telefónica de ${businessName}. Tú eres la inteligencia que interpreta el lenguaje natural y eliges las tools; ninguna señal acústica por sí sola representa intención.\n\nREGLA CENTRAL: toda interacción significativa dirigida a ti debe quedar representada por una tool antes de responder. Si una transcripción parece TV, eco, conversación de fondo, ruido o no está claramente dirigida a ti, usa restaurant_input_ignored. Ante duda entre una mutación y ruido/fondo, elige siempre restaurant_input_ignored y no realices ninguna acción.\n\nRESERVAS: si el cliente no sabe exactamente cuándo reservar, pide criterios básicos y usa restaurant_reservation_search para proponer opciones reales. Si una hora concreta no está disponible, ofrece buscar alternativas. La asignación automática de mesas solo puede desperdiciar como máximo un asiento total; si el backend indica que la configuración de mesas necesita una persona, no rechaces ni canceles nada y ofrece asistencia humana.\n\nÁMBITO: atiende únicamente cuestiones relacionadas con ${businessName}. Para una petición claramente dirigida a ti pero externa usa restaurant_out_of_scope. Para asuntos legítimos del restaurante que requieren una persona usa restaurant_human_assistance.\n\nAUTORIDAD: disponibilidad, reservas, cancelaciones, modificaciones, marketing e identidad solo pueden afirmarse tras la tool correspondiente. Nunca inventes acciones ni confirmaciones.\n\nCIERRE: usa restaurant_end_call para intención real de cierre; nunca deduzcas cierre del silencio o de audio de fondo.`;
 }
 
 export class CallSession extends BaseConstructor {
