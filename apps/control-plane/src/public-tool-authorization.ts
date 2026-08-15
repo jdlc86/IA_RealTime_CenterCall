@@ -6,6 +6,7 @@ export const PUBLIC_RESTAURANT_TOOLS = [
   "restaurant_business_info",
   "restaurant_marketing_preferences",
   "restaurant_human_assistance",
+  "restaurant_input_ignored",
   "restaurant_end_call",
   "restaurant_out_of_scope",
 ] as const;
@@ -49,7 +50,12 @@ export function authorizePublicRestaurantTool(
   args: Record<string, unknown>,
   configuredAllowedTools: readonly string[],
 ): PublicToolAuthorizationDecision {
-  if (tool === "restaurant_end_call" || tool === "restaurant_out_of_scope" || tool === "restaurant_human_assistance") {
+  if (
+    tool === "restaurant_end_call"
+    || tool === "restaurant_out_of_scope"
+    || tool === "restaurant_human_assistance"
+    || tool === "restaurant_input_ignored"
+  ) {
     return { allowed: true, tool, requiredCapabilities: [], matchedCapability: null, reason: "BUILTIN_RUNTIME_TOOL" };
   }
 
