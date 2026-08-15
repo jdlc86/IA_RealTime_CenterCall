@@ -82,9 +82,7 @@ export class ProtectedSpeechLifecycle {
   }
 
   private matchesResponse(responseId: string | null | undefined): boolean {
-    if (!this.active || !responseId) return false;
-    if (!this.active.responseId) this.active.responseId = responseId;
-    return this.active.responseId === responseId;
+    return Boolean(this.active?.responseId && responseId && this.active.responseId === responseId);
   }
 
   private release(reason: string): ProtectedSpeechRelease {
