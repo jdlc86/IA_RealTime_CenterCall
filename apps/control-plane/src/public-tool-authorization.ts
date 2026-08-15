@@ -1,5 +1,6 @@
 export const PUBLIC_RESTAURANT_TOOLS = [
   "restaurant_reservation_create",
+  "restaurant_reservation_search",
   "restaurant_reservation_query",
   "restaurant_reservation_modify",
   "restaurant_reservation_cancel",
