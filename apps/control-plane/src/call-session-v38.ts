@@ -1,0 +1,226 @@
+import { CallSession as CallSessionV37 } from "./call-session-v37";
+import { classifyHandoffFailure, encodeHumanHandoffClientState, parseHumanHandoffConfig } from "./human-handoff";
+import { HumanHandoffStore } from "./human-handoff-store";
+import { tenantConfigurationKey, tenantConfigurationKeyV2 } from "./tenant-kv";
+
+const BaseConstructor = CallSessionV37 as unknown as new (...args: any[]) => any;
+const FAILURE_STATUSES = new Set(["NO_ANSWER", "BUSY", "FAILED"]);
+const TERMINAL_SPEECH_WATCHDOG_MS = 15_000;
+
+type HandoffTelnyxEvent = {
+  handoff_id?: unknown;
+  realtime_call_id?: unknown;
+  tenant_id?: unknown;
+  source_call_control_id?: unknown;
+  event_type?: unknown;
+  call_control_id?: unknown;
+  hangup_cause?: unknown;
+};
+
+function nonEmpty(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/**
+ * v38 fixes the terminal NO_ANSWER/BUSY/FAILED lifecycle.
+ *
+ * Root cause: a Telnyx transfer can detach/close the OpenAI SIP sideband before
+ * the target leg later reports timeout/busy. Therefore Realtime is no longer a
+ * reliable transport for the terminal failure sentence. v37 tried to create a
+ * Realtime response after that detachment and then waited for its watchdog.
+ *
+ * v38 keeps the successful TRANSFERRED path untouched. Only failed target-leg
+ * handoffs are intercepted. Their configured terminal sentence is played by
+ * Telnyx directly on the still-live source leg. call.speak.ended is the atomic
+ * completion event; only then is the source call hung up. Lucía never resumes.
+ */
+export class CallSession extends BaseConstructor {
+  private terminalSpeechTimersV38 = new Map<string, ReturnType<typeof setTimeout>>();
+
+  private storeV38(): HumanHandoffStore {
+    const env = (this as any).env ?? {};
+    return new HumanHandoffStore({ SUPABASE_URL: env.SUPABASE_URL, SUPABASE_SECRET_KEY: env.SUPABASE_SECRET_KEY });
+  }
+
+  private async failureMessageV38(tenantId: string): Promise<string | null> {
+    const kv = (this as any).env?.TENANT_CONFIG;
+    if (!kv || typeof kv.get !== "function") return null;
+    const raw = await kv.get(tenantConfigurationKeyV2(tenantId), { cacheTtl: 30 })
+      ?? await kv.get(tenantConfigurationKey(tenantId), { cacheTtl: 30 });
+    if (!raw) return null;
+    const config = parseHumanHandoffConfig((JSON.parse(raw) as Record<string, unknown>).humanHandoff);
+    return config?.enabled ? config.failurePolicy.message : null;
+  }
+
+  private clearTerminalSpeechTimerV38(handoffId: string): void {
+    const timer = this.terminalSpeechTimersV38.get(handoffId);
+    if (timer) clearTimeout(timer);
+    this.terminalSpeechTimersV38.delete(handoffId);
+  }
+
+  private async hangupSourceV38(event: HandoffTelnyxEvent, trigger: string): Promise<void> {
+    const handoffId = nonEmpty(event.handoff_id);
+    const tenantId = nonEmpty(event.tenant_id);
+    const sourceCallControlId = nonEmpty(event.source_call_control_id);
+    if (!handoffId || !tenantId || !sourceCallControlId) return;
+    this.clearTerminalSpeechTimerV38(handoffId);
+
+    let terminated = false;
+    try {
+      const apiKey = nonEmpty((this as any).env?.TELNYX_API_KEY);
+      if (!apiKey) throw new Error("TELNYX_API_KEY unavailable");
+      const response = await fetch(`https://api.telnyx.com/v2/calls/${encodeURIComponent(sourceCallControlId)}/actions/hangup`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ command_id: `${handoffId}-terminal-hangup-v38` }),
+      });
+      terminated = response.ok;
+      if (!response.ok && response.status !== 422) {
+        const body = await response.text();
+        throw new Error(`Telnyx hangup HTTP ${response.status}: ${body.slice(0, 250)}`);
+      }
+    } catch (error) {
+      (this as any).diagnostics?.fail?.("HUMAN_HANDOFF_TERMINAL_HANGUP_FAILED_V38", "TELNYX_TERMINAL_HANGUP_FAILED", {
+        handoff_id: handoffId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    await this.storeV38().update(handoffId, tenantId, { call_terminated_at: new Date().toISOString() });
+    (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_TERMINAL_CALL_ENDED_V38", {
+      handoff_id: handoffId,
+      trigger,
+      telephony_terminated: terminated,
+      lucia_conversation_resumes: false,
+    });
+  }
+
+  private async speakFailureOnSourceV38(event: HandoffTelnyxEvent): Promise<Response> {
+    const handoffId = nonEmpty(event.handoff_id);
+    const realtimeCallId = nonEmpty(event.realtime_call_id);
+    const tenantId = nonEmpty(event.tenant_id);
+    const sourceCallControlId = nonEmpty(event.source_call_control_id);
+    const eventCallControlId = nonEmpty(event.call_control_id);
+    if (!handoffId || !realtimeCallId || !tenantId || !sourceCallControlId || !eventCallControlId) {
+      return Response.json({ ok: false, error: "missing_handoff_correlation" }, { status: 400 });
+    }
+
+    const state = await this.storeV38().getState(handoffId, tenantId);
+    if (state?.status === "TRANSFERRED") {
+      return super.fetch(new Request("https://call-session.internal/human-handoff/telnyx-event", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(event),
+      }));
+    }
+
+    const status = classifyHandoffFailure(event.hangup_cause);
+    const failureReason = `TARGET_CALL_HANGUP:${nonEmpty(event.hangup_cause) ?? "unknown"}`;
+    await this.storeV38().update(handoffId, tenantId, {
+      status,
+      transfer_ended_at: new Date().toISOString(),
+      callback_required: true,
+      callback_status: "PENDING",
+      failure_reason: failureReason,
+    });
+
+    const message = await this.failureMessageV38(tenantId);
+    if (!message) {
+      await this.hangupSourceV38(event, "failure_message_configuration_unavailable");
+      return Response.json({ ok: true, action: "failure_recorded_and_hung_up", status });
+    }
+
+    try {
+      const apiKey = nonEmpty((this as any).env?.TELNYX_API_KEY);
+      if (!apiKey) throw new Error("TELNYX_API_KEY unavailable");
+      const clientState = encodeHumanHandoffClientState({
+        kind: "human_handoff_v1",
+        handoffId,
+        realtimeCallId,
+        tenantId,
+        sourceCallControlId,
+      });
+      const response = await fetch(`https://api.telnyx.com/v2/calls/${encodeURIComponent(sourceCallControlId)}/actions/speak`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          payload: message,
+          payload_type: "text",
+          voice: "Azure.es-ES-ElviraNeural",
+          language: "es-ES",
+          service_level: "premium",
+          client_state: clientState,
+          command_id: `${handoffId}-failure-terminal-speak-v38`,
+          target_legs: "self",
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`Telnyx speak HTTP ${response.status}: ${body.slice(0, 250)}`);
+      }
+
+      (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_FAILURE_SPEECH_STARTED_V38", {
+        handoff_id: handoffId,
+        status,
+        transport: "TELNYX_SOURCE_LEG_TTS",
+        lucia_conversation_resumes: false,
+      });
+      this.clearTerminalSpeechTimerV38(handoffId);
+      this.terminalSpeechTimersV38.set(handoffId, setTimeout(() => {
+        void this.hangupSourceV38(event, "failure_message_telnyx_watchdog");
+      }, TERMINAL_SPEECH_WATCHDOG_MS));
+      return Response.json({ ok: true, action: "failure_terminal_speech_started", status });
+    } catch (error) {
+      (this as any).diagnostics?.fail?.("HUMAN_HANDOFF_FAILURE_SPEECH_FAILED_V38", "TELNYX_FAILURE_SPEECH_FAILED", {
+        handoff_id: handoffId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await this.hangupSourceV38(event, "failure_message_telnyx_start_failed");
+      return Response.json({ ok: true, action: "failure_speech_failed_and_hung_up", status });
+    }
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method !== "POST" || url.pathname !== "/human-handoff/telnyx-event") {
+      return super.fetch(request);
+    }
+
+    let event: HandoffTelnyxEvent;
+    try { event = await request.clone().json() as HandoffTelnyxEvent; }
+    catch { return super.fetch(request); }
+
+    const handoffId = nonEmpty(event.handoff_id);
+    const tenantId = nonEmpty(event.tenant_id);
+    const sourceCallControlId = nonEmpty(event.source_call_control_id);
+    const eventCallControlId = nonEmpty(event.call_control_id);
+    const eventType = nonEmpty(event.event_type) ?? "unknown";
+    const targetLeg = Boolean(eventCallControlId && sourceCallControlId && eventCallControlId !== sourceCallControlId);
+
+    if (eventType === "call.hangup" && targetLeg) {
+      return this.speakFailureOnSourceV38(event);
+    }
+
+    if (eventType === "call.speak.ended" && !targetLeg && handoffId && tenantId) {
+      const state = await this.storeV38().getState(handoffId, tenantId);
+      if (state && state.callback_required && FAILURE_STATUSES.has(state.status)) {
+        (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_FAILURE_SPEECH_COMPLETED_V38", {
+          handoff_id: handoffId,
+          status: state.status,
+          transport: "TELNYX_SOURCE_LEG_TTS",
+        });
+        await this.hangupSourceV38(event, "failure_message_telnyx_speak_ended");
+        return Response.json({ ok: true, action: "failure_terminal_speech_completed_and_hung_up" });
+      }
+    }
+
+    if (eventType === "call.hangup" && !targetLeg && handoffId && tenantId) {
+      const state = await this.storeV38().getState(handoffId, tenantId);
+      if (state && state.callback_required && FAILURE_STATUSES.has(state.status)) {
+        this.clearTerminalSpeechTimerV38(handoffId);
+        await this.storeV38().update(handoffId, tenantId, { call_terminated_at: new Date().toISOString() });
+        return Response.json({ ok: true, action: "source_hangup_preserved_failure_status" });
+      }
+    }
+
+    return super.fetch(request);
+  }
+}
