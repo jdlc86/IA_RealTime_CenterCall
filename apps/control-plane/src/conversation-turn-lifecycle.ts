@@ -85,6 +85,20 @@ export class ConversationTurnLifecycle {
 
     if (this.state === "CLOSING") return effects;
 
+    // Once terminal speech has been selected, the conversation is irreversible.
+    // Late caller/model/normal-audio events must not reopen or mutate the turn.
+    // The only legal transition is completion of the terminal playback -> CLOSING.
+    if (this.state === "TERMINAL_SPEAKING") {
+      if (event.type === "assistant_audio_started" && event.kind === "TERMINAL") {
+        return effects;
+      }
+      if (event.type === "assistant_audio_stopped" && event.kind === "TERMINAL") {
+        this.state = "CLOSING";
+        effects.push({ type: "HANGUP" });
+      }
+      return effects;
+    }
+
     if (event.type === "max_call_duration") {
       this.cancelSilence(effects);
       this.state = "TERMINAL_SPEAKING";
@@ -120,7 +134,7 @@ export class ConversationTurnLifecycle {
       }
 
       case "assistant_audio_stopped": {
-        if (this.state === "TERMINAL_SPEAKING" || event.kind === "TERMINAL") {
+        if (event.kind === "TERMINAL") {
           this.state = "CLOSING";
           effects.push({ type: "HANGUP" });
           return effects;
