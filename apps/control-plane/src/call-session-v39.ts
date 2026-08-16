@@ -17,19 +17,38 @@ function nonEmpty(value: unknown): string | null {
 }
 
 /**
- * v39 fixes transfer-success classification.
+ * v39 fixes transfer-success classification and keeps the v37/v38 lifecycle
+ * coherent once a real target-leg result has arrived.
  *
  * Telnyx transfer emits call.bridged while the destination can still be ringing.
  * The authoritative remote-answer signal is call.answered. Therefore:
  * - call.bridged is only an intermediate transport signal;
  * - only call.answered on the target leg marks TRANSFERRED and closes Lucía;
- * - target call.hangup before answer still falls through to v38 NO_ANSWER/BUSY/FAILED;
+ * - target call.hangup before answer falls through to v38 NO_ANSWER/BUSY/FAILED;
+ * - when target call.hangup arrives, the older v37 result watchdog is cancelled
+ *   immediately so it cannot later overwrite the precise failure result;
  * - hangups after confirmed TRANSFERRED are terminal telephony bookkeeping only.
  */
 export class CallSession extends BaseConstructor {
   private storeV39(): HumanHandoffStore {
     const env = (this as any).env ?? {};
     return new HumanHandoffStore({ SUPABASE_URL: env.SUPABASE_URL, SUPABASE_SECRET_KEY: env.SUPABASE_SECRET_KEY });
+  }
+
+  private settleTargetFailureLifecycleV39(handoffId: string): void {
+    // v37 owns the transfer-result watchdog. v38 owns terminal TTS after a real
+    // target-leg hangup. Once that hangup exists, waiting for a transfer-result
+    // webhook is no longer meaningful and must not be allowed to fire later.
+    (this as any).clearTransferWatchdogV37?.();
+    const active = (this as any).activeHandoffV37 as { id?: string; phase?: string } | null | undefined;
+    if (active?.id === handoffId && active.phase === "DIALING") {
+      active.phase = "FAILURE_SPEAKING";
+    }
+    (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_TARGET_RESULT_SETTLED_V39", {
+      handoff_id: handoffId,
+      transfer_result_watchdog_cancelled: true,
+      precise_failure_result_preserved: true,
+    });
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -76,6 +95,7 @@ export class CallSession extends BaseConstructor {
       }
       if (state && (state.status === "DIALING" || state.status === "ANSWERED")) {
         const now = new Date().toISOString();
+        (this as any).clearTransferWatchdogV37?.();
         await this.storeV39().update(handoffId, tenantId, {
           status: "TRANSFERRED",
           answered_at: now,
@@ -107,6 +127,11 @@ export class CallSession extends BaseConstructor {
           await this.storeV39().update(handoffId, tenantId, { call_terminated_at: new Date().toISOString() });
         }
         return Response.json({ ok: true, action: "post_transfer_hangup_recorded" });
+      }
+
+      if (targetLeg) {
+        this.settleTargetFailureLifecycleV39(handoffId);
+        return super.fetch(request);
       }
     }
 
