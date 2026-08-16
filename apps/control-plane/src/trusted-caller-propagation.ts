@@ -17,11 +17,15 @@ export function buildTrustedCallerTransferHeaders(
   tenantId: string,
   calledNumber: string,
   routingSource: string,
+  telnyxCallControlId?: string,
 ): Array<{ name: string; value: string }> {
   return [
     { name: "X-IA-Tenant-ID", value: tenantId },
     { name: "X-IA-Called-Number", value: calledNumber },
     { name: "X-IA-Routing-Source", value: routingSource },
     { name: "X-IA-Caller-Number", value: callerPhone },
+    ...(telnyxCallControlId?.trim()
+      ? [{ name: "X-IA-Telnyx-Call-Control-ID", value: telnyxCallControlId.trim() }]
+      : []),
   ];
 }
