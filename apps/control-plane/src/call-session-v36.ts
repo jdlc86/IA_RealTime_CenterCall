@@ -106,6 +106,22 @@ export class CallSession extends BaseConstructor {
     });
   }
 
+  /**
+   * A terminal lifecycle (for example human handoff) can take ownership of the
+   * already-suspended VAD without briefly restoring normal turn detection.
+   * This only releases v36's local mutex/watchdog; the caller remains acoustically
+   * gated until the terminal owner explicitly ends the call or transfers it.
+   */
+  protected detachTurnConcurrencyForTerminalV36(reason: string): void {
+    const wasActive = this.turnConcurrencyV36.release();
+    this.clearTurnConcurrencyWatchdogV36();
+    (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_DETACHED_FOR_TERMINAL_V36", {
+      reason,
+      was_active: wasActive,
+      vad_restored: false,
+    });
+  }
+
   private discardOverlappingTurnV36(event: RealtimeEvent): void {
     const session = this as any;
     if (event.item_id && session.socket) {
