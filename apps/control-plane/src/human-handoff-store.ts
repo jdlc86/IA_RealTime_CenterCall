@@ -29,6 +29,12 @@ export type HumanHandoffPatch = {
   target_call_control_id?: string | null;
 };
 
+export type HumanHandoffState = {
+  status: string;
+  callback_required: boolean;
+  failure_reason: string | null;
+};
+
 function requireString(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`Missing ${name}`);
   return value.trim();
@@ -90,5 +96,24 @@ export class HumanHandoffStore {
       const body = await response.text();
       throw new Error(`human_handoff_events update failed with HTTP ${response.status}: ${body.slice(0, 300)}`);
     }
+  }
+
+  async getState(id: string, tenantId: string): Promise<HumanHandoffState | null> {
+    const response = await fetch(
+      `${this.baseUrl()}/rest/v1/human_handoff_events?id=eq.${encodeURIComponent(id)}&tenant_id=eq.${encodeURIComponent(tenantId)}&select=status,callback_required,failure_reason&limit=1`,
+      { method: "GET", headers: this.headers() },
+    );
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`human_handoff_events select failed with HTTP ${response.status}: ${body.slice(0, 300)}`);
+    }
+    const rows = await response.json() as Array<{ status?: unknown; callback_required?: unknown; failure_reason?: unknown }>;
+    const row = rows[0];
+    if (!row || typeof row.status !== "string" || typeof row.callback_required !== "boolean") return null;
+    return {
+      status: row.status,
+      callback_required: row.callback_required,
+      failure_reason: typeof row.failure_reason === "string" ? row.failure_reason : null,
+    };
   }
 }
