@@ -10,6 +10,12 @@ export type TurnConcurrencyAcquireDecision =
   | "BYPASS_HIGHER_LAYER"
   | "BYPASS_PLAYBACK_ALREADY_STARTED";
 
+export type TurnConcurrencyReleaseReason =
+  | "normal_assistant_playback_started"
+  | "protected_playback_completed"
+  | "watchdog"
+  | string;
+
 /**
  * Pure acquisition boundary for v36 semantic serialization.
  *
@@ -26,4 +32,19 @@ export function decideTurnConcurrencyAcquire(
   if (!input.usableTranscript) return "BYPASS_UNUSABLE";
   if (input.normalPlaybackActive) return "BYPASS_PLAYBACK_ALREADY_STARTED";
   return "ACQUIRE";
+}
+
+/**
+ * Releasing semantic serialization at the exact moment normal assistant audio
+ * becomes audible must preserve newly arriving caller audio. Clearing the input
+ * buffer at that boundary creates a blind spot for an immediate barge-in: the
+ * caller may already be speaking before non-interrupting listening is restored.
+ *
+ * Recovery-style releases can still discard buffered audio because their goal
+ * is to abandon stale input rather than transition into an interruptible turn.
+ */
+export function shouldClearInputOnTurnConcurrencyRelease(
+  reason: TurnConcurrencyReleaseReason,
+): boolean {
+  return reason !== "normal_assistant_playback_started";
 }
