@@ -18,14 +18,32 @@ function normalize(value: unknown): string {
     : "";
 }
 
+function canonicalShortReply(value: unknown): string {
+  return normalize(value).replace(/[.,;:!?¿¡]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
 function isShortAffirmative(value: unknown): boolean {
-  const text = normalize(value).replace(/[.!?]+$/g, "").trim();
+  const text = canonicalShortReply(value);
   return /^(?:si|vale|de acuerdo|adelante|hazlo|por favor|perfecto)$/.test(text);
 }
 
 function isExplicitRejection(value: unknown): boolean {
-  const text = normalize(value).replace(/[.!?]+$/g, "").trim();
+  const text = canonicalShortReply(value);
   return /^(?:no|no gracias|mejor no|prefiero que no|dejalo|dejalo asi)$/.test(text);
+}
+
+/**
+ * An offer may only be confirmed by the immediately following meaningful caller
+ * turn. Any unrelated caller turn consumes the pending offer so a later generic
+ * "sí" cannot accidentally authorize an old transfer proposal.
+ */
+export function observeHumanHandoffCallerTurn(
+  state: HumanHandoffAuthorizationState,
+  transcript: unknown,
+): HumanHandoffAuthorizationState {
+  if (!state.offerPending) return state;
+  if (isShortAffirmative(transcript)) return state;
+  return { offerPending: false };
 }
 
 /**
