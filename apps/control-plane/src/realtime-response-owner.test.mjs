@@ -53,14 +53,36 @@ test("SIP-cleared playback and active response are independent", () => {
   ]);
 });
 
-test("ignored background resumes only when SIP already cleared playback", () => {
+test("ignored candidate never creates a replacement while original response is active", () => {
   let s = initialResponseOwnerSnapshot();
   ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
   ({ snapshot: s } = step(s, { type: "assistant_playback_cleared" }));
   ({ snapshot: s } = step(s, { type: "caller_speech_started" }));
+  const ignored = step(s, { type: "barge_in_ignore" });
+  assert.equal(ignored.snapshot.state, "ASSISTANT_ACTIVE");
+  assert.equal(ignored.snapshot.activeResponseId, "old");
+  assert.equal(ignored.snapshot.resumeAfterActiveDone, true);
+  assert.deepEqual(ignored.effects, []);
+
+  const done = step(ignored.snapshot, { type: "assistant_response_done", responseId: "old" });
+  assert.equal(done.snapshot.activeResponseId, null);
+  assert.equal(done.snapshot.resumeAfterActiveDone, false);
+  assert.equal(done.snapshot.playbackCleared, false);
+  assert.deepEqual(done.effects, [{ type: "resume_assistant" }]);
+});
+
+test("ignored candidate with no active response may resume immediately", () => {
+  let s = initialResponseOwnerSnapshot();
+  ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
+  ({ snapshot: s } = step(s, { type: "assistant_playback_cleared" }));
+  ({ snapshot: s } = step(s, { type: "assistant_response_done", responseId: "old" }));
+  ({ snapshot: s } = step(s, { type: "caller_speech_started" }));
+  // No active assistant ownership means this speech is not a barge-in; model the accepted
+  // semantic state directly to verify the no-active-response branch.
+  s = { ...s, state: "BARGE_IN_CLASSIFYING" };
   const r = step(s, { type: "barge_in_ignore" });
-  assert.equal(r.snapshot.state, "ASSISTANT_ACTIVE");
   assert.deepEqual(r.effects, [{ type: "resume_assistant" }]);
+  assert.equal(r.snapshot.resumeAfterActiveDone, false);
 });
 
 test("late response.done only reconciles old response and never gates caller turn", () => {
