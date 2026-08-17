@@ -172,7 +172,7 @@ export class CallSession extends BaseConstructor {
     if (!itemId || !transcript) return false;
 
     if (this.pendingBargeInV40) {
-      try { (this as any).send?.({ type: "conversation.item.delete", item_id: itemId }); } catch { /* best effort */ }
+      try { realtimeCommandPortFor(this as any).discardInputItem(itemId); } catch { /* best effort */ }
       (this as any).diagnostics?.checkpoint?.("BARGE_IN_EXTRA_CANDIDATE_DROPPED_V40_REBUILD", {
         item_id: itemId,
         pending_item_id: this.pendingBargeInV40.itemId,
@@ -232,7 +232,7 @@ export class CallSession extends BaseConstructor {
     this.reportOwnerEffectsV40(result.effects);
 
     if (itemId) {
-      try { (this as any).send?.({ type: "conversation.item.delete", item_id: itemId }); } catch { /* best effort */ }
+      try { realtimeCommandPortFor(this as any).discardInputItem(itemId); } catch { /* best effort */ }
     }
     this.executePostSemanticEffectsV40(emission.executable);
     (this as any).diagnostics?.checkpoint?.("BARGE_IN_UNCLASSIFIABLE_IGNORED_V40_REBUILD", {
@@ -267,7 +267,7 @@ export class CallSession extends BaseConstructor {
     this.reportOwnerEffectsV40(result.effects);
 
     if (decision === "IGNORE") {
-      try { (this as any).send?.({ type: "conversation.item.delete", item_id: pending.itemId }); } catch { /* best effort */ }
+      try { realtimeCommandPortFor(this as any).discardInputItem(pending.itemId); } catch { /* best effort */ }
       this.executePostSemanticEffectsV40(emission.executable);
       (this as any).diagnostics?.checkpoint?.("BARGE_IN_IGNORED_V40_REBUILD", {
         item_id: pending.itemId,
