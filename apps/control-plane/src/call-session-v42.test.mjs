@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { shouldQuiesceConversationLifecycleV42 } from "../.test-dist/call-session-v42.js";
+import { shouldQuiesceConversationLifecycleV42 } from "../.test-dist/call-session-v42-policy.js";
 
 test("v42 quiesces when lower runtime enters closing", () => {
   assert.equal(shouldQuiesceConversationLifecycleV42("closing", false), true);
