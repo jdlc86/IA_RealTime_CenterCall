@@ -2,6 +2,7 @@ import type { TenantVadSettings } from "./protected-turn-detection";
 
 export type RealtimeSpeechRequest = {
   instructions: string;
+  requestId?: string;
   purpose?: string;
   metadata?: Record<string, unknown>;
   isolated?: boolean;
