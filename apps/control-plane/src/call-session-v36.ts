@@ -1,6 +1,7 @@
 import { CallSession as CallSessionV35Runtime } from "./call-session-v35-runtime";
 import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
 import { TurnConcurrencyLifecycle } from "./turn-concurrency-lifecycle";
+import { decideTurnConcurrencyAcquire } from "./turn-concurrency-acquire-policy";
 
 const BaseConstructor = CallSessionV35Runtime as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV35Runtime.prototype as any;
@@ -45,12 +46,16 @@ function hasUsableTranscript(value: unknown): boolean {
  * v36 is a semantic serialization guard, not a conversation-state authority.
  * Only usable completed transcripts may acquire ownership and suspend turn
  * detection. Unusable transcripts cannot own the pipeline or disable VAD.
+ * A transcript that arrives after normal assistant playback already started is
+ * late evidence for the turn already being answered and must not reacquire a
+ * lock whose playback release boundary has already passed.
  * ConversationTurnLifecycle remains the authority for caller/waiting state.
  */
 export class CallSession extends BaseConstructor {
   private turnConcurrencyV36 = new TurnConcurrencyLifecycle();
   private turnConcurrencyWatchdogV36: ReturnType<typeof setTimeout> | null = null;
   private protectedResponseIdsV36 = new Set<string>();
+  private normalPlaybackActiveV36 = false;
 
   protected shouldBypassTurnConcurrencyV36(_event: RealtimeEvent): boolean {
     return false;
@@ -106,6 +111,7 @@ export class CallSession extends BaseConstructor {
   protected detachTurnConcurrencyForTerminalV36(reason: string): void {
     const wasActive = this.turnConcurrencyV36.release();
     this.clearTurnConcurrencyWatchdogV36();
+    this.normalPlaybackActiveV36 = false;
     (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_DETACHED_FOR_TERMINAL_V36", {
       reason,
       was_active: wasActive,
@@ -165,24 +171,35 @@ export class CallSession extends BaseConstructor {
 
     if (event?.type === "conversation.item.input_audio_transcription.completed") {
       const usable = hasUsableTranscript(event.transcript);
+      const higherLayerOwns = this.shouldBypassTurnConcurrencyV36(event);
 
-      if (!this.shouldBypassTurnConcurrencyV36(event)) {
-        if (this.turnConcurrencyV36.isActive()) {
-          this.discardOverlappingTurnV36(event, usable);
-          return;
-        }
+      if (!higherLayerOwns && this.turnConcurrencyV36.isActive()) {
+        this.discardOverlappingTurnV36(event, usable);
+        return;
+      }
 
-        if (!usable) {
-          (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_UNUSABLE_TRANSCRIPT_BYPASSED_V36", {
-            item_id: event.item_id ?? null,
-            ownership_acquired: false,
-            turn_detection_suspended: false,
-          });
-          // Let lower layers record transcript_unusable so the authoritative
-          // lifecycle can return to a fresh WAITING epoch.
-        } else {
-          this.acquireTurnConcurrencyV36();
-        }
+      const decision = decideTurnConcurrencyAcquire({
+        usableTranscript: usable,
+        normalPlaybackActive: this.normalPlaybackActiveV36,
+        higherLayerOwns,
+      });
+
+      if (decision === "ACQUIRE") {
+        this.acquireTurnConcurrencyV36();
+      } else if (decision === "BYPASS_UNUSABLE") {
+        (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_UNUSABLE_TRANSCRIPT_BYPASSED_V36", {
+          item_id: event.item_id ?? null,
+          ownership_acquired: false,
+          turn_detection_suspended: false,
+        });
+      } else if (decision === "BYPASS_PLAYBACK_ALREADY_STARTED") {
+        (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_LATE_TRANSCRIPT_BYPASSED_V36", {
+          item_id: event.item_id ?? null,
+          ownership_acquired: false,
+          turn_detection_suspended: false,
+          normal_playback_active: true,
+          release_boundary_already_passed: true,
+        });
       } else {
         (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_BYPASSED_V36", {
           item_id: event.item_id ?? null,
@@ -191,15 +208,23 @@ export class CallSession extends BaseConstructor {
       }
     }
 
-    if (event?.type === "output_audio_buffer.started" && this.turnConcurrencyV36.isActive()) {
+    if (event?.type === "output_audio_buffer.started") {
       const id = responseId(event);
-      if (!id || !this.protectedResponseIdsV36.has(id)) {
-        this.releaseTurnConcurrencyV36("normal_assistant_playback_started");
+      const protectedPlayback = Boolean(id && this.protectedResponseIdsV36.has(id));
+      if (!protectedPlayback) {
+        this.normalPlaybackActiveV36 = true;
+        if (this.turnConcurrencyV36.isActive()) {
+          this.releaseTurnConcurrencyV36("normal_assistant_playback_started");
+        }
       }
     }
 
     if (event?.type === "output_audio_buffer.stopped") {
       const id = responseId(event);
+      const protectedPlayback = Boolean(id && this.protectedResponseIdsV36.has(id));
+      if (!protectedPlayback) {
+        this.normalPlaybackActiveV36 = false;
+      }
       if (id && this.protectedResponseIdsV36.has(id)) {
         this.protectedResponseIdsV36.delete(id);
         if (this.turnConcurrencyV36.isActive()) {
@@ -210,6 +235,7 @@ export class CallSession extends BaseConstructor {
 
     if (event?.type === "output_audio_buffer.cleared") {
       const id = responseId(event);
+      this.normalPlaybackActiveV36 = false;
       if (id) this.protectedResponseIdsV36.delete(id);
     }
 
