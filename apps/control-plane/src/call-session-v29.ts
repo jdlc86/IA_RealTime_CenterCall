@@ -66,7 +66,7 @@ export class CallSession extends BaseConstructor {
   private originalSendV29: ((message: unknown) => void) | null = null;
 
   async fetch(request: Request): Promise<Response> {
-    const isStart = request.method === "POST" && new URL(request.url()).pathname === "/start";
+    const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
     const response = await super.fetch(request);
 
     if (isStart && response.ok) {
@@ -149,16 +149,12 @@ export class CallSession extends BaseConstructor {
       },
     });
 
-    // Semantic classification is reported to the lifecycle. v29 does not rearm
-    // presence or touch v18 implementation fields.
     (this as any).observeSemanticIgnoredV18?.(reason);
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const event = parseEvent(data);
 
-    // Acoustic evidence must still reach the lower realtime chain, but MUST
-    // bypass v27's speech_started -> tool_choice=required behavior.
     if (event?.type === "input_audio_buffer.speech_started") {
       await V26Prototype.handleRealtimeMessage.call(this, data);
       return;
