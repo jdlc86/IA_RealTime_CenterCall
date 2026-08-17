@@ -1,227 +1,211 @@
 # IA_RealTime_CenterCall — PROJECT STATUS
 
-> **Estado operativo actual del proyecto**  
-> **Fecha:** 2026-08-13  
-> Este documento registra progreso y cierre de fases. La definición de arquitectura y del roadmap pertenece a `docs/architecture/SYSTEM_ARCHITECTURE.md`.
+> **Estado operativo actual del proyecto**
+> **Fecha:** 2026-08-17
+> La arquitectura normativa pertenece a `docs/architecture/SYSTEM_ARCHITECTURE.md`.
+> Para continuidad entre sesiones leer también `docs/SESSION_HANDOFF_2026-08-17.md`.
 
-## Estado de fases
+## Estado resumido
 
 ```text
-F0 Voz E2E                                   ✅ CERRADA — PASS
-F1 Baseline + observabilidad + TenantResolver ✅ CERRADA — PASS con baseline cuantitativo CANCELADO por decisión de proyecto
-F2 Latencia + barge-in                       ✅ CERRADA SIN CAMBIOS DE OPTIMIZACIÓN — comportamiento actual aceptado
-F3 ToolGateway                               🟡 EN CURSO — integración E2E activa
-F4 Clínica + validación multi-negocio        🟡 EN CURSO — RESTAURANT validado con número/routing independiente
-F5 Persistencia empresarial + Supabase + post-call 🟡 EN CURSO — reservas RESTAURANT avanzadas; marketing conversacional parcialmente validado
-F6 Handoff humano                            ⬜ NO INICIADA — decisión transversal documentada
-F7 Concurrencia                              ⬜ NO INICIADA
+F0 Voz E2E                                   ✅ CERRADA
+F1 Baseline + observabilidad + TenantResolver ✅ CERRADA
+F2 Latencia + barge-in                       🟡 REABIERTO OPERATIVAMENTE PARA HARDENING v40
+F3 ToolGateway                               🟡 EN CURSO
+F4 Clínica + validación multi-negocio        🟡 EN CURSO
+F5 Persistencia empresarial + Supabase       🟡 EN CURSO
+F6 Handoff humano                            🟡 IMPLEMENTADO / VALIDADO PARCIALMENTE E2E
+F7 Concurrencia                              🟡 IMPLEMENTACIÓN PARCIAL v36/v40
 F8 Hardening producción                      🟡 EN CURSO
-F9 App de gestión web/escritorio             ⬜ NO INICIADA
+F9 App de gestión                            ⬜ NO INICIADA
 ```
 
-## Checkpoint operativo RESTAURANT — 2026-08-13
+## Estado de código/CI actual
 
-### Estado validado E2E
-
-- routing telefónico independiente y persona conversacional Lucía: VALIDADO;
-- `businessType=RESTAURANT` en configuración V2: VALIDADO EN RUNTIME;
-- inventario de prueba: tres mesas de 4 plazas y dos mesas de 2 plazas;
-- `check_reservation_availability` como READ gobernada por allowlist;
-- CREATE backend-orchestrated con disponibilidad en paralelo y recheck final: VALIDADO E2E;
-- confirmación verbal protegida por evidencia backend `BOOKED`: VALIDADO;
-- propagación confiable de `payload.from` Telnyx hasta `caller_phone`: VALIDADA;
-- `CONVERSATION_STATE_AUTHORITY` evita que workflows especializados bypassen lifecycle/core routing: VALIDADO en llamadas reales;
-- CLOSING terminal sin reactivar marketing/otros flujos: VALIDADO en llamada real;
-- QUERY por `tenant_id + caller_phone`: IMPLEMENTADA;
-- CANCEL individual/múltiple/ALL por `tenant_id + caller_phone`: VALIDADA E2E;
-- una cancelación real de 6 reservas del mismo número finalizó con `cancelled_count=6`, `failed_count=0`;
-- una reserva asociada a otro teléfono quedó correctamente intacta tras `CANCEL ALL`: VALIDADO;
-- Truth Guard distingue `BOOKED` y `CANCELLED`: VALIDADO con tests y evidencia posterior de cancelación;
-- `reservation_code` público corto tipo `R-######`: IMPLEMENTADO y persistido para reservas existentes;
-- grounding temporal centralizado en `Europe/Madrid`: IMPLEMENTADO; evita contradicciones tipo “mañana 13” cuando es día 13.
-
-### Diseño vigente de reservas
-
-El dominio distingue explícitamente:
+Rama:
 
 ```text
-RESERVATION / CREATE
-RESERVATION / QUERY
-RESERVATION / CANCEL
+rebuild/v39-stable-baseline
 ```
 
-El clasificador propone semántica, pero el Core/lifecycle decide qué workflow puede consumir el turno.
-
-#### CREATE
+Último SHA funcional con CI verde antes de los commits documentales:
 
 ```text
-conversation_intent → RESERVATION/CREATE
-  ↓
-ReservationState incremental
-  ↓
-party_size + starts_at normalizado
-  → check_reservation_availability (READ paralelo)
-  ↓
-completar datos restantes
-  ↓
-resumen
-  ↓
-confirmación explícita
-  ↓
-recheck final
-  ↓
-manage_reservation
-  ↓
-BOOKED
-  ↓
-confirmación verbal autorizada
+f69f37de06cc953d50dd18884cb7bcd2132251c3
+Control Plane CI #254 — SUCCESS
 ```
 
-Cambios recientes de robustez:
+Estado de `f69f37de...`:
 
-- el workflow CREATE se activa desde la primera intención inequívoca de reservar, incluso con draft vacío;
-- `starts_at` no normalizado ya no invalida todo el turno: se preservan los demás campos válidos;
-- mientras CREATE está activo, un fallback degradado no puede escapar a `BUSINESS_INFO`;
-- el `caller_phone` confiable se usa automáticamente como contacto de reserva para minimizar interacción;
-- Lucía no debe pedir que el usuario repita el mismo número si el caller confiable existe;
-- el usuario puede indicar explícitamente otro `reservation_phone`; sigue siendo un dato de contacto, no identidad ni autorización de marketing.
+- IMPLEMENTADO: sí;
+- CI VERDE: sí;
+- DESPLEGADO: no confirmado al generar este documento;
+- VALIDADO E2E: pendiente de nueva llamada posterior al despliegue.
 
-La última corrección de uso automático del `caller_phone` como contacto está IMPLEMENTADA y con CI verde, pero queda PENDIENTE una nueva llamada E2E que confirme que Lucía ya no solicita el teléfono durante CREATE.
+## RESTAURANT — reservas
 
-#### QUERY
+Estado funcional vigente:
 
-QUERY es READ-only y parte de `tenant_id + caller_phone` confiable. No utiliza un número verbal como prueba de identidad y no expone UUID ni teléfonos en la respuesta conversacional.
+- CREATE con disponibilidad, datos incrementales, caller ID confiable y confirmación explícita;
+- QUERY por `tenant_id + caller_phone`;
+- CANCEL individual/múltiple/ALL;
+- `reservation_code` público `R-######` separado del UUID interno;
+- grounding temporal en `Europe/Madrid`;
+- Truth Guard para no afirmar BOOKED/CANCELLED sin evidencia backend;
+- marketing separado de reservas.
 
-#### CANCEL
+Última llamada registrada durante la sesión 2026-08-17 completó una reserva `BOOKED` y permitió continuar conversación; el cierre automático indebido fue bloqueado por v41.
+
+## Barge-in — reconstrucción v40
+
+Objetivo: recuperar interrupción natural sin volver a introducir silencios, cancelaciones espurias ni dependencia de `response.done`.
+
+Arquitectura actual:
+
+- escucha durante playback con auto-interrupt y auto-create desactivados;
+- clasificación semántica `INTERRUPT | IGNORE` fuera de conversación;
+- un único response owner;
+- v36 cede ownership para un barge-in confirmado;
+- `response.done` es reconciliación, no gate;
+- candidato sin transcript útil -> `IGNORE` inmediato;
+- saludo/recovery/handoff protegidos no son interruptibles.
+
+Evidencia E2E positiva observada:
 
 ```text
-lookup BOOKED por tenant + caller_phone
-  ↓
-mostrar candidatas
-  ↓
-selección una | varias | ALL
-  ↓
-resumen
-  ↓
-confirmación explícita única
-  ↓
-recheck individual
-  ↓
-BOOKED → CANCELLED condicionado
-  ↓
-resultado por reserva
+BARGE_IN_CLASSIFIER_REQUESTED_V40_REBUILD
+BARGE_IN_CLASSIFIER_BOUND_V40_REBUILD
+TURN_CONCURRENCY_BYPASSED_V36
+BARGE_IN_CONFIRMED_V40_REBUILD
+response_done_gate=false
 ```
 
-No se simula atomicidad: cada reserva tiene su propia precondición y resultado. Si una cambia antes del WRITE, las demás pueden cancelarse y debe informarse el resultado exacto.
-
-### Identificadores públicos
-
-Las reservas tienen:
-
-- `id`: UUID técnico interno, no verbalizable;
-- `reservation_code`: código público corto `R-######`.
-
-CREATE/QUERY/CANCEL deben exponer únicamente `reservation_code` al usuario. El UUID queda reservado para backend, joins, precondiciones y diagnósticos.
-
-### Grounding temporal
-
-La política de fecha relativa se centraliza en `Europe/Madrid`. El backend determina la etiqueta temporal autorizada; Lucía no debe derivar por su cuenta “hoy/mañana/ayer”.
-
-## Identidad telefónica confiable
-
-La fuente de identidad telefónica automática sigue siendo:
+También:
 
 ```text
-Telnyx payload.from
-  ↓ firma Ed25519 verificada
-Worker
-  ↓ normalización
-from + X-IA-Caller-Number
-  ↓
-CallSession caller_phone
+BARGE_IN_UNCLASSIFIABLE_IGNORED_V40_REBUILD
+resolved_without_watchdog=true
 ```
 
-El DID llamado del tenant nunca puede aceptarse como `caller_phone`.
+## Concurrencia v36/v40
 
-Para QUERY/CANCEL, `caller_phone` es la clave primaria de identidad dentro del tenant. Para CREATE se usa además como contacto por defecto, salvo que el usuario indique expresamente otro teléfono.
+v36 sigue protegiendo turnos normales. Cuando v40 confirma un barge-in, el `item_id` queda bajo ownership superior y v36 no adquiere lock ni puede descartarlo como solapado.
 
-## Consentimiento comercial conversacional
+Aun se han observado `TURN_CONCURRENCY_OVERLAPPING_TURN_DROPPED_V36` en turnos normales. No se deben eliminar esas defensas sin nueva evidencia; deben investigarse caso por caso.
 
-Reserva y marketing son dominios separados. Rechazar marketing nunca impide reservar.
+## User presence / “¿Sigues ahí?”
 
-Reglas vigentes:
+Se detectó un defecto real: presence recovery podía activarse durante una conversación todavía activa y generar respuestas concurrentes.
 
-- `reservation_phone` y `marketing_phone` pueden ser distintos;
-- alta/baja automática por voz solo para el mismo `caller_phone` confiable;
-- el teléfono dictado no sirve como evidencia `CALLER_ID_MATCH`;
-- una llamada desde A no puede modificar automáticamente marketing para B;
-- consentimiento explícito y verificación del canal se persisten por separado;
-- el backend mantiene historial de ofertas/cooldown para no repetir propuestas de forma insistente;
-- una decisión existente puede suprimir la propuesta;
-- se validó una alta real con `MARKETING_GRANTED` + `CALLER_ID_MATCH` y una llamada posterior suprimió correctamente la oferta por decisión existente.
+Correcciones:
 
-Pendiente de nueva evidencia E2E: desde un número realmente nuevo, completar CREATE hasta `BOOKED` con los últimos fixes y verificar que la política post-booking evalúa/realiza la propuesta de marketing cuando corresponde.
+- guardas para no recuperar presencia mientras Lucía está reproduciendo/procesando/herramienta activa;
+- v42 impide que `background_input_ignored_v29` vuelva a armar/reiniciar el deadline como un periodo nuevo de espera.
 
-## Supabase y observabilidad
+Pendiente: validar E2E que tras `f69f37de...` ya no aparece `USER_PRESENCE_RECOVERY_REQUESTED` inducido por background ignored.
 
-- Cloudflare Worker → Supabase: ✅ operativo.
-- Conector Supabase de ChatGPT: ✅ disponible de nuevo en esta sesión para consultas directas.
-- `public.call_diagnostic_events` continúa como fuente principal de trazas por `call_id`.
-- No registrar secretos, audio ni PII innecesaria.
+## Cierre de llamada — v41
 
-## Commits recientes relevantes
+Incidente: después de `BOOKED`, el modelo seleccionó `restaurant_end_call {confirmed:true}` sin despedida del usuario y el runtime colgó.
 
-- `0f17d37083dbb7c6d7ff7cfe65005325e5afc6f4` — autoridad de estado conversacional;
-- `eb2db0cdfba78ca4e32bba3c83e5d0165622d137` — CANCEL como operación independiente;
-- `7d978454e57c653876999ef992be1982782d975b` — QUERY por caller_phone;
-- `4a7b9751266b57f842f9f8d370d2bc402c5d2abd` — cancelación múltiple + Truth Guard por operación;
-- `47d7834ab94b73629768ff2219d07d27ce7f8f20` — grounding temporal;
-- `0f81cb0e9cfe248be8f2acf47a3182ec34d76ccd` — `reservation_code` público;
-- `4a422c6cdc3a35087d3589b949c3334954eab3ae` — CREATE incremental/sticky;
-- `cb4c569b76cdf14ef2096930e4f46880fcf99226` — caller_phone confiable como contacto por defecto.
+v41 añade autorización determinista:
 
-## F3 — ToolGateway
+- `confirmed:true` del modelo no basta;
+- se exige evidencia del último transcript útil del usuario;
+- despedida explícita o confirmación a una pregunta de cierre pendiente permiten cerrar;
+- reserva terminada, marketing o cortesía de Lucía no autorizan hangup.
 
-Continúa como frontera única de acciones empresariales. Mantiene `tenant_id` obligatorio, allowlist explícita, fail-closed, validación de argumentos y separación READ/WRITE.
+En la llamada posterior la defensa funcionó: `closing_authorized=false` y no hubo cierre automático.
 
-## F4 — Multi-negocio
+## Human handoff — F6 ya activo
 
-La configuración V2 soporta `BusinessType = CLINIC | RESTAURANT`, con routing independiente y configuración por tenant. La clínica debe permanecer estable mientras evoluciona restaurante; no se permiten forks del Core ni condicionales específicos por tenant.
+La documentación anterior que decía “F6 no iniciada / no hay transferencia activa” quedó obsoleta.
 
-## F5 — Restaurante: reservas, consentimiento y post-call
+Estado actual:
 
-Reservas dispone ya de evidencia E2E positiva para CREATE base y CANCEL múltiple. QUERY, códigos públicos, grounding temporal y las últimas mejoras de CREATE están implementadas. F5 sigue abierta por validaciones E2E pendientes de los cambios recientes, consentimiento comercial completo y siguientes dominios post-call.
+- v37: transporte determinista, trazabilidad, anuncio protegido y transferencia Telnyx;
+- v38: manejo de fallos terminales;
+- v39: `call.bridged` es señal intermedia; solo `call.answered` en target leg confirma transferencia contestada;
+- existen llamadas reales donde el flujo de handoff llegó a `HUMAN_HANDOFF_TRANSFER_STARTED_V37`.
 
-## F6 — Handoff humano
+### Regresión detectada
 
-**NO INICIADA.** La decisión arquitectónica sigue fijada como capacidad transversal del Core. No existe `transfer_to_human` activo, no se simula transferencia y no se promete disponibilidad humana desconocida.
-
-## F8 — Observabilidad/hardening
-
-`DEBUG_KEY` + `call_diagnostic_events` continúan siendo la fuente de evidencia E2E. CI de control-plane exige tests + Wrangler dry-run antes de merge.
-
-## F9 — App de gestión
-
-La futura app compartirá Business Modules y persistencia con voz. Para restaurante deberá administrar inventario/capacidad, disponibilidad, reservas, códigos públicos y operaciones administrativas definidas posteriormente.
-
-## Roadmap vigente
+En una llamada del 2026-08-17:
 
 ```text
-F5 Persistencia/operaciones empresariales
- ↓
-F6 Handoff humano transversal
- ↓
-F7 Concurrencia
- ↓
-F8 Hardening producción
- ↓
-F9 App de gestión
+usuario pregunta horario
+→ restaurant_business_info(HOURS)
+→ backend FOUND
+→ respuesta correcta disponible
+→ modelo selecciona restaurant_human_assistance
+→ v37 acepta OTHER_RESTAURANT_MATTER
+→ comienza transferencia
 ```
+
+El transporte v37/v39 funcionó; el defecto estaba en la frontera de autorización: el modelo podía pedir una acción irreversible aunque el turno ya estuviera resuelto.
+
+### Corrección v42
+
+Si el turno actual acaba de resolverse con:
+
+```text
+restaurant_business_info -> FOUND
+```
+
+y la respuesta ya terminó, `restaurant_human_assistance` queda bloqueado en ese mismo turno. Un nuevo transcript útil del usuario inicia un turno nuevo y vuelve a permitir handoff legítimo.
+
+La política es intencionadamente conservadora: no extenderla a todas las tools sin evidencia.
+
+## Supabase / observabilidad
+
+Proyecto:
+
+```text
+vutekfkbtvfogouwcfvc
+```
+
+Fuente principal de diagnóstico:
+
+```text
+public.call_diagnostic_events
+```
+
+Regla operativa: toda regresión de llamada debe reconstruirse desde esta tabla antes de modificar código.
+
+## Cloudflare
+
+- Worker control-plane activo en Cloudflare;
+- tenant config rápida en KV `TENANT_CONFIG`;
+- CI ejecuta `wrangler deploy --dry-run`;
+- deploy real: `wrangler deploy` por el flujo disponible;
+- la disponibilidad de un conector Cloudflare de escritura depende de la sesión de ChatGPT; no afirmar un deploy si no existe herramienta capaz de ejecutarlo/verificarlo.
+
+## Metodología obligatoria
+
+1. Recibir síntoma.
+2. No cambiar código.
+3. Consultar `call_diagnostic_events` de la llamada afectada.
+4. Reconstruir orden de eventos.
+5. Identificar la capa que tomó la decisión errónea.
+6. Comparar con v39 cuando aporte información, distinguiendo garantías reales de comportamiento de facto.
+7. Crear una corrección estructural mínima.
+8. Añadir test de regresión.
+9. Exigir CI verde: tests + Wrangler dry-run.
+10. Confirmar SHA desplegado.
+11. Realizar llamada controlada.
+12. Revisar logs antes de cualquier siguiente modificación.
+
+No apilar timers/parches. Para acciones irreversibles (WRITE, hangup, handoff) el modelo/prompt no debe ser la única autoridad.
 
 ## Próximo paso operativo
 
-1. Ejecutar una nueva llamada CREATE desde un número nuevo tras `cb4c569...` y confirmar que Lucía no pide el teléfono cuando existe `caller_phone` confiable.
-2. En esa misma llamada, completar hasta `BOOKED` y verificar la política post-booking de marketing para un número sin historial.
-3. Revisar por `call_id` que no reaparezcan `RESERVATION_CLASSIFIER_PAYLOAD_INVALID`, escapes degradados a `BUSINESS_INFO` ni falsas confirmaciones.
-4. Mantener QUERY/CANCEL y clínica estables mientras se valida el nuevo CREATE.
-5. Mantener F6 únicamente documentada por ahora.
+1. Confirmar si `f69f37de06cc953d50dd18884cb7bcd2132251c3` está realmente desplegado.
+2. Si procede, repetir la llamada controlada.
+3. Revisar la nueva traza completa sin hacer cambios.
+4. Verificar:
+   - background ignored no provoca un nuevo presence recovery;
+   - `business_info -> FOUND` no desemboca en handoff en el mismo turno;
+   - un turno nuevo sí puede solicitar handoff legítimo;
+   - barge-in v40 sigue funcionando;
+   - v41 sigue bloqueando cierre sin despedida real.
+5. No avanzar a otra corrección hasta tener evidencia de esa llamada.
