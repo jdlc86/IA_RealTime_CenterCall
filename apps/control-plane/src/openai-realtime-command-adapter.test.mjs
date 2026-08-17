@@ -58,11 +58,12 @@ test("provider-neutral text decision maps to isolated OpenAI text response", () 
   }]);
 });
 
-test("provider commands preserve current OpenAI VAD and playback semantics", () => {
+test("provider commands preserve current OpenAI VAD playback and input-discard semantics", () => {
   const h = host();
   const port = new OpenAIRealtimeCommandAdapter(h);
   port.suspendInputDetection();
   port.clearInput();
+  port.discardInputItem("item-7");
   port.clearPlayback();
   port.cancelResponse("resp-7");
   port.createDefaultResponse();
@@ -70,14 +71,15 @@ test("provider commands preserve current OpenAI VAD and playback semantics", () 
 
   assert.equal(h.events[0].type, "session.update");
   assert.equal(h.events[0].session.audio.input.turn_detection, null);
-  assert.deepEqual(h.events.slice(1, 5), [
+  assert.deepEqual(h.events.slice(1, 6), [
     { type: "input_audio_buffer.clear" },
+    { type: "conversation.item.delete", item_id: "item-7" },
     { type: "output_audio_buffer.clear" },
     { type: "response.cancel", response_id: "resp-7" },
     { type: "response.create" },
   ]);
-  assert.equal(h.events[5].session.audio.input.turn_detection.type, "server_vad");
-  assert.equal(h.events[5].session.audio.input.turn_detection.threshold, 0.7);
+  assert.equal(h.events[6].session.audio.input.turn_detection.type, "server_vad");
+  assert.equal(h.events[6].session.audio.input.turn_detection.threshold, 0.7);
 });
 
 test("non-interrupting listening preserves VAD thresholds but disables automatic response effects", () => {
