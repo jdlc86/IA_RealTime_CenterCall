@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decideTurnConcurrencyAcquire } from "../.test-dist/turn-concurrency-acquire-policy.js";
+import {
+  decideTurnConcurrencyAcquire,
+  shouldClearInputOnTurnConcurrencyRelease,
+} from "../.test-dist/turn-concurrency-acquire-policy.js";
 
 test("usable transcript before playback acquires semantic serialization", () => {
   assert.equal(decideTurnConcurrencyAcquire({
@@ -32,4 +35,13 @@ test("higher-layer ownership always wins over v36", () => {
     normalPlaybackActive: false,
     higherLayerOwns: true,
   }), "BYPASS_HIGHER_LAYER");
+});
+
+test("normal playback release preserves immediately arriving barge-in audio", () => {
+  assert.equal(shouldClearInputOnTurnConcurrencyRelease("normal_assistant_playback_started"), false);
+});
+
+test("recovery releases may still discard stale buffered audio", () => {
+  assert.equal(shouldClearInputOnTurnConcurrencyRelease("protected_playback_completed"), true);
+  assert.equal(shouldClearInputOnTurnConcurrencyRelease("watchdog"), true);
 });
