@@ -37,12 +37,15 @@ function responseId(event: RealtimeEvent): string | null {
   return event.response_id ?? event.response?.id ?? null;
 }
 
+function hasUsableTranscript(value: unknown): boolean {
+  return typeof value === "string" && value.replace(/\s+/g, " ").trim().length > 0;
+}
+
 /**
- * v36 serializes ordinary caller turns while Lucia is processing one semantic turn.
- *
- * Higher layers may explicitly take ownership of a completed transcript by overriding
- * shouldBypassTurnConcurrencyV36(). This prevents two independent lifecycle owners
- * from locking/dropping the same already-classified barge-in turn.
+ * v36 is a semantic serialization guard, not a conversation-state authority.
+ * Only usable completed transcripts may acquire ownership and suspend turn
+ * detection. Unusable transcripts cannot own the pipeline or disable VAD.
+ * ConversationTurnLifecycle remains the authority for caller/waiting state.
  */
 export class CallSession extends BaseConstructor {
   private turnConcurrencyV36 = new TurnConcurrencyLifecycle();
@@ -51,10 +54,6 @@ export class CallSession extends BaseConstructor {
 
   protected shouldBypassTurnConcurrencyV36(_event: RealtimeEvent): boolean {
     return false;
-  }
-
-  protected onOverlappingTurnDroppedV36(_event: RealtimeEvent): void {
-    // Higher layers may observe the discard without changing semantic ownership.
   }
 
   private acquireTurnConcurrencyV36(): void {
@@ -68,7 +67,7 @@ export class CallSession extends BaseConstructor {
       (this as any).send?.(suspendTurnDetectionEvent());
       this.armTurnConcurrencyWatchdogV36();
       (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_LOCK_ACQUIRED_V36", {
-        source: "completed_user_transcript",
+        source: "usable_completed_user_transcript",
         turn_detection_suspended: true,
       });
     } catch (error) {
@@ -113,7 +112,7 @@ export class CallSession extends BaseConstructor {
     });
   }
 
-  private discardOverlappingTurnV36(event: RealtimeEvent): void {
+  private discardOverlappingTurnV36(event: RealtimeEvent, usable: boolean): void {
     const session = this as any;
     if (event.item_id && session.socket) {
       try {
@@ -128,9 +127,10 @@ export class CallSession extends BaseConstructor {
     session.diagnostics?.checkpoint?.("TURN_CONCURRENCY_OVERLAPPING_TURN_DROPPED_V36", {
       item_id: event.item_id ?? null,
       active_turn_age_ms: this.turnConcurrencyV36.ageMs(),
+      transcript_usable: usable,
       semantic_processing_unchanged: true,
+      lifecycle_ownership_unchanged: true,
     });
-    this.onOverlappingTurnDroppedV36(event);
   }
 
   private armTurnConcurrencyWatchdogV36(): void {
@@ -163,12 +163,25 @@ export class CallSession extends BaseConstructor {
     }
 
     if (event?.type === "conversation.item.input_audio_transcription.completed") {
+      const usable = hasUsableTranscript(event.transcript);
+
       if (!this.shouldBypassTurnConcurrencyV36(event)) {
         if (this.turnConcurrencyV36.isActive()) {
-          this.discardOverlappingTurnV36(event);
+          this.discardOverlappingTurnV36(event, usable);
           return;
         }
-        this.acquireTurnConcurrencyV36();
+
+        if (!usable) {
+          (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_UNUSABLE_TRANSCRIPT_BYPASSED_V36", {
+            item_id: event.item_id ?? null,
+            ownership_acquired: false,
+            turn_detection_suspended: false,
+          });
+          // Let lower layers record transcript_unusable so the authoritative
+          // lifecycle can return to a fresh WAITING epoch.
+        } else {
+          this.acquireTurnConcurrencyV36();
+        }
       } else {
         (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_BYPASSED_V36", {
           item_id: event.item_id ?? null,
