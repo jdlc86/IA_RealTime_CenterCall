@@ -11,6 +11,7 @@ type RealtimeEvent = {
   type?: string;
   item_id?: string;
   response_id?: string;
+  transcript?: unknown;
   response?: {
     id?: string;
     metadata?: Record<string, unknown> | null;
@@ -52,8 +53,8 @@ export class CallSession extends BaseConstructor {
     return false;
   }
 
-  protected isTurnConcurrencyActiveV36(): boolean {
-    return this.turnConcurrencyV36.isActive();
+  protected onOverlappingTurnDroppedV36(_event: RealtimeEvent): void {
+    // Higher layers may observe the discard without changing semantic ownership.
   }
 
   private acquireTurnConcurrencyV36(): void {
@@ -129,6 +130,7 @@ export class CallSession extends BaseConstructor {
       active_turn_age_ms: this.turnConcurrencyV36.ageMs(),
       semantic_processing_unchanged: true,
     });
+    this.onOverlappingTurnDroppedV36(event);
   }
 
   private armTurnConcurrencyWatchdogV36(): void {
