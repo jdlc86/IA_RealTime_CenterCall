@@ -34,7 +34,7 @@ function responseId(event: RealtimeEvent | null): string | null {
 }
 
 /**
- * v18 now acts only as the runtime adapter/executor for ConversationTurnLifecycle.
+ * v18 is the runtime adapter/executor for ConversationTurnLifecycle.
  * The lifecycle is the single authority for caller/processing/waiting/presence
  * state. Timers are epoch-scoped effects; stale deadlines cannot act after caller
  * speech, while processing, or while Lucia is speaking.
@@ -78,24 +78,6 @@ export class CallSession extends BaseConstructor {
 
   protected observeSemanticIgnoredV18(reason: string): void {
     this.dispatchLifecycleV18({ type: "semantic_ignored", reason });
-  }
-
-  /** Compatibility entry point for older layers. It no longer owns a timer. */
-  protected armWaitingForUserV18(trigger: string): void {
-    (this as any).diagnostics?.checkpoint?.("LEGACY_PRESENCE_REARM_IGNORED_V18", {
-      trigger,
-      authority: "ConversationTurnLifecycle",
-      lifecycle_state: this.turnLifecycleV18.snapshot().state,
-    });
-  }
-
-  /** Compatibility hook: useful caller evidence is already represented by lifecycle events. */
-  protected refreshRecentUserPresenceV18(source: string): void {
-    (this as any).diagnostics?.checkpoint?.("LEGACY_PRESENCE_REFRESH_IGNORED_V18", {
-      source,
-      authority: "ConversationTurnLifecycle",
-      lifecycle_state: this.turnLifecycleV18.snapshot().state,
-    });
   }
 
   private clearPresenceTimersV18(): void {
