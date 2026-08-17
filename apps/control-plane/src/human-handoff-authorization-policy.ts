@@ -27,9 +27,9 @@ function isShortAffirmative(value: unknown): boolean {
   return /^(?:si|vale|de acuerdo|adelante|hazlo|por favor|perfecto)$/.test(text);
 }
 
-function isExplicitRejection(value: unknown): boolean {
+export function isExplicitHumanHandoffRejection(value: unknown): boolean {
   const text = canonicalShortReply(value);
-  return /^(?:no|no gracias|mejor no|prefiero que no|dejalo|dejalo asi)$/.test(text);
+  return /^(?:(?:no)(?: no){0,5}|(?:no){2,6}|no gracias|mejor no|prefiero que no|dejalo|dejalo asi)$/.test(text);
 }
 
 /**
@@ -67,7 +67,7 @@ export function authorizeHumanHandoff(
     return { allowed: true, source: "CONFIRMED_OFFER", state: { offerPending: false } };
   }
 
-  if (isExplicitRejection(currentTranscript)) {
+  if (isExplicitHumanHandoffRejection(currentTranscript)) {
     return { allowed: false, source: "CALLER_REJECTED", state: { offerPending: false } };
   }
 
