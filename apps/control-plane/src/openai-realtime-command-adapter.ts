@@ -89,6 +89,14 @@ export class OpenAIRealtimeCommandAdapter implements RealtimeProviderCommandPort
     this.host.send(openAITurnDetectionUpdate(null));
   }
 
+  beginNonInterruptingListening(settings: RealtimeInputDetectionSettings = {}): void {
+    this.host.send(openAITurnDetectionUpdate({
+      ...openAIServerVad(settings),
+      create_response: false,
+      interrupt_response: false,
+    }));
+  }
+
   restoreInputDetection(settings: RealtimeInputDetectionSettings = {}): void {
     this.host.send(openAITurnDetectionUpdate(openAIServerVad(settings)));
   }
