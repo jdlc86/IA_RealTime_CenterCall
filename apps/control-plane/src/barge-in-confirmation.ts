@@ -1,4 +1,4 @@
-import { buildServerVad, type TenantVadSettings } from "./protected-turn-detection";
+import { buildServerVad, type TenantVadSettings } from "./protected-turn-detection.js";
 
 export const BARGE_IN_METADATA_PURPOSE = "barge_in_classifier_v36";
 
