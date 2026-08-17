@@ -1,7 +1,10 @@
 import { CallSession as CallSessionV35Runtime } from "./call-session-v35-runtime";
 import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
 import { TurnConcurrencyLifecycle } from "./turn-concurrency-lifecycle";
-import { decideTurnConcurrencyAcquire } from "./turn-concurrency-acquire-policy";
+import {
+  decideTurnConcurrencyAcquire,
+  shouldClearInputOnTurnConcurrencyRelease,
+} from "./turn-concurrency-acquire-policy";
 
 const BaseConstructor = CallSessionV35Runtime as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV35Runtime.prototype as any;
@@ -88,10 +91,11 @@ export class CallSession extends BaseConstructor {
     this.clearTurnConcurrencyWatchdogV36();
 
     const session = this as any;
+    const clearInput = shouldClearInputOnTurnConcurrencyRelease(reason);
     try {
       if (session.socket && session.state !== "closing" && !session.hangupStarted) {
         const realtime = realtimeCommandPortFor(session);
-        realtime.clearInput();
+        if (clearInput) realtime.clearInput();
         realtime.restoreInputDetection(session.tenantVadV35 ?? {});
       }
     } catch (error) {
@@ -103,7 +107,8 @@ export class CallSession extends BaseConstructor {
 
     session.diagnostics?.checkpoint?.("TURN_CONCURRENCY_LOCK_RELEASED_V36", {
       reason,
-      input_buffer_cleared: true,
+      input_buffer_cleared: clearInput,
+      immediate_barge_in_audio_preserved: !clearInput,
       normal_barge_in_restored: true,
     });
   }
