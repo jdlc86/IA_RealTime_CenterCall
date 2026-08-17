@@ -116,6 +116,19 @@ test("CTL-13 coherent semantic turn resets ignored count", () => {
   assert.ok(effectTypes(effects).includes("RESET_IGNORED_COUNT"));
 });
 
+test("CTL-13b normal coherent assistant response also resets ignored count", () => {
+  const l = new ConversationTurnLifecycle();
+  startWaiting(l);
+  l.dispatch({ type: "semantic_ignored", reason: "INCOHERENT" });
+  l.dispatch({ type: "speech_started" });
+  l.dispatch({ type: "speech_stopped" });
+  l.dispatch({ type: "transcript_usable" });
+  const effects = l.dispatch({ type: "assistant_audio_started", kind: "NORMAL" });
+  assert.equal(l.snapshot().ignoredCount, 0);
+  assert.equal(l.snapshot().state, "LUCIA_SPEAKING");
+  assert.ok(effectTypes(effects).includes("RESET_IGNORED_COUNT"));
+});
+
 test("CTL-14 out of scope is coherent and does not increment ignored", () => {
   const l = new ConversationTurnLifecycle();
   startWaiting(l);
