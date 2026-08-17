@@ -1,4 +1,5 @@
 import { CallSession as CallSessionV40 } from "./call-session-v40-rebuild";
+import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
 import {
   decideEndCallProposal,
   hasExplicitUserFarewellEvidence,
@@ -9,6 +10,7 @@ import {
 const BaseConstructor = CallSessionV40 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV40.prototype as any;
 const END_CALL = "restaurant_end_call";
+const CLOSE_CONFIRMATION_PROMPT = "¿Quieres que finalice la llamada?";
 
 type RealtimeEvent = {
   type?: string;
@@ -49,11 +51,12 @@ function usableTranscript(value: unknown): string {
  * v41 protects the irreversible end-call boundary.
  *
  * The model may propose restaurant_end_call, but it cannot authorize itself.
- * A blocked end-call proposal creates one pending close. If the caller then
- * explicitly confirms the closing question, v41 commits that already-pending
- * backend action directly. Repeated model proposals while that confirmation is
- * pending are acknowledged without creating another response, preventing a
- * self-sustaining end-call/confirmation loop.
+ * A blocked end-call proposal creates one pending close. The confirmation
+ * question is emitted through the provider command port with tools disabled,
+ * so no model-selected public tool can steal that recovery response. If the
+ * caller then explicitly confirms, v41 commits the already-pending backend
+ * action directly. Repeated model proposals while confirmation is pending are
+ * acknowledged without creating another response.
  */
 export class CallSession extends BaseConstructor {
   private closingConfirmationPendingV41 = false;
@@ -109,16 +112,36 @@ export class CallSession extends BaseConstructor {
         output: JSON.stringify({
           ok: true,
           status: "USER_CONFIRMATION_REQUIRED",
-          instruction: "No finalices la llamada todavía. Pregunta brevemente al usuario si desea terminar la llamada y espera su respuesta explícita.",
+          instruction: "No finalices la llamada todavía. La capa de cierre formulará directamente la pregunta de confirmación y esperará la respuesta explícita del usuario.",
         }),
       },
     });
-    session.send?.({ type: "response.create" });
+
+    realtimeCommandPortFor(session).speak({
+      instructions: `Pronuncia exactamente esta pregunta y nada más: ${JSON.stringify(CLOSE_CONFIRMATION_PROMPT)}`,
+      exactText: CLOSE_CONFIRMATION_PROMPT,
+      tools: "DISABLED",
+      isolated: true,
+      purpose: "close_confirmation_v41",
+      metadata: {
+        authority: "closure_guard_v41",
+        pending_close: true,
+      },
+    });
+
+    session.diagnostics?.checkpoint?.("CLOSE_CONFIRMATION_PROMPT_EMITTED_V41", {
+      prompt: CLOSE_CONFIRMATION_PROMPT,
+      tool_choice: "none",
+      isolated_response: true,
+      pending_close: true,
+      response_authority: "closure_guard_v41",
+    });
     session.diagnostics?.checkpoint?.("END_CALL_BLOCKED_WITHOUT_USER_EVIDENCE_V41", {
       model_confirmed_argument_ignored: true,
       last_user_transcript_present: Boolean(this.lastUserTranscriptV41),
       irreversible_close_prevented: true,
       pending_close_recorded: true,
+      confirmation_prompt_owned_by_backend: true,
     });
   }
 
