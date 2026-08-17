@@ -1,5 +1,5 @@
 import baseHandler from "./index-v4";
-export { CallSession } from "./call-session-v44-raw-vad-routing";
+export { CallSession } from "./call-session-v45-barge-in-semantic-authority";
 
 type WorkerEnv = {
   CALL_SESSIONS: DurableObjectNamespace;
