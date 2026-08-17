@@ -48,8 +48,8 @@ export function initialResponseOwnerSnapshot(): ResponseOwnerSnapshot {
  * - playback state and response-generation state are independent;
  * - a confirmed interruption never waits indefinitely for response.done;
  * - an ignored candidate never creates a replacement while the original response is still active;
- * - if playback was cleared for an ignored candidate, continuation is emitted only after
- *   the authoritative response.done for that active response;
+ * - if SIP already cleared playback for an ignored candidate, the now-inaudible active response
+ *   is cancelled and continuation waits for its authoritative response.done before resuming;
  * - response.done is reconciliation evidence, not permission for confirmed interruption;
  * - if Realtime reports a second response while one is still active, the newest
  *   server-created response becomes authoritative and the conflict is surfaced;
@@ -124,7 +124,7 @@ export function reduceResponseOwner(
             callerResponsePending: false,
             resumeAfterActiveDone: true,
           },
-          effects: [],
+          effects: [{ type: "cancel_response", responseId: snapshot.activeResponseId }],
         };
       }
       return {
