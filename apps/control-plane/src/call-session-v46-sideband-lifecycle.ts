@@ -73,7 +73,17 @@ export class CallSession extends BaseConstructor {
 
     if (this.observedSidebandSocketV46 === socket) return;
     this.observedSidebandSocketV46 = socket;
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", (event) => {
+      const closeEvent = event as CloseEvent;
+      const session = this as any;
+      session.diagnostics?.checkpoint?.("SIDEBAND_CLOSE_OBSERVED_V46", {
+        close_code: typeof closeEvent.code === "number" ? closeEvent.code : null,
+        close_reason: typeof closeEvent.reason === "string" ? closeEvent.reason : "",
+        was_clean: typeof closeEvent.wasClean === "boolean" ? closeEvent.wasClean : null,
+        session_state: session.state ?? null,
+        hangup_started: Boolean(session.hangupStarted),
+        observed_socket_matches_active: session.socket === socket,
+      });
       if (this.observedSidebandSocketV46 === socket) this.observedSidebandSocketV46 = null;
       this.quiesceRealtimeConversationDeadlinesV46("sideband_closed");
     });
