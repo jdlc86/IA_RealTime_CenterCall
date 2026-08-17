@@ -62,7 +62,7 @@ function realtimeResponseId(event: RealtimeEvent): string | null {
 
 function protectedKindFromMetadata(event: RealtimeEvent): ProtectedSpeechKind | null {
   const value = event.response?.metadata?.[PROTECTED_METADATA_KEY];
-  return value === "GREETING" || value === "RECOVERY" ? value : null;
+  return value === "GREETING" || value === "RECOVERY" || value === "TERMINAL" ? value : null;
 }
 
 /**
@@ -101,11 +101,6 @@ export class CallSession extends BaseConstructor {
     return response;
   }
 
-  /**
-   * v2 calls this through `this`, so the v35 instance can make the greeting
-   * explicitly protected instead of guessing that the first response.create is
-   * necessarily the greeting.
-   */
   private sendInitialGreetingIfNeeded(): void {
     const session = this as any;
     if (session.greetingSent || !session.socket || !session.initialGreeting || !session.callId) return;

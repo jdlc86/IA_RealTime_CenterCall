@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { TurnConcurrencyLifecycle } from '../.test-dist/turn-concurrency-lifecycle.js';
+import { TurnConcurrencyLifecycle, isUsableCompletedTranscript } from '../.test-dist/turn-concurrency-lifecycle.js';
 
 test('acquires only one active turn at a time', () => {
   const lifecycle = new TurnConcurrencyLifecycle();
@@ -18,4 +18,13 @@ test('release allows the next turn', () => {
   assert.equal(lifecycle.isActive(), false);
   assert.equal(lifecycle.ageMs(500), null);
   assert.equal(lifecycle.acquire(600), true);
+});
+
+test('completed transcript must contain semantic text before acquiring concurrency', () => {
+  assert.equal(isUsableCompletedTranscript(undefined), false);
+  assert.equal(isUsableCompletedTranscript(null), false);
+  assert.equal(isUsableCompletedTranscript(''), false);
+  assert.equal(isUsableCompletedTranscript('   '), false);
+  assert.equal(isUsableCompletedTranscript('Hola'), true);
+  assert.equal(isUsableCompletedTranscript('  Quiero reservar  '), true);
 });

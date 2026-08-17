@@ -1,3 +1,7 @@
+export function isUsableCompletedTranscript(transcript: unknown): boolean {
+  return typeof transcript === "string" && transcript.trim().length > 0;
+}
+
 export class TurnConcurrencyLifecycle {
   private active = false;
   private acquiredAt = 0;
