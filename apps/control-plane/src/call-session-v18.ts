@@ -1,4 +1,5 @@
 import { CallSession as CallSessionV17 } from "./call-session-v17";
+import { shouldDeferPresenceRecovery } from "./core-user-turn-gate.js";
 
 const BaseConstructor = CallSessionV17 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV17.prototype as any;
@@ -46,6 +47,7 @@ function readRealtimeText(data: unknown): string | null {
  *   a concrete agent tool.
  * - Recovery prompts never reset the original inactivity deadline.
  * - Presence recovery speech is out-of-band and never enters Lucia's conversation.
+ * - Presence recovery is forbidden while Lucia is audibly replying or a tool is active.
  * - Tool execution suspends the relative user-turn watchdog; the absolute call
  *   duration limit remains armed.
  */
@@ -59,6 +61,7 @@ export class CallSession extends BaseConstructor {
   private recoverySpeechInFlightV18 = false;
   private recoveryResponseIdV18: string | null = null;
   private toolExecutionActiveV18 = false;
+  private luciaPlaybackActiveV18 = false;
   private watchdogInstalledV18 = false;
 
   async fetch(request: Request): Promise<Response> {
@@ -111,7 +114,7 @@ export class CallSession extends BaseConstructor {
   }
 
   private armWaitingForUserV18(trigger: string): void {
-    if (this.toolExecutionActiveV18 || (this as any).state === "closing" || (this as any).hangupStarted) return;
+    if (this.toolExecutionActiveV18 || this.luciaPlaybackActiveV18 || (this as any).state === "closing" || (this as any).hangupStarted) return;
     this.clearInactivityTimerV18();
     this.inactivityStartedAtV18 = Date.now();
     this.presenceStageV18 = 0;
@@ -165,6 +168,21 @@ export class CallSession extends BaseConstructor {
     }, delay);
   }
 
+  private deferActiveConversationV18(elapsed: number): void {
+    (this as any).diagnostics?.checkpoint?.("USER_TURN_WATCHDOG_DEFERRED_ACTIVE_CONVERSATION_V18", {
+      elapsed_ms: elapsed,
+      stage: this.presenceStageV18,
+      user_audio_active: this.userAudioActiveV18,
+      lucia_playback_active: this.luciaPlaybackActiveV18,
+      tool_execution_active: this.toolExecutionActiveV18,
+      resets_deadline: false,
+    });
+    this.inactivityTimerV18 = setTimeout(() => {
+      this.inactivityTimerV18 = null;
+      this.onInactivityDeadlineV18();
+    }, ACTIVE_SPEECH_RECHECK_MS);
+  }
+
   private onInactivityDeadlineV18(): void {
     if (this.inactivityStartedAtV18 === null || this.toolExecutionActiveV18) return;
     if (!(this as any).socket || (this as any).state === "closing" || (this as any).hangupStarted) {
@@ -173,6 +191,15 @@ export class CallSession extends BaseConstructor {
     }
 
     const elapsed = Date.now() - this.inactivityStartedAtV18;
+    if (shouldDeferPresenceRecovery({
+      userAudioActive: this.userAudioActiveV18,
+      luciaPlaybackActive: this.luciaPlaybackActiveV18,
+      toolExecutionActive: this.toolExecutionActiveV18,
+    })) {
+      this.deferActiveConversationV18(elapsed);
+      return;
+    }
+
     if (elapsed >= MAX_UNANSWERED_WAIT_MS) {
       this.clearInactivityTimerV18();
       (this as any).diagnostics?.checkpoint?.("USER_TURN_INACTIVITY_CLOSE", {
@@ -181,19 +208,6 @@ export class CallSession extends BaseConstructor {
         reason: "no_coherent_user_turn",
       });
       (this as any).beginClosing?.("user_inactivity_timeout", "runtime_user_turn_watchdog_v18");
-      return;
-    }
-
-    if (this.userAudioActiveV18) {
-      (this as any).diagnostics?.checkpoint?.("USER_TURN_WATCHDOG_DEFERRED_ACTIVE_AUDIO", {
-        elapsed_ms: elapsed,
-        stage: this.presenceStageV18,
-        resets_deadline: false,
-      });
-      this.inactivityTimerV18 = setTimeout(() => {
-        this.inactivityTimerV18 = null;
-        this.onInactivityDeadlineV18();
-      }, ACTIVE_SPEECH_RECHECK_MS);
       return;
     }
 
@@ -222,9 +236,6 @@ export class CallSession extends BaseConstructor {
       isolated_from_agent_context: true,
     });
 
-    // Generate the presence check out-of-band. The user hears it, but it is not
-    // written to the default conversation and therefore cannot become context that
-    // Lucia later interprets/responds to as though it were a caller turn.
     (this as any).send?.({
       type: "response.create",
       response: {
@@ -287,6 +298,10 @@ export class CallSession extends BaseConstructor {
       this.recoveryResponseIdV18 = event.response_id ?? event.response?.id ?? null;
     }
 
+    if (event?.type === "output_audio_buffer.started") {
+      this.luciaPlaybackActiveV18 = true;
+    }
+
     if (event?.type === "response.output_audio_transcript.done") {
       const isRecovery = this.recoverySpeechInFlightV18
         && (!this.recoveryResponseIdV18 || !event.response_id || event.response_id === this.recoveryResponseIdV18);
@@ -298,6 +313,7 @@ export class CallSession extends BaseConstructor {
     await BasePrototype.handleRealtimeMessage.call(this, data);
 
     if (event?.type === "output_audio_buffer.stopped") {
+      this.luciaPlaybackActiveV18 = false;
       const isRecovery = this.recoverySpeechInFlightV18
         && (!this.recoveryResponseIdV18 || !event.response_id || event.response_id === this.recoveryResponseIdV18);
       if (isRecovery) {
