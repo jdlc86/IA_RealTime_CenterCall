@@ -53,6 +53,22 @@ test("provider commands preserve current OpenAI VAD and playback semantics", () 
   assert.equal(h.events[5].session.audio.input.turn_detection.threshold, 0.7);
 });
 
+test("non-interrupting listening preserves VAD thresholds but disables automatic response effects", () => {
+  const h = host();
+  const port = new OpenAIRealtimeCommandAdapter(h);
+  port.beginNonInterruptingListening({ threshold: 0.61, prefixPaddingMs: 150, silenceDurationMs: 720, idleTimeoutMs: 8000 });
+
+  const turnDetection = h.events[0].session.audio.input.turn_detection;
+  assert.equal(h.events[0].type, "session.update");
+  assert.equal(turnDetection.type, "server_vad");
+  assert.equal(turnDetection.threshold, 0.61);
+  assert.equal(turnDetection.prefix_padding_ms, 150);
+  assert.equal(turnDetection.silence_duration_ms, 720);
+  assert.equal(turnDetection.idle_timeout_ms, 8000);
+  assert.equal(turnDetection.create_response, false);
+  assert.equal(turnDetection.interrupt_response, false);
+});
+
 test("one command port instance is shared per CallSession host", () => {
   const h = host();
   assert.equal(realtimeCommandPortFor(h), realtimeCommandPortFor(h));
