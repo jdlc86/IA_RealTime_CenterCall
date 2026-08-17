@@ -7,6 +7,7 @@ import {
   shouldBlockHumanHandoff,
   type HandoffTurnPolicyState,
 } from "./human-handoff-turn-policy.js";
+import { shouldRearmPresenceAfterTrigger } from "./presence-rearm-policy.js";
 
 const BaseConstructor = CallSessionV41 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV41.prototype as any;
@@ -73,11 +74,8 @@ export class CallSession extends BaseConstructor {
     return response;
   }
 
-  // v29 historically called armWaitingForUserV18 after restaurant_input_ignored.
-  // That reset the 26-second deadline and treated background noise as a fresh
-  // waiting period. Keep the existing timer/deadline untouched for that trigger.
   private armWaitingForUserV18(trigger: string): void {
-    if (trigger === "background_input_ignored_v29") {
+    if (!shouldRearmPresenceAfterTrigger(trigger)) {
       (this as any).toolExecutionActiveV18 = false;
       (this as any).diagnostics?.checkpoint?.("BACKGROUND_INPUT_DID_NOT_REARM_PRESENCE_V42", {
         trigger,
