@@ -2,216 +2,148 @@
 
 > **Path estable de compatibilidad. NO RENOMBRAR NI ELIMINAR.**
 
-Este archivo existe como puerta de entrada permanente a la documentación maestra del proyecto. El antiguo `MASTER_PROJECT_GUIDE.md` fue renombrado durante la evolución documental; para evitar volver a perder la referencia, este path queda reservado de forma estable.
+Este archivo es la puerta de entrada permanente a la documentación del proyecto.
 
-## Fuente de verdad
+## Continuación operativa más reciente
 
-La arquitectura normativa vigente está en:
+Para continuar el trabajo técnico desde el estado del **17 de agosto de 2026**, leer primero:
 
-- [`docs/architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md)
-
-La decisión de verticales de negocio `CLINIC | RESTAURANT` está en:
-
-- [`docs/architecture/BUSINESS_VERTICALS.md`](./architecture/BUSINESS_VERTICALS.md)
-
-La decisión de **handoff humano como capacidad transversal del Core y fase futura F6** está detallada en:
-
-- [`docs/architecture/HUMAN_HANDOFF.md`](./architecture/HUMAN_HANDOFF.md)
-
-El estado operativo actual de fases está en:
-
+- [`docs/SESSION_HANDOFF_2026-08-17.md`](./SESSION_HANDOFF_2026-08-17.md)
 - [`docs/PROJECT_STATUS.md`](./PROJECT_STATUS.md)
 
-El índice oficial y orden de autoridad documental está en:
+El handoff de sesión contiene:
 
-- [`docs/README.md`](./README.md)
+- rama y SHA actuales;
+- estado CI/despliegue/E2E;
+- reconstrucción v39 → v40 → v41 → v42;
+- metodología obligatoria de diagnóstico antes de modificar código;
+- conectores GitHub, Supabase y entorno Cloudflare;
+- `project_id` de Supabase y tabla de diagnósticos;
+- procedimiento para revisar llamadas reales;
+- siguiente prueba recomendada.
 
-Las reglas no negociables de implementación están en:
+## Fuentes de verdad arquitectónicas
 
-- [`docs/architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md)
+- [`docs/architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — arquitectura y roadmap.
+- [`docs/architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — reglas no negociables de implementación.
+- [`docs/architecture/BUSINESS_VERTICALS.md`](./architecture/BUSINESS_VERTICALS.md) — `CLINIC | RESTAURANT`.
+- [`docs/architecture/HUMAN_HANDOFF.md`](./architecture/HUMAN_HANDOFF.md) — diseño transversal de handoff humano.
+- [`docs/README.md`](./README.md) — índice documental.
 
-## Checkpoint operativo — 2026-08-13
+## Checkpoint operativo — 2026-08-17
 
-El estado detallado y autoritativo permanece en `PROJECT_STATUS.md`. Resumen vigente:
-
-- Cloudflare KV sigue siendo la fuente de configuración rápida por tenant, incluido prompt/persona, allowlist y `assistant.waitingPhrases`.
-- `ToolGateway` continúa como frontera de acceso a datos/acciones empresariales y aplica allowlist + tenant context.
-- El Core sigue siendo multi-tenant y multi-vertical con `businessType = CLINIC | RESTAURANT`; no se permiten forks del Core por tenant.
-- `TenantConfigurationV2` continúa integrada con fallback compatible a V1 y fail-closed cuando una V2 existente es inválida/deshabilitada.
-- `restaurante-centro` permanece validado en runtime como `businessType=RESTAURANT`; clínica debe mantenerse estable durante la evolución del vertical restaurante.
-- Human handoff sigue siendo transversal y diferido a F6; no debe simularse todavía.
-- Supabase sigue operativo desde el Worker y el conector Supabase de ChatGPT vuelve a estar disponible en esta sesión para consultas directas inocuas/verificación.
-- `DEBUG_KEY` + `public.call_diagnostic_events` continúan siendo la fuente de evidencia E2E correlacionada por `call_id`.
-- CI de `control-plane` sigue validando tests + Wrangler dry-run antes de integrar cambios que afectan al Worker.
-
-## Checkpoint RESTAURANT — reservas, identidad, consulta, cancelación y códigos públicos
-
-A 2026-08-13, el dominio de reservas ha evolucionado desde un único flujo `RESERVATION` hacia operaciones explícitas:
+Repositorio y rama:
 
 ```text
-RESERVATION / CREATE
-RESERVATION / QUERY
-RESERVATION / CANCEL
+jdlc86/IA_RealTime_CenterCall
+rebuild/v39-stable-baseline
 ```
 
-El clasificador propone intención/operación, pero el Core mantiene autoridad sobre el lifecycle y los workflows activos.
-
-### CREATE
-
-El flujo principal sigue siendo backend-orchestrated:
+Último SHA funcional con CI verde al generar este checkpoint:
 
 ```text
-usuario habla
-  ↓
-conversation_intent clasifica RESERVATION/CREATE
-  ↓
-ReservationState incremental en backend
-  ↓
-party_size + starts_at normalizado
-  → check_reservation_availability (READ, en paralelo)
-  ↓
-completar datos restantes
-  ↓
-resumen
-  ↓
-confirmación explícita
-  ↓
-recheck final
-  ↓
-manage_reservation (WRITE)
-  ↓
-BOOKED
-  ↓
-solo entonces Lucía puede afirmar que está confirmada
+f69f37de06cc953d50dd18884cb7bcd2132251c3
+Control Plane CI #254 — SUCCESS
 ```
 
-Reglas añadidas/fortalecidas:
+Este SHA incorpora v42. Al generar este documento todavía faltaba confirmar **despliegue + nueva llamada E2E**.
 
-- el workflow CREATE pasa a considerarse activo desde la primera intención inequívoca de reservar, aunque todavía no exista un draft completo;
-- un `starts_at` todavía no normalizado no invalida todo el turno: se preservan los demás datos válidos y `starts_at` queda pendiente;
-- un fallback degradado del clasificador no puede sacar una reserva activa hacia un flujo ajeno como `BUSINESS_INFO`;
-- el `caller_phone` confiable proveniente de Telnyx es el contacto por defecto de la reserva para minimizar interacción; Lucía no debe pedir que el usuario repita ese mismo número;
-- el usuario puede proporcionar explícitamente otro `reservation_phone`; esto no altera la identidad confiable ni autoriza marketing;
-- la disponibilidad paralela nunca sustituye el recheck inmediatamente anterior al WRITE.
-
-### QUERY
-
-`QUERY` es una operación READ-only independiente. La búsqueda se inicia siempre por:
+### Runtime conversacional relevante
 
 ```text
-tenant_id + caller_phone confiable
+v18  user presence/watchdog
+v23  herramientas directas restaurante
+v29  semantic tool gate / input ignored
+v35  protected speech / VAD
+v36  concurrencia de turnos normales
+v37  human handoff determinista
+v38  lifecycle de fallo de handoff
+v39  baseline estable + resultado Telnyx correcto
+v40  response owner + barge-in reconstruido
+v41  cierre irreversible exige evidencia del usuario
+v42  fronteras de turno para presence + handoff redundante
 ```
 
-No se usa un número dictado como prueba de identidad. La respuesta pública no expone teléfonos ni UUID internos.
+### Barge-in
 
-### CANCEL
+La arquitectura reconstruida v40 usa un único owner. VAD bruto no cancela una respuesta. Durante playback se escucha sin auto-interrumpir y la transcripción candidata se clasifica fuera de conversación como `INTERRUPT` o `IGNORE`.
 
-`CANCEL` tiene workflow propio y soporta una, varias o todas las reservas verificadas del mismo caller:
+Evidencia E2E positiva ya observada:
 
 ```text
-lookup por tenant + caller_phone
-  ↓
-mostrar candidatas BOOKED
-  ↓
-selección: una | varias | ALL
-  ↓
-resumen exacto
-  ↓
-confirmación explícita única
-  ↓
-recheck individual
-  ↓
-BOOKED → CANCELLED condicionado por reserva
-  ↓
-resultado por reserva
+BARGE_IN_CLASSIFIER_REQUESTED_V40_REBUILD
+BARGE_IN_CLASSIFIER_BOUND_V40_REBUILD
+TURN_CONCURRENCY_BYPASSED_V36
+BARGE_IN_CONFIRMED_V40_REBUILD
+response_done_gate=false
 ```
 
-La cancelación múltiple fue validada en llamada real: 6 reservas del mismo `caller_phone` fueron canceladas con `failed_count=0`; una reserva de otro número quedó correctamente intacta.
+También se validó que candidatos sin transcript utilizable pueden resolverse como `IGNORE` sin watchdog.
 
-### Truth Guard y lifecycle
+### Cierre de llamada
 
-El Truth Guard distingue evidencia por operación:
+Después de detectar un hangup incorrecto posterior a `BOOKED`, v41 dejó de confiar en `restaurant_end_call {confirmed:true}` como evidencia suficiente. El backend exige despedida/confirmación originada en el último turno del usuario.
 
-- afirmación de creación confirmada → requiere `BOOKED`;
-- afirmación de cancelación confirmada → requiere `CANCELLED`.
+### Presence recovery
 
-El estado `CLOSING` es terminal: una vez iniciado el cierre no puede reactivarse marketing ni otro workflow.
+Se detectaron falsos “¿Sigues ahí?” durante conversación activa. v41 añadió guardas para playback/procesamiento y v42 elimina el rearme del deadline causado por `background_input_ignored_v29`.
 
-### Códigos públicos de reserva
+### Human handoff
 
-Las reservas disponen ahora de dos identificadores separados:
+**El handoff humano ya está implementado y activo en el runtime.** Documentación anterior que lo marcaba como “F6 no iniciada/no activo” está obsoleta para el estado operativo actual.
 
-- `id` UUID interno: solo backend, joins, precondiciones y diagnósticos;
-- `reservation_code` público: formato corto `R-######`, apto para voz y atención al cliente.
+v37 ejecuta el transporte determinista; v39 corrige la clasificación del resultado Telnyx (`call.answered` del target leg es la evidencia autoritativa de transferencia contestada).
 
-El UUID no debe formar parte del contrato conversacional. CREATE/QUERY/CANCEL exponen únicamente el código público cuando necesitan referenciar una reserva al usuario.
+En una llamada reciente se observó una transferencia injustificada justo después de `restaurant_business_info(HOURS) -> FOUND`. v42 añade una frontera conservadora: si el mismo turno ya fue resuelto por `restaurant_business_info -> FOUND` y la respuesta terminó, un handoff posterior en ese mismo turno se bloquea. Un nuevo turno del usuario vuelve a permitir handoff legítimo.
 
-### Grounding temporal
+## Metodología de trabajo obligatoria
 
-La verbalización de fechas usa una política centralizada en `Europe/Madrid`. El backend determina si un timestamp corresponde a `HOY`, `MANANA` o fecha absoluta; Lucía no debe recalcular por su cuenta relativos como hoy/mañana.
+1. **No modificar código al recibir un síntoma.** Primero recuperar la llamada real de `public.call_diagnostic_events`.
+2. Reconstruir cronológicamente el lifecycle y encontrar la capa que tomó la decisión errónea.
+3. Distinguir causa raíz de síntoma. No asumir que fallos parecidos tienen la misma causa.
+4. No apilar parches ni timers. Preferir ownership único, contratos de estado y fronteras deterministas.
+5. Añadir prueba de regresión que reproduzca el incidente.
+6. Exigir CI verde (`Run tests` + `Wrangler dry-run`) antes de pedir una llamada real.
+7. Confirmar el SHA realmente desplegado antes de interpretar una llamada.
+8. Después de la llamada, revisar diagnósticos **antes** de cambiar código.
+9. Diferenciar siempre `IMPLEMENTADO`, `CI VERDE`, `DESPLEGADO` y `VALIDADO E2E`.
+10. Para decisiones irreversibles (hangup, handoff, WRITE) el prompt/modelo no debe ser la única autoridad.
 
-## Checkpoint marketing conversacional
+## Infraestructura y conectores
 
-Marketing y reservas siguen siendo procesos independientes.
+### GitHub
 
-Reglas vigentes:
+Repositorio: `jdlc86/IA_RealTime_CenterCall`.
 
-- rechazar marketing nunca bloquea una reserva;
-- `reservation_phone` y `marketing_phone` pueden ser distintos;
-- para alta/baja automática por voz, `marketing_phone` debe coincidir exactamente con `caller_phone` confiable;
-- un número dictado verbalmente no sirve como prueba para `CALLER_ID_MATCH`;
-- consentimiento explícito y verificación del canal son hechos distintos y se persisten por separado;
-- una persona A llamando desde A no puede modificar automáticamente marketing para B;
-- el backend mantiene historial de ofertas para evitar propuestas repetitivas; una decisión existente/cooldown puede suprimir la propuesta;
-- en una llamada real se validó `MARKETING_GRANTED` mediante `CALLER_ID_MATCH` y se verificó la supresión posterior por decisión existente;
-- una llamada nueva falló antes de BOOKED por problemas de reserva incremental; por tanto, la revalidación E2E del post-booking con número nuevo queda pendiente después de los últimos fixes de CREATE/contacto.
+La sesión puede usar el conector GitHub para leer/escribir archivos, inspeccionar commits y consultar GitHub Actions cuando esté disponible.
 
-## Commits recientes relevantes
+### Supabase
 
-- `0f17d37083dbb7c6d7ff7cfe65005325e5afc6f4` — autoridad única de estado conversacional;
-- `eb2db0cdfba78ca4e32bba3c83e5d0165622d137` — operación CANCEL independiente;
-- `7d978454e57c653876999ef992be1982782d975b` — operación QUERY por caller_phone;
-- `4a7b9751266b57f842f9f8d370d2bc402c5d2abd` — cancelación múltiple + Truth Guard sensible a operación;
-- `47d7834ab94b73629768ff2219d07d27ce7f8f20` — grounding temporal centralizado;
-- `0f81cb0e9cfe248be8f2acf47a3182ec34d76ccd` — `reservation_code` público persistido;
-- `4a422c6cdc3a35087d3589b949c3334954eab3ae` — ReservationState incremental/sticky;
-- `cb4c569b76cdf14ef2096930e4f46880fcf99226` — `caller_phone` confiable como contacto por defecto de CREATE.
-
-## Roadmap canónico
-
-Según `SYSTEM_ARCHITECTURE.md` v2.2:
+Proyecto operativo:
 
 ```text
-F0 Voz E2E
-  ↓
-F1 Baseline + observabilidad + TenantResolver
-  ↓
-F2 Latencia + barge-in
-  ↓
-F3 ToolGateway
-  ↓
-F4 Clínica + validación multi-negocio
-  ↓
-F5 Persistencia empresarial + Supabase + post-call
-  ↓
-F6 Handoff humano
-  ↓
-F7 Concurrencia
-  ↓
-F8 Hardening producción
-  ↓
-F9 App de gestión web/escritorio
+project_id = vutekfkbtvfogouwcfvc
 ```
 
-F6 implementará el handoff humano transversal mediante contratos del Core/CallOrchestrator y `TelephonyProvider`, con configuración por tenant. Hasta entonces se mantiene como decisión arquitectónica documentada, no como capacidad activa.
+Diagnósticos E2E:
+
+```text
+public.call_diagnostic_events
+```
+
+Cloudflare Worker → Supabase está operativo. No modificar datos de negocio durante una investigación salvo instrucción explícita.
+
+### Cloudflare
+
+El control-plane se ejecuta en Workers. Configuración rápida por tenant usa `TENANT_CONFIG` KV. El repositorio valida con `wrangler deploy --dry-run` y despliega con `wrangler deploy`.
+
+La disponibilidad de un conector Cloudflare con permisos reales depende de la sesión. No afirmar que un deploy fue ejecutado si la sesión no dispone de una herramienta de escritura; en ese caso el usuario confirma/despliega por su flujo habitual.
 
 ## Regla de mantenimiento
 
 1. Este archivo no se elimina ni se renombra.
-2. Si cambia la ubicación de la arquitectura canónica, se actualiza únicamente el enlace de este archivo.
-3. Las definiciones de fases se toman de `SYSTEM_ARCHITECTURE.md`.
-4. El progreso/cierre de fases se toma de `PROJECT_STATUS.md` y de la evidencia en `docs/tests/`.
-5. Una guía de implementación puede ampliar una fase, pero no redefinir el roadmap sin actualizar la arquitectura canónica o una decisión arquitectónica posterior.
-6. No marcar una funcionalidad como validada únicamente porque exista código: debe distinguirse entre IMPLEMENTADA, VALIDADA y PENDIENTE DE EVIDENCIA E2E.
-7. Las diferencias entre sectores se modelan mediante `businessType`, configuración, módulos y allowlists; nunca mediante forks del Core o condicionales específicos por tenant.
-8. El handoff humano se implementa una sola vez como capacidad transversal; los verticales pueden aportar razones/reglas de escalado, pero no duplicar el mecanismo telefónico.
+2. Arquitectura canónica: `SYSTEM_ARCHITECTURE.md`.
+3. Estado operativo: `PROJECT_STATUS.md` y el handoff de sesión más reciente.
+4. Una funcionalidad no es `VALIDADA E2E` solo porque exista código o CI verde.
+5. No crear forks del Core por tenant; usar `businessType`, configuración, módulos y allowlists.
+6. El handoff telefónico es una capacidad transversal única; los verticales pueden aportar razones/reglas, no duplicar el transporte.
