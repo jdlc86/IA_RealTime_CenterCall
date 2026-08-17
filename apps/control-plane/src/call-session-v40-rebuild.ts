@@ -82,7 +82,8 @@ function isProtectedMetadata(metadata: Record<string, unknown>): boolean {
  * - an unclassifiable candidate resolves immediately as IGNORE;
  * - confirmed barge-in has one lifecycle owner: v40. v36 explicitly yields that
  *   item instead of acquiring a second concurrency lock;
- * - response.done is reconciliation evidence only and never gates continuation.
+ * - IGNORE may defer continuation until the authoritative active response is done;
+ * - INTERRUPT never waits for response.done.
  */
 export class CallSession extends BaseConstructor {
   private responseOwnerV40: ResponseOwnerSnapshot = initialResponseOwnerSnapshot();
@@ -129,11 +130,13 @@ export class CallSession extends BaseConstructor {
       active_response_id: result.snapshot.activeResponseId,
       playback_cleared: result.snapshot.playbackCleared,
       caller_response_pending: result.snapshot.callerResponsePending,
+      resume_after_active_done: result.snapshot.resumeAfterActiveDone,
       reducer_effects: result.effects.map((effect) => effect.type),
       executable_effects: emission.executable.map((effect) => effect.type),
       observed_only_effects: emission.observedOnly.map((effect) => effect.type),
       emission_mode: RESPONSE_OWNER_EMISSION_MODE,
     });
+    this.executePostSemanticEffectsV40(emission.executable);
     return emission.executable;
   }
 
@@ -290,6 +293,8 @@ export class CallSession extends BaseConstructor {
       (this as any).diagnostics?.checkpoint?.("BARGE_IN_IGNORED_V40_REBUILD", {
         item_id: pending.itemId,
         playback_cleared: result.snapshot.playbackCleared,
+        active_response_id: result.snapshot.activeResponseId,
+        resume_after_active_done: result.snapshot.resumeAfterActiveDone,
         semantic_pipeline_entered: false,
       });
       return;
