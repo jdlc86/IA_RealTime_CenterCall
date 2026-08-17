@@ -74,8 +74,8 @@ function isProtectedMetadata(metadata: Record<string, unknown>): boolean {
  * Invariants:
  * - raw VAD never authorizes cancellation or a new semantic response;
  * - protected greeting/recovery/handoff speech is never made interruptible here;
- * - only speech detected while our explicit normalListening window is active can
- *   enter BARGE_IN_CLASSIFYING; ordinary caller turns never do;
+ * - normal assistant response ownership opens the semantic barge-in window at
+ *   response.created; provider listening confirmation is an effect, not authority;
  * - completed caller speech is classified out-of-conversation as INTERRUPT/IGNORE;
  * - an unclassifiable candidate resolves immediately as IGNORE;
  * - confirmed barge-in has one lifecycle owner: v40. v36 explicitly yields that
@@ -88,6 +88,7 @@ export class CallSession extends BaseConstructor {
   private classifierByResponseV40 = new Map<string, PendingBargeIn>();
   private protectedResponseIdsV40 = new Set<string>();
   private normalListeningV40 = false;
+  private semanticBargeInWindowV40 = false;
   private v40OwnedSemanticItemId: string | null = null;
 
   protected shouldBypassTurnConcurrencyV36(event: RealtimeEvent): boolean {
@@ -145,6 +146,7 @@ export class CallSession extends BaseConstructor {
   }
 
   private setNormalListeningV40(): void {
+    if (this.normalListeningV40) return;
     const session = this as any;
     if (!session.socket || session.state === "closing" || session.hangupStarted) return;
     realtimeCommandPortFor(session).beginNonInterruptingListening(session.tenantVadV35 ?? {});
@@ -153,6 +155,7 @@ export class CallSession extends BaseConstructor {
       automatic_interrupt: false,
       automatic_response: false,
       owner_state: this.responseOwnerV40.state,
+      semantic_window_active: this.semanticBargeInWindowV40,
     });
   }
 
@@ -331,8 +334,20 @@ export class CallSession extends BaseConstructor {
     }
 
     if (event?.type === "response.created" && id) {
-      if (isProtectedMetadata(metadata)) this.protectedResponseIdsV40.add(id);
+      const protectedResponse = isProtectedMetadata(metadata);
+      if (protectedResponse) {
+        this.protectedResponseIdsV40.add(id);
+      }
       this.reconcileOwnerEventV40({ type: "assistant_response_started", responseId: id });
+      if (!protectedResponse) {
+        this.semanticBargeInWindowV40 = true;
+        (this as any).diagnostics?.checkpoint?.("BARGE_IN_SEMANTIC_WINDOW_OPENED_V40_REBUILD", {
+          response_id: id,
+          authority_from: "assistant_response_started",
+          playback_start_required: false,
+        });
+        this.setNormalListeningV40();
+      }
     } else if (event?.type === "response.done" && id) {
       this.reportStaleDoneV40(id);
       this.reconcileOwnerEventV40({ type: "assistant_response_done", responseId: id });
@@ -341,8 +356,16 @@ export class CallSession extends BaseConstructor {
       this.reconcileOwnerEventV40({ type: "assistant_playback_cleared" });
       if (id) this.protectedResponseIdsV40.delete(id);
     } else if (event?.type === "input_audio_buffer.speech_started") {
-      if (this.normalListeningV40) {
+      if (this.semanticBargeInWindowV40 && this.responseOwnerV40.state === "ASSISTANT_ACTIVE") {
+        const providerListeningConfirmed = this.normalListeningV40;
         this.reconcileOwnerEventV40({ type: "caller_speech_started" });
+        if (!providerListeningConfirmed) {
+          (this as any).diagnostics?.checkpoint?.("BARGE_IN_EARLY_OWNERSHIP_CLAIMED_V40_REBUILD", {
+            owner_state: this.responseOwnerV40.state,
+            provider_listening_confirmed: false,
+            semantic_window_active: true,
+          });
+        }
       }
     }
 
@@ -352,6 +375,7 @@ export class CallSession extends BaseConstructor {
       this.classifierByResponseV40.clear();
       this.protectedResponseIdsV40.clear();
       this.normalListeningV40 = false;
+      this.semanticBargeInWindowV40 = false;
       this.v40OwnedSemanticItemId = null;
     }
 
@@ -361,6 +385,7 @@ export class CallSession extends BaseConstructor {
       this.setNormalListeningV40();
     } else if (event?.type === "output_audio_buffer.stopped") {
       if (id) this.protectedResponseIdsV40.delete(id);
+      this.semanticBargeInWindowV40 = false;
       this.restoreNormalVadV40("assistant_playback_stopped");
     }
   }
