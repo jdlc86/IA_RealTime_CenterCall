@@ -4,6 +4,8 @@ import {
   authoritativeMadridNowContext,
   authoritativeTemporalPromptContext,
   groundMadridDateTime,
+  stripAuthoritativeNowContext,
+  withAuthoritativeNowContext,
   withAuthoritativeTemporalGrounding,
 } from "../.test-dist/temporal-grounding.js";
 
@@ -49,4 +51,14 @@ test("prompt context explicitly forbids inventing current year or date", () => {
   assert.match(prompt, /2026-08-13T09:13:00\+02:00/);
   assert.match(prompt, /Nunca inventes el año ni la fecha actual/i);
   assert.match(prompt, /autoridad final/i);
+});
+
+test("refreshing authoritative now preserves base instructions and replaces old clock", () => {
+  const base = "INSTRUCCIONES PRINCIPALES DE LUCIA";
+  const first = withAuthoritativeNowContext(base, new Date("2026-08-13T07:13:00.000Z"));
+  const refreshed = withAuthoritativeNowContext(first, new Date("2026-08-13T08:45:00.000Z"));
+  assert.equal(stripAuthoritativeNowContext(refreshed), base);
+  assert.match(refreshed, /2026-08-13T10:45:00\+02:00/);
+  assert.doesNotMatch(refreshed, /2026-08-13T09:13:00\+02:00/);
+  assert.equal((refreshed.match(/\[AUTHORITATIVE_NOW_V48\]/g) ?? []).length, 1);
 });
