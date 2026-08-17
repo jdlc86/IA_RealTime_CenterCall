@@ -57,6 +57,30 @@ test("late response.done only reconciles old response and never gates caller tur
   assert.deepEqual(r.effects, []);
 });
 
+test("second response.created is reconciled deterministically and surfaces conflict", () => {
+  let s = initialResponseOwnerSnapshot();
+  ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
+  const r = step(s, { type: "assistant_response_started", responseId: "new" });
+  assert.equal(r.snapshot.activeResponseId, "new");
+  assert.equal(r.snapshot.state, "ASSISTANT_ACTIVE");
+  assert.deepEqual(r.effects, [{
+    type: "response_ownership_conflict",
+    previousResponseId: "old",
+    newResponseId: "new",
+  }]);
+});
+
+test("stale response.done can never clear the current active response", () => {
+  let s = initialResponseOwnerSnapshot();
+  ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
+  ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "new" }));
+  const stale = step(s, { type: "assistant_response_done", responseId: "old" });
+  assert.equal(stale.snapshot.activeResponseId, "new");
+  assert.deepEqual(stale.effects, []);
+  const current = step(stale.snapshot, { type: "assistant_response_done", responseId: "new" });
+  assert.equal(current.snapshot.activeResponseId, null);
+});
+
 test("terminal state is absorbing", () => {
   let s = initialResponseOwnerSnapshot();
   ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
