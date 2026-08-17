@@ -1,5 +1,5 @@
 import baseHandler from "./index-v4";
-export { CallSession } from "./call-session-v39";
+export { CallSession } from "./call-session-v40-rebuild";
 
 type WorkerEnv = {
   CALL_SESSIONS: DurableObjectNamespace;
