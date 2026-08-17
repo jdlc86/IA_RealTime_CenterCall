@@ -38,6 +38,7 @@ export interface RealtimeProviderCommandPort {
   cancelResponse(responseId: string): void;
   clearPlayback(): void;
   clearInput(): void;
+  discardInputItem(itemId: string): void;
   suspendInputDetection(): void;
   beginNonInterruptingListening(settings?: RealtimeInputDetectionSettings): void;
   restoreInputDetection(settings?: RealtimeInputDetectionSettings): void;
