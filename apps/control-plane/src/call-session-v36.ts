@@ -42,11 +42,18 @@ function responseId(event: RealtimeEvent): string | null {
  * Empty/unusable transcripts never acquire the lock because they cannot produce a
  * semantic response that would release it. A higher lifecycle may also explicitly
  * abandon a stalled processing turn and release this local lock deterministically.
+ *
+ * Normal Lucia playback is atomic with respect to VAD interruption. The local
+ * processing mutex is released when playback starts, but turn detection remains
+ * suspended until that playback drains. This prevents echo/background detections
+ * from cutting a valid response before semantic classification can reject them.
  */
 export class CallSession extends BaseConstructor {
   private turnConcurrencyV36 = new TurnConcurrencyLifecycle();
   private turnConcurrencyWatchdogV36: ReturnType<typeof setTimeout> | null = null;
   private protectedResponseIdsV36 = new Set<string>();
+  private atomicNormalPlaybackV36 = false;
+  private atomicNormalResponseIdV36: string | null = null;
 
   private acquireTurnConcurrencyV36(): void {
     if (!this.turnConcurrencyV36.acquire()) return;
@@ -70,13 +77,13 @@ export class CallSession extends BaseConstructor {
     }
   }
 
-  private releaseTurnConcurrencyV36(reason: string): void {
+  private releaseTurnConcurrencyV36(reason: string, restoreVad = true): void {
     if (!this.turnConcurrencyV36.release()) return;
     this.clearTurnConcurrencyWatchdogV36();
 
     const session = this as any;
     try {
-      if (session.socket && session.state !== "closing" && !session.hangupStarted) {
+      if (restoreVad && session.socket && session.state !== "closing" && !session.hangupStarted) {
         session.send?.({ type: "input_audio_buffer.clear" });
         session.send?.(restoreTurnDetectionEvent(session.tenantVadV35 ?? {}));
       }
@@ -88,6 +95,45 @@ export class CallSession extends BaseConstructor {
     }
 
     session.diagnostics?.checkpoint?.("TURN_CONCURRENCY_LOCK_RELEASED_V36", {
+      reason,
+      input_buffer_cleared: restoreVad,
+      normal_barge_in_restored: restoreVad,
+      vad_restore_deferred_to_playback_end: !restoreVad,
+    });
+  }
+
+  private beginAtomicNormalPlaybackV36(event: RealtimeEvent): void {
+    this.releaseTurnConcurrencyV36("normal_assistant_playback_started", false);
+    this.atomicNormalPlaybackV36 = true;
+    this.atomicNormalResponseIdV36 = responseId(event);
+    (this as any).diagnostics?.checkpoint?.("NORMAL_ASSISTANT_PLAYBACK_PROTECTED_V36", {
+      response_id: this.atomicNormalResponseIdV36,
+      vad_interruption_allowed: false,
+      vad_restore_at_playback_end: true,
+    });
+  }
+
+  private finishAtomicNormalPlaybackV36(reason: string, event: RealtimeEvent): void {
+    if (!this.atomicNormalPlaybackV36) return;
+    const id = responseId(event);
+    if (this.atomicNormalResponseIdV36 && id && id !== this.atomicNormalResponseIdV36) return;
+
+    this.atomicNormalPlaybackV36 = false;
+    this.atomicNormalResponseIdV36 = null;
+    const session = this as any;
+    try {
+      if (session.socket && session.state !== "closing" && !session.hangupStarted) {
+        session.send?.({ type: "input_audio_buffer.clear" });
+        session.send?.(restoreTurnDetectionEvent(session.tenantVadV35 ?? {}));
+      }
+    } catch (error) {
+      session.diagnostics?.fail?.("NORMAL_ASSISTANT_PLAYBACK_RELEASE_FAILED_V36", "TURN_DETECTION_RESTORE_FAILED", {
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    session.diagnostics?.checkpoint?.("NORMAL_ASSISTANT_PLAYBACK_RELEASED_V36", {
       reason,
       input_buffer_cleared: true,
       normal_barge_in_restored: true,
@@ -106,6 +152,8 @@ export class CallSession extends BaseConstructor {
   protected detachTurnConcurrencyForTerminalV36(reason: string): void {
     const wasActive = this.turnConcurrencyV36.release();
     this.clearTurnConcurrencyWatchdogV36();
+    this.atomicNormalPlaybackV36 = false;
+    this.atomicNormalResponseIdV36 = null;
     (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_DETACHED_FOR_TERMINAL_V36", {
       reason,
       was_active: wasActive,
@@ -177,7 +225,7 @@ export class CallSession extends BaseConstructor {
     if (event?.type === "output_audio_buffer.started" && this.turnConcurrencyV36.isActive()) {
       const id = responseId(event);
       if (!id || !this.protectedResponseIdsV36.has(id)) {
-        this.releaseTurnConcurrencyV36("normal_assistant_playback_started");
+        this.beginAtomicNormalPlaybackV36(event);
       }
     }
 
@@ -188,12 +236,15 @@ export class CallSession extends BaseConstructor {
         if (this.turnConcurrencyV36.isActive()) {
           this.releaseTurnConcurrencyV36("protected_playback_completed");
         }
+      } else {
+        this.finishAtomicNormalPlaybackV36("output_audio_buffer_stopped", event);
       }
     }
 
     if (event?.type === "output_audio_buffer.cleared") {
       const id = responseId(event);
       if (id) this.protectedResponseIdsV36.delete(id);
+      this.finishAtomicNormalPlaybackV36("output_audio_buffer_cleared", event);
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
