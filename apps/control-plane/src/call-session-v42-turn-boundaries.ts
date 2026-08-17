@@ -7,7 +7,6 @@ import {
   shouldBlockHumanHandoff,
   type HandoffTurnPolicyState,
 } from "./human-handoff-turn-policy.js";
-import { shouldRearmPresenceAfterTrigger } from "./presence-rearm-policy.js";
 
 const BaseConstructor = CallSessionV41 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV41.prototype as any;
@@ -52,15 +51,11 @@ function parseToolOutput(value: unknown): Record<string, unknown> | null {
 }
 
 /**
- * v42 closes two turn-boundary holes observed in production diagnostics:
- *
- * 1. Background/ignored audio is neutral evidence. It must not restart the
- *    inactivity window. The existing waiting deadline continues unchanged.
- *
- * 2. Human handoff is irreversible. If the current caller turn was already
- *    conclusively answered by restaurant_business_info (FOUND) and the answer
- *    completed, a model-selected handoff in that same turn is rejected. A new
- *    caller transcript clears the guard immediately.
+ * v42 owns only the same-turn self-service/handoff boundary.
+ * Presence is now exclusively owned by ConversationTurnLifecycle through v18.
+ * If restaurant_business_info resolves the current turn with FOUND and the
+ * answer completes, a model-selected handoff in that same turn is rejected.
+ * A new usable caller transcript opens a fresh turn and clears this guard.
  */
 export class CallSession extends BaseConstructor {
   private handoffTurnStateV42: HandoffTurnPolicyState = initialHandoffTurnPolicyState();
@@ -72,18 +67,6 @@ export class CallSession extends BaseConstructor {
     const response = await super.fetch(request);
     if (isStart && response.ok) this.installSendBoundaryV42();
     return response;
-  }
-
-  private armWaitingForUserV18(trigger: string): void {
-    if (!shouldRearmPresenceAfterTrigger(trigger)) {
-      (this as any).toolExecutionActiveV18 = false;
-      (this as any).diagnostics?.checkpoint?.("BACKGROUND_INPUT_DID_NOT_REARM_PRESENCE_V42", {
-        trigger,
-        inactivity_deadline_preserved: true,
-      });
-      return;
-    }
-    BasePrototype.armWaitingForUserV18?.call(this, trigger);
   }
 
   private installSendBoundaryV42(): void {
