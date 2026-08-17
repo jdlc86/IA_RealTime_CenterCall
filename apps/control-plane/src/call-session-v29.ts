@@ -222,9 +222,18 @@ export class CallSession extends BaseConstructor {
         (this as any).diagnostics?.checkpoint?.("DEBUG_USER_TRANSCRIPT_V29", { transcript: transcript ?? "", usable: transcript !== null });
       }
       if (transcript) {
-        if (!this.semanticTurnDecisionV29.turnOpen) this.semanticTurnDecisionV29 = beginSemanticCallerTurn();
         const itemId = typeof event.item_id === "string" ? event.item_id : null;
         const higherLayerOwns = Boolean((this as any).shouldBypassTurnConcurrencyV36?.(event));
+        if (!this.semanticTurnDecisionV29.turnOpen || higherLayerOwns) {
+          this.semanticTurnDecisionV29 = beginSemanticCallerTurn();
+          if (higherLayerOwns) {
+            (this as any).diagnostics?.checkpoint?.("CONFIRMED_BARGE_IN_SEMANTIC_TURN_STARTED_V29", {
+              item_id: itemId,
+              authority: "higher_layer_confirmed_turn_ownership",
+              previous_turn_decision_discarded: true,
+            });
+          }
+        }
         if (itemId && higherLayerOwns) this.armCallerDirectedSemanticAuthorityV29(itemId, "higher_layer_confirmed_turn_ownership");
         if (shouldArmSemanticGateAfterTranscript(this.semanticTurnDecisionV29)) {
           this.armSemanticGateV29(transcript, itemId);
