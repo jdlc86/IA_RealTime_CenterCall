@@ -1,10 +1,7 @@
 import { CallSession as CallSessionV35 } from "./call-session-v35";
 import { KvTenantRepository } from "./tenant-kv";
-import {
-  restoreTurnDetectionEvent,
-  suspendTurnDetectionEvent,
-  type TenantVadSettings,
-} from "./protected-turn-detection";
+import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
+import type { RealtimeInputDetectionSettings } from "./realtime-provider-command-port";
 
 const BaseConstructor = CallSessionV35 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV35.prototype as any;
@@ -71,12 +68,12 @@ function responseId(event: RealtimeSessionEvent): string | null {
  * turn detection completely, wait for the server to confirm it is disabled,
  * emit the greeting, wait for actual playback completion, discard any caller
  * audio accumulated during the protected window, and then restore the tenant's
- * normal server_vad configuration.
+ * normal input-detection configuration through the provider command boundary.
  *
  * This layer does not classify caller intent and does not change normal turns.
  */
 export class CallSession extends BaseConstructor {
-  private tenantVadV35: TenantVadSettings = {};
+  private tenantVadV35: RealtimeInputDetectionSettings = {};
   private atomicGreetingActiveV35 = false;
   private atomicGreetingAwaitingVadOffV35 = false;
   private atomicGreetingResponseIdV35: string | null = null;
@@ -107,11 +104,14 @@ export class CallSession extends BaseConstructor {
       (this as any).diagnostics?.checkpoint?.("CALLSESSION_RUNTIME_FINGERPRINT_V35", {
         fingerprint: CALLSESSION_RUNTIME_FINGERPRINT,
         atomic_greeting_vad_suspension: true,
+        provider_command_port: true,
       });
     }
 
     return response;
   }
+
+  private commandsV35() { return realtimeCommandPortFor(this as any); }
 
   private sendInitialGreetingIfNeeded(): void {
     const session = this as any;
@@ -124,11 +124,12 @@ export class CallSession extends BaseConstructor {
       `Pronuncia exactamente este saludo inicial y nada más: ${JSON.stringify(session.initialGreeting)}`;
     session.greetingSent = true;
 
-    session.send?.(suspendTurnDetectionEvent());
+    this.commandsV35().suspendInputDetection();
     this.armAtomicGreetingWatchdogV35();
 
     session.diagnostics?.checkpoint?.("ATOMIC_GREETING_VAD_SUSPEND_REQUESTED_V35", {
       turn_detection: null,
+      provider_command_port: true,
     });
     session.diagnostics?.checkpoint?.("GREETING_SENT", {
       protected_speech: true,
@@ -142,17 +143,15 @@ export class CallSession extends BaseConstructor {
 
     this.atomicGreetingAwaitingVadOffV35 = false;
     const clientEventId = `atomic_greeting_v35_${crypto.randomUUID()}`;
-    (this as any).send?.({
-      event_id: clientEventId,
-      type: "response.create",
-      response: {
-        tool_choice: "none",
-        instructions: this.atomicGreetingInstructionsV35,
-        metadata: { [PROTECTED_METADATA_KEY]: "GREETING" },
-      },
+    this.commandsV35().speak({
+      requestId: clientEventId,
+      tools: "DISABLED",
+      instructions: this.atomicGreetingInstructionsV35,
+      metadata: { [PROTECTED_METADATA_KEY]: "GREETING" },
     });
     (this as any).diagnostics?.checkpoint?.("ATOMIC_GREETING_RESPONSE_REQUESTED_V35", {
       vad_confirmed_disabled: true,
+      provider_command_port: true,
     });
   }
 
@@ -164,9 +163,10 @@ export class CallSession extends BaseConstructor {
     try {
       if (session.socket) {
         // Caller speech during the protected greeting is intentionally not a
-        // conversational turn. Drop buffered input before re-enabling VAD.
-        session.send?.({ type: "input_audio_buffer.clear" });
-        session.send?.(restoreTurnDetectionEvent(this.tenantVadV35));
+        // conversational turn. Drop buffered input before re-enabling detection.
+        const commands = this.commandsV35();
+        commands.clearInput();
+        commands.restoreInputDetection(this.tenantVadV35);
         this.awaitingVadRestoreConfirmationV35 = true;
       }
     } catch (error) {
@@ -187,6 +187,7 @@ export class CallSession extends BaseConstructor {
       response_id: this.atomicGreetingResponseIdV35,
       input_buffer_cleared_before_vad_restore: true,
       vad_restore_requested: Boolean(session.socket),
+      provider_command_port: true,
     });
 
     this.atomicGreetingActiveV35 = false;
