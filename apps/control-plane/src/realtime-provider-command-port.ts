@@ -29,5 +29,6 @@ export interface RealtimeProviderCommandPort {
   clearPlayback(): void;
   clearInput(): void;
   suspendInputDetection(): void;
+  beginNonInterruptingListening(settings?: RealtimeInputDetectionSettings): void;
   restoreInputDetection(settings?: RealtimeInputDetectionSettings): void;
 }
