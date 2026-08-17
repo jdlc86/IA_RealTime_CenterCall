@@ -27,15 +27,13 @@ export function isExplicitClosingConfirmation(value: string): boolean {
   return /^(?:si|si claro|claro|de acuerdo|vale|ok|correcto|confirmo)(?:\b|$)/.test(text);
 }
 
-/**
- * A semantic CLOSING decision is model-derived and the transition is irreversible.
- * Therefore an unconfirmed closing request still requires one explicit confirmation.
- *
- * The structured conversation contract may mark a turn as explicitly confirmed
- * only when the user directly answers a prior continuation/closing question with
- * an unequivocal end-of-call response. That pair (CLOSING + explicit confirmation)
- * is enough to close without asking a redundant second question.
- */
+export function shouldCommitPendingClose(
+  closingConfirmationPending: boolean,
+  transcript: string,
+): boolean {
+  return closingConfirmationPending && isExplicitClosingConfirmation(transcript);
+}
+
 export function decideClosingTransition(
   _currentWorkflow: CoreWorkflow,
   requestedWorkflow: CoreWorkflow,
