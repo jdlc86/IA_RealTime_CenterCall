@@ -1,4 +1,9 @@
-import type { TenantVadSettings } from "./protected-turn-detection";
+export type RealtimeInputDetectionSettings = {
+  threshold?: number;
+  prefixPaddingMs?: number;
+  silenceDurationMs?: number;
+  idleTimeoutMs?: number;
+};
 
 export type RealtimeSpeechRequest = {
   instructions: string;
@@ -24,5 +29,5 @@ export interface RealtimeProviderCommandPort {
   clearPlayback(): void;
   clearInput(): void;
   suspendInputDetection(): void;
-  restoreInputDetection(settings?: TenantVadSettings): void;
+  restoreInputDetection(settings?: RealtimeInputDetectionSettings): void;
 }
