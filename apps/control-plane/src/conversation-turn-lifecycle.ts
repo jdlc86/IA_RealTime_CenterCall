@@ -119,9 +119,17 @@ export class ConversationTurnLifecycle {
 
     switch (event.type) {
       case "assistant_audio_started": {
-        // Presence speech is out-of-band lifecycle audio. It must preserve the
-        // same WAITING_FOR_CALLER silence episode and its original close deadline.
         if (event.kind === "PRESENCE") return effects;
+
+        // A normal assistant response that starts while a caller turn is being
+        // processed is objective evidence that the conversation produced a
+        // coherent answer even when no public tool was needed. That must break
+        // the consecutive ignored-input streak.
+        if ((event.kind === undefined || event.kind === "NORMAL") && this.state === "PROCESSING_CALLER_TURN" && this.ignoredCount !== 0) {
+          this.ignoredCount = 0;
+          effects.push({ type: "RESET_IGNORED_COUNT" });
+        }
+
         this.cancelSilence(effects);
         if (event.kind === "RECOVERY") this.state = "IGNORED_RECOVERY_SPEAKING";
         else if (event.kind === "TERMINAL") this.state = "TERMINAL_SPEAKING";
