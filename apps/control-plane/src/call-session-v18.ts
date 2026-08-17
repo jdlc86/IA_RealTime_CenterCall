@@ -128,6 +128,22 @@ export class CallSession extends BaseConstructor {
     this.scheduleNextInactivityCheckV18();
   }
 
+  protected refreshRecentUserPresenceV18(source: string): void {
+    if (this.inactivityStartedAtV18 === null || this.toolExecutionActiveV18 || (this as any).state === "closing" || (this as any).hangupStarted) return;
+    this.clearInactivityTimerV18();
+    this.inactivityStartedAtV18 = Date.now();
+    this.presenceStageV18 = 0;
+    this.recoverySpeechInFlightV18 = false;
+    this.recoveryResponseIdV18 = null;
+    (this as any).diagnostics?.checkpoint?.("USER_PRESENCE_EVIDENCE_REFRESHED_V18", {
+      source,
+      semantic_turn_validated: false,
+      vad_only: false,
+      absolute_unanswered_deadline_ms: MAX_UNANSWERED_WAIT_MS,
+    });
+    this.scheduleNextInactivityCheckV18();
+  }
+
   private suspendForToolV18(tool: string): void {
     this.toolExecutionActiveV18 = true;
     this.clearInactivityTimerV18();
