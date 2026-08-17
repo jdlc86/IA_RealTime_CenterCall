@@ -1,10 +1,10 @@
 import { CallSession as CallSessionV13 } from "./call-session-v13";
 import {
+  armClassifierTurn,
   consumeClassifierTurn,
-  initialUserTurnGateState,
-  markUserTurnStarted,
-  type UserTurnGateState,
-} from "./core-user-turn-gate";
+  initialClassifierTurnGateState,
+  type ClassifierTurnGateState,
+} from "./classifier-turn-gate";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV13 as unknown as new (...args: any[]) => any;
@@ -26,15 +26,14 @@ function readRealtimeText(data: unknown): string | null {
 }
 
 /**
- * User-turn boundary for the hierarchical classifier.
+ * One-shot authorization boundary for the hierarchical classifier.
  *
- * A global Realtime tool_choice=required can also produce a classifier call as a
- * side effect of assistant-originated responses such as the initial greeting.
- * Business routing must never accept those calls. Only input VAD activity from
- * the caller arms one classifier result; that result consumes the turn.
+ * This is deliberately not a conversation lifecycle. It carries only one fact:
+ * whether caller-originated speech has armed exactly one classifier result. It
+ * has no timers, presence decisions, response ownership or terminal authority.
  */
 export class CallSession extends BaseConstructor {
-  private userTurnGateV14: UserTurnGateState = initialUserTurnGateState();
+  private classifierTurnGateV14: ClassifierTurnGateState = initialClassifierTurnGateState();
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const text = readRealtimeText(data);
@@ -44,17 +43,18 @@ export class CallSession extends BaseConstructor {
     }
 
     if (event?.type === "input_audio_buffer.speech_started") {
-      this.userTurnGateV14 = markUserTurnStarted(this.userTurnGateV14);
+      this.classifierTurnGateV14 = armClassifierTurn(this.classifierTurnGateV14);
       (this as any).diagnostics?.checkpoint?.("CORE_USER_TURN_ARMED", {
         source: "input_audio_buffer.speech_started",
+        authority_scope: "classifier_one_shot_only",
       });
       await BasePrototype.handleRealtimeMessage.call(this, data);
       return;
     }
 
     if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
-      const decision = consumeClassifierTurn(this.userTurnGateV14);
-      this.userTurnGateV14 = decision.next;
+      const decision = consumeClassifierTurn(this.classifierTurnGateV14);
+      this.classifierTurnGateV14 = decision.next;
       if (!decision.allowed) {
         if (event.call_id) {
           (this as any).send({
