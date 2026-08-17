@@ -6,9 +6,11 @@ import {
   type ResponseOwnerEvent,
   type ResponseOwnerSnapshot,
 } from "./realtime-response-owner";
+import { decideResponseOwnerEmission, type ResponseOwnerEmissionMode } from "./response-owner-emission-policy";
 
 const BaseConstructor = CallSessionV39 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV39.prototype as any;
+const RESPONSE_OWNER_EMISSION_MODE: ResponseOwnerEmissionMode = "shadow";
 
 type RealtimeEvent = {
   type?: string;
@@ -38,10 +40,10 @@ function responseId(event: RealtimeEvent): string | null {
 /**
  * Rebuild v40: reconciliation authority above the known-good v39.
  *
- * This class owns the canonical response identity/reconciliation view, including
- * superseded response.created events and stale response.done events. It still
- * does NOT execute response.create, response.cancel, playback clear, or resume
- * effects. Emission authority remains disabled until reconciliation proves stable.
+ * One explicit policy boundary now owns whether reducer effects are allowed to
+ * reach Realtime. The boundary is intentionally fixed to shadow mode here:
+ * reconciliation is live, but no response.create/cancel/playback command can be
+ * emitted by the rebuild until a later reviewed activation changes this switch.
  */
 export class CallSession extends BaseConstructor {
   private responseOwnerV40: ResponseOwnerSnapshot = initialResponseOwnerSnapshot();
@@ -69,6 +71,16 @@ export class CallSession extends BaseConstructor {
     this.responseOwnerV40 = result.snapshot;
     this.reportOwnerEffectsV40(result.effects);
 
+    const emission = decideResponseOwnerEmission(result.effects, RESPONSE_OWNER_EMISSION_MODE);
+    if (emission.executable.length !== 0) {
+      // Fail closed: this branch is unreachable while the compile-time mode is
+      // shadow. Keeping the assertion visible prevents accidental socket writes
+      // from being added around the authority boundary.
+      (this as any).diagnostics?.fail?.("RESPONSE_OWNER_SHADOW_INVARIANT_BROKEN_V40_REBUILD", "SHADOW_MODE_PRODUCED_EXECUTABLE_EFFECTS", {
+        executable_effects: emission.executable.map((effect) => effect.type),
+      });
+    }
+
     (this as any).diagnostics?.checkpoint?.("RESPONSE_OWNER_RECONCILED_V40_REBUILD", {
       event_type: event.type,
       previous_state: previous.state,
@@ -77,9 +89,10 @@ export class CallSession extends BaseConstructor {
       active_response_id: result.snapshot.activeResponseId,
       playback_cleared: result.snapshot.playbackCleared,
       caller_response_pending: result.snapshot.callerResponsePending,
-      emitted_effects: result.effects.map((effect) => effect.type),
-      runtime_effects_executed: false,
-      emission_authority_enabled: false,
+      reducer_effects: result.effects.map((effect) => effect.type),
+      executable_effects: emission.executable.map((effect) => effect.type),
+      observed_only_effects: emission.observedOnly.map((effect) => effect.type),
+      emission_mode: RESPONSE_OWNER_EMISSION_MODE,
     });
   }
 
