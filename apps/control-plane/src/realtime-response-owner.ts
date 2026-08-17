@@ -27,6 +27,7 @@ export type ResponseOwnerSnapshot = {
   activeResponseId: string | null;
   playbackCleared: boolean;
   callerResponsePending: boolean;
+  resumeAfterActiveDone: boolean;
 };
 
 export function initialResponseOwnerSnapshot(): ResponseOwnerSnapshot {
@@ -35,6 +36,7 @@ export function initialResponseOwnerSnapshot(): ResponseOwnerSnapshot {
     activeResponseId: null,
     playbackCleared: false,
     callerResponsePending: false,
+    resumeAfterActiveDone: false,
   };
 }
 
@@ -45,7 +47,10 @@ export function initialResponseOwnerSnapshot(): ResponseOwnerSnapshot {
  * - one component owns response.create/response.cancel decisions;
  * - playback state and response-generation state are independent;
  * - a confirmed interruption never waits indefinitely for response.done;
- * - response.done is reconciliation evidence, not permission to continue;
+ * - an ignored candidate never creates a replacement while the original response is still active;
+ * - if playback was cleared for an ignored candidate, continuation is emitted only after
+ *   the authoritative response.done for that active response;
+ * - response.done is reconciliation evidence, not permission for confirmed interruption;
  * - if Realtime reports a second response while one is still active, the newest
  *   server-created response becomes authoritative and the conflict is surfaced;
  * - a late response start cannot destroy an already-valid barge-in classification;
@@ -59,7 +64,13 @@ export function reduceResponseOwner(
   if (snapshot.state === "TERMINAL") return { snapshot, effects: [] };
   if (event.type === "terminal") {
     return {
-      snapshot: { ...snapshot, state: "TERMINAL", activeResponseId: null, callerResponsePending: false },
+      snapshot: {
+        ...snapshot,
+        state: "TERMINAL",
+        activeResponseId: null,
+        callerResponsePending: false,
+        resumeAfterActiveDone: false,
+      },
       effects: [],
     };
   }
@@ -79,6 +90,7 @@ export function reduceResponseOwner(
           activeResponseId: event.responseId,
           playbackCleared: snapshot.state === "BARGE_IN_CLASSIFYING" ? snapshot.playbackCleared : false,
           callerResponsePending: false,
+          resumeAfterActiveDone: snapshot.resumeAfterActiveDone,
         },
         effects: conflict,
       };
@@ -93,13 +105,37 @@ export function reduceResponseOwner(
 
     case "barge_in_ignore":
       if (snapshot.state !== "BARGE_IN_CLASSIFYING") return { snapshot, effects: [] };
+      if (!snapshot.playbackCleared) {
+        return {
+          snapshot: {
+            ...snapshot,
+            state: "ASSISTANT_ACTIVE",
+            callerResponsePending: false,
+            resumeAfterActiveDone: false,
+          },
+          effects: [],
+        };
+      }
+      if (snapshot.activeResponseId) {
+        return {
+          snapshot: {
+            ...snapshot,
+            state: "ASSISTANT_ACTIVE",
+            callerResponsePending: false,
+            resumeAfterActiveDone: true,
+          },
+          effects: [],
+        };
+      }
       return {
         snapshot: {
           ...snapshot,
           state: "ASSISTANT_ACTIVE",
           callerResponsePending: false,
+          playbackCleared: false,
+          resumeAfterActiveDone: false,
         },
-        effects: snapshot.playbackCleared ? [{ type: "resume_assistant" }] : [],
+        effects: [{ type: "resume_assistant" }],
       };
 
     case "barge_in_interrupt": {
@@ -114,6 +150,7 @@ export function reduceResponseOwner(
           state: "CALLER_TURN_READY",
           callerResponsePending: true,
           playbackCleared: true,
+          resumeAfterActiveDone: false,
         },
         effects,
       };
@@ -121,6 +158,17 @@ export function reduceResponseOwner(
 
     case "assistant_response_done":
       if (snapshot.activeResponseId !== event.responseId) return { snapshot, effects: [] };
+      if (snapshot.resumeAfterActiveDone) {
+        return {
+          snapshot: {
+            ...snapshot,
+            activeResponseId: null,
+            playbackCleared: false,
+            resumeAfterActiveDone: false,
+          },
+          effects: [{ type: "resume_assistant" }],
+        };
+      }
       return {
         snapshot: { ...snapshot, activeResponseId: null },
         effects: [],
@@ -140,6 +188,7 @@ export function reduceResponseOwner(
           activeResponseId: event.responseId,
           playbackCleared: false,
           callerResponsePending: false,
+          resumeAfterActiveDone: false,
         },
         effects: conflict,
       };
