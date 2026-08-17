@@ -78,13 +78,10 @@ function isProtectedMetadata(metadata: Record<string, unknown>): boolean {
  * - only speech detected while our explicit normalListening window is active can
  *   enter BARGE_IN_CLASSIFYING; ordinary caller turns never do;
  * - completed caller speech is classified out-of-conversation as INTERRUPT/IGNORE;
- * - an unclassifiable candidate (missing item id or usable transcript) resolves
- *   immediately as IGNORE and never reaches the v39 semantic pipeline;
- * - IGNORE never reaches the v39 semantic pipeline;
- * - INTERRUPT cancels/clears the previous response as needed, then forwards the
- *   already-committed caller item to v39 and creates exactly one response;
- * - response.done is reconciliation evidence only and never gates continuation;
- * - classifier responses are excluded from conversational response ownership.
+ * - an unclassifiable candidate resolves immediately as IGNORE;
+ * - confirmed barge-in has one lifecycle owner: v40. v36 explicitly yields that
+ *   item instead of acquiring a second concurrency lock;
+ * - response.done is reconciliation evidence only and never gates continuation.
  */
 export class CallSession extends BaseConstructor {
   private responseOwnerV40: ResponseOwnerSnapshot = initialResponseOwnerSnapshot();
@@ -92,6 +89,11 @@ export class CallSession extends BaseConstructor {
   private classifierByResponseV40 = new Map<string, PendingBargeIn>();
   private protectedResponseIdsV40 = new Set<string>();
   private normalListeningV40 = false;
+  private v40OwnedSemanticItemId: string | null = null;
+
+  protected shouldBypassTurnConcurrencyV36(event: RealtimeEvent): boolean {
+    return Boolean(this.v40OwnedSemanticItemId && event.item_id === this.v40OwnedSemanticItemId);
+  }
 
   private reportOwnerEffectsV40(effects: ResponseOwnerEffect[]): void {
     for (const effect of effects) {
@@ -280,7 +282,12 @@ export class CallSession extends BaseConstructor {
     }
 
     this.executePreSemanticEffectsV40(emission.executable);
-    await BasePrototype.handleRealtimeMessage.call(this, pending.originalData);
+    this.v40OwnedSemanticItemId = pending.itemId;
+    try {
+      await BasePrototype.handleRealtimeMessage.call(this, pending.originalData);
+    } finally {
+      this.v40OwnedSemanticItemId = null;
+    }
     this.executePostSemanticEffectsV40(emission.executable);
     const cancelled = result.effects.find((effect): effect is Extract<ResponseOwnerEffect, { type: "cancel_response" }> => effect.type === "cancel_response");
     (this as any).diagnostics?.checkpoint?.("BARGE_IN_CONFIRMED_V40_REBUILD", {
@@ -288,6 +295,7 @@ export class CallSession extends BaseConstructor {
       cancelled_response_id: cancelled?.responseId ?? null,
       playback_was_already_cleared: result.snapshot.playbackCleared,
       promoted_to_v39_semantic_pipeline: true,
+      v36_turn_lock_bypassed: true,
       response_done_gate: false,
     });
   }
@@ -317,8 +325,6 @@ export class CallSession extends BaseConstructor {
     }
 
     if (event?.type === "response.done" && id && this.classifierByResponseV40.has(id)) {
-      // If output_text.done never arrived, fail closed to IGNORE rather than
-      // leaving the owner indefinitely in BARGE_IN_CLASSIFYING.
       await this.finalizeClassifierV40(id, "IGNORE");
       return;
     }
@@ -339,9 +345,6 @@ export class CallSession extends BaseConstructor {
       this.reconcileOwnerEventV40({ type: "assistant_playback_cleared" });
       if (id) this.protectedResponseIdsV40.delete(id);
     } else if (event?.type === "input_audio_buffer.speech_started") {
-      // A speech_started event is only a barge-in candidate while the explicit
-      // non-interrupting listening window is active. Outside that window it is
-      // an ordinary caller turn and remains owned by v39/v36.
       if (this.normalListeningV40) {
         this.reconcileOwnerEventV40({ type: "caller_speech_started" });
       }
@@ -353,6 +356,7 @@ export class CallSession extends BaseConstructor {
       this.classifierByResponseV40.clear();
       this.protectedResponseIdsV40.clear();
       this.normalListeningV40 = false;
+      this.v40OwnedSemanticItemId = null;
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
