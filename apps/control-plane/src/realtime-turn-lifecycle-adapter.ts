@@ -42,6 +42,7 @@ function assistantKind(event: SyntheticRealtimeEvent): "NORMAL" | "GREETING" | "
   const protectedKind = metadata.protected_speech_v35;
   if (protectedKind === "GREETING") return "GREETING";
   if (protectedKind === "RECOVERY") return "RECOVERY";
+  if (protectedKind === "TERMINAL") return "TERMINAL";
   const purpose = metadata.purpose;
   if (purpose === "presence_recovery_v18" || purpose === "presence_check") return "PRESENCE";
   if (purpose === "terminal_farewell" || purpose === "repeated_ignored_input_close") return "TERMINAL";
@@ -52,6 +53,10 @@ function assistantKind(event: SyntheticRealtimeEvent): "NORMAL" | "GREETING" | "
  * Pure mapping from Realtime-shaped events to ConversationTurnLifecycle events.
  * It intentionally performs no semantic classification. Model tool choice remains
  * the source of truth for coherent, ignored, out-of-scope and end-call turns.
+ *
+ * restaurant_human_assistance is only a semantic request here. HANDOFF becomes
+ * authoritative only after the deterministic v37 transport has accepted the
+ * transfer prerequisites and persisted traceability.
  */
 export function adaptRealtimeTurnEvent(event: SyntheticRealtimeEvent): LifecycleEvent[] {
   switch (event.type) {
@@ -71,7 +76,7 @@ export function adaptRealtimeTurnEvent(event: SyntheticRealtimeEvent): Lifecycle
       }
       if (event.name === "restaurant_out_of_scope") return [{ type: "out_of_scope" }];
       if (event.name === "restaurant_end_call") return [{ type: "end_call" }];
-      if (event.name === "restaurant_human_assistance") return [{ type: "handoff_started" }];
+      if (event.name === "restaurant_human_assistance") return [{ type: "semantic_valid", tool: event.name }];
       if (event.name && PUBLIC_SEMANTIC_TOOLS.has(event.name)) return [{ type: "semantic_valid", tool: event.name }];
       return [];
     }
