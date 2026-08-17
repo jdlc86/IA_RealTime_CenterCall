@@ -1,12 +1,5 @@
 import { type IgnoredReason, type LifecycleEvent } from "./conversation-turn-lifecycle";
-
-export type SyntheticRealtimeEvent = {
-  type?: string;
-  name?: string;
-  arguments?: string;
-  transcript?: string;
-  response?: { metadata?: Record<string, unknown> | null };
-};
+import type { RealtimeProviderEvent } from "./realtime-provider-event";
 
 const PUBLIC_SEMANTIC_TOOLS = new Set([
   "restaurant_business_info",
@@ -37,45 +30,28 @@ function ignoredReason(args: unknown): IgnoredReason {
   }
 }
 
-function assistantKind(event: SyntheticRealtimeEvent): "NORMAL" | "GREETING" | "RECOVERY" | "TERMINAL" | "PRESENCE" {
-  const metadata = event.response?.metadata ?? {};
-  const protectedKind = metadata.protected_speech_v35;
-  if (protectedKind === "GREETING") return "GREETING";
-  if (protectedKind === "RECOVERY") return "RECOVERY";
-  if (protectedKind === "TERMINAL") return "TERMINAL";
-  const purpose = metadata.purpose;
-  if (purpose === "presence_recovery_v18" || purpose === "presence_check") return "PRESENCE";
-  if (purpose === "terminal_farewell" || purpose === "repeated_ignored_input_close") return "TERMINAL";
-  return "NORMAL";
-}
-
-/**
- * Pure Realtime -> lifecycle mapping.
- * Terminal authorization remains outside this adapter: v41/v43 decide whether
- * end-call or human-handoff requests are actually authorized. This adapter only
- * records those model selections as coherent semantic activity.
- */
-export function adaptRealtimeTurnEvent(event: SyntheticRealtimeEvent): LifecycleEvent[] {
+/** Provider-neutral realtime event -> lifecycle mapping. */
+export function adaptRealtimeTurnEvent(event: RealtimeProviderEvent): LifecycleEvent[] {
   switch (event.type) {
-    case "input_audio_buffer.speech_started":
+    case "CALLER_SPEECH_STARTED":
       return [{ type: "speech_started" }];
-    case "input_audio_buffer.speech_stopped":
+    case "CALLER_SPEECH_STOPPED":
       return [{ type: "speech_stopped" }];
-    case "conversation.item.input_audio_transcription.completed":
+    case "CALLER_TRANSCRIPT_COMPLETED":
       return [{ type: usableTranscript(event.transcript) ? "transcript_usable" : "transcript_unusable" }];
-    case "output_audio_buffer.started":
-      return [{ type: "assistant_audio_started", kind: assistantKind(event) }];
-    case "output_audio_buffer.stopped":
-      return [{ type: "assistant_audio_stopped", kind: assistantKind(event) }];
-    case "response.function_call_arguments.done": {
+    case "ASSISTANT_AUDIO_STARTED":
+      return [{ type: "assistant_audio_started", kind: event.kind }];
+    case "ASSISTANT_AUDIO_STOPPED":
+      return [{ type: "assistant_audio_stopped", kind: event.kind }];
+    case "SEMANTIC_TOOL_SELECTED": {
       if (event.name === "restaurant_input_ignored") {
         return [{ type: "semantic_ignored", reason: ignoredReason(event.arguments) }];
       }
       if (event.name === "restaurant_out_of_scope") return [{ type: "out_of_scope" }];
-      if (event.name && PUBLIC_SEMANTIC_TOOLS.has(event.name)) return [{ type: "semantic_valid", tool: event.name }];
+      if (PUBLIC_SEMANTIC_TOOLS.has(event.name)) return [{ type: "semantic_valid", tool: event.name }];
       return [];
     }
-    default:
+    case "ASSISTANT_RESPONSE_STARTED":
       return [];
   }
 }
