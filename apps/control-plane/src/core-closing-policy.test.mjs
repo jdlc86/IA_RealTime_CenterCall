@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decideClosingTransition } from "../.test-dist/core-closing-policy.js";
+import {
+  decideClosingTransition,
+  hasExplicitUserFarewellEvidence,
+  isExplicitClosingConfirmation,
+} from "../.test-dist/core-closing-policy.js";
 
 test("active workflow requires one closing confirmation turn", () => {
   assert.deepEqual(decideClosingTransition("CREATE_RESERVATION", "CLOSING", false), { action: "ASK_CONFIRMATION", pending: true });
@@ -24,4 +28,22 @@ test("structured explicit close confirmation avoids redundant second question", 
 
 test("non closing turn clears a pending close and continues", () => {
   assert.deepEqual(decideClosingTransition("CREATE_RESERVATION", "CREATE_RESERVATION", true), { action: "CONTINUE", pending: false });
+});
+
+test("direct user farewells are end-call evidence", () => {
+  for (const phrase of ["Adiós", "Hasta luego", "Puedes colgar", "Quiero terminar la llamada", "Gracias, adiós", "Eso es todo"]) {
+    assert.equal(hasExplicitUserFarewellEvidence(phrase), true, phrase);
+  }
+});
+
+test("business completion and courtesy are not end-call evidence", () => {
+  for (const phrase of ["Sí, confirma la reserva", "No quiero promociones", "Perfecto, gracias", "La primera opción me vale", "¿A qué hora cerráis?"]) {
+    assert.equal(hasExplicitUserFarewellEvidence(phrase), false, phrase);
+  }
+});
+
+test("yes can confirm only a previously pending closing question", () => {
+  assert.equal(isExplicitClosingConfirmation("Sí"), true);
+  assert.equal(isExplicitClosingConfirmation("Vale"), true);
+  assert.equal(isExplicitClosingConfirmation("No, todavía no"), false);
 });
