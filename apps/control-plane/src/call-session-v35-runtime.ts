@@ -1,7 +1,9 @@
 import { CallSession as CallSessionV35 } from "./call-session-v35";
 import { KvTenantRepository } from "./tenant-kv";
 import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
+import { adaptOpenAIRealtimeEvent } from "./openai-realtime-event-adapter";
 import type { RealtimeInputDetectionSettings } from "./realtime-provider-command-port";
+import type { RealtimeProviderEvent } from "./realtime-provider-event";
 
 const BaseConstructor = CallSessionV35 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV35.prototype as any;
@@ -9,68 +11,13 @@ const CALLSESSION_RUNTIME_FINGERPRINT = "v35-protected-speech-runtime-2026-08-15
 const ATOMIC_GREETING_WATCHDOG_MS = 30_000;
 const PROTECTED_METADATA_KEY = "protected_speech_v35";
 
-type TurnDetection = {
-  type?: string;
-  threshold?: number;
-  prefix_padding_ms?: number;
-  silence_duration_ms?: number;
-  idle_timeout_ms?: number;
-  create_response?: boolean;
-  interrupt_response?: boolean;
-} | null;
-
-type RealtimeSessionEvent = {
-  type?: string;
-  response_id?: string;
-  response?: {
-    id?: string;
-    status?: string;
-    metadata?: Record<string, unknown> | null;
-  };
-  session?: {
-    audio?: {
-      input?: {
-        turn_detection?: TurnDetection;
-      };
-    };
-  };
-};
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) {
-    return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  }
-  return null;
-}
-
-function parseRealtimeEvent(data: unknown): RealtimeSessionEvent | null {
-  const text = readRealtimeText(data);
-  if (!text) return null;
-  try {
-    return JSON.parse(text) as RealtimeSessionEvent;
-  } catch {
-    return null;
-  }
-}
-
-function responseId(event: RealtimeSessionEvent): string | null {
-  return event.response_id ?? event.response?.id ?? null;
-}
-
 /**
  * Validation layer for atomic greeting playback.
  *
- * Root-cause evidence from production showed that SIP emitted
- * output_audio_buffer.cleared at the same instant as VAD speech_started even
- * while interrupt_response=false. For the initial greeting we therefore remove
- * turn detection completely, wait for the server to confirm it is disabled,
- * emit the greeting, wait for actual playback completion, discard any caller
- * audio accumulated during the protected window, and then restore the tenant's
- * normal input-detection configuration through the provider command boundary.
- *
- * This layer does not classify caller intent and does not change normal turns.
+ * Provider wire events are translated before this layer sees them. v35 owns only
+ * the protected-greeting lifecycle and observes provider-neutral input-detection,
+ * response and playback events. OpenAI-specific event names and field shapes stay
+ * behind OpenAIRealtimeEventAdapter.
  */
 export class CallSession extends BaseConstructor {
   private tenantVadV35: RealtimeInputDetectionSettings = {};
@@ -105,6 +52,7 @@ export class CallSession extends BaseConstructor {
         fingerprint: CALLSESSION_RUNTIME_FINGERPRINT,
         atomic_greeting_vad_suspension: true,
         provider_command_port: true,
+        provider_event_adapter: true,
       });
     }
 
@@ -162,8 +110,6 @@ export class CallSession extends BaseConstructor {
     const session = this as any;
     try {
       if (session.socket) {
-        // Caller speech during the protected greeting is intentionally not a
-        // conversational turn. Drop buffered input before re-enabling detection.
         const commands = this.commandsV35();
         commands.clearInput();
         commands.restoreInputDetection(this.tenantVadV35);
@@ -215,91 +161,93 @@ export class CallSession extends BaseConstructor {
     this.atomicGreetingWatchdogV35 = null;
   }
 
-  private traceTurnDetectionV35(event: RealtimeSessionEvent): void {
-    const turnDetection = event.session?.audio?.input?.turn_detection;
+  private traceInputDetectionV35(event: Extract<RealtimeProviderEvent, { type: "INPUT_DETECTION_UPDATED" }>): void {
+    const settings = event.settings;
     (this as any).diagnostics?.checkpoint?.("REALTIME_TURN_DETECTION_EFFECTIVE_V35", {
-      event_type: event.type,
-      turn_detection_present: turnDetection !== undefined,
-      turn_detection_disabled: turnDetection === null,
-      turn_detection_type: turnDetection && typeof turnDetection === "object" ? turnDetection.type ?? null : null,
-      interrupt_response: turnDetection && typeof turnDetection === "object" ? turnDetection.interrupt_response ?? null : null,
-      create_response: turnDetection && typeof turnDetection === "object" ? turnDetection.create_response ?? null : null,
-      threshold: turnDetection && typeof turnDetection === "object" ? turnDetection.threshold ?? null : null,
-      prefix_padding_ms: turnDetection && typeof turnDetection === "object" ? turnDetection.prefix_padding_ms ?? null : null,
-      silence_duration_ms: turnDetection && typeof turnDetection === "object" ? turnDetection.silence_duration_ms ?? null : null,
-      idle_timeout_ms: turnDetection && typeof turnDetection === "object" ? turnDetection.idle_timeout_ms ?? null : null,
+      provider_event: event.type,
+      turn_detection_present: event.present,
+      turn_detection_disabled: event.present && settings === null,
+      turn_detection_type: settings === null ? null : "provider_managed",
+      interrupt_response: settings?.interruptResponse ?? null,
+      create_response: settings?.createResponse ?? null,
+      threshold: settings?.threshold ?? null,
+      prefix_padding_ms: settings?.prefixPaddingMs ?? null,
+      silence_duration_ms: settings?.silenceDurationMs ?? null,
+      idle_timeout_ms: settings?.idleTimeoutMs ?? null,
+      provider_neutral_observation: true,
     });
   }
 
-  private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const event = parseRealtimeEvent(data);
+  private handleNeutralEventV35(event: RealtimeProviderEvent): void {
+    if (event.type === "INPUT_DETECTION_UPDATED") {
+      this.traceInputDetectionV35(event);
 
-    if (event?.type === "session.created" || event?.type === "session.updated") {
-      this.traceTurnDetectionV35(event);
-      const turnDetection = event.session?.audio?.input?.turn_detection;
-
-      if (this.atomicGreetingActiveV35 && this.atomicGreetingAwaitingVadOffV35 && turnDetection === null) {
+      if (this.atomicGreetingActiveV35 && this.atomicGreetingAwaitingVadOffV35 && event.present && event.settings === null) {
         (this as any).diagnostics?.checkpoint?.("ATOMIC_GREETING_VAD_DISABLED_CONFIRMED_V35", {});
         this.emitAtomicGreetingAfterVadDisabledV35();
       }
 
-      if (this.awaitingVadRestoreConfirmationV35 && turnDetection && typeof turnDetection === "object") {
+      if (this.awaitingVadRestoreConfirmationV35 && event.present && event.settings !== null) {
         this.awaitingVadRestoreConfirmationV35 = false;
         (this as any).diagnostics?.checkpoint?.("ATOMIC_GREETING_VAD_RESTORED_CONFIRMED_V35", {
-          type: turnDetection.type ?? null,
-          interrupt_response: turnDetection.interrupt_response ?? null,
-          create_response: turnDetection.create_response ?? null,
+          type: "provider_managed",
+          interrupt_response: event.settings.interruptResponse ?? null,
+          create_response: event.settings.createResponse ?? null,
         });
       }
+      return;
     }
 
-    if (event?.type === "response.created" && this.atomicGreetingActiveV35) {
-      const metadataKind = event.response?.metadata?.[PROTECTED_METADATA_KEY];
-      if (metadataKind === "GREETING") {
-        this.atomicGreetingResponseIdV35 = responseId(event);
-        (this as any).diagnostics?.checkpoint?.("ATOMIC_GREETING_RESPONSE_BOUND_V35", {
-          response_id: this.atomicGreetingResponseIdV35,
-          metadata_confirmed: true,
-        });
+    if (event.type === "ASSISTANT_RESPONSE_STARTED" && this.atomicGreetingActiveV35 && event.kind === "GREETING") {
+      this.atomicGreetingResponseIdV35 = event.responseId ?? null;
+      (this as any).diagnostics?.checkpoint?.("ATOMIC_GREETING_RESPONSE_BOUND_V35", {
+        response_id: this.atomicGreetingResponseIdV35,
+        metadata_confirmed: true,
+      });
+      return;
+    }
+
+    if (event.type === "ASSISTANT_AUDIO_STARTED" && this.atomicGreetingActiveV35) {
+      if (event.responseId && event.responseId === this.atomicGreetingResponseIdV35) {
+        (this as any).diagnostics?.checkpoint?.("ATOMIC_GREETING_PLAYBACK_STARTED_V35", { response_id: event.responseId });
       }
+      return;
     }
 
-    if (event?.type === "output_audio_buffer.started" && this.atomicGreetingActiveV35) {
-      const id = responseId(event);
-      if (id && id === this.atomicGreetingResponseIdV35) {
-        (this as any).diagnostics?.checkpoint?.("ATOMIC_GREETING_PLAYBACK_STARTED_V35", { response_id: id });
+    if (event.type === "ASSISTANT_AUDIO_STOPPED" && this.atomicGreetingActiveV35) {
+      if (event.responseId && event.responseId === this.atomicGreetingResponseIdV35) {
+        this.finishAtomicGreetingV35("assistant_audio_stopped");
       }
+      return;
     }
 
-    if (event?.type === "output_audio_buffer.stopped" && this.atomicGreetingActiveV35) {
-      const id = responseId(event);
-      if (id && id === this.atomicGreetingResponseIdV35) {
-        this.finishAtomicGreetingV35("output_audio_buffer_stopped");
+    if (event.type === "ASSISTANT_AUDIO_CLEARED" && this.atomicGreetingActiveV35) {
+      if (event.responseId && event.responseId === this.atomicGreetingResponseIdV35) {
+        this.finishAtomicGreetingV35("assistant_audio_cleared", true);
       }
+      return;
     }
 
-    if (event?.type === "output_audio_buffer.cleared" && this.atomicGreetingActiveV35) {
-      const id = responseId(event);
-      if (id && id === this.atomicGreetingResponseIdV35) {
-        this.finishAtomicGreetingV35("output_audio_buffer_cleared", true);
-      }
-    }
-
-    if (event?.type === "response.done" && this.atomicGreetingActiveV35) {
-      const id = responseId(event);
-      if (id && id === this.atomicGreetingResponseIdV35 && event.response?.status === "failed") {
+    if (event.type === "ASSISTANT_RESPONSE_COMPLETED" && this.atomicGreetingActiveV35) {
+      if (event.responseId && event.responseId === this.atomicGreetingResponseIdV35 && event.status === "failed") {
         this.finishAtomicGreetingV35("response_failed", true);
       }
+      return;
     }
 
-    if (event?.type === "input_audio_buffer.speech_started") {
+    if (event.type === "CALLER_SPEECH_STARTED") {
       (this as any).diagnostics?.checkpoint?.("CALLER_SPEECH_DURING_ATOMIC_GREETING_V35", {
         atomic_greeting_active: this.atomicGreetingActiveV35,
         awaiting_vad_off: this.atomicGreetingAwaitingVadOffV35,
         response_id: this.atomicGreetingResponseIdV35,
       });
     }
+  }
 
+  private async handleRealtimeMessage(data: unknown): Promise<void> {
+    for (const event of adaptOpenAIRealtimeEvent(data)) {
+      this.handleNeutralEventV35(event);
+    }
     await BasePrototype.handleRealtimeMessage.call(this, data);
   }
 }
