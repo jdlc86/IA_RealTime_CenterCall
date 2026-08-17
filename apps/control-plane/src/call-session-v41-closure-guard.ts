@@ -2,6 +2,7 @@ import { CallSession as CallSessionV40 } from "./call-session-v40-rebuild";
 import {
   hasExplicitUserFarewellEvidence,
   isExplicitClosingConfirmation,
+  shouldCommitPendingClose,
 } from "./core-closing-policy.js";
 
 const BaseConstructor = CallSessionV40 as unknown as new (...args: any[]) => any;
@@ -19,9 +20,7 @@ type RealtimeEvent = {
 function readRealtimeText(data: unknown): string | null {
   if (typeof data === "string") return data;
   if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) {
-    return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  }
+  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
   return null;
 }
 
@@ -49,14 +48,38 @@ function usableTranscript(value: unknown): string {
  * v41 protects the irreversible end-call boundary.
  *
  * The model may propose restaurant_end_call, but it cannot authorize itself.
- * Closing requires caller-originated evidence from the most recent usable user
- * transcript: either a direct farewell/end-call request, or an affirmative reply
- * to a closing confirmation prompt issued by this guard.
+ * A blocked end-call proposal creates one pending close. If the caller then
+ * explicitly confirms the closing question, v41 commits that already-pending
+ * backend action directly. It never depends on the model issuing end_call a
+ * second time, so tool/transcription ordering cannot lose the authorization.
  */
 export class CallSession extends BaseConstructor {
   private closingConfirmationPendingV41 = false;
   private userClosingEvidenceV41 = false;
   private lastUserTranscriptV41 = "";
+
+  private commitConfirmedPendingCloseV41(transcript: string): boolean {
+    if (!shouldCommitPendingClose(this.closingConfirmationPendingV41, transcript)) return false;
+
+    this.lastUserTranscriptV41 = transcript;
+    this.userClosingEvidenceV41 = false;
+    this.closingConfirmationPendingV41 = false;
+
+    const session = this as any;
+    session.diagnostics?.checkpoint?.("USER_CLOSING_EVIDENCE_EVALUATED_V41", {
+      direct_farewell: false,
+      confirmed_pending_close: true,
+      closing_authorized: true,
+    });
+    session.diagnostics?.checkpoint?.("END_CALL_AUTHORIZED_BY_USER_EVIDENCE_V41", {
+      model_confirmed: true,
+      caller_evidence_present: true,
+      authority_source: "pending_close_plus_explicit_confirmation",
+      model_retry_required: false,
+    });
+    session.beginClosing?.("agent_end_confirmed_v41", "caller_confirmed_pending_close_v41");
+    return true;
+  }
 
   private recordUserTranscriptV41(transcript: string): void {
     this.lastUserTranscriptV41 = transcript;
@@ -93,6 +116,7 @@ export class CallSession extends BaseConstructor {
       model_confirmed_argument_ignored: true,
       last_user_transcript_present: Boolean(this.lastUserTranscriptV41),
       irreversible_close_prevented: true,
+      pending_close_recorded: true,
     });
   }
 
@@ -101,10 +125,16 @@ export class CallSession extends BaseConstructor {
 
     if (event?.type === "conversation.item.input_audio_transcription.completed") {
       const transcript = usableTranscript(event.transcript);
-      if (transcript) this.recordUserTranscriptV41(transcript);
+      if (transcript) {
+        if (this.commitConfirmedPendingCloseV41(transcript)) return;
+        this.recordUserTranscriptV41(transcript);
+      }
     }
 
     if (event?.type === "response.function_call_arguments.done" && event.name === END_CALL) {
+      const session = this as any;
+      if (session.state === "closing" || session.hangupStarted) return;
+
       const args = parseArgs(event.arguments);
       const modelConfirmed = args.confirmed === true;
       if (!modelConfirmed || !this.userClosingEvidenceV41) {
@@ -112,9 +142,11 @@ export class CallSession extends BaseConstructor {
         return;
       }
 
-      (this as any).diagnostics?.checkpoint?.("END_CALL_AUTHORIZED_BY_USER_EVIDENCE_V41", {
+      session.diagnostics?.checkpoint?.("END_CALL_AUTHORIZED_BY_USER_EVIDENCE_V41", {
         model_confirmed: true,
         caller_evidence_present: true,
+        authority_source: "direct_user_evidence_before_tool",
+        model_retry_required: false,
       });
       this.userClosingEvidenceV41 = false;
       this.closingConfirmationPendingV41 = false;
