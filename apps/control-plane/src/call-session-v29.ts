@@ -2,6 +2,7 @@ import { CallSession as CallSessionV28 } from "./call-session-v28";
 import { CallSession as CallSessionV26 } from "./call-session-v26";
 import { isPublicRestaurantTool } from "./public-tool-authorization";
 import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
+import { shouldBlockIgnoredInputForDirectedTurn } from "./directed-turn-authority";
 
 const BaseConstructor = CallSessionV28 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV28.prototype as any;
@@ -121,7 +122,11 @@ export class CallSession extends BaseConstructor {
   }
 
   private callerDirectedAuthorityAppliesV29(): boolean {
-    return Boolean(this.semanticGateArmedV29 && this.activeSemanticItemIdV29 && this.callerDirectedItemIdV29 === this.activeSemanticItemIdV29);
+    return shouldBlockIgnoredInputForDirectedTurn({
+      semanticGateArmed: this.semanticGateArmedV29,
+      activeItemId: this.activeSemanticItemIdV29,
+      directedItemId: this.callerDirectedItemIdV29,
+    });
   }
 
   private rejectIgnoredInputForDirectedTurnV29(event: RealtimeEvent): void {
