@@ -88,12 +88,15 @@ test("synthetic: out_of_scope is not ignored input", () => {
   assert.ok(!effects.some((e) => e.type === "IGNORED_COUNT_CHANGED"));
 });
 
-test("synthetic: handoff suspends conversational lifecycle", () => {
+test("synthetic: human assistance request is coherent but not handoff until transport accepts", () => {
   const m = new ConversationTurnLifecycle();
   startWaiting(m);
   const effects = feed(m, { type: "response.function_call_arguments.done", name: "restaurant_human_assistance", arguments: '{}' });
+  assert.equal(m.snapshot().state, "LUCIA_SPEAKING");
+  assert.ok(!effects.some((e) => e.type === "SUSPEND_FOR_HANDOFF"));
+  const accepted = m.dispatch({ type: "handoff_started" });
   assert.equal(m.snapshot().state, "HANDOFF");
-  assert.ok(effects.some((e) => e.type === "SUSPEND_FOR_HANDOFF"));
+  assert.ok(accepted.some((e) => e.type === "SUSPEND_FOR_HANDOFF"));
   assert.deepEqual(feed(m, { type: "input_audio_buffer.speech_started" }), []);
 });
 
