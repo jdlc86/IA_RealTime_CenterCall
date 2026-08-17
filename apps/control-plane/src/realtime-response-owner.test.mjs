@@ -53,7 +53,7 @@ test("SIP-cleared playback and active response are independent", () => {
   ]);
 });
 
-test("ignored candidate never creates a replacement while original response is active", () => {
+test("ignored SIP-cleared candidate cancels inaudible response and resumes only after authoritative done", () => {
   let s = initialResponseOwnerSnapshot();
   ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
   ({ snapshot: s } = step(s, { type: "assistant_playback_cleared" }));
@@ -62,7 +62,7 @@ test("ignored candidate never creates a replacement while original response is a
   assert.equal(ignored.snapshot.state, "ASSISTANT_ACTIVE");
   assert.equal(ignored.snapshot.activeResponseId, "old");
   assert.equal(ignored.snapshot.resumeAfterActiveDone, true);
-  assert.deepEqual(ignored.effects, []);
+  assert.deepEqual(ignored.effects, [{ type: "cancel_response", responseId: "old" }]);
 
   const done = step(ignored.snapshot, { type: "assistant_response_done", responseId: "old" });
   assert.equal(done.snapshot.activeResponseId, null);
