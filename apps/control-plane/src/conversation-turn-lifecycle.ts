@@ -99,6 +99,13 @@ export class ConversationTurnLifecycle {
       return effects;
     }
 
+    // HANDOFF is also absorbing for conversational lifecycle purposes.
+    // Duplicate handoff_started events are expected in distributed/webhook systems
+    // and must not re-emit transfer side effects.
+    if (this.state === "HANDOFF") {
+      return effects;
+    }
+
     if (event.type === "max_call_duration") {
       this.cancelSilence(effects);
       this.state = "TERMINAL_SPEAKING";
@@ -110,10 +117,6 @@ export class ConversationTurnLifecycle {
       this.cancelSilence(effects);
       this.state = "HANDOFF";
       effects.push({ type: "SUSPEND_FOR_HANDOFF" });
-      return effects;
-    }
-
-    if (this.state === "HANDOFF") {
       return effects;
     }
 
