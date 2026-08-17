@@ -1,4 +1,6 @@
 import { CallSession as CallSessionV19 } from "./call-session-v19";
+import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
+import { decideReservationDatetimeValidity } from "./reservation-datetime-validity";
 
 const BaseConstructor = CallSessionV19 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV19.prototype as any;
@@ -94,6 +96,29 @@ function normalizeMadridLocalIso(value: string): string {
 }
 
 export class CallSession extends BaseConstructor {
+  private rejectReservationDatetimeV20(event: RealtimeEvent, status: string, normalizedStartsAt: string): void {
+    (this as any).send?.({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: event.call_id,
+        output: JSON.stringify({
+          ok: false,
+          stage: "COLLECT_RESERVATION_DATA",
+          status,
+          starts_at: normalizedStartsAt,
+          reservation_created: false,
+          availability_checked: false,
+          explicit_confirmation_required: false,
+          instruction: status === "RESERVATION_DATETIME_IN_PAST"
+            ? "La fecha u hora solicitada ya ha pasado. No confirmes ni consultes disponibilidad para esa fecha. Pide al cliente una nueva fecha y hora futuras y espera su respuesta."
+            : "La fecha u hora indicada no es válida. Pide al cliente una nueva fecha y hora y espera su respuesta.",
+        }),
+      },
+    });
+    realtimeCommandPortFor(this as any).createDefaultResponse();
+  }
+
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const text = readRealtimeText(data);
     let event: RealtimeEvent | null = null;
@@ -105,17 +130,35 @@ export class CallSession extends BaseConstructor {
       try {
         const parsed = JSON.parse(event.arguments) as Record<string, unknown>;
         const rawStartsAt = typeof parsed.starts_at === "string" ? parsed.starts_at.trim() : null;
-        if (rawStartsAt && !hasExplicitZone(rawStartsAt)) {
-          const normalizedStartsAt = normalizeMadridLocalIso(rawStartsAt);
-          parsed.starts_at = normalizedStartsAt;
-          (this as any).diagnostics?.checkpoint?.("RESERVATION_DATETIME_NORMALIZED_V20", {
-            source_timezone: RESTAURANT_TIMEZONE,
-            original_starts_at: rawStartsAt,
-            normalized_starts_at: normalizedStartsAt,
-          });
-          const normalizedEvent = { ...event, arguments: JSON.stringify(parsed) };
-          await BasePrototype.handleRealtimeMessage.call(this, JSON.stringify(normalizedEvent));
-          return;
+        if (rawStartsAt) {
+          const normalizedStartsAt = hasExplicitZone(rawStartsAt) ? rawStartsAt : normalizeMadridLocalIso(rawStartsAt);
+          if (normalizedStartsAt !== rawStartsAt) {
+            (this as any).diagnostics?.checkpoint?.("RESERVATION_DATETIME_NORMALIZED_V20", {
+              source_timezone: RESTAURANT_TIMEZONE,
+              original_starts_at: rawStartsAt,
+              normalized_starts_at: normalizedStartsAt,
+            });
+          }
+
+          const temporalDecision = decideReservationDatetimeValidity(normalizedStartsAt, Date.now());
+          if (temporalDecision.kind !== "ALLOW") {
+            (this as any).diagnostics?.checkpoint?.("RESERVATION_DATETIME_REJECTED_V20", {
+              reason: temporalDecision.reason,
+              original_starts_at: rawStartsAt,
+              normalized_starts_at: normalizedStartsAt,
+              availability_checked: false,
+              confirmation_reached: false,
+            });
+            this.rejectReservationDatetimeV20(event, temporalDecision.reason, normalizedStartsAt);
+            return;
+          }
+
+          if (normalizedStartsAt !== rawStartsAt) {
+            parsed.starts_at = normalizedStartsAt;
+            const normalizedEvent = { ...event, arguments: JSON.stringify(parsed) };
+            await BasePrototype.handleRealtimeMessage.call(this, JSON.stringify(normalizedEvent));
+            return;
+          }
         }
       } catch (error) {
         (this as any).diagnostics?.fail?.("RESERVATION_DATETIME_NORMALIZATION_FAILED_V20", "RESERVATION_DATETIME_INVALID", {
