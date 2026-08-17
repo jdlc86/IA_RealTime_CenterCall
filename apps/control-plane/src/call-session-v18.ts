@@ -117,8 +117,18 @@ export class CallSession extends BaseConstructor {
       if (providerEvent.type === "ASSISTANT_RESPONSE_STARTED" && this.presenceRequestPendingV18 && !this.presenceResponseIdV18 && providerEvent.purpose === "presence_recovery_v18") {
         this.presenceResponseIdV18 = providerEvent.responseId ?? null;
       }
+
       const adapted = adaptRealtimeTurnEvent(providerEvent);
-      for (const lifecycleEvent of adapted) this.dispatchLifecycleV18(lifecycleEvent);
+      for (const lifecycleEvent of adapted) {
+        const isPresenceAudio =
+          (providerEvent.type === "ASSISTANT_AUDIO_STARTED" || providerEvent.type === "ASSISTANT_AUDIO_STOPPED") &&
+          Boolean(this.presenceResponseIdV18) && providerEvent.responseId === this.presenceResponseIdV18;
+        if (isPresenceAudio && (lifecycleEvent.type === "assistant_audio_started" || lifecycleEvent.type === "assistant_audio_stopped")) {
+          this.dispatchLifecycleV18({ type: lifecycleEvent.type, kind: "PRESENCE" });
+        } else {
+          this.dispatchLifecycleV18(lifecycleEvent);
+        }
+      }
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
