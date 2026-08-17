@@ -76,6 +76,8 @@ function isProtectedMetadata(metadata: Record<string, unknown>): boolean {
  * - protected greeting/recovery/handoff speech is never made interruptible here;
  * - response.created alone never opens barge-in; real assistant playback does;
  * - playback start opens semantic ownership before lower layers process the same event;
+ * - listening ownership is response-scoped: playback.clear invalidates the old
+ *   assumption and the next playback must reassert non-interrupting listening;
  * - completed caller speech is classified out-of-conversation as INTERRUPT/IGNORE;
  * - an unclassifiable candidate resolves immediately as IGNORE;
  * - confirmed barge-in has one lifecycle owner: v40. v36 explicitly yields that
@@ -87,7 +89,7 @@ export class CallSession extends BaseConstructor {
   private pendingBargeInV40: PendingBargeIn | null = null;
   private classifierByResponseV40 = new Map<string, PendingBargeIn>();
   private protectedResponseIdsV40 = new Set<string>();
-  private normalListeningV40 = false;
+  private listeningResponseIdV40: string | null = null;
   private playbackBargeInWindowV40 = false;
   private v40OwnedSemanticItemId: string | null = null;
 
@@ -145,13 +147,14 @@ export class CallSession extends BaseConstructor {
     });
   }
 
-  private setNormalListeningV40(): void {
-    if (this.normalListeningV40) return;
+  private setNormalListeningV40(responseIdValue: string): void {
+    if (this.listeningResponseIdV40 === responseIdValue) return;
     const session = this as any;
     if (!session.socket || session.state === "closing" || session.hangupStarted) return;
     realtimeCommandPortFor(session).beginNonInterruptingListening(session.tenantVadV35 ?? {});
-    this.normalListeningV40 = true;
+    this.listeningResponseIdV40 = responseIdValue;
     session.diagnostics?.checkpoint?.("BARGE_IN_LISTENING_ACTIVE_V40_REBUILD", {
+      response_id: responseIdValue,
       automatic_interrupt: false,
       automatic_response: false,
       owner_state: this.responseOwnerV40.state,
@@ -159,10 +162,22 @@ export class CallSession extends BaseConstructor {
     });
   }
 
+  private invalidateNormalListeningV40(reason: string, responseIdValue: string | null): void {
+    const previousResponseId = this.listeningResponseIdV40;
+    this.listeningResponseIdV40 = null;
+    (this as any).diagnostics?.checkpoint?.("BARGE_IN_LISTENING_INVALIDATED_V40_REBUILD", {
+      reason,
+      response_id: responseIdValue,
+      previous_listening_response_id: previousResponseId,
+      vad_restored: false,
+      next_playback_must_reassert: true,
+    });
+  }
+
   private restoreNormalVadV40(reason: string): void {
-    if (!this.normalListeningV40) return;
+    if (!this.listeningResponseIdV40) return;
     const session = this as any;
-    this.normalListeningV40 = false;
+    this.listeningResponseIdV40 = null;
     if (!session.socket || session.state === "closing" || session.hangupStarted) return;
     realtimeCommandPortFor(session).restoreInputDetection(session.tenantVadV35 ?? {});
     session.diagnostics?.checkpoint?.("BARGE_IN_LISTENING_RELEASED_V40_REBUILD", { reason });
@@ -343,6 +358,8 @@ export class CallSession extends BaseConstructor {
     } else if (event?.type === "output_audio_buffer.cleared") {
       this.reconcileOwnerEventV40({ type: "assistant_playback_cleared" });
       if (id) this.protectedResponseIdsV40.delete(id);
+      this.playbackBargeInWindowV40 = false;
+      this.invalidateNormalListeningV40("assistant_playback_cleared", id);
     } else if (event?.type === "input_audio_buffer.speech_started") {
       if (this.playbackBargeInWindowV40) {
         this.reconcileOwnerEventV40({ type: "caller_speech_started" });
@@ -371,15 +388,15 @@ export class CallSession extends BaseConstructor {
       this.pendingBargeInV40 = null;
       this.classifierByResponseV40.clear();
       this.protectedResponseIdsV40.clear();
-      this.normalListeningV40 = false;
+      this.listeningResponseIdV40 = null;
       this.playbackBargeInWindowV40 = false;
       this.v40OwnedSemanticItemId = null;
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
 
-    if (normalPlaybackStarting) {
-      this.setNormalListeningV40();
+    if (normalPlaybackStarting && id) {
+      this.setNormalListeningV40(id);
     } else if (event?.type === "output_audio_buffer.stopped") {
       if (id) this.protectedResponseIdsV40.delete(id);
       this.restoreNormalVadV40("assistant_playback_stopped");
