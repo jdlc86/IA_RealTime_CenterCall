@@ -5,6 +5,11 @@ export type ClosingDecision =
   | { action: "ASK_CONFIRMATION"; pending: true }
   | { action: "CONTINUE"; pending: false };
 
+export type EndCallProposalDecision =
+  | { action: "ALLOW_CLOSE" }
+  | { action: "ASK_CONFIRMATION" }
+  | { action: "ACK_PENDING" };
+
 function normalizeClosingText(value: string): string {
   return value
     .normalize("NFD")
@@ -15,11 +20,30 @@ function normalizeClosingText(value: string): string {
     .trim();
 }
 
+/**
+ * Strong farewell expressions remain evidence even when surrounded by natural
+ * courtesy language. Vague completion expressions stay end-anchored so phrases
+ * such as "no necesito nada más sobre la reserva, pero..." cannot close a call.
+ */
 export function hasExplicitUserFarewellEvidence(value: string): boolean {
   const text = normalizeClosingText(value);
   if (!text) return false;
-  return /^(?:vale |ok |perfecto )?(?:adios|hasta luego|hasta pronto|me despido|puedes colgar|puede colgar|cuelga|termina la llamada|terminar la llamada|finaliza la llamada|finalizar la llamada|quiero terminar la llamada|quiero finalizar la llamada|eso es todo|nada mas|no necesito nada mas)(?:\b|$)/.test(text)
-    || /^(?:gracias )+(?:adios|hasta luego|hasta pronto)(?:\b|$)/.test(text);
+
+  const strongFarewell = /(?:^|\b)(?:adios|hasta luego|hasta pronto|me despido)(?:\b|$)/.test(text);
+  const explicitHangup = /(?:^|\b)(?:puedes colgar|puede colgar|podemos colgar|cuelga|cuelgue)(?:\b|$)/.test(text);
+  const explicitCallEnd = /(?:^|\b)(?:termina|termine|finaliza|finalice) (?:ya )?(?:la )?llamada(?:\b|$)/.test(text)
+    || /(?:^|\b)quiero (?:terminar|finalizar) (?:ya )?(?:la )?llamada(?:\b|$)/.test(text);
+
+  if (strongFarewell || explicitHangup || explicitCallEnd) {
+    // Explicit negation must win over a matching phrase.
+    if (/\b(?:no|todavia no|aun no) (?:quiero )?(?:terminar|finalizar|colgar|cuelgues|cuelgue)\b/.test(text)) return false;
+    if (/\b(?:no|todavia no|aun no) (?:me despido|adios|hasta luego|hasta pronto)\b/.test(text)) return false;
+    return true;
+  }
+
+  // These are intentionally terminal-only because they can also close a topic,
+  // not necessarily the phone call, when followed by another request.
+  return /(?:^|\b)(?:eso es todo|nada mas|no necesito nada mas|ya esta|hemos terminado|ya hemos terminado)(?: gracias| muchas gracias)?$/.test(text);
 }
 
 export function isExplicitClosingConfirmation(value: string): boolean {
@@ -32,6 +56,23 @@ export function shouldCommitPendingClose(
   transcript: string,
 ): boolean {
   return closingConfirmationPending && isExplicitClosingConfirmation(transcript);
+}
+
+/**
+ * Backend authority for restaurant_end_call.
+ *
+ * Once a confirmation question is pending, repeated model proposals are merely
+ * acknowledged. They must not create another assistant response because only a
+ * new caller turn may resolve or replace the pending decision.
+ */
+export function decideEndCallProposal(
+  closingConfirmationPending: boolean,
+  userClosingEvidence: boolean,
+  modelConfirmed: boolean,
+): EndCallProposalDecision {
+  if (closingConfirmationPending) return { action: "ACK_PENDING" };
+  if (!modelConfirmed || !userClosingEvidence) return { action: "ASK_CONFIRMATION" };
+  return { action: "ALLOW_CLOSE" };
 }
 
 export function decideClosingTransition(
