@@ -106,6 +106,10 @@ export class OpenAIRealtimeCommandAdapter implements RealtimeProviderCommandPort
     this.host.send({ type: "input_audio_buffer.clear" });
   }
 
+  discardInputItem(itemId: string): void {
+    this.host.send({ type: "conversation.item.delete", item_id: itemId });
+  }
+
   suspendInputDetection(): void {
     this.host.send(openAITurnDetectionUpdate(null));
   }
