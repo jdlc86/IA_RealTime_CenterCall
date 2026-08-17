@@ -1,5 +1,6 @@
 import { CallSession as CallSessionV40 } from "./call-session-v40-rebuild";
 import {
+  decideEndCallProposal,
   hasExplicitUserFarewellEvidence,
   isExplicitClosingConfirmation,
   shouldCommitPendingClose,
@@ -50,8 +51,9 @@ function usableTranscript(value: unknown): string {
  * The model may propose restaurant_end_call, but it cannot authorize itself.
  * A blocked end-call proposal creates one pending close. If the caller then
  * explicitly confirms the closing question, v41 commits that already-pending
- * backend action directly. It never depends on the model issuing end_call a
- * second time, so tool/transcription ordering cannot lose the authorization.
+ * backend action directly. Repeated model proposals while that confirmation is
+ * pending are acknowledged without creating another response, preventing a
+ * self-sustaining end-call/confirmation loop.
  */
 export class CallSession extends BaseConstructor {
   private closingConfirmationPendingV41 = false;
@@ -120,6 +122,27 @@ export class CallSession extends BaseConstructor {
     });
   }
 
+  private acknowledgePendingEndCallV41(callId: string | undefined): void {
+    const session = this as any;
+    session.send?.({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify({
+          ok: true,
+          status: "USER_CONFIRMATION_PENDING",
+          instruction: "La confirmación de cierre ya está pendiente. No vuelvas a solicitar restaurant_end_call y espera un nuevo turno del usuario.",
+        }),
+      },
+    });
+    session.diagnostics?.checkpoint?.("END_CALL_DUPLICATE_SUPPRESSED_WHILE_CONFIRMATION_PENDING_V41", {
+      irreversible_close_prevented: true,
+      confirmation_still_pending: true,
+      response_create_emitted: false,
+    });
+  }
+
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const event = parseEvent(data);
 
@@ -136,8 +159,18 @@ export class CallSession extends BaseConstructor {
       if (session.state === "closing" || session.hangupStarted) return;
 
       const args = parseArgs(event.arguments);
-      const modelConfirmed = args.confirmed === true;
-      if (!modelConfirmed || !this.userClosingEvidenceV41) {
+      const decision = decideEndCallProposal(
+        this.closingConfirmationPendingV41,
+        this.userClosingEvidenceV41,
+        args.confirmed === true,
+      );
+
+      if (decision.action === "ACK_PENDING") {
+        this.acknowledgePendingEndCallV41(event.call_id);
+        return;
+      }
+
+      if (decision.action === "ASK_CONFIRMATION") {
         this.rejectUngroundedEndCallV41(event.call_id);
         return;
       }
