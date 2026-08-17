@@ -1,5 +1,5 @@
 import baseHandler from "./index-v4";
-export { CallSession } from "./call-session-v41-closure-guard";
+export { CallSession } from "./call-session-v42-turn-boundaries";
 
 type WorkerEnv = {
   CALL_SESSIONS: DurableObjectNamespace;
