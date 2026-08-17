@@ -10,7 +10,7 @@ import { decideResponseOwnerEmission, type ResponseOwnerEmissionMode } from "./r
 import { applyBargeInSemanticDecision } from "./response-owner-barge-in-decision";
 import {
   BARGE_IN_METADATA_PURPOSE,
-  buildBargeInClassifierResponse,
+  buildBargeInClassifierRequest,
   parseBargeInDecision,
 } from "./barge-in-confirmation";
 import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
@@ -182,7 +182,7 @@ export class CallSession extends BaseConstructor {
 
     const pending: PendingBargeIn = { itemId, transcript, originalData: data };
     this.pendingBargeInV40 = pending;
-    (this as any).send?.(buildBargeInClassifierResponse(transcript, itemId));
+    realtimeCommandPortFor(this as any).requestTextDecision(buildBargeInClassifierRequest(transcript, itemId));
     (this as any).diagnostics?.checkpoint?.("BARGE_IN_CLASSIFIER_REQUESTED_V40_REBUILD", {
       item_id: itemId,
       transcript_length: transcript.length,
