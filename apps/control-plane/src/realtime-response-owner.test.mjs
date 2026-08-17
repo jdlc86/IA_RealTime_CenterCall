@@ -23,14 +23,22 @@ test("confirmed barge-in does not wait for response.done", () => {
   ]);
 });
 
-test("early caller speech is owned from response start without waiting for playback start", () => {
+test("caller speech without assistant ownership is not classified as barge-in", () => {
+  const s = initialResponseOwnerSnapshot();
+  const r = step(s, { type: "caller_speech_started" });
+  assert.equal(r.snapshot.state, "IDLE");
+  assert.equal(r.snapshot.activeResponseId, null);
+  assert.deepEqual(r.effects, []);
+});
+
+test("late assistant response start cannot destroy an active barge-in classification", () => {
   let s = initialResponseOwnerSnapshot();
-  ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "early" }));
-  const claimed = step(s, { type: "caller_speech_started" });
-  assert.equal(claimed.snapshot.state, "BARGE_IN_CLASSIFYING");
-  assert.equal(claimed.snapshot.activeResponseId, "early");
-  assert.equal(claimed.snapshot.playbackCleared, false);
-  assert.deepEqual(claimed.effects, []);
+  ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
+  ({ snapshot: s } = step(s, { type: "caller_speech_started" }));
+  const late = step(s, { type: "assistant_response_started", responseId: "new" });
+  assert.equal(late.snapshot.state, "BARGE_IN_CLASSIFYING");
+  assert.equal(late.snapshot.activeResponseId, "new");
+  assert.equal(late.snapshot.playbackCleared, false);
 });
 
 test("SIP-cleared playback and active response are independent", () => {
