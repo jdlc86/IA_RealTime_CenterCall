@@ -31,6 +31,33 @@ test("isolated speech is translated without leaking OpenAI protocol into caller"
   }]);
 });
 
+test("provider-neutral text decision maps to isolated OpenAI text response", () => {
+  const h = host();
+  const port = new OpenAIRealtimeCommandAdapter(h);
+  port.requestTextDecision({
+    requestId: "classifier-1",
+    purpose: "barge_in_classifier_rebuild",
+    metadata: { source_item_id: "item-1" },
+    maxOutputTokens: 8,
+    instructions: "Return INTERRUPT or IGNORE",
+    inputText: "Transcripción: espera",
+  });
+
+  assert.deepEqual(h.events, [{
+    event_id: "classifier-1",
+    type: "response.create",
+    response: {
+      conversation: "none",
+      output_modalities: ["text"],
+      tool_choice: "none",
+      instructions: "Return INTERRUPT or IGNORE",
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Transcripción: espera" }] }],
+      max_output_tokens: 8,
+      metadata: { source_item_id: "item-1", purpose: "barge_in_classifier_rebuild" },
+    },
+  }]);
+});
+
 test("provider commands preserve current OpenAI VAD and playback semantics", () => {
   const h = host();
   const port = new OpenAIRealtimeCommandAdapter(h);
