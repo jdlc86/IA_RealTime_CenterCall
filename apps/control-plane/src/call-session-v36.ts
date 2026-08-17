@@ -52,6 +52,10 @@ export class CallSession extends BaseConstructor {
     return false;
   }
 
+  protected isTurnConcurrencyActiveV36(): boolean {
+    return this.turnConcurrencyV36.isActive();
+  }
+
   private acquireTurnConcurrencyV36(): void {
     if (!this.turnConcurrencyV36.acquire()) return;
     if ((this as any).state === "closing" || (this as any).hangupStarted) {
