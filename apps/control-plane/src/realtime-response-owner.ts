@@ -48,6 +48,7 @@ export function initialResponseOwnerSnapshot(): ResponseOwnerSnapshot {
  * - response.done is reconciliation evidence, not permission to continue;
  * - if Realtime reports a second response while one is still active, the newest
  *   server-created response becomes authoritative and the conflict is surfaced;
+ * - a late response start cannot destroy an already-valid barge-in classification;
  * - a late response.done for a superseded response can never clear the current one;
  * - terminal state is absorbing.
  */
@@ -74,9 +75,9 @@ export function reduceResponseOwner(
         : [];
       return {
         snapshot: {
-          state: "ASSISTANT_ACTIVE",
+          state: snapshot.state === "BARGE_IN_CLASSIFYING" ? "BARGE_IN_CLASSIFYING" : "ASSISTANT_ACTIVE",
           activeResponseId: event.responseId,
-          playbackCleared: false,
+          playbackCleared: snapshot.state === "BARGE_IN_CLASSIFYING" ? snapshot.playbackCleared : false,
           callerResponsePending: false,
         },
         effects: conflict,
