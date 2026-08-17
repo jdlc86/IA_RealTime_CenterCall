@@ -15,6 +15,7 @@ import {
   parseBargeInDecision,
 } from "./barge-in-confirmation";
 import { restoreTurnDetectionEvent } from "./protected-turn-detection";
+import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
 
 const BaseConstructor = CallSessionV39 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV39.prototype as any;
@@ -194,30 +195,27 @@ export class CallSession extends BaseConstructor {
   }
 
   private executePreSemanticEffectsV40(effects: ResponseOwnerEffect[]): void {
-    const session = this as any;
+    const realtime = realtimeCommandPortFor(this as any);
     for (const effect of effects) {
       if (effect.type === "cancel_response") {
-        session.send?.({ type: "response.cancel", response_id: effect.responseId });
+        realtime.cancelResponse(effect.responseId);
       } else if (effect.type === "clear_playback") {
-        session.send?.({ type: "output_audio_buffer.clear" });
+        realtime.clearPlayback();
       }
     }
   }
 
   private executePostSemanticEffectsV40(effects: ResponseOwnerEffect[]): void {
-    const session = this as any;
+    const realtime = realtimeCommandPortFor(this as any);
     for (const effect of effects) {
       if (effect.type === "create_caller_response") {
-        session.send?.({ type: "response.create" });
+        realtime.createDefaultResponse();
       } else if (effect.type === "resume_assistant") {
-        session.send?.({
-          type: "response.create",
-          response: {
-            tool_choice: "none",
-            instructions:
-              "Continúa inmediatamente la respuesta que estabas pronunciando antes de la interrupción acústica. " +
-              "No menciones la interrupción, no vuelvas a empezar desde el principio y completa únicamente la información pendiente.",
-          },
+        realtime.speak({
+          tools: "DISABLED",
+          instructions:
+            "Continúa inmediatamente la respuesta que estabas pronunciando antes de la interrupción acústica. " +
+            "No menciones la interrupción, no vuelvas a empezar desde el principio y completa únicamente la información pendiente.",
         });
       }
     }
