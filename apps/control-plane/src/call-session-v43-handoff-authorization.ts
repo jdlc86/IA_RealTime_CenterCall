@@ -2,6 +2,7 @@ import { CallSession as CallSessionV42 } from "./call-session-v42-turn-boundarie
 import {
   authorizeHumanHandoff,
   initialHumanHandoffAuthorizationState,
+  observeHumanHandoffCallerTurn,
   type HumanHandoffAuthorizationState,
 } from "./human-handoff-authorization-policy.js";
 
@@ -81,7 +82,10 @@ export class CallSession extends BaseConstructor {
 
     if (event?.type === "conversation.item.input_audio_transcription.completed") {
       const transcript = usableTranscript(event.transcript);
-      if (transcript) this.latestCallerTranscriptV43 = transcript;
+      if (transcript) {
+        this.handoffAuthorizationV43 = observeHumanHandoffCallerTurn(this.handoffAuthorizationV43, transcript);
+        this.latestCallerTranscriptV43 = transcript;
+      }
     }
 
     if (event?.type === "response.function_call_arguments.done" && event.name === HUMAN_ASSISTANCE) {
