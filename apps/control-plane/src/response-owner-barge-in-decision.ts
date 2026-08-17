@@ -2,7 +2,7 @@ import {
   reduceResponseOwner,
   type ResponseOwnerEffect,
   type ResponseOwnerSnapshot,
-} from "./realtime-response-owner";
+} from "./realtime-response-owner.js";
 
 export type BargeInSemanticDecision = "INTERRUPT" | "IGNORE";
 
