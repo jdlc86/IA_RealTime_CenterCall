@@ -1,6 +1,7 @@
 import { CallSession as CallSessionV17 } from "./call-session-v17";
 import { ConversationTurnLifecycle, type LifecycleEffect, type LifecycleEvent } from "./conversation-turn-lifecycle";
-import { adaptRealtimeTurnEvent, type SyntheticRealtimeEvent } from "./realtime-turn-lifecycle-adapter";
+import { adaptRealtimeTurnEvent } from "./realtime-turn-lifecycle-adapter";
+import { adaptOpenAIRealtimeEvent } from "./openai-realtime-event-adapter";
 import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
 
 const BaseConstructor = CallSessionV17 as unknown as new (...args: any[]) => any;
@@ -9,26 +10,6 @@ const BasePrototype = CallSessionV17.prototype as any;
 const FIRST_PRESENCE_CHECK_MS = 8_000;
 const MAX_UNANSWERED_WAIT_MS = 26_000;
 const MAX_CALL_DURATION_MS = 15 * 60_000;
-
-type RealtimeEvent = SyntheticRealtimeEvent & {
-  response_id?: string;
-  response?: { id?: string; metadata?: Record<string, unknown> | null };
-};
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
-function parseRealtimeEvent(data: unknown): RealtimeEvent | null {
-  const text = readRealtimeText(data);
-  if (!text) return null;
-  try { return JSON.parse(text) as RealtimeEvent; } catch { return null; }
-}
-function responseId(event: RealtimeEvent | null): string | null {
-  return event?.response_id ?? event?.response?.id ?? null;
-}
 
 export class CallSession extends BaseConstructor {
   private turnLifecycleV18 = new ConversationTurnLifecycle();
@@ -49,6 +30,7 @@ export class CallSession extends BaseConstructor {
         authority: "ConversationTurnLifecycle", presence_check_ms: FIRST_PRESENCE_CHECK_MS,
         silence_close_ms: MAX_UNANSWERED_WAIT_MS, max_call_duration_ms: MAX_CALL_DURATION_MS,
         epoch_scoped_deadlines: true, legacy_presence_stages_removed: true, provider_command_port: true,
+        provider_event_adapter: true,
       });
     }
     return response;
@@ -130,20 +112,22 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const event = parseRealtimeEvent(data);
-    if (event) {
-      if (event.type === "response.created" && this.presenceRequestPendingV18 && !this.presenceResponseIdV18) this.presenceResponseIdV18 = responseId(event);
-      const adapted = adaptRealtimeTurnEvent(event);
-      for (const lifecycleEvent of adapted) {
-        if ((lifecycleEvent.type === "assistant_audio_started" || lifecycleEvent.type === "assistant_audio_stopped") && this.presenceResponseIdV18 && responseId(event) === this.presenceResponseIdV18) {
-          this.dispatchLifecycleV18({ type: lifecycleEvent.type, kind: "PRESENCE" });
-        } else this.dispatchLifecycleV18(lifecycleEvent);
+    const providerEvents = adaptOpenAIRealtimeEvent(data);
+    for (const providerEvent of providerEvents) {
+      if (providerEvent.type === "ASSISTANT_RESPONSE_STARTED" && this.presenceRequestPendingV18 && !this.presenceResponseIdV18 && providerEvent.purpose === "presence_recovery_v18") {
+        this.presenceResponseIdV18 = providerEvent.responseId ?? null;
       }
+      const adapted = adaptRealtimeTurnEvent(providerEvent);
+      for (const lifecycleEvent of adapted) this.dispatchLifecycleV18(lifecycleEvent);
     }
+
     await BasePrototype.handleRealtimeMessage.call(this, data);
-    if (event?.type === "output_audio_buffer.stopped" && this.presenceResponseIdV18 && responseId(event) === this.presenceResponseIdV18) {
-      this.presenceRequestPendingV18 = false;
-      this.presenceResponseIdV18 = null;
+
+    for (const providerEvent of providerEvents) {
+      if (providerEvent.type === "ASSISTANT_AUDIO_STOPPED" && this.presenceResponseIdV18 && providerEvent.responseId === this.presenceResponseIdV18) {
+        this.presenceRequestPendingV18 = false;
+        this.presenceResponseIdV18 = null;
+      }
     }
   }
 }
