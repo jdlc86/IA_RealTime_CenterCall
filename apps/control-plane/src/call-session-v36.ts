@@ -1,6 +1,6 @@
 import { CallSession as CallSessionV35Runtime } from "./call-session-v35-runtime";
 import { restoreTurnDetectionEvent, suspendTurnDetectionEvent } from "./protected-turn-detection";
-import { TurnConcurrencyLifecycle } from "./turn-concurrency-lifecycle";
+import { TurnConcurrencyLifecycle, isUsableCompletedTranscript } from "./turn-concurrency-lifecycle";
 
 const BaseConstructor = CallSessionV35Runtime as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV35Runtime.prototype as any;
@@ -10,6 +10,7 @@ const PROTECTED_METADATA_KEY = "protected_speech_v35";
 type RealtimeEvent = {
   type?: string;
   item_id?: string;
+  transcript?: unknown;
   response_id?: string;
   response?: {
     id?: string;
@@ -37,21 +38,10 @@ function responseId(event: RealtimeEvent): string | null {
 }
 
 /**
- * v36 serializes caller turns while Lucia is processing one semantic turn.
- *
- * Lifecycle invariant:
- * caller transcript completed
- *   -> suspend turn detection
- *   -> Lucia may reason/call one or more tools
- *   -> any overlapping caller item is removed from conversation context
- *   -> normal assistant playback starts: clear uncommitted audio + restore tenant VAD
- *   -> barge-in is normal again while Lucia speaks
- *
- * Protected recovery is different: its VAD remains suspended until protected
- * playback completes, so restoring normal VAD cannot make the recovery interruptible.
- *
- * No semantic classification is performed here. This is only a single-flight
- * lifecycle boundary around Realtime user turns.
+ * v36 serializes usable caller turns while Lucia is processing one semantic turn.
+ * Empty/unusable transcripts never acquire the lock because they cannot produce a
+ * semantic response that would release it. A higher lifecycle may also explicitly
+ * abandon a stalled processing turn and release this local lock deterministically.
  */
 export class CallSession extends BaseConstructor {
   private turnConcurrencyV36 = new TurnConcurrencyLifecycle();
@@ -69,7 +59,7 @@ export class CallSession extends BaseConstructor {
       (this as any).send?.(suspendTurnDetectionEvent());
       this.armTurnConcurrencyWatchdogV36();
       (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_LOCK_ACQUIRED_V36", {
-        source: "completed_user_transcript",
+        source: "completed_usable_user_transcript",
         turn_detection_suspended: true,
       });
     } catch (error) {
@@ -87,8 +77,6 @@ export class CallSession extends BaseConstructor {
     const session = this as any;
     try {
       if (session.socket && session.state !== "closing" && !session.hangupStarted) {
-        // Audio spoken while Lucia was processing is not a second conversational
-        // turn. Drop any uncommitted bytes before normal VAD is restored.
         session.send?.({ type: "input_audio_buffer.clear" });
         session.send?.(restoreTurnDetectionEvent(session.tenantVadV35 ?? {}));
       }
@@ -107,11 +95,14 @@ export class CallSession extends BaseConstructor {
   }
 
   /**
-   * A terminal lifecycle (for example human handoff) can take ownership of the
-   * already-suspended VAD without briefly restoring normal turn detection.
-   * This only releases v36's local mutex/watchdog; the caller remains acoustically
-   * gated until the terminal owner explicitly ends the call or transfers it.
+   * Higher conversation lifecycles call this only when semantic processing has
+   * objectively been abandoned. Keeping the release here preserves one owner for
+   * the VAD restore + local watchdog cleanup.
    */
+  protected releaseTurnConcurrencyForRecoveryV36(reason: string): void {
+    this.releaseTurnConcurrencyV36(reason);
+  }
+
   protected detachTurnConcurrencyForTerminalV36(reason: string): void {
     const wasActive = this.turnConcurrencyV36.release();
     this.clearTurnConcurrencyWatchdogV36();
@@ -165,24 +156,27 @@ export class CallSession extends BaseConstructor {
     if (event?.type === "response.created") {
       const id = responseId(event);
       const protectedKind = event.response?.metadata?.[PROTECTED_METADATA_KEY];
-      if (id && (protectedKind === "GREETING" || protectedKind === "RECOVERY")) {
+      if (id && (protectedKind === "GREETING" || protectedKind === "RECOVERY" || protectedKind === "TERMINAL")) {
         this.protectedResponseIdsV36.add(id);
       }
     }
 
     if (event?.type === "conversation.item.input_audio_transcription.completed") {
-      if (this.turnConcurrencyV36.isActive()) {
+      if (!isUsableCompletedTranscript(event.transcript)) {
+        (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_EMPTY_TRANSCRIPT_IGNORED_V36", {
+          lock_acquired: false,
+        });
+      } else if (this.turnConcurrencyV36.isActive()) {
         this.discardOverlappingTurnV36(event);
         return;
+      } else {
+        this.acquireTurnConcurrencyV36();
       }
-      this.acquireTurnConcurrencyV36();
     }
 
     if (event?.type === "output_audio_buffer.started" && this.turnConcurrencyV36.isActive()) {
       const id = responseId(event);
       if (!id || !this.protectedResponseIdsV36.has(id)) {
-        // Restore VAD at the start of normal Lucia speech so normal barge-in is
-        // preserved. The already-active semantic turn remains the only processed turn.
         this.releaseTurnConcurrencyV36("normal_assistant_playback_started");
       }
     }
