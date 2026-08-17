@@ -14,6 +14,8 @@ export type AuthoritativeMadridNowContext = {
   weekday: string;
 };
 
+const AUTHORITATIVE_NOW_MARKER = "[AUTHORITATIVE_NOW_V48]";
+
 function madridParts(value: Date): { y: number; m: number; d: number } {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Europe/Madrid",
@@ -77,6 +79,16 @@ export function authoritativeMadridNowContext(now: Date = new Date()): Authorita
 export function authoritativeTemporalPromptContext(now: Date = new Date()): string {
   const context = authoritativeMadridNowContext(now);
   return `CONTEXTO TEMPORAL AUTORITATIVO DEL BACKEND: ${JSON.stringify(context)}. Usa exclusivamente este contexto para interpretar hoy, mañana, pasado mañana, este lunes/domingo y cualquier fecha relativa. Nunca inventes el año ni la fecha actual. Si una petición temporal es ambigua, pide aclaración. Este contexto orienta tu interpretación; las validaciones temporales del backend siguen siendo la autoridad final.`;
+}
+
+export function stripAuthoritativeNowContext(instructions: string): string {
+  const markerIndex = instructions.indexOf(`\n\n${AUTHORITATIVE_NOW_MARKER}\n`);
+  return markerIndex >= 0 ? instructions.slice(0, markerIndex) : instructions;
+}
+
+export function withAuthoritativeNowContext(instructions: string, now: Date = new Date()): string {
+  const base = stripAuthoritativeNowContext(instructions);
+  return `${base}\n\n${AUTHORITATIVE_NOW_MARKER}\n${authoritativeTemporalPromptContext(now)}`;
 }
 
 export function groundMadridDateTime(iso: string, now: Date = new Date()): MadridTemporalLabel {
