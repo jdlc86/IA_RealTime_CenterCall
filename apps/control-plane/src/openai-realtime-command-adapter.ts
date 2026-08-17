@@ -30,7 +30,9 @@ export class OpenAIRealtimeCommandAdapter implements RealtimeProviderCommandPort
         content: [{ type: "input_text", text: request.exactText }],
       }];
     }
-    this.host.send({ type: "response.create", response });
+    const event: Record<string, unknown> = { type: "response.create", response };
+    if (request.requestId) event.event_id = request.requestId;
+    this.host.send(event);
   }
 
   createDefaultResponse(): void {
