@@ -56,15 +56,9 @@ CIERRE: una despedida inequívoca usa restaurant_end_call confirmed=true. El sil
 
 /**
  * v29 separates acoustic evidence from semantic evidence.
- *
- * speech_started remains available to the watchdog but is deliberately routed
- * below v27, so VAD can never force tool_choice=required. Only a completed,
- * non-empty transcription arms the tool-first domain gate. Lucia then decides
- * whether the transcript is a real restaurant turn, out of scope, or background
- * input via restaurant_input_ignored.
- *
- * It also prevents Lucia's own spoken transcript from validating a caller turn
- * and adds DEBUG traceability: user transcript -> tool+arguments -> tool output.
+ * Presence/waiting state is not owned here: ignored-input outcomes are reported
+ * to ConversationTurnLifecycle through v18, which alone decides the next silence
+ * epoch. v29 retains only the semantic tool gate and model/tool observability.
  */
 export class CallSession extends BaseConstructor {
   private semanticGateArmedV29 = false;
@@ -72,7 +66,7 @@ export class CallSession extends BaseConstructor {
   private originalSendV29: ((message: unknown) => void) | null = null;
 
   async fetch(request: Request): Promise<Response> {
-    const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
+    const isStart = request.method === "POST" && new URL(request.url()).pathname === "/start";
     const response = await super.fetch(request);
 
     if (isStart && response.ok) {
@@ -87,6 +81,7 @@ export class CallSession extends BaseConstructor {
         lucia_speech_can_validate_user_turn: false,
         ignored_input_tool: INPUT_IGNORED,
         debug_turn_trace: true,
+        presence_authority: "ConversationTurnLifecycle",
       });
     }
 
@@ -136,13 +131,14 @@ export class CallSession extends BaseConstructor {
     let reason = "UNCERTAIN";
     try {
       const args = event.arguments?.trim() ? JSON.parse(event.arguments) as Record<string, unknown> : {};
-      if (typeof args.reason === "string") reason = args.reason;
+      if (typeof args.reason === "string" && args.reason.trim()) reason = args.reason.trim();
     } catch { /* fail safe */ }
 
     (this as any).diagnostics?.checkpoint?.("BACKGROUND_INPUT_IGNORED_V29", {
       reason,
       no_business_action: true,
       no_spoken_response: true,
+      lifecycle_authority: true,
     });
     (this as any).send?.({
       type: "conversation.item.create",
@@ -153,17 +149,16 @@ export class CallSession extends BaseConstructor {
       },
     });
 
-    // v18 suspends on tool execution; this safe sink intentionally produces no
-    // assistant audio, so return the watchdog to waiting state explicitly.
-    (this as any).toolExecutionActiveV18 = false;
-    (this as any).armWaitingForUserV18?.("background_input_ignored_v29");
+    // Semantic classification is reported to the lifecycle. v29 does not rearm
+    // presence or touch v18 implementation fields.
+    (this as any).observeSemanticIgnoredV18?.(reason);
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const event = parseEvent(data);
 
-    // Acoustic evidence must still reach the watchdog, but MUST bypass v27's
-    // speech_started -> tool_choice=required behavior.
+    // Acoustic evidence must still reach the lower realtime chain, but MUST
+    // bypass v27's speech_started -> tool_choice=required behavior.
     if (event?.type === "input_audio_buffer.speech_started") {
       await V26Prototype.handleRealtimeMessage.call(this, data);
       return;
@@ -180,12 +175,6 @@ export class CallSession extends BaseConstructor {
       if (transcript) this.armSemanticGateV29(transcript);
     }
 
-    // Never let Lucia's own speech satisfy the watchdog's semantic-user-turn
-    // condition. Only caller transcript + subsequent agent tool can do that.
-    if (event?.type === "response.output_audio_transcript.done") {
-      (this as any).userTurnObservedV18 = false;
-    }
-
     if (event?.type === "response.function_call_arguments.done" && event.name && isPublicRestaurantTool(event.name)) {
       if (this.debugEnabledV29()) {
         (this as any).diagnostics?.checkpoint?.("DEBUG_MODEL_TOOL_DECISION_V29", {
@@ -197,8 +186,6 @@ export class CallSession extends BaseConstructor {
       this.releaseSemanticGateV29(event.name);
 
       if (event.name === INPUT_IGNORED) {
-        // v25 authorization sees this as a built-in runtime tool; execute it here
-        // before older fallback handlers can treat it as missing.
         this.handleIgnoredInputV29(event);
         return;
       }
