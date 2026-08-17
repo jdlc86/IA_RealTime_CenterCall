@@ -3,6 +3,8 @@ export type RealtimeInputDetectionSettings = {
   prefixPaddingMs?: number;
   silenceDurationMs?: number;
   idleTimeoutMs?: number;
+  createResponse?: boolean;
+  interruptResponse?: boolean;
 };
 
 export type RealtimeSpeechRequest = {
