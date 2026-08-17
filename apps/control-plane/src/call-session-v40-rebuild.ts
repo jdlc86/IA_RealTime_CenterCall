@@ -2,6 +2,7 @@ import { CallSession as CallSessionV39 } from "./call-session-v39";
 import {
   initialResponseOwnerSnapshot,
   reduceResponseOwner,
+  type ResponseOwnerEffect,
   type ResponseOwnerEvent,
   type ResponseOwnerSnapshot,
 } from "./realtime-response-owner";
@@ -35,32 +36,60 @@ function responseId(event: RealtimeEvent): string | null {
 }
 
 /**
- * Rebuild v40: passive response-ownership observer above the known-good v39.
+ * Rebuild v40: reconciliation authority above the known-good v39.
  *
- * This class intentionally does NOT emit response.create, response.cancel, or
- * playback commands. Its only job is to prove that one state model can
- * reconcile the Realtime/SIP events seen by v39 without changing behaviour.
- * Authority will be enabled only after synthetic and CI coverage proves the
- * event mapping is sound.
+ * This class owns the canonical response identity/reconciliation view, including
+ * superseded response.created events and stale response.done events. It still
+ * does NOT execute response.create, response.cancel, playback clear, or resume
+ * effects. Emission authority remains disabled until reconciliation proves stable.
  */
 export class CallSession extends BaseConstructor {
   private responseOwnerV40: ResponseOwnerSnapshot = initialResponseOwnerSnapshot();
+
+  private reportOwnerEffectsV40(effects: ResponseOwnerEffect[]): void {
+    for (const effect of effects) {
+      if (effect.type === "response_ownership_conflict") {
+        (this as any).diagnostics?.fail?.(
+          "RESPONSE_OWNERSHIP_CONFLICT_V40_REBUILD",
+          "MULTIPLE_ACTIVE_REALTIME_RESPONSES",
+          {
+            previous_response_id: effect.previousResponseId,
+            new_response_id: effect.newResponseId,
+            reconciled_to_newest_server_response: true,
+            runtime_effects_executed: false,
+          },
+        );
+      }
+    }
+  }
 
   private applyOwnerEventV40(event: ResponseOwnerEvent): void {
     const previous = this.responseOwnerV40;
     const result = reduceResponseOwner(previous, event);
     this.responseOwnerV40 = result.snapshot;
+    this.reportOwnerEffectsV40(result.effects);
 
-    (this as any).diagnostics?.checkpoint?.("RESPONSE_OWNER_OBSERVED_V40_REBUILD", {
+    (this as any).diagnostics?.checkpoint?.("RESPONSE_OWNER_RECONCILED_V40_REBUILD", {
       event_type: event.type,
       previous_state: previous.state,
       next_state: result.snapshot.state,
+      previous_active_response_id: previous.activeResponseId,
       active_response_id: result.snapshot.activeResponseId,
       playback_cleared: result.snapshot.playbackCleared,
       caller_response_pending: result.snapshot.callerResponsePending,
       emitted_effects: result.effects.map((effect) => effect.type),
-      effects_executed: false,
-      passive_observer: true,
+      runtime_effects_executed: false,
+      emission_authority_enabled: false,
+    });
+  }
+
+  private reportStaleDoneV40(id: string): void {
+    const activeId = this.responseOwnerV40.activeResponseId;
+    if (!activeId || activeId === id) return;
+    (this as any).diagnostics?.checkpoint?.("STALE_RESPONSE_DONE_IGNORED_V40_REBUILD", {
+      stale_response_id: id,
+      active_response_id: activeId,
+      active_response_preserved: true,
     });
   }
 
@@ -72,7 +101,10 @@ export class CallSession extends BaseConstructor {
       if (id) this.applyOwnerEventV40({ type: "assistant_response_started", responseId: id });
     } else if (event?.type === "response.done") {
       const id = responseId(event);
-      if (id) this.applyOwnerEventV40({ type: "assistant_response_done", responseId: id });
+      if (id) {
+        this.reportStaleDoneV40(id);
+        this.applyOwnerEventV40({ type: "assistant_response_done", responseId: id });
+      }
     } else if (event?.type === "output_audio_buffer.cleared") {
       this.applyOwnerEventV40({ type: "assistant_playback_cleared" });
     } else if (event?.type === "input_audio_buffer.speech_started") {
