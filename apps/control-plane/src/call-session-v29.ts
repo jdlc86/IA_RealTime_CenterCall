@@ -1,6 +1,7 @@
 import { CallSession as CallSessionV28 } from "./call-session-v28";
 import { CallSession as CallSessionV26 } from "./call-session-v26";
 import { isPublicRestaurantTool } from "./public-tool-authorization";
+import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
 
 const BaseConstructor = CallSessionV28 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV28.prototype as any;
@@ -11,6 +12,7 @@ type RealtimeEvent = {
   type?: string;
   name?: string;
   call_id?: string;
+  item_id?: string;
   arguments?: string;
   transcript?: string;
   response_id?: string;
@@ -39,19 +41,7 @@ function usableTranscript(value: unknown): string | null {
 function v29Instructions(session: any): string {
   const assistantName = typeof session.assistantName === "string" && session.assistantName.trim() ? session.assistantName.trim() : "Lucía";
   const businessName = typeof session.businessName === "string" && session.businessName.trim() ? session.businessName.trim() : "el restaurante";
-  return `Eres ${assistantName}, agente telefónica de ${businessName}. Tú eres la única inteligencia que interpreta el contenido del usuario. Las señales VAD no son intención: solo una transcripción completada puede iniciar una decisión de tool.
-
-TODO TURNO SIGNIFICATIVO: cuando recibas una transcripción que esté claramente dirigida a ti, selecciona exactamente la tool pública que representa esa intención antes de responder.
-
-RUIDO Y FONDO: si la transcripción parece televisión, radio, eco, otra conversación, palabras sueltas, contenido incoherente o algo no dirigido a ti, usa restaurant_input_ignored. Esa tool no produce acción ni respuesta hablada. Ante duda entre ruido/fondo y una operación que modifica datos (cancelar, modificar, reservar, marketing), usa restaurant_input_ignored. Nunca conviertas audio ambiguo en una mutación.
-
-ÁMBITO: atiende solo asuntos relacionados con ${businessName}. Si una petición está claramente dirigida a ti pero no pertenece al restaurante, usa restaurant_out_of_scope. Si pertenece al restaurante pero requiere una persona, usa restaurant_human_assistance.
-
-AUTORIDAD: el backend es la única autoridad sobre datos y acciones. No afirmes que una reserva fue creada, modificada o cancelada hasta recibir el resultado correspondiente. confirm=true solo representa una confirmación explícita del usuario al cambio concreto que acabas de presentar.
-
-RESPUESTAS: tras una tool comunica el resultado brevemente. No hables después de restaurant_input_ignored; simplemente espera otro turno.
-
-CIERRE: una despedida inequívoca usa restaurant_end_call confirmed=true. El silencio y el ruido nunca significan cierre.`;
+  return `Eres ${assistantName}, agente telefónica de ${businessName}. Tú eres la única inteligencia que interpreta el contenido del usuario. Las señales VAD no son intención: solo una transcripción completada puede iniciar una decisión de tool.\n\nTODO TURNO SIGNIFICATIVO: cuando recibas una transcripción que esté claramente dirigida a ti, selecciona exactamente la tool pública que representa esa intención antes de responder.\n\nRUIDO Y FONDO: si la transcripción parece televisión, radio, eco, otra conversación, palabras sueltas, contenido incoherente o algo no dirigido a ti, usa restaurant_input_ignored. Esa tool no produce acción ni respuesta hablada. Ante duda entre ruido/fondo y una operación que modifica datos (cancelar, modificar, reservar, marketing), usa restaurant_input_ignored. Nunca conviertas audio ambiguo en una mutación.\n\nÁMBITO: atiende solo asuntos relacionados con ${businessName}. Si una petición está claramente dirigida a ti pero no pertenece al restaurante, usa restaurant_out_of_scope. Si pertenece al restaurante pero requiere una persona, usa restaurant_human_assistance.\n\nAUTORIDAD: el backend es la única autoridad sobre datos y acciones. No afirmes que una reserva fue creada, modificada o cancelada hasta recibir el resultado correspondiente. confirm=true solo representa una confirmación explícita del usuario al cambio concreto que acabas de presentar.\n\nRESPUESTAS: tras una tool comunica el resultado brevemente. No hables después de restaurant_input_ignored; simplemente espera otro turno.\n\nCIERRE: una despedida inequívoca usa restaurant_end_call confirmed=true. El silencio y el ruido nunca significan cierre.`;
 }
 
 /**
@@ -59,11 +49,27 @@ CIERRE: una despedida inequívoca usa restaurant_end_call confirmed=true. El sil
  * Presence/waiting state is not owned here: ignored-input outcomes are reported
  * to ConversationTurnLifecycle through v18, which alone decides the next silence
  * epoch. v29 retains only the semantic tool gate and model/tool observability.
+ *
+ * A higher layer may attach one-shot caller-directed authority to a specific
+ * transcript item. When present, the model cannot downgrade that same item to
+ * restaurant_input_ignored; it must choose a coherent public tool instead.
  */
 export class CallSession extends BaseConstructor {
   private semanticGateArmedV29 = false;
   private observabilityInstalledV29 = false;
   private originalSendV29: ((message: unknown) => void) | null = null;
+  private callerDirectedItemIdV29: string | null = null;
+  private activeSemanticItemIdV29: string | null = null;
+
+  protected armCallerDirectedSemanticAuthorityV29(itemId: string, source: string): void {
+    if (!itemId || (this as any).state === "closing" || (this as any).hangupStarted) return;
+    this.callerDirectedItemIdV29 = itemId;
+    (this as any).diagnostics?.checkpoint?.("CALLER_DIRECTED_SEMANTIC_AUTHORITY_ARMED_V29", {
+      item_id: itemId,
+      source,
+      one_shot: true,
+    });
+  }
 
   async fetch(request: Request): Promise<Response> {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
@@ -110,21 +116,60 @@ export class CallSession extends BaseConstructor {
     };
   }
 
-  private armSemanticGateV29(transcript: string): void {
+  private armSemanticGateV29(transcript: string, itemId: string | null): void {
     if (this.semanticGateArmedV29 || (this as any).state === "closing" || (this as any).hangupStarted) return;
     this.semanticGateArmedV29 = true;
+    this.activeSemanticItemIdV29 = itemId;
     (this as any).send?.({ type: "session.update", session: { type: "realtime", tool_choice: "required" } });
     (this as any).diagnostics?.checkpoint?.("RESTAURANT_SEMANTIC_TOOL_GATE_ARMED_V29", {
       source: "completed_transcription",
       transcript_length: transcript.length,
+      item_id: itemId,
+      caller_directed_authority: Boolean(itemId && itemId === this.callerDirectedItemIdV29),
     });
   }
 
   private releaseSemanticGateV29(tool: string): void {
     if (!this.semanticGateArmedV29) return;
     this.semanticGateArmedV29 = false;
+    this.activeSemanticItemIdV29 = null;
+    this.callerDirectedItemIdV29 = null;
     (this as any).send?.({ type: "session.update", session: { type: "realtime", tool_choice: "auto" } });
     (this as any).diagnostics?.checkpoint?.("RESTAURANT_SEMANTIC_TOOL_GATE_RELEASED_V29", { tool });
+  }
+
+  private callerDirectedAuthorityAppliesV29(): boolean {
+    return Boolean(
+      this.semanticGateArmedV29 &&
+      this.activeSemanticItemIdV29 &&
+      this.callerDirectedItemIdV29 === this.activeSemanticItemIdV29
+    );
+  }
+
+  private rejectIgnoredInputForDirectedTurnV29(event: RealtimeEvent): void {
+    (this as any).diagnostics?.checkpoint?.("BACKGROUND_INPUT_RECLASSIFICATION_BLOCKED_V29", {
+      item_id: this.activeSemanticItemIdV29,
+      model_tool: INPUT_IGNORED,
+      authority: "caller_directed_barge_in_classifier",
+      semantic_gate_preserved: true,
+      presence_unchanged: true,
+    });
+
+    (this as any).send?.({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: event.call_id,
+        output: JSON.stringify({
+          ok: false,
+          status: "REJECTED",
+          reason: "CALLER_DIRECTED_TURN_CONFIRMED",
+          instruction: "The caller-directed turn is already authoritative. Select the appropriate public restaurant tool for the same user turn; do not use restaurant_input_ignored.",
+        }),
+      },
+    });
+
+    realtimeCommandPortFor(this as any).createDefaultResponse();
   }
 
   private handleIgnoredInputV29(event: RealtimeEvent): void {
@@ -149,6 +194,8 @@ export class CallSession extends BaseConstructor {
       },
     });
 
+    this.activeSemanticItemIdV29 = null;
+    this.callerDirectedItemIdV29 = null;
     (this as any).observeSemanticIgnoredV18?.(reason);
   }
 
@@ -168,7 +215,7 @@ export class CallSession extends BaseConstructor {
           usable: transcript !== null,
         });
       }
-      if (transcript) this.armSemanticGateV29(transcript);
+      if (transcript) this.armSemanticGateV29(transcript, typeof event.item_id === "string" ? event.item_id : null);
     }
 
     if (event?.type === "response.function_call_arguments.done" && event.name && isPublicRestaurantTool(event.name)) {
@@ -179,6 +226,12 @@ export class CallSession extends BaseConstructor {
           call_id: event.call_id ?? null,
         });
       }
+
+      if (event.name === INPUT_IGNORED && this.callerDirectedAuthorityAppliesV29()) {
+        this.rejectIgnoredInputForDirectedTurnV29(event);
+        return;
+      }
+
       this.releaseSemanticGateV29(event.name);
 
       if (event.name === INPUT_IGNORED) {
