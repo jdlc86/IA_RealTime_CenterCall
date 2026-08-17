@@ -12,6 +12,13 @@ export function beginSemanticCallerTurn(): SemanticTurnDecisionState {
   return { turnOpen: true, decisionTaken: false, selectedTool: null };
 }
 
+export function shouldBeginSemanticTurnForTranscript(
+  state: SemanticTurnDecisionState,
+  higherLayerOwns: boolean,
+): boolean {
+  return !state.turnOpen || higherLayerOwns;
+}
+
 export function selectSemanticTool(
   state: SemanticTurnDecisionState,
   tool: string,
