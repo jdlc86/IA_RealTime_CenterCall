@@ -8,6 +8,7 @@ import {
   initialSemanticTurnDecisionState,
   selectSemanticTool,
   shouldArmSemanticGateAfterTranscript,
+  shouldBeginSemanticTurnForTranscript,
   type SemanticTurnDecisionState,
 } from "./semantic-turn-decision-policy";
 
@@ -224,7 +225,7 @@ export class CallSession extends BaseConstructor {
       if (transcript) {
         const itemId = typeof event.item_id === "string" ? event.item_id : null;
         const higherLayerOwns = Boolean((this as any).shouldBypassTurnConcurrencyV36?.(event));
-        if (!this.semanticTurnDecisionV29.turnOpen || higherLayerOwns) {
+        if (shouldBeginSemanticTurnForTranscript(this.semanticTurnDecisionV29, higherLayerOwns)) {
           this.semanticTurnDecisionV29 = beginSemanticCallerTurn();
           if (higherLayerOwns) {
             (this as any).diagnostics?.checkpoint?.("CONFIRMED_BARGE_IN_SEMANTIC_TURN_STARTED_V29", {
