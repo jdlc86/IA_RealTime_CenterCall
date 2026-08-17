@@ -19,7 +19,8 @@ export type ResponseOwnerEffect =
   | { type: "cancel_response"; responseId: string }
   | { type: "clear_playback" }
   | { type: "resume_assistant" }
-  | { type: "create_caller_response" };
+  | { type: "create_caller_response" }
+  | { type: "response_ownership_conflict"; previousResponseId: string; newResponseId: string };
 
 export type ResponseOwnerSnapshot = {
   state: ResponseOwnerState;
@@ -38,14 +39,16 @@ export function initialResponseOwnerSnapshot(): ResponseOwnerSnapshot {
 }
 
 /**
- * Pure testbed for the next runtime design. This module is intentionally NOT
- * integrated into CallSession v39 yet.
+ * Pure authority model for Realtime response ownership.
  *
  * Invariants:
  * - one component owns response.create/response.cancel decisions;
  * - playback state and response-generation state are independent;
  * - a confirmed interruption never waits indefinitely for response.done;
  * - response.done is reconciliation evidence, not permission to continue;
+ * - if Realtime reports a second response while one is still active, the newest
+ *   server-created response becomes authoritative and the conflict is surfaced;
+ * - a late response.done for a superseded response can never clear the current one;
  * - terminal state is absorbing.
  */
 export function reduceResponseOwner(
@@ -61,7 +64,14 @@ export function reduceResponseOwner(
   }
 
   switch (event.type) {
-    case "assistant_response_started":
+    case "assistant_response_started": {
+      const conflict = snapshot.activeResponseId && snapshot.activeResponseId !== event.responseId
+        ? [{
+            type: "response_ownership_conflict" as const,
+            previousResponseId: snapshot.activeResponseId,
+            newResponseId: event.responseId,
+          }]
+        : [];
       return {
         snapshot: {
           state: "ASSISTANT_ACTIVE",
@@ -69,8 +79,9 @@ export function reduceResponseOwner(
           playbackCleared: false,
           callerResponsePending: false,
         },
-        effects: [],
+        effects: conflict,
       };
+    }
 
     case "assistant_playback_cleared":
       return { snapshot: { ...snapshot, playbackCleared: true }, effects: [] };
@@ -95,9 +106,6 @@ export function reduceResponseOwner(
       const effects: ResponseOwnerEffect[] = [];
       if (snapshot.activeResponseId) effects.push({ type: "cancel_response", responseId: snapshot.activeResponseId });
       if (!snapshot.playbackCleared) effects.push({ type: "clear_playback" });
-      // Critical design change vs v43: caller response creation is authorized
-      // immediately by the confirmed semantic decision. response.done may arrive
-      // later and only reconciles the old response id.
       effects.push({ type: "create_caller_response" });
       return {
         snapshot: {
@@ -117,8 +125,14 @@ export function reduceResponseOwner(
         effects: [],
       };
 
-    case "caller_response_created":
-      if (!snapshot.callerResponsePending) return { snapshot, effects: [] };
+    case "caller_response_created": {
+      const conflict = snapshot.activeResponseId && snapshot.activeResponseId !== event.responseId
+        ? [{
+            type: "response_ownership_conflict" as const,
+            previousResponseId: snapshot.activeResponseId,
+            newResponseId: event.responseId,
+          }]
+        : [];
       return {
         snapshot: {
           state: "ASSISTANT_ACTIVE",
@@ -126,7 +140,8 @@ export function reduceResponseOwner(
           playbackCleared: false,
           callerResponsePending: false,
         },
-        effects: [],
+        effects: conflict,
       };
+    }
   }
 }
