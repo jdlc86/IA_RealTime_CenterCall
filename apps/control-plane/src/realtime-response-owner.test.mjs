@@ -23,6 +23,16 @@ test("confirmed barge-in does not wait for response.done", () => {
   ]);
 });
 
+test("early caller speech is owned from response start without waiting for playback start", () => {
+  let s = initialResponseOwnerSnapshot();
+  ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "early" }));
+  const claimed = step(s, { type: "caller_speech_started" });
+  assert.equal(claimed.snapshot.state, "BARGE_IN_CLASSIFYING");
+  assert.equal(claimed.snapshot.activeResponseId, "early");
+  assert.equal(claimed.snapshot.playbackCleared, false);
+  assert.deepEqual(claimed.effects, []);
+});
+
 test("SIP-cleared playback and active response are independent", () => {
   let s = initialResponseOwnerSnapshot();
   ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
