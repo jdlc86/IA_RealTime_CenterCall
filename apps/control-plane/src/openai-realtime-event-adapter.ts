@@ -1,4 +1,15 @@
 import type { AssistantSpeechKind, RealtimeProviderEvent } from "./realtime-provider-event";
+import type { RealtimeInputDetectionSettings } from "./realtime-provider-command-port";
+
+type OpenAITurnDetection = {
+  type?: string;
+  threshold?: number;
+  prefix_padding_ms?: number;
+  silence_duration_ms?: number;
+  idle_timeout_ms?: number;
+  create_response?: boolean;
+  interrupt_response?: boolean;
+} | null;
 
 type OpenAIRealtimeEvent = {
   type?: string;
@@ -6,7 +17,8 @@ type OpenAIRealtimeEvent = {
   arguments?: string;
   transcript?: string;
   response_id?: string;
-  response?: { id?: string; metadata?: Record<string, unknown> | null };
+  response?: { id?: string; status?: string; metadata?: Record<string, unknown> | null };
+  session?: { audio?: { input?: { turn_detection?: OpenAITurnDetection } } };
 };
 
 function readRealtimeText(data: unknown): string | null {
@@ -40,12 +52,35 @@ function assistantKind(event: OpenAIRealtimeEvent): AssistantSpeechKind {
   return "NORMAL";
 }
 
+function inputDetectionSettings(turnDetection: Exclude<OpenAITurnDetection, null>): RealtimeInputDetectionSettings {
+  return {
+    threshold: turnDetection.threshold,
+    prefixPaddingMs: turnDetection.prefix_padding_ms,
+    silenceDurationMs: turnDetection.silence_duration_ms,
+    idleTimeoutMs: turnDetection.idle_timeout_ms,
+    createResponse: turnDetection.create_response,
+    interruptResponse: turnDetection.interrupt_response,
+  };
+}
+
 /** Translate OpenAI Realtime wire events into provider-neutral runtime events. */
 export function adaptOpenAIRealtimeEvent(data: unknown): RealtimeProviderEvent[] {
   const event = parseOpenAIRealtimeEvent(data);
   if (!event) return [];
 
   switch (event.type) {
+    case "session.created":
+    case "session.updated": {
+      const turnDetection = event.session?.audio?.input?.turn_detection;
+      if (turnDetection === undefined) {
+        return [{ type: "INPUT_DETECTION_UPDATED", present: false, settings: null }];
+      }
+      return [{
+        type: "INPUT_DETECTION_UPDATED",
+        present: true,
+        settings: turnDetection === null ? null : inputDetectionSettings(turnDetection),
+      }];
+    }
     case "input_audio_buffer.speech_started":
       return [{ type: "CALLER_SPEECH_STARTED" }];
     case "input_audio_buffer.speech_stopped":
@@ -56,14 +91,24 @@ export function adaptOpenAIRealtimeEvent(data: unknown): RealtimeProviderEvent[]
       return [{ type: "ASSISTANT_AUDIO_STARTED", kind: assistantKind(event), responseId: responseId(event) }];
     case "output_audio_buffer.stopped":
       return [{ type: "ASSISTANT_AUDIO_STOPPED", kind: assistantKind(event), responseId: responseId(event) }];
+    case "output_audio_buffer.cleared":
+      return [{ type: "ASSISTANT_AUDIO_CLEARED", kind: assistantKind(event), responseId: responseId(event) }];
     case "response.created": {
       const purpose = event.response?.metadata?.purpose;
       return [{
         type: "ASSISTANT_RESPONSE_STARTED",
+        kind: assistantKind(event),
         responseId: responseId(event),
         purpose: typeof purpose === "string" ? purpose : undefined,
       }];
     }
+    case "response.done":
+      return [{
+        type: "ASSISTANT_RESPONSE_COMPLETED",
+        kind: assistantKind(event),
+        responseId: responseId(event),
+        status: typeof event.response?.status === "string" ? event.response.status : undefined,
+      }];
     case "response.function_call_arguments.done":
       return event.name ? [{ type: "SEMANTIC_TOOL_SELECTED", name: event.name, arguments: event.arguments }] : [];
     default:
