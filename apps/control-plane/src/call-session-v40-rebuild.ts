@@ -75,9 +75,11 @@ function isProtectedMetadata(metadata: Record<string, unknown>): boolean {
  * Invariants:
  * - raw VAD never authorizes cancellation or a new semantic response;
  * - protected greeting/recovery/handoff speech is never made interruptible here;
- * - while normal Lucia audio is playing, server VAD listens but neither
- *   interrupts nor auto-creates a response;
+ * - only speech detected while our explicit normalListening window is active can
+ *   enter BARGE_IN_CLASSIFYING; ordinary caller turns never do;
  * - completed caller speech is classified out-of-conversation as INTERRUPT/IGNORE;
+ * - an unclassifiable candidate (missing item id or usable transcript) resolves
+ *   immediately as IGNORE and never reaches the v39 semantic pipeline;
  * - IGNORE never reaches the v39 semantic pipeline;
  * - INTERRUPT cancels/clears the previous response as needed, then forwards the
  *   already-committed caller item to v39 and creates exactly one response;
@@ -219,6 +221,32 @@ export class CallSession extends BaseConstructor {
     }
   }
 
+  private resolveUnclassifiableCandidateV40(event: RealtimeEvent): boolean {
+    if (this.responseOwnerV40.state !== "BARGE_IN_CLASSIFYING") return false;
+    const itemId = typeof event.item_id === "string" ? event.item_id : "";
+    const transcript = usableTranscript(event.transcript);
+    if (itemId && transcript) return false;
+
+    const result = applyBargeInSemanticDecision(this.responseOwnerV40, "IGNORE");
+    if (!result.accepted) return false;
+    this.responseOwnerV40 = result.snapshot;
+    const emission = decideResponseOwnerEmission(result.effects, RESPONSE_OWNER_EMISSION_MODE);
+    this.reportOwnerEffectsV40(result.effects);
+
+    if (itemId) {
+      try { (this as any).send?.({ type: "conversation.item.delete", item_id: itemId }); } catch { /* best effort */ }
+    }
+    this.executePostSemanticEffectsV40(emission.executable);
+    (this as any).diagnostics?.checkpoint?.("BARGE_IN_UNCLASSIFIABLE_IGNORED_V40_REBUILD", {
+      item_id_present: Boolean(itemId),
+      usable_transcript_present: Boolean(transcript),
+      playback_cleared: result.snapshot.playbackCleared,
+      semantic_pipeline_entered: false,
+      resolved_without_watchdog: true,
+    });
+    return true;
+  }
+
   private async finalizeClassifierV40(responseIdValue: string, text: unknown): Promise<void> {
     const pending = this.classifierByResponseV40.get(responseIdValue);
     if (!pending) return;
@@ -289,12 +317,15 @@ export class CallSession extends BaseConstructor {
     }
 
     if (event?.type === "response.done" && id && this.classifierByResponseV40.has(id)) {
-      if (event.response?.status !== "completed") await this.finalizeClassifierV40(id, "IGNORE");
+      // If output_text.done never arrived, fail closed to IGNORE rather than
+      // leaving the owner indefinitely in BARGE_IN_CLASSIFYING.
+      await this.finalizeClassifierV40(id, "IGNORE");
       return;
     }
 
-    if (event?.type === "conversation.item.input_audio_transcription.completed" && this.requestClassifierV40(event, data)) {
-      return;
+    if (event?.type === "conversation.item.input_audio_transcription.completed") {
+      if (this.resolveUnclassifiableCandidateV40(event)) return;
+      if (this.requestClassifierV40(event, data)) return;
     }
 
     if (event?.type === "response.created" && id) {
@@ -308,7 +339,12 @@ export class CallSession extends BaseConstructor {
       this.reconcileOwnerEventV40({ type: "assistant_playback_cleared" });
       if (id) this.protectedResponseIdsV40.delete(id);
     } else if (event?.type === "input_audio_buffer.speech_started") {
-      this.reconcileOwnerEventV40({ type: "caller_speech_started" });
+      // A speech_started event is only a barge-in candidate while the explicit
+      // non-interrupting listening window is active. Outside that window it is
+      // an ordinary caller turn and remains owned by v39/v36.
+      if (this.normalListeningV40) {
+        this.reconcileOwnerEventV40({ type: "caller_speech_started" });
+      }
     }
 
     if ((this as any).state === "closing" || (this as any).hangupStarted) {
