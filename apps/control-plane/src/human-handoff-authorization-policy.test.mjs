@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   authorizeHumanHandoff,
   initialHumanHandoffAuthorizationState,
+  observeHumanHandoffCallerTurn,
 } from "../.test-dist/human-handoff-authorization-policy.js";
 
 test("model limitation cannot authorize terminal handoff by itself", () => {
@@ -22,15 +23,26 @@ test("caller can explicitly request a human in the current turn", () => {
 test("caller can accept a previously offered transfer", () => {
   const blocked = authorizeHumanHandoff(initialHumanHandoffAuthorizationState(), "Eso no me lo puedes resolver");
   assert.equal(blocked.allowed, false);
-  const confirmed = authorizeHumanHandoff(blocked.state, "Sí");
+  const observed = observeHumanHandoffCallerTurn(blocked.state, "Sí");
+  const confirmed = authorizeHumanHandoff(observed, "Sí");
   assert.equal(confirmed.allowed, true);
   assert.equal(confirmed.source, "CONFIRMED_OFFER");
 });
 
 test("caller rejection clears pending authorization", () => {
   const blocked = authorizeHumanHandoff(initialHumanHandoffAuthorizationState(), "Eso no me lo puedes resolver");
-  const rejected = authorizeHumanHandoff(blocked.state, "No, gracias");
+  const observed = observeHumanHandoffCallerTurn(blocked.state, "No, gracias");
+  const rejected = authorizeHumanHandoff(observed, "No, gracias");
   assert.equal(rejected.allowed, false);
   assert.equal(rejected.source, "CALLER_REJECTED");
   assert.equal(rejected.state.offerPending, false);
+});
+
+test("unrelated caller turn expires an old transfer offer", () => {
+  const blocked = authorizeHumanHandoff(initialHumanHandoffAuthorizationState(), "Eso no me lo puedes resolver");
+  const afterUnrelatedTurn = observeHumanHandoffCallerTurn(blocked.state, "Otra cosa, ¿tenéis terraza?");
+  assert.equal(afterUnrelatedTurn.offerPending, false);
+  const laterYes = authorizeHumanHandoff(afterUnrelatedTurn, "Sí");
+  assert.equal(laterYes.allowed, false);
+  assert.equal(laterYes.source, "OFFER_REQUIRED");
 });
