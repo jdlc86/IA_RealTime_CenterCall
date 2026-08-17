@@ -50,15 +50,6 @@ function responseId(event: RealtimeEventV40 | null): string | null {
   return event?.response_id ?? event?.response?.id ?? null;
 }
 
-/**
- * v40 replaces the relative v18 user-turn watchdog with one deterministic
- * conversation lifecycle. v18 remains in the inheritance chain for historical
- * behavior, but its relative watchdog hooks are dynamically neutralized here so
- * two independent silence authorities can never coexist.
- *
- * Semantic intent remains model-owned. This layer only consumes objective
- * Realtime events plus the model's structured public-tool choices.
- */
 export class CallSession extends BaseConstructor {
   private conversationLifecycleV40 = new ConversationTurnLifecycle();
   private presenceTimerV40: ReturnType<typeof setTimeout> | null = null;
@@ -88,21 +79,14 @@ export class CallSession extends BaseConstructor {
     return response;
   }
 
-  // ----- v18 relative-watchdog takeover -------------------------------------------------
-  // v18 invokes these through `this`, therefore the most-derived implementation
-  // owns them at runtime. Keeping them inert prevents parallel silence timers.
-  private armMaxCallDurationV18(): void { /* v40 owns the absolute timer */ }
-  private armWaitingForUserV18(_trigger: string): void { /* v40 lifecycle owns waiting */ }
-  private scheduleNextInactivityCheckV18(): void { /* v40 lifecycle owns timers */ }
-  private validateUserTurnV18(_source: string): void { /* semantic event is consumed by v40 */ }
-  private suspendForToolV18(_tool: string): void { /* lifecycle has no relative timer during processing */ }
-  private issuePresenceRecoveryV18(_phrase: string): void { /* v40 owns one presence check */ }
+  private armMaxCallDurationV18(): void { }
+  private armWaitingForUserV18(_trigger: string): void { }
+  private scheduleNextInactivityCheckV18(): void { }
+  private validateUserTurnV18(_source: string): void { }
+  private suspendForToolV18(_tool: string): void { }
+  private issuePresenceRecoveryV18(_phrase: string): void { }
+  private noteIgnoredInputV35(_reason: string): void { }
 
-  // v35 previously maintained an independent rolling ignored-input counter.
-  // v40 owns the only counter, so the historical hook must be inert.
-  private noteIgnoredInputV35(_reason: string): void { /* v40 lifecycle owns ignoredCount */ }
-
-  /** v37 calls this dynamically. Only an accepted deterministic handoff is terminal. */
   private async beginHumanHandoffV37(event: unknown): Promise<boolean> {
     const accepted = await HandoffPrototype.beginHumanHandoffV37.call(this, event);
     if (accepted) {
@@ -147,6 +131,7 @@ export class CallSession extends BaseConstructor {
     this.clearProcessingGuardV40();
     this.processingGuardTimerV40 = setTimeout(() => {
       this.processingGuardTimerV40 = null;
+      (this as any).releaseTurnConcurrencyForRecoveryV36?.("v40_processing_guard_expired");
       this.dispatchLifecycleV40({ type: "processing_guard_expired" });
     }, PROCESSING_GUARD_MS);
   }
@@ -207,7 +192,6 @@ export class CallSession extends BaseConstructor {
           break;
         case "IGNORED_COUNT_CHANGED":
         case "RESET_IGNORED_COUNT":
-          // State is already authoritative in ConversationTurnLifecycle.
           break;
       }
     }
@@ -273,7 +257,6 @@ export class CallSession extends BaseConstructor {
   }
 
   private dispatchAdaptedV40(event: RealtimeEventV40): void {
-    // Existing core closing remains authoritative for explicit restaurant_end_call.
     if (event.type === "response.function_call_arguments.done" && event.name === "restaurant_end_call") return;
     for (const adapted of adaptRealtimeTurnEvent(event)) this.dispatchLifecycleV40(adapted);
   }
@@ -282,7 +265,6 @@ export class CallSession extends BaseConstructor {
     const event = parseRealtimeEvent(data);
     const protectedBefore = this.protectedSnapshotV40();
 
-    // Objective caller activity must cancel silence before any inherited async work.
     if (event?.type === "input_audio_buffer.speech_started" || event?.type === "input_audio_buffer.speech_stopped" || event?.type === "conversation.item.input_audio_transcription.completed") {
       this.dispatchAdaptedV40(event);
       if (event.type === "input_audio_buffer.speech_stopped") this.armProcessingGuardV40();
@@ -291,8 +273,6 @@ export class CallSession extends BaseConstructor {
       }
     }
 
-    // A structured model decision ends processing latency immediately. Ignored
-    // input is applied after the inherited tool path so recovery cannot race it.
     if (event?.type === "response.function_call_arguments.done" && event.name !== "restaurant_input_ignored" && event.name !== "restaurant_end_call") {
       this.clearProcessingGuardV40();
       this.dispatchAdaptedV40(event);
@@ -301,8 +281,6 @@ export class CallSession extends BaseConstructor {
     if (event?.type === "output_audio_buffer.started") {
       const kind = this.outputKindV40(event, protectedBefore);
       this.clearProcessingGuardV40();
-      // Presence speech is intentionally out-of-band: it must not cancel or
-      // restart the original silence episode.
       if (kind !== "PRESENCE") this.dispatchLifecycleV40({ type: "assistant_audio_started", kind });
     }
 
