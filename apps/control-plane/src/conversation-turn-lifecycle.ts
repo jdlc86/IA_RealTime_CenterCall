@@ -137,11 +137,10 @@ export class ConversationTurnLifecycle {
       }
 
       case "assistant_audio_stopped": {
-        if (event.kind === "TERMINAL") {
-          this.state = "CLOSING";
-          effects.push({ type: "HANGUP" });
-          return effects;
-        }
+        // A TERMINAL stop is authoritative only after this lifecycle has
+        // explicitly entered TERMINAL_SPEAKING. In every other state it can
+        // only be a stale/misattributed playback event and must be inert.
+        if (event.kind === "TERMINAL") return effects;
         if (event.kind === "PRESENCE") {
           // Presence speech does not alter semantic state. Continue the same
           // silence episode; no new epoch is created.
