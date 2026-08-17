@@ -2,6 +2,7 @@ import { CallSession as CallSessionV42 } from "./call-session-v42-turn-boundarie
 import {
   authorizeHumanHandoff,
   initialHumanHandoffAuthorizationState,
+  isExplicitHumanHandoffRejection,
   observeHumanHandoffCallerTurn,
   type HumanHandoffAuthorizationState,
 } from "./human-handoff-authorization-policy.js";
@@ -9,6 +10,7 @@ import {
 const BaseConstructor = CallSessionV42 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV42.prototype as any;
 const HUMAN_ASSISTANCE = "restaurant_human_assistance";
+const INPUT_IGNORED = "restaurant_input_ignored";
 
 type RealtimeEvent = {
   type?: string;
@@ -49,6 +51,7 @@ function usableTranscript(value: unknown): string | null {
 export class CallSession extends BaseConstructor {
   private handoffAuthorizationV43: HumanHandoffAuthorizationState = initialHumanHandoffAuthorizationState();
   private latestCallerTranscriptV43: string | null = null;
+  private explicitPendingOfferRejectionV43 = false;
 
   private rejectUnauthorizedHandoffV43(event: RealtimeEvent, source: "OFFER_REQUIRED" | "CALLER_REJECTED"): void {
     const session = this as any;
@@ -77,20 +80,55 @@ export class CallSession extends BaseConstructor {
     });
   }
 
+  private consumeRejectedOfferMisclassifiedAsIgnoredV43(event: RealtimeEvent): boolean {
+    if (event.type !== "response.function_call_arguments.done" || event.name !== INPUT_IGNORED || !this.explicitPendingOfferRejectionV43) return false;
+    const session = this as any;
+    this.explicitPendingOfferRejectionV43 = false;
+    this.handoffAuthorizationV43 = { offerPending: false };
+    session.releaseSemanticGateV29?.(INPUT_IGNORED);
+    session.validateUserTurnV18?.("human_handoff_rejected");
+    session.send?.({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: event.call_id,
+        output: JSON.stringify({
+          ok: true,
+          status: "HUMAN_HANDOFF_DECLINED",
+          transfer_started: false,
+          speak: true,
+          instruction: "La negativa del usuario responde a la oferta de transferencia; no es ruido. Confirma brevemente que no se transferirá y continúa disponible para ayudar con el restaurante.",
+        }),
+      },
+    });
+    session.send?.({ type: "response.create" });
+    session.diagnostics?.checkpoint?.("HUMAN_HANDOFF_REJECTION_OVERRULED_IGNORED_INPUT_V43", {
+      transfer_started: false,
+      pending_offer_cleared: true,
+      caller_presence_validated: true,
+      model_tool: INPUT_IGNORED,
+    });
+    return true;
+  }
+
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const event = parseEvent(data);
 
     if (event?.type === "conversation.item.input_audio_transcription.completed") {
       const transcript = usableTranscript(event.transcript);
       if (transcript) {
+        this.explicitPendingOfferRejectionV43 = this.handoffAuthorizationV43.offerPending && isExplicitHumanHandoffRejection(transcript);
         this.handoffAuthorizationV43 = observeHumanHandoffCallerTurn(this.handoffAuthorizationV43, transcript);
         this.latestCallerTranscriptV43 = transcript;
       }
     }
 
+    if (event && this.consumeRejectedOfferMisclassifiedAsIgnoredV43(event)) return;
+
     if (event?.type === "response.function_call_arguments.done" && event.name === HUMAN_ASSISTANCE) {
       const decision = authorizeHumanHandoff(this.handoffAuthorizationV43, this.latestCallerTranscriptV43);
       this.handoffAuthorizationV43 = decision.state;
+      this.explicitPendingOfferRejectionV43 = false;
 
       if (!decision.allowed) {
         this.rejectUnauthorizedHandoffV43(event, decision.source);
