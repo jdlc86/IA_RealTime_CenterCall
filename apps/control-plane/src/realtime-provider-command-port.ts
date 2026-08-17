@@ -15,6 +15,15 @@ export type RealtimeSpeechRequest = {
   tools?: "DISABLED" | "DEFAULT";
 };
 
+export type RealtimeTextDecisionRequest = {
+  instructions: string;
+  inputText: string;
+  requestId?: string;
+  purpose?: string;
+  metadata?: Record<string, unknown>;
+  maxOutputTokens?: number;
+};
+
 /**
  * Provider-neutral command boundary for live conversational runtimes.
  *
@@ -24,6 +33,7 @@ export type RealtimeSpeechRequest = {
  */
 export interface RealtimeProviderCommandPort {
   speak(request: RealtimeSpeechRequest): void;
+  requestTextDecision(request: RealtimeTextDecisionRequest): void;
   createDefaultResponse(): void;
   cancelResponse(responseId: string): void;
   clearPlayback(): void;
