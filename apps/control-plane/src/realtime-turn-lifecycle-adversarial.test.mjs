@@ -71,7 +71,7 @@ test("adversarial: stale timer from previous turn cannot affect a later waiting 
   assert.equal(m.snapshot().state, "WAITING_FOR_CALLER");
 });
 
-test("adversarial: presence check cannot cause semantic reset or increment", () => {
+test("adversarial: presence check preserves original silence timer and semantics", () => {
   const m = new ConversationTurnLifecycle();
   const epoch = epochFrom(startWaiting(m));
   const effects = m.dispatch({ type: "presence_deadline", epoch });
@@ -81,6 +81,9 @@ test("adversarial: presence check cannot cause semantic reset or increment", () 
   feed(m, { type: "output_audio_buffer.stopped", response: { metadata: { purpose: "presence_recovery_v18" } } });
   assert.equal(m.snapshot().ignoredCount, before.ignoredCount);
   assert.equal(m.snapshot().silenceEpoch, before.silenceEpoch);
+  assert.equal(m.snapshot().silenceTimerArmed, true);
+  const close = m.dispatch({ type: "silence_close_deadline", epoch });
+  assert.ok(close.some((e) => e.type === "SPEAK_TERMINAL_FAREWELL" && e.reason === "silence_timeout"));
 });
 
 test("adversarial: caller speech immediately after presence request still cancels silence close", () => {
@@ -127,10 +130,22 @@ test("adversarial: after CLOSING all events are ignored", () => {
   for (const event of events) assert.deepEqual(feed(m, event), []);
 });
 
-test("adversarial: handoff remains authoritative despite late assistant or caller events", () => {
+test("adversarial: assistance request alone never freezes the lifecycle", () => {
   const m = new ConversationTurnLifecycle();
   startWaiting(m);
   feed(m, { type: "response.function_call_arguments.done", name: "restaurant_human_assistance", arguments: "{}" });
+  assert.equal(m.snapshot().state, "LUCIA_SPEAKING");
+  feed(m, { type: "output_audio_buffer.stopped", response: { metadata: {} } });
+  assert.equal(m.snapshot().state, "WAITING_FOR_CALLER");
+  assert.equal(m.snapshot().silenceTimerArmed, true);
+});
+
+test("adversarial: accepted handoff remains authoritative despite late assistant or caller events", () => {
+  const m = new ConversationTurnLifecycle();
+  startWaiting(m);
+  feed(m, { type: "response.function_call_arguments.done", name: "restaurant_human_assistance", arguments: "{}" });
+  const accepted = m.dispatch({ type: "handoff_started" });
+  assert.ok(accepted.some((e) => e.type === "SUSPEND_FOR_HANDOFF"));
   const late = [
     { type: "input_audio_buffer.speech_started" },
     { type: "input_audio_buffer.speech_stopped" },
