@@ -56,9 +56,14 @@ function responseId(event: RealtimeEvent): string | null {
  * During normal Lucia playback VAD stays ACTIVE, but both automatic interruption
  * and automatic response creation are disabled. A completed transcript is judged
  * by a tiny out-of-band text-only Realtime response. Only an explicit INTERRUPT
- * decision cancels Lucia and promotes that already-committed caller item into the
- * normal semantic tool pipeline. IGNORE deletes the background item and Lucia
- * continues uninterrupted.
+ * decision promotes that already-committed caller item into the normal semantic
+ * tool pipeline. IGNORE deletes the background item.
+ *
+ * SIP may nevertheless emit output_audio_buffer.cleared on VAD speech_started.
+ * That transport event is therefore not treated as a semantic interruption. We
+ * keep the candidate lifecycle alive until transcription/classification. If the
+ * candidate is IGNORE and SIP already cleared Lucia's audio, we explicitly ask
+ * Lucia to continue the interrupted answer instead of leaving the call silent.
  */
 export class CallSession extends BaseConstructor {
   private turnConcurrencyV36 = new TurnConcurrencyLifecycle();
@@ -66,6 +71,7 @@ export class CallSession extends BaseConstructor {
   private protectedResponseIdsV36 = new Set<string>();
   private normalPlaybackActiveV36 = false;
   private normalPlaybackResponseIdV36: string | null = null;
+  private normalPlaybackClearedAwaitingDecisionV36 = false;
   private pendingBargeInByItemV36 = new Map<string, PendingBargeIn>();
   private bargeInClassifierByResponseV36 = new Map<string, PendingBargeIn>();
 
@@ -120,6 +126,7 @@ export class CallSession extends BaseConstructor {
     this.releaseTurnConcurrencyV36("normal_assistant_playback_started", false);
     this.normalPlaybackActiveV36 = true;
     this.normalPlaybackResponseIdV36 = responseId(event);
+    this.normalPlaybackClearedAwaitingDecisionV36 = false;
     const session = this as any;
     try {
       if (session.socket && session.state !== "closing" && !session.hangupStarted) {
@@ -146,6 +153,7 @@ export class CallSession extends BaseConstructor {
 
     this.normalPlaybackActiveV36 = false;
     this.normalPlaybackResponseIdV36 = null;
+    this.normalPlaybackClearedAwaitingDecisionV36 = false;
     const session = this as any;
     try {
       if (session.socket && session.state !== "closing" && !session.hangupStarted) {
@@ -177,29 +185,66 @@ export class CallSession extends BaseConstructor {
       item_id: itemId,
       transcript_length: transcript.length,
       lucia_playback_active: this.normalPlaybackActiveV36,
+      playback_already_cleared: this.normalPlaybackClearedAwaitingDecisionV36,
     });
+  }
+
+  private resumeLuciaAfterIgnoredBargeInV36(): void {
+    const session = this as any;
+    this.normalPlaybackActiveV36 = false;
+    this.normalPlaybackResponseIdV36 = null;
+    this.normalPlaybackClearedAwaitingDecisionV36 = false;
+
+    try {
+      if (session.socket && session.state !== "closing" && !session.hangupStarted) {
+        session.send?.({
+          type: "response.create",
+          response: {
+            tool_choice: "none",
+            instructions:
+              "Continúa inmediatamente la respuesta que estabas pronunciando antes de la interrupción acústica. " +
+              "No menciones la interrupción, no vuelvas a empezar desde el principio y completa únicamente la información pendiente.",
+          },
+        });
+        session.diagnostics?.checkpoint?.("BARGE_IN_BACKGROUND_RESUME_REQUESTED_V36", {
+          reason: "sip_playback_cleared_before_classifier_ignore",
+        });
+      }
+    } catch (error) {
+      session.diagnostics?.fail?.("BARGE_IN_BACKGROUND_RESUME_FAILED_V36", "RESUME_RESPONSE_CREATE_FAILED", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private ignoreBargeInCandidateV36(pending: PendingBargeIn, reason: string): void {
     this.pendingBargeInByItemV36.delete(pending.itemId);
+    const playbackWasCleared = this.normalPlaybackClearedAwaitingDecisionV36;
     try {
       (this as any).send?.({ type: "conversation.item.delete", item_id: pending.itemId });
     } catch { /* best effort; semantic path remains fail-closed */ }
     (this as any).diagnostics?.checkpoint?.("BARGE_IN_IGNORED_V36", {
       item_id: pending.itemId,
       reason,
-      lucia_continues: this.normalPlaybackActiveV36,
+      lucia_continues: this.normalPlaybackActiveV36 && !playbackWasCleared,
+      playback_was_cleared: playbackWasCleared,
     });
+
+    if (playbackWasCleared) {
+      this.resumeLuciaAfterIgnoredBargeInV36();
+    }
   }
 
   private promoteConfirmedBargeInV36(pending: PendingBargeIn): void {
     this.pendingBargeInByItemV36.delete(pending.itemId);
     const session = this as any;
     const activeResponseId = this.normalPlaybackResponseIdV36;
+    const playbackWasCleared = this.normalPlaybackClearedAwaitingDecisionV36;
     this.normalPlaybackActiveV36 = false;
     this.normalPlaybackResponseIdV36 = null;
+    this.normalPlaybackClearedAwaitingDecisionV36 = false;
 
-    if (activeResponseId) {
+    if (activeResponseId && !playbackWasCleared) {
       session.send?.({ type: "response.cancel", response_id: activeResponseId });
       session.send?.({ type: "output_audio_buffer.clear" });
     }
@@ -212,7 +257,8 @@ export class CallSession extends BaseConstructor {
     session.send?.({ type: "response.create" });
     session.diagnostics?.checkpoint?.("BARGE_IN_CONFIRMED_V36", {
       item_id: pending.itemId,
-      cancelled_response_id: activeResponseId,
+      cancelled_response_id: playbackWasCleared ? null : activeResponseId,
+      playback_was_already_cleared: playbackWasCleared,
       promoted_to_semantic_pipeline: true,
     });
   }
@@ -236,6 +282,7 @@ export class CallSession extends BaseConstructor {
     this.clearTurnConcurrencyWatchdogV36();
     this.normalPlaybackActiveV36 = false;
     this.normalPlaybackResponseIdV36 = null;
+    this.normalPlaybackClearedAwaitingDecisionV36 = false;
     this.pendingBargeInByItemV36.clear();
     this.bargeInClassifierByResponseV36.clear();
     (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_DETACHED_FOR_TERMINAL_V36", {
@@ -331,9 +378,7 @@ export class CallSession extends BaseConstructor {
 
     // Confirmed barge-in must be activated by every normal (non-protected)
     // Lucia playback, independently of whether a turn-concurrency lock happens
-    // to be active at playback start. Tool-backed responses can legitimately
-    // begin without an active lock; coupling these lifecycles made those
-    // responses effectively non-interruptible.
+    // to be active at playback start.
     if (event?.type === "output_audio_buffer.started") {
       const id = responseId(event);
       const isProtected = !!(id && this.protectedResponseIdsV36.has(id));
@@ -347,6 +392,12 @@ export class CallSession extends BaseConstructor {
       if (id && this.protectedResponseIdsV36.has(id)) {
         this.protectedResponseIdsV36.delete(id);
         if (this.turnConcurrencyV36.isActive()) this.releaseTurnConcurrencyV36("protected_playback_completed");
+      } else if (this.normalPlaybackActiveV36 && this.normalPlaybackClearedAwaitingDecisionV36) {
+        (this as any).diagnostics?.checkpoint?.("BARGE_IN_PLAYBACK_STOPPED_DEFERRED_V36", {
+          response_id: id,
+          awaiting_transcript_or_classifier: true,
+        });
+        return;
       } else {
         this.finishNormalPlaybackV36("output_audio_buffer_stopped", event);
       }
@@ -354,6 +405,22 @@ export class CallSession extends BaseConstructor {
 
     if (event?.type === "output_audio_buffer.cleared") {
       const id = responseId(event);
+      const isProtected = !!(id && this.protectedResponseIdsV36.has(id));
+      const belongsToNormalPlayback = this.normalPlaybackActiveV36 &&
+        (!this.normalPlaybackResponseIdV36 || !id || id === this.normalPlaybackResponseIdV36);
+
+      if (!isProtected && belongsToNormalPlayback) {
+        this.normalPlaybackClearedAwaitingDecisionV36 = true;
+        (this as any).diagnostics?.checkpoint?.("BARGE_IN_PLAYBACK_CLEARED_AWAITING_CLASSIFICATION_V36", {
+          response_id: id,
+          normal_playback_response_id: this.normalPlaybackResponseIdV36,
+          vad_mode_preserved: true,
+        });
+        // Do not pass this transport-level clear down the inheritance chain. In
+        // SIP it can be emitted on speech_started before semantic evidence exists.
+        return;
+      }
+
       if (id) this.protectedResponseIdsV36.delete(id);
       this.finishNormalPlaybackV36("output_audio_buffer_cleared", event);
     }
