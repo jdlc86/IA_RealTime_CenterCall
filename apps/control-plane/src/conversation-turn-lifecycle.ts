@@ -85,13 +85,8 @@ export class ConversationTurnLifecycle {
 
     if (this.state === "CLOSING") return effects;
 
-    // Once terminal speech has been selected, the conversation is irreversible.
-    // Late caller/model/normal-audio events must not reopen or mutate the turn.
-    // The only legal transition is completion of the terminal playback -> CLOSING.
     if (this.state === "TERMINAL_SPEAKING") {
-      if (event.type === "assistant_audio_started" && event.kind === "TERMINAL") {
-        return effects;
-      }
+      if (event.type === "assistant_audio_started" && event.kind === "TERMINAL") return effects;
       if (event.type === "assistant_audio_stopped" && event.kind === "TERMINAL") {
         this.state = "CLOSING";
         effects.push({ type: "HANGUP" });
@@ -99,12 +94,7 @@ export class ConversationTurnLifecycle {
       return effects;
     }
 
-    // HANDOFF is also absorbing for conversational lifecycle purposes.
-    // Duplicate handoff_started events are expected in distributed/webhook systems
-    // and must not re-emit transfer side effects.
-    if (this.state === "HANDOFF") {
-      return effects;
-    }
+    if (this.state === "HANDOFF") return effects;
 
     if (event.type === "max_call_duration") {
       this.cancelSilence(effects);
@@ -129,23 +119,19 @@ export class ConversationTurnLifecycle {
 
     switch (event.type) {
       case "assistant_audio_started": {
+        // Presence speech is out-of-band lifecycle audio. It must preserve the
+        // same WAITING_FOR_CALLER silence episode and its original close deadline.
+        if (event.kind === "PRESENCE") return effects;
         this.cancelSilence(effects);
         if (event.kind === "RECOVERY") this.state = "IGNORED_RECOVERY_SPEAKING";
         else if (event.kind === "TERMINAL") this.state = "TERMINAL_SPEAKING";
-        else if (event.kind !== "PRESENCE") this.state = "LUCIA_SPEAKING";
+        else this.state = "LUCIA_SPEAKING";
         return effects;
       }
 
       case "assistant_audio_stopped": {
-        // A TERMINAL stop is authoritative only after this lifecycle has
-        // explicitly entered TERMINAL_SPEAKING. In every other state it can
-        // only be a stale/misattributed playback event and must be inert.
         if (event.kind === "TERMINAL") return effects;
-        if (event.kind === "PRESENCE") {
-          // Presence speech does not alter semantic state. Continue the same
-          // silence episode; no new epoch is created.
-          return effects;
-        }
+        if (event.kind === "PRESENCE") return effects;
         this.state = "WAITING_FOR_CALLER";
         this.armFreshSilence(effects);
         return effects;
@@ -164,9 +150,7 @@ export class ConversationTurnLifecycle {
       }
 
       case "transcript_usable": {
-        if (this.state === "CALLER_SPEAKING" || this.state === "PROCESSING_CALLER_TURN") {
-          this.state = "PROCESSING_CALLER_TURN";
-        }
+        if (this.state === "CALLER_SPEAKING" || this.state === "PROCESSING_CALLER_TURN") this.state = "PROCESSING_CALLER_TURN";
         return effects;
       }
 
@@ -224,23 +208,14 @@ export class ConversationTurnLifecycle {
       }
 
       case "presence_deadline": {
-        if (
-          this.state !== "WAITING_FOR_CALLER"
-          || !this.silenceTimerArmed
-          || event.epoch !== this.silenceEpoch
-          || this.presenceCheckIssued
-        ) return effects;
+        if (this.state !== "WAITING_FOR_CALLER" || !this.silenceTimerArmed || event.epoch !== this.silenceEpoch || this.presenceCheckIssued) return effects;
         this.presenceCheckIssued = true;
         effects.push({ type: "SPEAK_PRESENCE_CHECK" });
         return effects;
       }
 
       case "silence_close_deadline": {
-        if (
-          this.state !== "WAITING_FOR_CALLER"
-          || !this.silenceTimerArmed
-          || event.epoch !== this.silenceEpoch
-        ) return effects;
+        if (this.state !== "WAITING_FOR_CALLER" || !this.silenceTimerArmed || event.epoch !== this.silenceEpoch) return effects;
         this.cancelSilence(effects);
         this.state = "TERMINAL_SPEAKING";
         effects.push({ type: "SPEAK_TERMINAL_FAREWELL", protected: true, reason: "silence_timeout" });
@@ -254,9 +229,7 @@ export class ConversationTurnLifecycle {
 
   private armFreshSilence(effects: LifecycleEffect[]): void {
     if (this.state !== "WAITING_FOR_CALLER") return;
-    if (this.silenceTimerArmed) {
-      effects.push({ type: "CANCEL_SILENCE_TIMER", epoch: this.silenceEpoch });
-    }
+    if (this.silenceTimerArmed) effects.push({ type: "CANCEL_SILENCE_TIMER", epoch: this.silenceEpoch });
     this.silenceEpoch += 1;
     this.silenceTimerArmed = true;
     this.presenceCheckIssued = false;
