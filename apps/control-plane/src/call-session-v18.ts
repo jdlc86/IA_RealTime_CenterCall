@@ -1,32 +1,17 @@
 import { CallSession as CallSessionV17 } from "./call-session-v17";
-import { shouldDeferPresenceRecovery } from "./core-user-turn-gate.js";
+import { ConversationTurnLifecycle, type LifecycleEffect, type LifecycleEvent } from "./conversation-turn-lifecycle";
+import { adaptRealtimeTurnEvent, type SyntheticRealtimeEvent } from "./realtime-turn-lifecycle-adapter";
 
 const BaseConstructor = CallSessionV17 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV17.prototype as any;
 
 const FIRST_PRESENCE_CHECK_MS = 8_000;
-const SECOND_PRESENCE_CHECK_MS = 16_000;
 const MAX_UNANSWERED_WAIT_MS = 26_000;
 const MAX_CALL_DURATION_MS = 15 * 60_000;
-const ACTIVE_SPEECH_RECHECK_MS = 750;
 
-const AGENT_BUSINESS_TOOLS = new Set([
-  "restaurant_reservation_create",
-  "restaurant_reservation_query",
-  "restaurant_reservation_modify",
-  "restaurant_reservation_cancel",
-  "restaurant_business_info",
-  "restaurant_marketing_preferences",
-  "restaurant_end_call",
-  "restaurant_out_of_scope",
-]);
-
-type RealtimeEvent = {
-  type?: string;
-  name?: string;
+type RealtimeEvent = SyntheticRealtimeEvent & {
   response_id?: string;
-  transcript?: string;
-  response?: { id?: string };
+  response?: { id?: string; metadata?: Record<string, unknown> | null };
 };
 
 function readRealtimeText(data: unknown): string | null {
@@ -38,308 +23,215 @@ function readRealtimeText(data: unknown): string | null {
   return null;
 }
 
+function parseRealtimeEvent(data: unknown): RealtimeEvent | null {
+  const text = readRealtimeText(data);
+  if (!text) return null;
+  try { return JSON.parse(text) as RealtimeEvent; } catch { return null; }
+}
+
+function responseId(event: RealtimeEvent | null): string | null {
+  return event?.response_id ?? event?.response?.id ?? null;
+}
+
 /**
- * v18 adds a runtime-only presence/cost boundary.
+ * v18 now acts only as the runtime adapter/executor for ConversationTurnLifecycle.
+ * The lifecycle is the single authority for caller/processing/waiting/presence
+ * state. Timers are epoch-scoped effects; stale deadlines cannot act after caller
+ * speech, while processing, or while Lucia is speaking.
  *
- * Important invariants:
- * - VAD/audio alone never resets inactivity.
- * - A user turn becomes valid only when Lucia reacts coherently (speech) or selects
- *   a concrete agent tool.
- * - Recovery prompts never reset the original inactivity deadline.
- * - Presence recovery speech is out-of-band and never enters Lucia's conversation.
- * - Presence recovery is forbidden while Lucia is audibly replying or a tool is active.
- * - Tool execution suspends the relative user-turn watchdog; the absolute call
- *   duration limit remains armed.
+ * Business semantics remain owned by the semantic/tool layers. Irreversible
+ * end-call and handoff authorization remain owned by v41/v43 and are deliberately
+ * not inferred here from model tool choice.
  */
 export class CallSession extends BaseConstructor {
-  private inactivityStartedAtV18: number | null = null;
-  private inactivityTimerV18: ReturnType<typeof setTimeout> | null = null;
+  private turnLifecycleV18 = new ConversationTurnLifecycle();
+  private presenceTimerV18: ReturnType<typeof setTimeout> | null = null;
+  private silenceCloseTimerV18: ReturnType<typeof setTimeout> | null = null;
   private maxCallTimerV18: ReturnType<typeof setTimeout> | null = null;
-  private presenceStageV18: 0 | 1 | 2 = 0;
-  private userAudioActiveV18 = false;
-  private userTurnObservedV18 = false;
-  private recoverySpeechInFlightV18 = false;
-  private recoveryResponseIdV18: string | null = null;
-  private toolExecutionActiveV18 = false;
-  private luciaPlaybackActiveV18 = false;
-  private watchdogInstalledV18 = false;
+  private presenceResponseIdV18: string | null = null;
+  private presenceRequestPendingV18 = false;
+  private lifecycleInstalledV18 = false;
 
   async fetch(request: Request): Promise<Response> {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
     const response = await super.fetch(request);
 
-    if (isStart && response.ok && !this.watchdogInstalledV18) {
-      this.watchdogInstalledV18 = true;
+    if (isStart && response.ok && !this.lifecycleInstalledV18) {
+      this.lifecycleInstalledV18 = true;
       this.armMaxCallDurationV18();
-      (this as any).diagnostics?.checkpoint?.("USER_TURN_WATCHDOG_V18_ENABLED", {
-        first_presence_check_ms: FIRST_PRESENCE_CHECK_MS,
-        second_presence_check_ms: SECOND_PRESENCE_CHECK_MS,
-        max_unanswered_wait_ms: MAX_UNANSWERED_WAIT_MS,
+      (this as any).diagnostics?.checkpoint?.("CONVERSATION_TURN_LIFECYCLE_V18_ENABLED", {
+        authority: "ConversationTurnLifecycle",
+        presence_check_ms: FIRST_PRESENCE_CHECK_MS,
+        silence_close_ms: MAX_UNANSWERED_WAIT_MS,
         max_call_duration_ms: MAX_CALL_DURATION_MS,
-        vad_resets_inactivity: false,
-        coherent_lucia_reaction_required: true,
-        presence_recovery_conversation: "none",
+        epoch_scoped_deadlines: true,
+        legacy_presence_stages_removed: true,
       });
     }
 
     return response;
   }
 
-  private clearInactivityTimerV18(): void {
-    if (this.inactivityTimerV18 !== null) {
-      clearTimeout(this.inactivityTimerV18);
-      this.inactivityTimerV18 = null;
-    }
+  protected snapshotTurnLifecycleV18(): ReturnType<ConversationTurnLifecycle["snapshot"]> {
+    return this.turnLifecycleV18.snapshot();
   }
 
-  private clearMaxCallTimerV18(): void {
-    if (this.maxCallTimerV18 !== null) {
-      clearTimeout(this.maxCallTimerV18);
-      this.maxCallTimerV18 = null;
-    }
+  protected observeSemanticIgnoredV18(reason: string): void {
+    this.dispatchLifecycleV18({ type: "semantic_ignored", reason });
+  }
+
+  /** Compatibility entry point for older layers. It no longer owns a timer. */
+  protected armWaitingForUserV18(trigger: string): void {
+    (this as any).diagnostics?.checkpoint?.("LEGACY_PRESENCE_REARM_IGNORED_V18", {
+      trigger,
+      authority: "ConversationTurnLifecycle",
+      lifecycle_state: this.turnLifecycleV18.snapshot().state,
+    });
+  }
+
+  /** Compatibility hook: useful caller evidence is already represented by lifecycle events. */
+  protected refreshRecentUserPresenceV18(source: string): void {
+    (this as any).diagnostics?.checkpoint?.("LEGACY_PRESENCE_REFRESH_IGNORED_V18", {
+      source,
+      authority: "ConversationTurnLifecycle",
+      lifecycle_state: this.turnLifecycleV18.snapshot().state,
+    });
+  }
+
+  private clearPresenceTimersV18(): void {
+    if (this.presenceTimerV18 !== null) clearTimeout(this.presenceTimerV18);
+    if (this.silenceCloseTimerV18 !== null) clearTimeout(this.silenceCloseTimerV18);
+    this.presenceTimerV18 = null;
+    this.silenceCloseTimerV18 = null;
+  }
+
+  private armSilenceEpochV18(epoch: number): void {
+    this.clearPresenceTimersV18();
+    this.presenceTimerV18 = setTimeout(() => {
+      this.presenceTimerV18 = null;
+      this.dispatchLifecycleV18({ type: "presence_deadline", epoch });
+    }, FIRST_PRESENCE_CHECK_MS);
+    this.silenceCloseTimerV18 = setTimeout(() => {
+      this.silenceCloseTimerV18 = null;
+      this.dispatchLifecycleV18({ type: "silence_close_deadline", epoch });
+    }, MAX_UNANSWERED_WAIT_MS);
+    (this as any).diagnostics?.checkpoint?.("LIFECYCLE_SILENCE_EPOCH_ARMED_V18", {
+      epoch,
+      presence_check_ms: FIRST_PRESENCE_CHECK_MS,
+      silence_close_ms: MAX_UNANSWERED_WAIT_MS,
+    });
   }
 
   private armMaxCallDurationV18(): void {
-    this.clearMaxCallTimerV18();
+    if (this.maxCallTimerV18 !== null) clearTimeout(this.maxCallTimerV18);
     this.maxCallTimerV18 = setTimeout(() => {
       this.maxCallTimerV18 = null;
-      if (!(this as any).socket || (this as any).hangupStarted || (this as any).state === "closing") return;
-      this.clearInactivityTimerV18();
-      (this as any).diagnostics?.checkpoint?.("MAX_CALL_DURATION_REACHED", {
-        max_call_duration_ms: MAX_CALL_DURATION_MS,
-        reason: "cost_guard",
-      });
-      (this as any).beginClosing?.("max_call_duration_reached", "runtime_cost_watchdog_v18");
+      this.dispatchLifecycleV18({ type: "max_call_duration" });
     }, MAX_CALL_DURATION_MS);
   }
 
-  private armWaitingForUserV18(trigger: string): void {
-    if (this.toolExecutionActiveV18 || this.luciaPlaybackActiveV18 || (this as any).state === "closing" || (this as any).hangupStarted) return;
-    this.clearInactivityTimerV18();
-    this.inactivityStartedAtV18 = Date.now();
-    this.presenceStageV18 = 0;
-    this.userTurnObservedV18 = false;
-    this.recoverySpeechInFlightV18 = false;
-    this.recoveryResponseIdV18 = null;
-    (this as any).diagnostics?.checkpoint?.("WAITING_FOR_USER_TURN_ARMED", {
-      trigger,
-      absolute_unanswered_deadline_ms: MAX_UNANSWERED_WAIT_MS,
-    });
-    this.scheduleNextInactivityCheckV18();
-  }
-
-  protected refreshRecentUserPresenceV18(source: string): void {
-    if (this.inactivityStartedAtV18 === null || this.toolExecutionActiveV18 || (this as any).state === "closing" || (this as any).hangupStarted) return;
-    this.clearInactivityTimerV18();
-    this.inactivityStartedAtV18 = Date.now();
-    this.presenceStageV18 = 0;
-    this.recoverySpeechInFlightV18 = false;
-    this.recoveryResponseIdV18 = null;
-    (this as any).diagnostics?.checkpoint?.("USER_PRESENCE_EVIDENCE_REFRESHED_V18", {
-      source,
-      semantic_turn_validated: false,
-      vad_only: false,
-      absolute_unanswered_deadline_ms: MAX_UNANSWERED_WAIT_MS,
-    });
-    this.scheduleNextInactivityCheckV18();
-  }
-
-  private suspendForToolV18(tool: string): void {
-    this.toolExecutionActiveV18 = true;
-    this.clearInactivityTimerV18();
-    this.inactivityStartedAtV18 = null;
-    this.presenceStageV18 = 0;
-    (this as any).diagnostics?.checkpoint?.("USER_TURN_WATCHDOG_SUSPENDED_FOR_TOOL", { tool });
-  }
-
-  private validateUserTurnV18(source: string): void {
-    if (!this.userTurnObservedV18 && source !== "agent_tool") return;
-    const elapsed = this.inactivityStartedAtV18 === null ? null : Date.now() - this.inactivityStartedAtV18;
-    this.clearInactivityTimerV18();
-    this.inactivityStartedAtV18 = null;
-    this.presenceStageV18 = 0;
-    this.userTurnObservedV18 = false;
-    this.recoverySpeechInFlightV18 = false;
-    this.recoveryResponseIdV18 = null;
-    (this as any).diagnostics?.checkpoint?.("USER_TURN_VALIDATED_BY_LUCIA", {
-      source,
-      unanswered_elapsed_ms: elapsed,
-      vad_only: false,
-    });
-  }
-
-  private scheduleNextInactivityCheckV18(): void {
-    this.clearInactivityTimerV18();
-    if (this.inactivityStartedAtV18 === null || this.toolExecutionActiveV18) return;
-    const elapsed = Date.now() - this.inactivityStartedAtV18;
-    const target = this.presenceStageV18 === 0
-      ? FIRST_PRESENCE_CHECK_MS
-      : this.presenceStageV18 === 1
-        ? SECOND_PRESENCE_CHECK_MS
-        : MAX_UNANSWERED_WAIT_MS;
-    const delay = Math.max(0, target - elapsed);
-    this.inactivityTimerV18 = setTimeout(() => {
-      this.inactivityTimerV18 = null;
-      this.onInactivityDeadlineV18();
-    }, delay);
-  }
-
-  private deferActiveConversationV18(elapsed: number): void {
-    (this as any).diagnostics?.checkpoint?.("USER_TURN_WATCHDOG_DEFERRED_ACTIVE_CONVERSATION_V18", {
-      elapsed_ms: elapsed,
-      stage: this.presenceStageV18,
-      user_audio_active: this.userAudioActiveV18,
-      lucia_playback_active: this.luciaPlaybackActiveV18,
-      tool_execution_active: this.toolExecutionActiveV18,
-      resets_deadline: false,
-    });
-    this.inactivityTimerV18 = setTimeout(() => {
-      this.inactivityTimerV18 = null;
-      this.onInactivityDeadlineV18();
-    }, ACTIVE_SPEECH_RECHECK_MS);
-  }
-
-  private onInactivityDeadlineV18(): void {
-    if (this.inactivityStartedAtV18 === null || this.toolExecutionActiveV18) return;
-    if (!(this as any).socket || (this as any).state === "closing" || (this as any).hangupStarted) {
-      this.clearInactivityTimerV18();
-      return;
-    }
-
-    const elapsed = Date.now() - this.inactivityStartedAtV18;
-    if (shouldDeferPresenceRecovery({
-      userAudioActive: this.userAudioActiveV18,
-      luciaPlaybackActive: this.luciaPlaybackActiveV18,
-      toolExecutionActive: this.toolExecutionActiveV18,
-    })) {
-      this.deferActiveConversationV18(elapsed);
-      return;
-    }
-
-    if (elapsed >= MAX_UNANSWERED_WAIT_MS) {
-      this.clearInactivityTimerV18();
-      (this as any).diagnostics?.checkpoint?.("USER_TURN_INACTIVITY_CLOSE", {
-        elapsed_ms: elapsed,
-        presence_attempts: this.presenceStageV18,
-        reason: "no_coherent_user_turn",
-      });
-      (this as any).beginClosing?.("user_inactivity_timeout", "runtime_user_turn_watchdog_v18");
-      return;
-    }
-
-    if (this.presenceStageV18 === 0) {
-      this.presenceStageV18 = 1;
-      this.issuePresenceRecoveryV18("¿Sigues ahí?");
-      return;
-    }
-
-    if (this.presenceStageV18 === 1) {
-      this.presenceStageV18 = 2;
-      this.issuePresenceRecoveryV18("¿Me escuchas?");
-      return;
-    }
-
-    this.scheduleNextInactivityCheckV18();
-  }
-
-  private issuePresenceRecoveryV18(phrase: string): void {
-    this.recoverySpeechInFlightV18 = true;
-    this.recoveryResponseIdV18 = null;
+  private issuePresenceCheckV18(): void {
+    if (!(this as any).socket || (this as any).state === "closing" || (this as any).hangupStarted) return;
+    this.presenceRequestPendingV18 = true;
+    this.presenceResponseIdV18 = null;
     (this as any).diagnostics?.checkpoint?.("USER_PRESENCE_RECOVERY_REQUESTED", {
-      stage: this.presenceStageV18,
-      resets_inactivity: false,
+      lifecycle_state: this.turnLifecycleV18.snapshot().state,
       conversation: "none",
       isolated_from_agent_context: true,
+      lifecycle_authority: true,
     });
-
     (this as any).send?.({
       type: "response.create",
       response: {
         conversation: "none",
         tool_choice: "none",
-        metadata: {
-          purpose: "presence_recovery_v18",
-          presence_stage: String(this.presenceStageV18),
-        },
-        instructions: `Pronuncia exactamente esta frase y nada más: ${JSON.stringify(phrase)}. No respondas al historial de conversación, no añadas explicaciones y no llames herramientas.`,
-        input: [
-          {
-            type: "message",
-            role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: `Pronuncia exactamente: ${phrase}`,
-              },
-            ],
-          },
-        ],
+        metadata: { purpose: "presence_recovery_v18" },
+        instructions: "Pronuncia exactamente esta frase y nada más: \"¿Sigues ahí?\". No respondas al historial y no llames herramientas.",
+        input: [{
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Pronuncia exactamente: ¿Sigues ahí?" }],
+        }],
       },
     });
+  }
 
-    this.scheduleNextInactivityCheckV18();
+  private executeLifecycleEffectV18(effect: LifecycleEffect): void {
+    switch (effect.type) {
+      case "ARM_SILENCE_TIMER":
+        this.armSilenceEpochV18(effect.epoch);
+        break;
+      case "CANCEL_SILENCE_TIMER":
+        this.clearPresenceTimersV18();
+        break;
+      case "SPEAK_PRESENCE_CHECK":
+        this.issuePresenceCheckV18();
+        break;
+      case "SPEAK_IGNORED_RECOVERY":
+        (this as any).send?.({
+          type: "response.create",
+          response: {
+            conversation: "none",
+            tool_choice: "none",
+            metadata: { protected_speech_v35: "RECOVERY" },
+            instructions: "Di brevemente: \"Perdona, no te he entendido. ¿Puedes repetirlo?\"",
+          },
+        });
+        break;
+      case "SPEAK_TERMINAL_FAREWELL":
+        this.clearPresenceTimersV18();
+        (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_REQUESTED_V18", { reason: effect.reason });
+        (this as any).beginClosing?.(effect.reason, "conversation_turn_lifecycle");
+        break;
+      case "HANGUP":
+        this.clearPresenceTimersV18();
+        (this as any).beginClosing?.("lifecycle_terminal_audio_stopped", "conversation_turn_lifecycle");
+        break;
+      case "RESET_IGNORED_COUNT":
+      case "IGNORED_COUNT_CHANGED":
+      case "SUSPEND_FOR_HANDOFF":
+        (this as any).diagnostics?.checkpoint?.("CONVERSATION_LIFECYCLE_EFFECT_V18", { effect: effect.type, ...effect });
+        break;
+    }
+  }
+
+  private dispatchLifecycleV18(event: LifecycleEvent): void {
+    const before = this.turnLifecycleV18.snapshot();
+    const effects = this.turnLifecycleV18.dispatch(event);
+    const after = this.turnLifecycleV18.snapshot();
+    (this as any).diagnostics?.checkpoint?.("CONVERSATION_TURN_LIFECYCLE_TRANSITION_V18", {
+      event: event.type,
+      before: before.state,
+      after: after.state,
+      silence_epoch: after.silenceEpoch,
+      effects: effects.map((effect) => effect.type),
+    });
+    for (const effect of effects) this.executeLifecycleEffectV18(effect);
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) {
-      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
-    }
+    const event = parseRealtimeEvent(data);
+    if (event) {
+      if (event.type === "response.created" && this.presenceRequestPendingV18 && !this.presenceResponseIdV18) {
+        this.presenceResponseIdV18 = responseId(event);
+      }
 
-    if (event?.type === "input_audio_buffer.speech_started") {
-      this.userAudioActiveV18 = true;
-      this.userTurnObservedV18 = true;
-      (this as any).diagnostics?.checkpoint?.("USER_AUDIO_DETECTED_NO_RESET", {
-        inactivity_reset: false,
-        reason: "vad_is_not_semantic_evidence",
-      });
-    }
-
-    if (event?.type === "input_audio_buffer.speech_stopped") {
-      this.userAudioActiveV18 = false;
-    }
-
-    if (event?.type === "conversation.item.input_audio_transcription.completed") {
-      this.userAudioActiveV18 = false;
-      this.userTurnObservedV18 = true;
-    }
-
-    if (event?.type === "response.function_call_arguments.done" && event.name && AGENT_BUSINESS_TOOLS.has(event.name)) {
-      this.validateUserTurnV18("agent_tool");
-      this.suspendForToolV18(event.name);
-    }
-
-    if (event?.type === "response.created" && this.recoverySpeechInFlightV18 && !this.recoveryResponseIdV18) {
-      this.recoveryResponseIdV18 = event.response_id ?? event.response?.id ?? null;
-    }
-
-    if (event?.type === "output_audio_buffer.started") {
-      this.luciaPlaybackActiveV18 = true;
-    }
-
-    if (event?.type === "response.output_audio_transcript.done") {
-      const isRecovery = this.recoverySpeechInFlightV18
-        && (!this.recoveryResponseIdV18 || !event.response_id || event.response_id === this.recoveryResponseIdV18);
-      if (!isRecovery && this.userTurnObservedV18) {
-        this.validateUserTurnV18("lucia_spoken_response");
+      const adapted = adaptRealtimeTurnEvent(event);
+      for (const lifecycleEvent of adapted) {
+        if ((lifecycleEvent.type === "assistant_audio_started" || lifecycleEvent.type === "assistant_audio_stopped")
+          && this.presenceResponseIdV18 && responseId(event) === this.presenceResponseIdV18) {
+          this.dispatchLifecycleV18({ type: lifecycleEvent.type, kind: "PRESENCE" });
+        } else {
+          this.dispatchLifecycleV18(lifecycleEvent);
+        }
       }
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
 
-    if (event?.type === "output_audio_buffer.stopped") {
-      this.luciaPlaybackActiveV18 = false;
-      const isRecovery = this.recoverySpeechInFlightV18
-        && (!this.recoveryResponseIdV18 || !event.response_id || event.response_id === this.recoveryResponseIdV18);
-      if (isRecovery) {
-        this.recoverySpeechInFlightV18 = false;
-        this.recoveryResponseIdV18 = null;
-        this.scheduleNextInactivityCheckV18();
-      } else if ((this as any).state !== "closing" && !(this as any).hangupStarted) {
-        this.toolExecutionActiveV18 = false;
-        this.armWaitingForUserV18("assistant_audio_completed");
-      }
+    if (event?.type === "output_audio_buffer.stopped" && this.presenceResponseIdV18 && responseId(event) === this.presenceResponseIdV18) {
+      this.presenceRequestPendingV18 = false;
+      this.presenceResponseIdV18 = null;
     }
   }
 }
