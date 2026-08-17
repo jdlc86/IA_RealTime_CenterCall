@@ -44,16 +44,6 @@ function v29Instructions(session: any): string {
   return `Eres ${assistantName}, agente telefónica de ${businessName}. Tú eres la única inteligencia que interpreta el contenido del usuario. Las señales VAD no son intención: solo una transcripción completada puede iniciar una decisión de tool.\n\nTODO TURNO SIGNIFICATIVO: cuando recibas una transcripción que esté claramente dirigida a ti, selecciona exactamente la tool pública que representa esa intención antes de responder.\n\nRUIDO Y FONDO: si la transcripción parece televisión, radio, eco, otra conversación, palabras sueltas, contenido incoherente o algo no dirigido a ti, usa restaurant_input_ignored. Esa tool no produce acción ni respuesta hablada. Ante duda entre ruido/fondo y una operación que modifica datos (cancelar, modificar, reservar, marketing), usa restaurant_input_ignored. Nunca conviertas audio ambiguo en una mutación.\n\nÁMBITO: atiende solo asuntos relacionados con ${businessName}. Si una petición está claramente dirigida a ti pero no pertenece al restaurante, usa restaurant_out_of_scope. Si pertenece al restaurante pero requiere una persona, usa restaurant_human_assistance.\n\nAUTORIDAD: el backend es la única autoridad sobre datos y acciones. No afirmes que una reserva fue creada, modificada o cancelada hasta recibir el resultado correspondiente. confirm=true solo representa una confirmación explícita del usuario al cambio concreto que acabas de presentar.\n\nRESPUESTAS: tras una tool comunica el resultado brevemente. No hables después de restaurant_input_ignored; simplemente espera otro turno.\n\nCIERRE: una despedida inequívoca usa restaurant_end_call confirmed=true. El silencio y el ruido nunca significan cierre.`;
 }
 
-/**
- * v29 separates acoustic evidence from semantic evidence.
- * Presence/waiting state is not owned here: ignored-input outcomes are reported
- * to ConversationTurnLifecycle through v18, which alone decides the next silence
- * epoch. v29 retains only the semantic tool gate and model/tool observability.
- *
- * A higher layer may attach one-shot caller-directed authority to a specific
- * transcript item. When present, the model cannot downgrade that same item to
- * restaurant_input_ignored; it must choose a coherent public tool instead.
- */
 export class CallSession extends BaseConstructor {
   private semanticGateArmedV29 = false;
   private observabilityInstalledV29 = false;
@@ -74,13 +64,9 @@ export class CallSession extends BaseConstructor {
   async fetch(request: Request): Promise<Response> {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
     const response = await super.fetch(request);
-
     if (isStart && response.ok) {
       this.installObservabilityV29();
-      (this as any).send?.({
-        type: "session.update",
-        session: { type: "realtime", instructions: v29Instructions(this as any), tool_choice: "auto" },
-      });
+      (this as any).send?.({ type: "session.update", session: { type: "realtime", instructions: v29Instructions(this as any), tool_choice: "auto" } });
       (this as any).diagnostics?.checkpoint?.("SEMANTIC_TURN_GATE_V29_ENABLED", {
         vad_can_arm_tool_gate: false,
         transcript_required_to_arm: true,
@@ -90,7 +76,6 @@ export class CallSession extends BaseConstructor {
         presence_authority: "ConversationTurnLifecycle",
       });
     }
-
     return response;
   }
 
@@ -107,10 +92,7 @@ export class CallSession extends BaseConstructor {
     (this as any).send = (message: any) => {
       if (this.debugEnabledV29() && message?.type === "conversation.item.create" && message?.item?.type === "function_call_output") {
         const output = typeof message.item.output === "string" ? message.item.output.slice(0, 2000) : JSON.stringify(message.item.output ?? {}).slice(0, 2000);
-        (this as any).diagnostics?.checkpoint?.("DEBUG_TOOL_OUTPUT_V29", {
-          call_id: message.item.call_id ?? null,
-          output,
-        });
+        (this as any).diagnostics?.checkpoint?.("DEBUG_TOOL_OUTPUT_V29", { call_id: message.item.call_id ?? null, output });
       }
       this.originalSendV29?.(message);
     };
@@ -139,11 +121,7 @@ export class CallSession extends BaseConstructor {
   }
 
   private callerDirectedAuthorityAppliesV29(): boolean {
-    return Boolean(
-      this.semanticGateArmedV29 &&
-      this.activeSemanticItemIdV29 &&
-      this.callerDirectedItemIdV29 === this.activeSemanticItemIdV29
-    );
+    return Boolean(this.semanticGateArmedV29 && this.activeSemanticItemIdV29 && this.callerDirectedItemIdV29 === this.activeSemanticItemIdV29);
   }
 
   private rejectIgnoredInputForDirectedTurnV29(event: RealtimeEvent): void {
@@ -154,7 +132,6 @@ export class CallSession extends BaseConstructor {
       semantic_gate_preserved: true,
       presence_unchanged: true,
     });
-
     (this as any).send?.({
       type: "conversation.item.create",
       item: {
@@ -168,7 +145,6 @@ export class CallSession extends BaseConstructor {
         }),
       },
     });
-
     realtimeCommandPortFor(this as any).createDefaultResponse();
   }
 
@@ -178,22 +154,11 @@ export class CallSession extends BaseConstructor {
       const args = event.arguments?.trim() ? JSON.parse(event.arguments) as Record<string, unknown> : {};
       if (typeof args.reason === "string" && args.reason.trim()) reason = args.reason.trim();
     } catch { /* fail safe */ }
-
-    (this as any).diagnostics?.checkpoint?.("BACKGROUND_INPUT_IGNORED_V29", {
-      reason,
-      no_business_action: true,
-      no_spoken_response: true,
-      lifecycle_authority: true,
-    });
+    (this as any).diagnostics?.checkpoint?.("BACKGROUND_INPUT_IGNORED_V29", { reason, no_business_action: true, no_spoken_response: true, lifecycle_authority: true });
     (this as any).send?.({
       type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: event.call_id,
-        output: JSON.stringify({ ok: true, status: "IGNORED", reason, speak: false, mutation: false }),
-      },
+      item: { type: "function_call_output", call_id: event.call_id, output: JSON.stringify({ ok: true, status: "IGNORED", reason, speak: false, mutation: false }) },
     });
-
     this.activeSemanticItemIdV29 = null;
     this.callerDirectedItemIdV29 = null;
     (this as any).observeSemanticIgnoredV18?.(reason);
@@ -201,7 +166,6 @@ export class CallSession extends BaseConstructor {
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const event = parseEvent(data);
-
     if (event?.type === "input_audio_buffer.speech_started") {
       await V26Prototype.handleRealtimeMessage.call(this, data);
       return;
@@ -210,12 +174,14 @@ export class CallSession extends BaseConstructor {
     if (event?.type === "conversation.item.input_audio_transcription.completed") {
       const transcript = usableTranscript(event.transcript);
       if (this.debugEnabledV29()) {
-        (this as any).diagnostics?.checkpoint?.("DEBUG_USER_TRANSCRIPT_V29", {
-          transcript: transcript ?? "",
-          usable: transcript !== null,
-        });
+        (this as any).diagnostics?.checkpoint?.("DEBUG_USER_TRANSCRIPT_V29", { transcript: transcript ?? "", usable: transcript !== null });
       }
-      if (transcript) this.armSemanticGateV29(transcript, typeof event.item_id === "string" ? event.item_id : null);
+      if (transcript) {
+        const itemId = typeof event.item_id === "string" ? event.item_id : null;
+        const higherLayerOwns = Boolean((this as any).shouldBypassTurnConcurrencyV36?.(event));
+        if (itemId && higherLayerOwns) this.armCallerDirectedSemanticAuthorityV29(itemId, "higher_layer_confirmed_turn_ownership");
+        this.armSemanticGateV29(transcript, itemId);
+      }
     }
 
     if (event?.type === "response.function_call_arguments.done" && event.name && isPublicRestaurantTool(event.name)) {
@@ -226,14 +192,11 @@ export class CallSession extends BaseConstructor {
           call_id: event.call_id ?? null,
         });
       }
-
       if (event.name === INPUT_IGNORED && this.callerDirectedAuthorityAppliesV29()) {
         this.rejectIgnoredInputForDirectedTurnV29(event);
         return;
       }
-
       this.releaseSemanticGateV29(event.name);
-
       if (event.name === INPUT_IGNORED) {
         this.handleIgnoredInputV29(event);
         return;
