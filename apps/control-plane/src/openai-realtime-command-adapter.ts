@@ -1,14 +1,48 @@
-import type { RealtimeProviderCommandPort, RealtimeSpeechRequest } from "./realtime-provider-command-port";
-import { restoreTurnDetectionEvent, suspendTurnDetectionEvent, type TenantVadSettings } from "./protected-turn-detection";
+import type {
+  RealtimeInputDetectionSettings,
+  RealtimeProviderCommandPort,
+  RealtimeSpeechRequest,
+} from "./realtime-provider-command-port";
 
 export type OpenAIRealtimeCommandHost = {
   send(event: Record<string, unknown>): void;
 };
 
+const DEFAULT_THRESHOLD = 0.5;
+const DEFAULT_PREFIX_PADDING_MS = 300;
+const DEFAULT_SILENCE_DURATION_MS = 500;
+const DEFAULT_IDLE_TIMEOUT_MS = 10_000;
+
 function responseMetadata(request: RealtimeSpeechRequest): Record<string, unknown> | undefined {
   const metadata = { ...(request.metadata ?? {}) };
   if (request.purpose && metadata.purpose === undefined) metadata.purpose = request.purpose;
   return Object.keys(metadata).length ? metadata : undefined;
+}
+
+function openAIServerVad(settings: RealtimeInputDetectionSettings = {}): Record<string, unknown> {
+  return {
+    type: "server_vad",
+    threshold: settings.threshold ?? DEFAULT_THRESHOLD,
+    prefix_padding_ms: settings.prefixPaddingMs ?? DEFAULT_PREFIX_PADDING_MS,
+    silence_duration_ms: settings.silenceDurationMs ?? DEFAULT_SILENCE_DURATION_MS,
+    idle_timeout_ms: settings.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
+    create_response: true,
+    interrupt_response: true,
+  };
+}
+
+function openAITurnDetectionUpdate(turnDetection: Record<string, unknown> | null): Record<string, unknown> {
+  return {
+    type: "session.update",
+    session: {
+      type: "realtime",
+      audio: {
+        input: {
+          turn_detection: turnDetection,
+        },
+      },
+    },
+  };
 }
 
 /** OpenAI-specific translation of the provider-neutral realtime command port. */
@@ -52,11 +86,11 @@ export class OpenAIRealtimeCommandAdapter implements RealtimeProviderCommandPort
   }
 
   suspendInputDetection(): void {
-    this.host.send(suspendTurnDetectionEvent());
+    this.host.send(openAITurnDetectionUpdate(null));
   }
 
-  restoreInputDetection(settings: TenantVadSettings = {}): void {
-    this.host.send(restoreTurnDetectionEvent(settings));
+  restoreInputDetection(settings: RealtimeInputDetectionSettings = {}): void {
+    this.host.send(openAITurnDetectionUpdate(openAIServerVad(settings)));
   }
 }
 
