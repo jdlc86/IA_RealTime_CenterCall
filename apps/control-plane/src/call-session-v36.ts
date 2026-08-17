@@ -117,7 +117,7 @@ export class CallSession extends BaseConstructor {
     const session = this as any;
     if (event.item_id && session.socket) {
       try {
-        session.send?.({ type: "conversation.item.delete", item_id: event.item_id });
+        realtimeCommandPortFor(session).discardInputItem(event.item_id);
       } catch (error) {
         session.diagnostics?.fail?.("TURN_CONCURRENCY_ITEM_DELETE_FAILED_V36", "OVERLAPPING_ITEM_DELETE_FAILED", {
           item_id: event.item_id,
