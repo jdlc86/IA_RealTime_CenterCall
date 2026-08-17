@@ -1,11 +1,8 @@
 import { CallSession as CallSessionV41 } from "./call-session-v41";
+import { shouldQuiesceConversationLifecycleV42 } from "./call-session-v42-policy";
 
 const BaseConstructor = CallSessionV41 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV41.prototype as any;
-
-export function shouldQuiesceConversationLifecycleV42(state: unknown, hangupStarted: unknown): boolean {
-  return state === "closing" || hangupStarted === true;
-}
 
 /**
  * v42 closes the lifecycle ownership gap between the legacy explicit-farewell
