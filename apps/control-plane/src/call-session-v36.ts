@@ -329,9 +329,15 @@ export class CallSession extends BaseConstructor {
       }
     }
 
-    if (event?.type === "output_audio_buffer.started" && this.turnConcurrencyV36.isActive()) {
+    // Confirmed barge-in must be activated by every normal (non-protected)
+    // Lucia playback, independently of whether a turn-concurrency lock happens
+    // to be active at playback start. Tool-backed responses can legitimately
+    // begin without an active lock; coupling these lifecycles made those
+    // responses effectively non-interruptible.
+    if (event?.type === "output_audio_buffer.started") {
       const id = responseId(event);
-      if (!id || !this.protectedResponseIdsV36.has(id)) {
+      const isProtected = !!(id && this.protectedResponseIdsV36.has(id));
+      if (!isProtected && !this.normalPlaybackActiveV36) {
         this.beginConfirmedBargeInListeningV36(event);
       }
     }
