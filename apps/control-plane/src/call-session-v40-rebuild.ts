@@ -19,6 +19,8 @@ import { restoreTurnDetectionEvent } from "./protected-turn-detection";
 const BaseConstructor = CallSessionV39 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV39.prototype as any;
 const RESPONSE_OWNER_EMISSION_MODE: ResponseOwnerEmissionMode = "active";
+const PROTECTED_METADATA_KEY = "protected_speech_v35";
+const HANDOFF_METADATA_KEY = "human_handoff_v37";
 
 type RealtimeEvent = {
   type?: string;
@@ -62,12 +64,17 @@ function usableTranscript(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 1500) : "";
 }
 
+function isProtectedMetadata(metadata: Record<string, unknown>): boolean {
+  return Boolean(metadata[PROTECTED_METADATA_KEY] || metadata[HANDOFF_METADATA_KEY]);
+}
+
 /**
  * Rebuild v40: single authority for classified normal-speech barge-in above the
  * known-good v39 baseline.
  *
  * Invariants:
  * - raw VAD never authorizes cancellation or a new semantic response;
+ * - protected greeting/recovery/handoff speech is never made interruptible here;
  * - while normal Lucia audio is playing, server VAD listens but neither
  *   interrupts nor auto-creates a response;
  * - completed caller speech is classified out-of-conversation as INTERRUPT/IGNORE;
@@ -81,6 +88,7 @@ export class CallSession extends BaseConstructor {
   private responseOwnerV40: ResponseOwnerSnapshot = initialResponseOwnerSnapshot();
   private pendingBargeInV40: PendingBargeIn | null = null;
   private classifierByResponseV40 = new Map<string, PendingBargeIn>();
+  private protectedResponseIdsV40 = new Set<string>();
   private normalListeningV40 = false;
 
   private reportOwnerEffectsV40(effects: ResponseOwnerEffect[]): void {
@@ -243,14 +251,13 @@ export class CallSession extends BaseConstructor {
       return;
     }
 
-    // Cancellation/clear happen first. The caller item is then deliberately fed
-    // into the known-good v39 semantic pipeline before the one new response is created.
     this.executePreSemanticEffectsV40(emission.executable);
     await BasePrototype.handleRealtimeMessage.call(this, pending.originalData);
     this.executePostSemanticEffectsV40(emission.executable);
+    const cancelled = result.effects.find((effect): effect is Extract<ResponseOwnerEffect, { type: "cancel_response" }> => effect.type === "cancel_response");
     (this as any).diagnostics?.checkpoint?.("BARGE_IN_CONFIRMED_V40_REBUILD", {
       item_id: pending.itemId,
-      cancelled_response_id: result.effects.find((effect) => effect.type === "cancel_response")?.responseId ?? null,
+      cancelled_response_id: cancelled?.responseId ?? null,
       playback_was_already_cleared: result.snapshot.playbackCleared,
       promoted_to_v39_semantic_pipeline: true,
       response_done_gate: false,
@@ -260,10 +267,10 @@ export class CallSession extends BaseConstructor {
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const event = parseEvent(data);
     const metadata = event?.response?.metadata ?? {};
+    const id = event ? responseId(event) : null;
     const isClassifierResponse = metadata.purpose === BARGE_IN_METADATA_PURPOSE;
 
     if (event?.type === "response.created" && isClassifierResponse) {
-      const id = responseId(event);
       const sourceItemId = typeof metadata.source_item_id === "string" ? metadata.source_item_id : "";
       const pending = this.pendingBargeInV40;
       if (id && pending && pending.itemId === sourceItemId) {
@@ -276,42 +283,30 @@ export class CallSession extends BaseConstructor {
       return;
     }
 
-    if (event?.type === "response.output_text.done") {
-      const id = responseId(event);
-      if (id && this.classifierByResponseV40.has(id)) {
-        await this.finalizeClassifierV40(id, event.text);
-        return;
-      }
+    if (event?.type === "response.output_text.done" && id && this.classifierByResponseV40.has(id)) {
+      await this.finalizeClassifierV40(id, event.text);
+      return;
     }
 
-    if (event?.type === "response.done") {
-      const id = responseId(event);
-      if (id && this.classifierByResponseV40.has(id)) {
-        const pending = this.classifierByResponseV40.get(id)!;
-        if (event.response?.status !== "completed") {
-          this.classifierByResponseV40.delete(id);
-          if (this.pendingBargeInV40?.itemId === pending.itemId) this.pendingBargeInV40 = null;
-          await this.finalizeClassifierV40(id, "IGNORE");
-        }
-        return;
-      }
+    if (event?.type === "response.done" && id && this.classifierByResponseV40.has(id)) {
+      if (event.response?.status !== "completed") await this.finalizeClassifierV40(id, "IGNORE");
+      return;
     }
 
     if (event?.type === "conversation.item.input_audio_transcription.completed" && this.requestClassifierV40(event, data)) {
       return;
     }
 
-    if (event?.type === "response.created") {
-      const id = responseId(event);
-      if (id) this.reconcileOwnerEventV40({ type: "assistant_response_started", responseId: id });
-    } else if (event?.type === "response.done") {
-      const id = responseId(event);
-      if (id) {
-        this.reportStaleDoneV40(id);
-        this.reconcileOwnerEventV40({ type: "assistant_response_done", responseId: id });
-      }
+    if (event?.type === "response.created" && id) {
+      if (isProtectedMetadata(metadata)) this.protectedResponseIdsV40.add(id);
+      this.reconcileOwnerEventV40({ type: "assistant_response_started", responseId: id });
+    } else if (event?.type === "response.done" && id) {
+      this.reportStaleDoneV40(id);
+      this.reconcileOwnerEventV40({ type: "assistant_response_done", responseId: id });
+      this.protectedResponseIdsV40.delete(id);
     } else if (event?.type === "output_audio_buffer.cleared") {
       this.reconcileOwnerEventV40({ type: "assistant_playback_cleared" });
+      if (id) this.protectedResponseIdsV40.delete(id);
     } else if (event?.type === "input_audio_buffer.speech_started") {
       this.reconcileOwnerEventV40({ type: "caller_speech_started" });
     }
@@ -320,17 +315,16 @@ export class CallSession extends BaseConstructor {
       this.reconcileOwnerEventV40({ type: "terminal" });
       this.pendingBargeInV40 = null;
       this.classifierByResponseV40.clear();
+      this.protectedResponseIdsV40.clear();
       this.normalListeningV40 = false;
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
 
-    // v39 restores ordinary VAD when normal playback starts. Override it only
-    // after the known-good base lifecycle has run, so normal audio remains audible
-    // while automatic SIP interruption/response creation stay disabled.
-    if (event?.type === "output_audio_buffer.started" && this.responseOwnerV40.state === "ASSISTANT_ACTIVE") {
+    if (event?.type === "output_audio_buffer.started" && id && !this.protectedResponseIdsV40.has(id) && this.responseOwnerV40.state === "ASSISTANT_ACTIVE") {
       this.setNormalListeningV40();
     } else if (event?.type === "output_audio_buffer.stopped") {
+      if (id) this.protectedResponseIdsV40.delete(id);
       this.restoreNormalVadV40("assistant_playback_stopped");
     }
   }
