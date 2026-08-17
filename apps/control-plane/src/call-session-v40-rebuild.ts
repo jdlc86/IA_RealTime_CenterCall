@@ -7,15 +7,36 @@ import {
   type ResponseOwnerSnapshot,
 } from "./realtime-response-owner";
 import { decideResponseOwnerEmission, type ResponseOwnerEmissionMode } from "./response-owner-emission-policy";
+import { applyBargeInSemanticDecision } from "./response-owner-barge-in-decision";
+import {
+  BARGE_IN_METADATA_PURPOSE,
+  buildBargeInClassifierResponse,
+  buildNonInterruptingListeningEvent,
+  parseBargeInDecision,
+} from "./barge-in-confirmation";
+import { restoreTurnDetectionEvent } from "./protected-turn-detection";
 
 const BaseConstructor = CallSessionV39 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV39.prototype as any;
-const RESPONSE_OWNER_EMISSION_MODE: ResponseOwnerEmissionMode = "shadow";
+const RESPONSE_OWNER_EMISSION_MODE: ResponseOwnerEmissionMode = "active";
 
 type RealtimeEvent = {
   type?: string;
+  item_id?: string;
+  transcript?: unknown;
+  text?: unknown;
   response_id?: string;
-  response?: { id?: string };
+  response?: {
+    id?: string;
+    status?: string;
+    metadata?: Record<string, unknown> | null;
+  };
+};
+
+type PendingBargeIn = {
+  itemId: string;
+  transcript: string;
+  originalData: unknown;
 };
 
 function readRealtimeText(data: unknown): string | null {
@@ -37,16 +58,30 @@ function responseId(event: RealtimeEvent): string | null {
   return event.response_id ?? event.response?.id ?? null;
 }
 
+function usableTranscript(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 1500) : "";
+}
+
 /**
- * Rebuild v40: reconciliation authority above the known-good v39.
+ * Rebuild v40: single authority for classified normal-speech barge-in above the
+ * known-good v39 baseline.
  *
- * One explicit policy boundary now owns whether reducer effects are allowed to
- * reach Realtime. The boundary is intentionally fixed to shadow mode here:
- * reconciliation is live, but no response.create/cancel/playback command can be
- * emitted by the rebuild until a later reviewed activation changes this switch.
+ * Invariants:
+ * - raw VAD never authorizes cancellation or a new semantic response;
+ * - while normal Lucia audio is playing, server VAD listens but neither
+ *   interrupts nor auto-creates a response;
+ * - completed caller speech is classified out-of-conversation as INTERRUPT/IGNORE;
+ * - IGNORE never reaches the v39 semantic pipeline;
+ * - INTERRUPT cancels/clears the previous response as needed, then forwards the
+ *   already-committed caller item to v39 and creates exactly one response;
+ * - response.done is reconciliation evidence only and never gates continuation;
+ * - classifier responses are excluded from conversational response ownership.
  */
 export class CallSession extends BaseConstructor {
   private responseOwnerV40: ResponseOwnerSnapshot = initialResponseOwnerSnapshot();
+  private pendingBargeInV40: PendingBargeIn | null = null;
+  private classifierByResponseV40 = new Map<string, PendingBargeIn>();
+  private normalListeningV40 = false;
 
   private reportOwnerEffectsV40(effects: ResponseOwnerEffect[]): void {
     for (const effect of effects) {
@@ -65,22 +100,13 @@ export class CallSession extends BaseConstructor {
     }
   }
 
-  private applyOwnerEventV40(event: ResponseOwnerEvent): void {
+  private reconcileOwnerEventV40(event: ResponseOwnerEvent): ResponseOwnerEffect[] {
     const previous = this.responseOwnerV40;
     const result = reduceResponseOwner(previous, event);
     this.responseOwnerV40 = result.snapshot;
     this.reportOwnerEffectsV40(result.effects);
 
     const emission = decideResponseOwnerEmission(result.effects, RESPONSE_OWNER_EMISSION_MODE);
-    if (emission.executable.length !== 0) {
-      // Fail closed: this branch is unreachable while the compile-time mode is
-      // shadow. Keeping the assertion visible prevents accidental socket writes
-      // from being added around the authority boundary.
-      (this as any).diagnostics?.fail?.("RESPONSE_OWNER_SHADOW_INVARIANT_BROKEN_V40_REBUILD", "SHADOW_MODE_PRODUCED_EXECUTABLE_EFFECTS", {
-        executable_effects: emission.executable.map((effect) => effect.type),
-      });
-    }
-
     (this as any).diagnostics?.checkpoint?.("RESPONSE_OWNER_RECONCILED_V40_REBUILD", {
       event_type: event.type,
       previous_state: previous.state,
@@ -94,6 +120,7 @@ export class CallSession extends BaseConstructor {
       observed_only_effects: emission.observedOnly.map((effect) => effect.type),
       emission_mode: RESPONSE_OWNER_EMISSION_MODE,
     });
+    return emission.executable;
   }
 
   private reportStaleDoneV40(id: string): void {
@@ -106,28 +133,205 @@ export class CallSession extends BaseConstructor {
     });
   }
 
+  private setNormalListeningV40(): void {
+    const session = this as any;
+    if (!session.socket || session.state === "closing" || session.hangupStarted) return;
+    session.send?.(buildNonInterruptingListeningEvent(session.tenantVadV35 ?? {}));
+    this.normalListeningV40 = true;
+    session.diagnostics?.checkpoint?.("BARGE_IN_LISTENING_ACTIVE_V40_REBUILD", {
+      automatic_interrupt: false,
+      automatic_response: false,
+      owner_state: this.responseOwnerV40.state,
+    });
+  }
+
+  private restoreNormalVadV40(reason: string): void {
+    if (!this.normalListeningV40) return;
+    const session = this as any;
+    this.normalListeningV40 = false;
+    if (!session.socket || session.state === "closing" || session.hangupStarted) return;
+    session.send?.(restoreTurnDetectionEvent(session.tenantVadV35 ?? {}));
+    session.diagnostics?.checkpoint?.("BARGE_IN_LISTENING_RELEASED_V40_REBUILD", { reason });
+  }
+
+  private requestClassifierV40(event: RealtimeEvent, data: unknown): boolean {
+    if (this.responseOwnerV40.state !== "BARGE_IN_CLASSIFYING") return false;
+    const itemId = typeof event.item_id === "string" ? event.item_id : "";
+    const transcript = usableTranscript(event.transcript);
+    if (!itemId || !transcript) return false;
+
+    if (this.pendingBargeInV40) {
+      try { (this as any).send?.({ type: "conversation.item.delete", item_id: itemId }); } catch { /* best effort */ }
+      (this as any).diagnostics?.checkpoint?.("BARGE_IN_EXTRA_CANDIDATE_DROPPED_V40_REBUILD", {
+        item_id: itemId,
+        pending_item_id: this.pendingBargeInV40.itemId,
+      });
+      return true;
+    }
+
+    const pending: PendingBargeIn = { itemId, transcript, originalData: data };
+    this.pendingBargeInV40 = pending;
+    (this as any).send?.(buildBargeInClassifierResponse(transcript, itemId));
+    (this as any).diagnostics?.checkpoint?.("BARGE_IN_CLASSIFIER_REQUESTED_V40_REBUILD", {
+      item_id: itemId,
+      transcript_length: transcript.length,
+      active_response_id: this.responseOwnerV40.activeResponseId,
+      playback_cleared: this.responseOwnerV40.playbackCleared,
+    });
+    return true;
+  }
+
+  private executePreSemanticEffectsV40(effects: ResponseOwnerEffect[]): void {
+    const session = this as any;
+    for (const effect of effects) {
+      if (effect.type === "cancel_response") {
+        session.send?.({ type: "response.cancel", response_id: effect.responseId });
+      } else if (effect.type === "clear_playback") {
+        session.send?.({ type: "output_audio_buffer.clear" });
+      }
+    }
+  }
+
+  private executePostSemanticEffectsV40(effects: ResponseOwnerEffect[]): void {
+    const session = this as any;
+    for (const effect of effects) {
+      if (effect.type === "create_caller_response") {
+        session.send?.({ type: "response.create" });
+      } else if (effect.type === "resume_assistant") {
+        session.send?.({
+          type: "response.create",
+          response: {
+            tool_choice: "none",
+            instructions:
+              "Continúa inmediatamente la respuesta que estabas pronunciando antes de la interrupción acústica. " +
+              "No menciones la interrupción, no vuelvas a empezar desde el principio y completa únicamente la información pendiente.",
+          },
+        });
+      }
+    }
+  }
+
+  private async finalizeClassifierV40(responseIdValue: string, text: unknown): Promise<void> {
+    const pending = this.classifierByResponseV40.get(responseIdValue);
+    if (!pending) return;
+    this.classifierByResponseV40.delete(responseIdValue);
+    if (this.pendingBargeInV40?.itemId === pending.itemId) this.pendingBargeInV40 = null;
+
+    const decision = parseBargeInDecision(text);
+    const result = applyBargeInSemanticDecision(this.responseOwnerV40, decision);
+    if (!result.accepted) {
+      (this as any).diagnostics?.fail?.("BARGE_IN_DECISION_REJECTED_V40_REBUILD", "OWNER_NOT_CLASSIFYING", {
+        item_id: pending.itemId,
+        decision,
+        owner_state: this.responseOwnerV40.state,
+      });
+      return;
+    }
+
+    this.responseOwnerV40 = result.snapshot;
+    const emission = decideResponseOwnerEmission(result.effects, RESPONSE_OWNER_EMISSION_MODE);
+    this.reportOwnerEffectsV40(result.effects);
+
+    if (decision === "IGNORE") {
+      try { (this as any).send?.({ type: "conversation.item.delete", item_id: pending.itemId }); } catch { /* best effort */ }
+      this.executePostSemanticEffectsV40(emission.executable);
+      (this as any).diagnostics?.checkpoint?.("BARGE_IN_IGNORED_V40_REBUILD", {
+        item_id: pending.itemId,
+        playback_cleared: result.snapshot.playbackCleared,
+        semantic_pipeline_entered: false,
+      });
+      return;
+    }
+
+    // Cancellation/clear happen first. The caller item is then deliberately fed
+    // into the known-good v39 semantic pipeline before the one new response is created.
+    this.executePreSemanticEffectsV40(emission.executable);
+    await BasePrototype.handleRealtimeMessage.call(this, pending.originalData);
+    this.executePostSemanticEffectsV40(emission.executable);
+    (this as any).diagnostics?.checkpoint?.("BARGE_IN_CONFIRMED_V40_REBUILD", {
+      item_id: pending.itemId,
+      cancelled_response_id: result.effects.find((effect) => effect.type === "cancel_response")?.responseId ?? null,
+      playback_was_already_cleared: result.snapshot.playbackCleared,
+      promoted_to_v39_semantic_pipeline: true,
+      response_done_gate: false,
+    });
+  }
+
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const event = parseEvent(data);
+    const metadata = event?.response?.metadata ?? {};
+    const isClassifierResponse = metadata.purpose === BARGE_IN_METADATA_PURPOSE;
+
+    if (event?.type === "response.created" && isClassifierResponse) {
+      const id = responseId(event);
+      const sourceItemId = typeof metadata.source_item_id === "string" ? metadata.source_item_id : "";
+      const pending = this.pendingBargeInV40;
+      if (id && pending && pending.itemId === sourceItemId) {
+        this.classifierByResponseV40.set(id, pending);
+        (this as any).diagnostics?.checkpoint?.("BARGE_IN_CLASSIFIER_BOUND_V40_REBUILD", {
+          response_id: id,
+          item_id: sourceItemId,
+        });
+      }
+      return;
+    }
+
+    if (event?.type === "response.output_text.done") {
+      const id = responseId(event);
+      if (id && this.classifierByResponseV40.has(id)) {
+        await this.finalizeClassifierV40(id, event.text);
+        return;
+      }
+    }
+
+    if (event?.type === "response.done") {
+      const id = responseId(event);
+      if (id && this.classifierByResponseV40.has(id)) {
+        const pending = this.classifierByResponseV40.get(id)!;
+        if (event.response?.status !== "completed") {
+          this.classifierByResponseV40.delete(id);
+          if (this.pendingBargeInV40?.itemId === pending.itemId) this.pendingBargeInV40 = null;
+          await this.finalizeClassifierV40(id, "IGNORE");
+        }
+        return;
+      }
+    }
+
+    if (event?.type === "conversation.item.input_audio_transcription.completed" && this.requestClassifierV40(event, data)) {
+      return;
+    }
 
     if (event?.type === "response.created") {
       const id = responseId(event);
-      if (id) this.applyOwnerEventV40({ type: "assistant_response_started", responseId: id });
+      if (id) this.reconcileOwnerEventV40({ type: "assistant_response_started", responseId: id });
     } else if (event?.type === "response.done") {
       const id = responseId(event);
       if (id) {
         this.reportStaleDoneV40(id);
-        this.applyOwnerEventV40({ type: "assistant_response_done", responseId: id });
+        this.reconcileOwnerEventV40({ type: "assistant_response_done", responseId: id });
       }
     } else if (event?.type === "output_audio_buffer.cleared") {
-      this.applyOwnerEventV40({ type: "assistant_playback_cleared" });
+      this.reconcileOwnerEventV40({ type: "assistant_playback_cleared" });
     } else if (event?.type === "input_audio_buffer.speech_started") {
-      this.applyOwnerEventV40({ type: "caller_speech_started" });
+      this.reconcileOwnerEventV40({ type: "caller_speech_started" });
     }
 
     if ((this as any).state === "closing" || (this as any).hangupStarted) {
-      this.applyOwnerEventV40({ type: "terminal" });
+      this.reconcileOwnerEventV40({ type: "terminal" });
+      this.pendingBargeInV40 = null;
+      this.classifierByResponseV40.clear();
+      this.normalListeningV40 = false;
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
+
+    // v39 restores ordinary VAD when normal playback starts. Override it only
+    // after the known-good base lifecycle has run, so normal audio remains audible
+    // while automatic SIP interruption/response creation stay disabled.
+    if (event?.type === "output_audio_buffer.started" && this.responseOwnerV40.state === "ASSISTANT_ACTIVE") {
+      this.setNormalListeningV40();
+    } else if (event?.type === "output_audio_buffer.stopped") {
+      this.restoreNormalVadV40("assistant_playback_stopped");
+    }
   }
 }
