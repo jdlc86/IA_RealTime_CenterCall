@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { OpenAIRealtimeCommandAdapter, realtimeCommandPortFor } from "./openai-realtime-command-adapter.js";
+import { OpenAIRealtimeCommandAdapter, realtimeCommandPortFor } from "../.test-dist/openai-realtime-command-adapter.js";
 
 function host() {
   const events = [];
