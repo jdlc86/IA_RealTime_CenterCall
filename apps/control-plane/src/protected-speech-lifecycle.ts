@@ -1,4 +1,4 @@
-export type ProtectedSpeechKind = "GREETING" | "RECOVERY";
+export type ProtectedSpeechKind = "GREETING" | "RECOVERY" | "TERMINAL";
 
 export type ProtectedSpeechSnapshot = {
   kind: ProtectedSpeechKind;
