@@ -4,6 +4,7 @@ import {
   decideClosingTransition,
   hasExplicitUserFarewellEvidence,
   isExplicitClosingConfirmation,
+  shouldCommitPendingClose,
 } from "../.test-dist/core-closing-policy.js";
 
 test("active workflow requires one closing confirmation turn", () => {
@@ -46,4 +47,13 @@ test("yes can confirm only a previously pending closing question", () => {
   assert.equal(isExplicitClosingConfirmation("Sí"), true);
   assert.equal(isExplicitClosingConfirmation("Vale"), true);
   assert.equal(isExplicitClosingConfirmation("No, todavía no"), false);
+  assert.equal(shouldCommitPendingClose(true, "Sí"), true);
+  assert.equal(shouldCommitPendingClose(true, "Vale"), true);
+  assert.equal(shouldCommitPendingClose(false, "Sí"), false);
+  assert.equal(shouldCommitPendingClose(true, "No, todavía no"), false);
+});
+
+test("pending close plus explicit confirmation is independent of model retry ordering", () => {
+  assert.equal(shouldCommitPendingClose(true, "Sí, claro"), true);
+  assert.equal(shouldCommitPendingClose(true, "Confirmo"), true);
 });
