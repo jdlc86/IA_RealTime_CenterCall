@@ -11,10 +11,8 @@ import { applyBargeInSemanticDecision } from "./response-owner-barge-in-decision
 import {
   BARGE_IN_METADATA_PURPOSE,
   buildBargeInClassifierResponse,
-  buildNonInterruptingListeningEvent,
   parseBargeInDecision,
 } from "./barge-in-confirmation";
-import { restoreTurnDetectionEvent } from "./protected-turn-detection";
 import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
 
 const BaseConstructor = CallSessionV39 as unknown as new (...args: any[]) => any;
@@ -149,7 +147,7 @@ export class CallSession extends BaseConstructor {
   private setNormalListeningV40(): void {
     const session = this as any;
     if (!session.socket || session.state === "closing" || session.hangupStarted) return;
-    session.send?.(buildNonInterruptingListeningEvent(session.tenantVadV35 ?? {}));
+    realtimeCommandPortFor(session).beginNonInterruptingListening(session.tenantVadV35 ?? {});
     this.normalListeningV40 = true;
     session.diagnostics?.checkpoint?.("BARGE_IN_LISTENING_ACTIVE_V40_REBUILD", {
       automatic_interrupt: false,
@@ -163,7 +161,7 @@ export class CallSession extends BaseConstructor {
     const session = this as any;
     this.normalListeningV40 = false;
     if (!session.socket || session.state === "closing" || session.hangupStarted) return;
-    session.send?.(restoreTurnDetectionEvent(session.tenantVadV35 ?? {}));
+    realtimeCommandPortFor(session).restoreInputDetection(session.tenantVadV35 ?? {});
     session.diagnostics?.checkpoint?.("BARGE_IN_LISTENING_RELEASED_V40_REBUILD", { reason });
   }
 
