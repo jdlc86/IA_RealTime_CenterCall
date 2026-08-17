@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   decideClosingTransition,
+  decideEndCallProposal,
   hasExplicitUserFarewellEvidence,
   isExplicitClosingConfirmation,
   shouldCommitPendingClose,
@@ -32,13 +33,33 @@ test("non closing turn clears a pending close and continues", () => {
 });
 
 test("direct user farewells are end-call evidence", () => {
-  for (const phrase of ["Adiós", "Hasta luego", "Puedes colgar", "Quiero terminar la llamada", "Gracias, adiós", "Eso es todo"]) {
+  for (const phrase of [
+    "Adiós",
+    "Hasta luego",
+    "Puedes colgar",
+    "Quiero terminar la llamada",
+    "Gracias, adiós",
+    "Bueno, pues muchas gracias y hasta luego",
+    "Perfecto, puedes colgar ya",
+    "Eso es todo",
+    "Pues ya está, muchas gracias",
+  ]) {
     assert.equal(hasExplicitUserFarewellEvidence(phrase), true, phrase);
   }
 });
 
-test("business completion and courtesy are not end-call evidence", () => {
-  for (const phrase of ["Sí, confirma la reserva", "No quiero promociones", "Perfecto, gracias", "La primera opción me vale", "¿A qué hora cerráis?"]) {
+test("business completion, courtesy and negated closing are not end-call evidence", () => {
+  for (const phrase of [
+    "Sí, confirma la reserva",
+    "No quiero promociones",
+    "Perfecto, gracias",
+    "La primera opción me vale",
+    "¿A qué hora cerráis?",
+    "No quiero terminar la llamada",
+    "Todavía no cuelgues",
+    "No necesito nada más sobre la reserva pero dime el horario",
+    "Eso es todo sobre las reservas, ahora dime el menú",
+  ]) {
     assert.equal(hasExplicitUserFarewellEvidence(phrase), false, phrase);
   }
 });
@@ -56,4 +77,18 @@ test("yes can confirm only a previously pending closing question", () => {
 test("pending close plus explicit confirmation is independent of model retry ordering", () => {
   assert.equal(shouldCommitPendingClose(true, "Sí, claro"), true);
   assert.equal(shouldCommitPendingClose(true, "Confirmo"), true);
+});
+
+test("end-call proposal asks once when caller evidence is absent", () => {
+  assert.deepEqual(decideEndCallProposal(false, false, true), { action: "ASK_CONFIRMATION" });
+  assert.deepEqual(decideEndCallProposal(false, true, false), { action: "ASK_CONFIRMATION" });
+});
+
+test("repeated end-call proposal cannot create another confirmation response while pending", () => {
+  assert.deepEqual(decideEndCallProposal(true, false, true), { action: "ACK_PENDING" });
+  assert.deepEqual(decideEndCallProposal(true, true, true), { action: "ACK_PENDING" });
+});
+
+test("direct user evidence plus confirmed model proposal is authorized", () => {
+  assert.deepEqual(decideEndCallProposal(false, true, true), { action: "ALLOW_CLOSE" });
 });
