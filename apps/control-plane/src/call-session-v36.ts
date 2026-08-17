@@ -37,26 +37,20 @@ function responseId(event: RealtimeEvent): string | null {
 }
 
 /**
- * v36 serializes caller turns while Lucia is processing one semantic turn.
+ * v36 serializes ordinary caller turns while Lucia is processing one semantic turn.
  *
- * Lifecycle invariant:
- * caller transcript completed
- *   -> suspend turn detection
- *   -> Lucia may reason/call one or more tools
- *   -> any overlapping caller item is removed from conversation context
- *   -> normal assistant playback starts: clear uncommitted audio + restore tenant VAD
- *   -> barge-in is normal again while Lucia speaks
- *
- * Protected recovery is different: its VAD remains suspended until protected
- * playback completes, so restoring normal VAD cannot make the recovery interruptible.
- *
- * No semantic classification is performed here. This is only a single-flight
- * lifecycle boundary around Realtime user turns.
+ * Higher layers may explicitly take ownership of a completed transcript by overriding
+ * shouldBypassTurnConcurrencyV36(). This prevents two independent lifecycle owners
+ * from locking/dropping the same already-classified barge-in turn.
  */
 export class CallSession extends BaseConstructor {
   private turnConcurrencyV36 = new TurnConcurrencyLifecycle();
   private turnConcurrencyWatchdogV36: ReturnType<typeof setTimeout> | null = null;
   private protectedResponseIdsV36 = new Set<string>();
+
+  protected shouldBypassTurnConcurrencyV36(_event: RealtimeEvent): boolean {
+    return false;
+  }
 
   private acquireTurnConcurrencyV36(): void {
     if (!this.turnConcurrencyV36.acquire()) return;
@@ -87,8 +81,6 @@ export class CallSession extends BaseConstructor {
     const session = this as any;
     try {
       if (session.socket && session.state !== "closing" && !session.hangupStarted) {
-        // Audio spoken while Lucia was processing is not a second conversational
-        // turn. Drop any uncommitted bytes before normal VAD is restored.
         session.send?.({ type: "input_audio_buffer.clear" });
         session.send?.(restoreTurnDetectionEvent(session.tenantVadV35 ?? {}));
       }
@@ -106,12 +98,6 @@ export class CallSession extends BaseConstructor {
     });
   }
 
-  /**
-   * A terminal lifecycle (for example human handoff) can take ownership of the
-   * already-suspended VAD without briefly restoring normal turn detection.
-   * This only releases v36's local mutex/watchdog; the caller remains acoustically
-   * gated until the terminal owner explicitly ends the call or transfers it.
-   */
   protected detachTurnConcurrencyForTerminalV36(reason: string): void {
     const wasActive = this.turnConcurrencyV36.release();
     this.clearTurnConcurrencyWatchdogV36();
@@ -171,18 +157,23 @@ export class CallSession extends BaseConstructor {
     }
 
     if (event?.type === "conversation.item.input_audio_transcription.completed") {
-      if (this.turnConcurrencyV36.isActive()) {
-        this.discardOverlappingTurnV36(event);
-        return;
+      if (!this.shouldBypassTurnConcurrencyV36(event)) {
+        if (this.turnConcurrencyV36.isActive()) {
+          this.discardOverlappingTurnV36(event);
+          return;
+        }
+        this.acquireTurnConcurrencyV36();
+      } else {
+        (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_BYPASSED_V36", {
+          item_id: event.item_id ?? null,
+          owner: "higher_layer",
+        });
       }
-      this.acquireTurnConcurrencyV36();
     }
 
     if (event?.type === "output_audio_buffer.started" && this.turnConcurrencyV36.isActive()) {
       const id = responseId(event);
       if (!id || !this.protectedResponseIdsV36.has(id)) {
-        // Restore VAD at the start of normal Lucia speech so normal barge-in is
-        // preserved. The already-active semantic turn remains the only processed turn.
         this.releaseTurnConcurrencyV36("normal_assistant_playback_started");
       }
     }
