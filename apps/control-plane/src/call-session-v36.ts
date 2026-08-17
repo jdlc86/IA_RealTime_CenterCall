@@ -1,5 +1,5 @@
 import { CallSession as CallSessionV35Runtime } from "./call-session-v35-runtime";
-import { restoreTurnDetectionEvent, suspendTurnDetectionEvent } from "./protected-turn-detection";
+import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
 import { TurnConcurrencyLifecycle } from "./turn-concurrency-lifecycle";
 
 const BaseConstructor = CallSessionV35Runtime as unknown as new (...args: any[]) => any;
@@ -64,7 +64,7 @@ export class CallSession extends BaseConstructor {
     }
 
     try {
-      (this as any).send?.(suspendTurnDetectionEvent());
+      realtimeCommandPortFor(this as any).suspendInputDetection();
       this.armTurnConcurrencyWatchdogV36();
       (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_LOCK_ACQUIRED_V36", {
         source: "usable_completed_user_transcript",
@@ -85,8 +85,9 @@ export class CallSession extends BaseConstructor {
     const session = this as any;
     try {
       if (session.socket && session.state !== "closing" && !session.hangupStarted) {
-        session.send?.({ type: "input_audio_buffer.clear" });
-        session.send?.(restoreTurnDetectionEvent(session.tenantVadV35 ?? {}));
+        const realtime = realtimeCommandPortFor(session);
+        realtime.clearInput();
+        realtime.restoreInputDetection(session.tenantVadV35 ?? {});
       }
     } catch (error) {
       session.diagnostics?.fail?.("TURN_CONCURRENCY_RELEASE_FAILED_V36", "TURN_DETECTION_RESTORE_FAILED", {
