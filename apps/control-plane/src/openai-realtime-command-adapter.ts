@@ -2,6 +2,7 @@ import type {
   RealtimeInputDetectionSettings,
   RealtimeProviderCommandPort,
   RealtimeSpeechRequest,
+  RealtimeTextDecisionRequest,
 } from "./realtime-provider-command-port";
 
 export type OpenAIRealtimeCommandHost = {
@@ -13,7 +14,7 @@ const DEFAULT_PREFIX_PADDING_MS = 300;
 const DEFAULT_SILENCE_DURATION_MS = 500;
 const DEFAULT_IDLE_TIMEOUT_MS = 10_000;
 
-function responseMetadata(request: RealtimeSpeechRequest): Record<string, unknown> | undefined {
+function responseMetadata(request: { purpose?: string; metadata?: Record<string, unknown> }): Record<string, unknown> | undefined {
   const metadata = { ...(request.metadata ?? {}) };
   if (request.purpose && metadata.purpose === undefined) metadata.purpose = request.purpose;
   return Object.keys(metadata).length ? metadata : undefined;
@@ -64,6 +65,26 @@ export class OpenAIRealtimeCommandAdapter implements RealtimeProviderCommandPort
         content: [{ type: "input_text", text: request.exactText }],
       }];
     }
+    const event: Record<string, unknown> = { type: "response.create", response };
+    if (request.requestId) event.event_id = request.requestId;
+    this.host.send(event);
+  }
+
+  requestTextDecision(request: RealtimeTextDecisionRequest): void {
+    const response: Record<string, unknown> = {
+      conversation: "none",
+      output_modalities: ["text"],
+      tool_choice: "none",
+      instructions: request.instructions,
+      input: [{
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: request.inputText }],
+      }],
+    };
+    if (request.maxOutputTokens !== undefined) response.max_output_tokens = request.maxOutputTokens;
+    const metadata = responseMetadata(request);
+    if (metadata) response.metadata = metadata;
     const event: Record<string, unknown> = { type: "response.create", response };
     if (request.requestId) event.event_id = request.requestId;
     this.host.send(event);
