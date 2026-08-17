@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   initialConversationLifecycle,
   reduceConversationLifecycle,
-} from '../../.test-dist/conversation-lifecycle-model.js';
+} from '../.test-dist/conversation-lifecycle-model.js';
 
 function run(events) {
   let state = initialConversationLifecycle();
