@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   authorizeHumanHandoff,
   initialHumanHandoffAuthorizationState,
+  isExplicitHumanHandoffRejection,
   observeHumanHandoffCallerTurn,
 } from "../.test-dist/human-handoff-authorization-policy.js";
 
@@ -33,6 +34,15 @@ test("caller rejection clears pending authorization", () => {
   const blocked = authorizeHumanHandoff(initialHumanHandoffAuthorizationState(), "Eso no me lo puedes resolver");
   const observed = observeHumanHandoffCallerTurn(blocked.state, "No, gracias");
   const rejected = authorizeHumanHandoff(observed, "No, gracias");
+  assert.equal(rejected.allowed, false);
+  assert.equal(rejected.source, "CALLER_REJECTED");
+  assert.equal(rejected.state.offerPending, false);
+});
+
+test("emphatic repeated no is an explicit transfer rejection", () => {
+  assert.equal(isExplicitHumanHandoffRejection("no no no"), true);
+  assert.equal(isExplicitHumanHandoffRejection("nononono"), true);
+  const rejected = authorizeHumanHandoff({ offerPending: true }, "no no no");
   assert.equal(rejected.allowed, false);
   assert.equal(rejected.source, "CALLER_REJECTED");
   assert.equal(rejected.state.offerPending, false);
