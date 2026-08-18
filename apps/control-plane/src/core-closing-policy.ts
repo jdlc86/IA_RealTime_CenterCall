@@ -26,13 +26,7 @@ export type CloseConsensusDecision =
 export type ContextualCloseResolution = "CLOSE" | "CONTINUE" | "UNRESOLVED";
 
 function normalizeClosingText(value: string): string {
-  return value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9ñ ]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9ñ ]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function hasExplicitContinueEvidence(value: string): boolean {
@@ -65,8 +59,9 @@ function hasCourtesyEvidence(value: string): boolean {
 export function isAssistantMoreHelpQuestion(value: string): boolean {
   const text = normalizeClosingText(value);
   if (!text) return false;
-  return /\b(?:algo mas|alguna cosa mas|alguna otra cosa|en algo mas)\b/.test(text)
-    && /\b(?:puedo ayudarte|pueda ayudarte|te puedo ayudar|necesitas|necesita|quieres|quiere)\b/.test(text);
+  const asksForMore = /\b(?:algo mas|alguna cosa mas|alguna otra cosa|en algo mas)\b/.test(text);
+  const offersHelp = /\b(?:puedo ayudarte|pueda ayudarte|te puedo ayudar|te pueda ayudar|puedo ayudar|pueda ayudar|necesitas|necesita|quieres|quiere)\b/.test(text);
+  return asksForMore && offersHelp;
 }
 
 export function resolveReplyToMoreHelpQuestion(value: string): ContextualCloseResolution {
@@ -79,28 +74,16 @@ export function resolveReplyToMoreHelpQuestion(value: string): ContextualCloseRe
   return "UNRESOLVED";
 }
 
-/**
- * Deterministic strong close evidence. Courtesy may coexist with closing intent:
- * "muchas gracias, no necesito nada más" is both courteous and clearly closing.
- */
 export function hasExplicitUserFarewellEvidence(value: string): boolean {
   const text = normalizeClosingText(value);
   if (!text || hasExplicitContinueEvidence(text) || hasFollowupRequest(text)) return false;
-
   const strongFarewell = /(?:^|\b)(?:adios|hasta luego|hasta pronto|me despido|que tengas buen dia|que tenga buen dia)(?:\b|$)/.test(text);
   const explicitHangup = /(?:^|\b)(?:puedes colgar|puede colgar|podemos colgar|cuelga|cuelgue)(?:\b|$)/.test(text);
   const explicitCallEnd = /(?:^|\b)(?:termina|termine|finaliza|finalice) (?:ya )?(?:la )?llamada(?:\b|$)/.test(text)
     || /(?:^|\b)quiero (?:terminar|finalizar) (?:ya )?(?:la )?llamada(?:\b|$)/.test(text);
-  const explicitNoMoreNeeded = hasCompletionLanguage(text);
-
-  return strongFarewell || explicitHangup || explicitCallEnd || explicitNoMoreNeeded;
+  return strongFarewell || explicitHangup || explicitCallEnd || hasCompletionLanguage(text);
 }
 
-/**
- * Independent controller assessment with two dimensions.
- * Courtesy is conversational context, not a close verdict. The controller may
- * therefore abstain on close intent while still recognizing courtesy.
- */
 export function assessControllerCloseIntent(value: string): ControllerCloseAssessment {
   const courtesy = hasCourtesyEvidence(value);
   if (hasExplicitContinueEvidence(value)) return { courtesy, closeIntent: "CONTINUE" };
@@ -109,7 +92,6 @@ export function assessControllerCloseIntent(value: string): ControllerCloseAsses
   return { courtesy, closeIntent: "ABSTAIN" };
 }
 
-/** Backward-compatible signal adapter while older callers/tests are retired. */
 export type ControllerCloseSignal = "CLOSE" | "CONTINUE" | "COURTESY" | "UNRESOLVED";
 export function classifyControllerCloseSignal(value: string): ControllerCloseSignal {
   const assessment = assessControllerCloseIntent(value);
@@ -128,18 +110,10 @@ export function isExplicitClosingRejection(value: string): boolean {
   return /^(?:no|no gracias|todavia no|aun no|mejor no)(?:\b|$)/.test(text);
 }
 
-export function shouldCommitPendingClose(
-  closingConfirmationPending: boolean,
-  transcript: string,
-): boolean {
+export function shouldCommitPendingClose(closingConfirmationPending: boolean, transcript: string): boolean {
   return closingConfirmationPending && isExplicitClosingConfirmation(transcript);
 }
 
-/**
- * Consensus policy for spontaneous closing only.
- * Context-resolved closing (for example a negative reply to Lucia's explicit
- * "anything else?" question) bypasses this arbitration entirely.
- */
 export function decideCloseConsensus(
   confirmationPending: boolean,
   controller: ControllerCloseAssessment,
@@ -148,23 +122,16 @@ export function decideCloseConsensus(
   if (confirmationPending) return { action: "ACK_PENDING", pending: true };
   if (!luciaProposesClose) return { action: "CONTINUE", pending: false };
   if (controller.closeIntent === "CLOSE") return { action: "CONSENSUS_CLOSE", pending: false };
-  if (controller.closeIntent === "ABSTAIN" && controller.courtesy) {
-    return { action: "COURTESY_FOLLOWUP", pending: false };
-  }
+  if (controller.closeIntent === "ABSTAIN" && controller.courtesy) return { action: "COURTESY_FOLLOWUP", pending: false };
   return { action: "AMBIGUOUS_CONFIRM", pending: true };
 }
 
-/** Backward-compatible adapter retained for older tests/callers. */
 export function decideEndCallProposal(
   closingConfirmationPending: boolean,
   userClosingEvidence: boolean,
   modelConfirmed: boolean,
 ): EndCallProposalDecision {
-  const decision = decideCloseConsensus(
-    closingConfirmationPending,
-    { courtesy: false, closeIntent: userClosingEvidence ? "CLOSE" : "ABSTAIN" },
-    modelConfirmed,
-  );
+  const decision = decideCloseConsensus(closingConfirmationPending, { courtesy: false, closeIntent: userClosingEvidence ? "CLOSE" : "ABSTAIN" }, modelConfirmed);
   if (decision.action === "CONSENSUS_CLOSE") return { action: "ALLOW_CLOSE" };
   if (decision.action === "ACK_PENDING") return { action: "ACK_PENDING" };
   return { action: "ASK_CONFIRMATION" };
