@@ -18,6 +18,13 @@ export class CallSession extends BaseConstructor {
         getCallId: () => typeof session.callId === "string" && session.callId.trim() ? session.callId : null,
         getSocketConnected: () => session.socket !== null,
         getApiKey: () => session.env?.OPENAI_API_KEY,
+        // v37 attaches the Telnyx source call_control_id for every realtime call,
+        // not only when a human handoff is later requested. Access remains optional
+        // so historical/direct OpenAI sessions still use the compatibility path.
+        getSourceCallControlId: () => typeof session.telnyxCallControlIdV37 === "string" && session.telnyxCallControlIdV37.trim()
+          ? session.telnyxCallControlIdV37
+          : null,
+        getTelnyxApiKey: () => session.env?.TELNYX_API_KEY,
         isHangupStarted: () => session.hangupStarted === true,
         setHangupStarted: (value) => { session.hangupStarted = value; },
         clearFinalFarewellWatchdog: () => session.clearFinalFarewellWatchdog?.(),
