@@ -1,16 +1,20 @@
 import { CallSession as CallSessionV40 } from "./call-session-v40-rebuild";
 import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
 import {
-  decideEndCallProposal,
-  hasExplicitUserFarewellEvidence,
+  classifyControllerCloseSignal,
+  decideCloseConsensus,
   isExplicitClosingConfirmation,
-  shouldCommitPendingClose,
+  isExplicitClosingRejection,
+  type ControllerCloseSignal,
 } from "./core-closing-policy.js";
 
 const BaseConstructor = CallSessionV40 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV40.prototype as any;
 const END_CALL = "restaurant_end_call";
-const CLOSE_CONFIRMATION_PROMPT = "¿Quieres que finalice la llamada?";
+const CLOSE_CONFIRMATION_PROMPT = "¿Quieres terminar la llamada?";
+const CLOSING_GUIDANCE_START = "[[V41_CLOSING_GUIDANCE_START]]";
+const CLOSING_GUIDANCE_END = "[[V41_CLOSING_GUIDANCE_END]]";
+const CLOSING_GUIDANCE = `${CLOSING_GUIDANCE_START}\nPROTOCOLO NATURAL DE CIERRE:\n- Un agradecimiento por sí solo (por ejemplo, 'gracias por la información' o 'gracias por la ayuda') NO significa que el usuario quiera terminar. Responde de forma natural preguntando si necesita algo más.\n- Si el usuario expresa de forma clara que quiere terminar (despedida inequívoca, petición de colgar o equivalente), puedes proponer restaurant_end_call.\n- Si dudas sobre si quiere terminar, no inventes el cierre: pregunta brevemente si necesita algo más o, si ya estás proponiendo cierre y hay discrepancia con el controlador, deja que la capa v41 formule la confirmación.\n- Nunca uses restaurant_input_ignored para resolver una intención de cierre.\n${CLOSING_GUIDANCE_END}`;
 
 type RealtimeEvent = {
   type?: string;
@@ -33,76 +37,67 @@ function parseEvent(data: unknown): RealtimeEvent | null {
   try { return JSON.parse(text) as RealtimeEvent; } catch { return null; }
 }
 
-function parseArgs(raw: string | undefined): Record<string, unknown> {
-  if (!raw?.trim()) return {};
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
-  } catch {
-    return {};
-  }
-}
-
 function usableTranscript(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 1500) : "";
 }
 
+function stripClosingGuidance(instructions: string): string {
+  const start = instructions.indexOf(CLOSING_GUIDANCE_START);
+  if (start < 0) return instructions.trim();
+  const end = instructions.indexOf(CLOSING_GUIDANCE_END, start);
+  if (end < 0) return instructions.slice(0, start).trim();
+  return `${instructions.slice(0, start)}${instructions.slice(end + CLOSING_GUIDANCE_END.length)}`.trim();
+}
+
+function withClosingGuidance(instructions: string): string {
+  const base = stripClosingGuidance(instructions);
+  return `${base}\n\n${CLOSING_GUIDANCE}`.trim();
+}
+
 /**
- * v41 protects the irreversible end-call boundary.
- *
- * The model may propose restaurant_end_call, but it cannot authorize itself.
- * A blocked end-call proposal creates one pending close. The confirmation
- * question is emitted through the provider command port with tools disabled,
- * so no model-selected public tool can steal that recovery response. If the
- * caller then explicitly confirms, v41 commits the already-pending backend
- * action directly. Repeated model proposals while confirmation is pending are
- * acknowledged without creating another response.
+ * v41 models call closing as agreement between two independent interpretations:
+ * Lucia's semantic CLOSE proposal (restaurant_end_call) and a deterministic
+ * controller reading of the caller's latest turn. Agreement closes. Any
+ * disagreement/insufficient evidence becomes an explicit ambiguity state owned
+ * by v41 and resolved only by the caller's next answer.
  */
 export class CallSession extends BaseConstructor {
   private closingConfirmationPendingV41 = false;
-  private userClosingEvidenceV41 = false;
+  private controllerCloseSignalV41: ControllerCloseSignal = "UNRESOLVED";
   private lastUserTranscriptV41 = "";
+  private closingSendBoundaryInstalledV41 = false;
+  private originalSendV41: ((message: unknown) => void) | null = null;
 
-  private commitConfirmedPendingCloseV41(transcript: string): boolean {
-    if (!shouldCommitPendingClose(this.closingConfirmationPendingV41, transcript)) return false;
-
-    this.lastUserTranscriptV41 = transcript;
-    this.userClosingEvidenceV41 = false;
-    this.closingConfirmationPendingV41 = false;
-
+  private installClosingGuidanceBoundaryV41(): void {
+    if (this.closingSendBoundaryInstalledV41) return;
     const session = this as any;
-    session.diagnostics?.checkpoint?.("USER_CLOSING_EVIDENCE_EVALUATED_V41", {
-      direct_farewell: false,
-      confirmed_pending_close: true,
-      closing_authorized: true,
-    });
-    session.diagnostics?.checkpoint?.("END_CALL_AUTHORIZED_BY_USER_EVIDENCE_V41", {
-      model_confirmed: true,
-      caller_evidence_present: true,
-      authority_source: "pending_close_plus_explicit_confirmation",
-      model_retry_required: false,
-    });
-    session.beginClosing?.("agent_end_confirmed_v41", "caller_confirmed_pending_close_v41");
-    return true;
+    const currentSend = session.send;
+    if (typeof currentSend !== "function") return;
+    this.closingSendBoundaryInstalledV41 = true;
+    this.originalSendV41 = currentSend.bind(this);
+    session.send = (message: any) => {
+      if (message?.type === "session.update" && typeof message?.session?.instructions === "string") {
+        this.originalSendV41?.({
+          ...message,
+          session: {
+            ...message.session,
+            instructions: withClosingGuidance(message.session.instructions),
+          },
+        });
+        return;
+      }
+      this.originalSendV41?.(message);
+    };
   }
 
-  private recordUserTranscriptV41(transcript: string): void {
-    this.lastUserTranscriptV41 = transcript;
-    const directFarewell = hasExplicitUserFarewellEvidence(transcript);
-    const confirmsPending = this.closingConfirmationPendingV41 && isExplicitClosingConfirmation(transcript);
-    this.userClosingEvidenceV41 = directFarewell || confirmsPending;
-    if (this.closingConfirmationPendingV41) this.closingConfirmationPendingV41 = false;
-
-    (this as any).diagnostics?.checkpoint?.("USER_CLOSING_EVIDENCE_EVALUATED_V41", {
-      direct_farewell: directFarewell,
-      confirmed_pending_close: confirmsPending,
-      closing_authorized: this.userClosingEvidenceV41,
-    });
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/start") this.installClosingGuidanceBoundaryV41();
+    return super.fetch(request);
   }
 
-  private rejectUngroundedEndCallV41(callId: string | undefined): void {
+  private emitAmbiguousConfirmationV41(callId: string | undefined): void {
     this.closingConfirmationPendingV41 = true;
-    this.userClosingEvidenceV41 = false;
     const session = this as any;
     session.send?.({
       type: "conversation.item.create",
@@ -111,37 +106,27 @@ export class CallSession extends BaseConstructor {
         call_id: callId,
         output: JSON.stringify({
           ok: true,
-          status: "USER_CONFIRMATION_REQUIRED",
-          instruction: "No finalices la llamada todavía. La capa de cierre formulará directamente la pregunta de confirmación y esperará la respuesta explícita del usuario.",
+          status: "CLOSE_INTENT_AMBIGUOUS",
+          instruction: "Lucía y el controlador no tienen consenso suficiente. La capa v41 preguntará al usuario si quiere terminar y esperará su respuesta.",
         }),
       },
     });
-
     realtimeCommandPortFor(session).speak({
       instructions: `Pronuncia exactamente esta pregunta y nada más: ${JSON.stringify(CLOSE_CONFIRMATION_PROMPT)}`,
       exactText: CLOSE_CONFIRMATION_PROMPT,
       tools: "DISABLED",
       isolated: true,
-      purpose: "close_confirmation_v41",
-      metadata: {
-        authority: "closure_guard_v41",
-        pending_close: true,
-      },
+      purpose: "close_intent_ambiguity_v41",
+      metadata: { authority: "closing_consensus_v41", pending_close: true },
     });
-
-    session.diagnostics?.checkpoint?.("CLOSE_CONFIRMATION_PROMPT_EMITTED_V41", {
-      prompt: CLOSE_CONFIRMATION_PROMPT,
+    session.diagnostics?.checkpoint?.("CLOSE_INTENT_AMBIGUOUS_V41", {
+      lucia_signal: "CLOSE",
+      controller_signal: this.controllerCloseSignalV41,
+      next_action: "ASK_CALLER",
+      confirmation_prompt: CLOSE_CONFIRMATION_PROMPT,
       tool_choice: "none",
-      isolated_response: true,
-      pending_close: true,
-      response_authority: "closure_guard_v41",
-    });
-    session.diagnostics?.checkpoint?.("END_CALL_BLOCKED_WITHOUT_USER_EVIDENCE_V41", {
-      model_confirmed_argument_ignored: true,
-      last_user_transcript_present: Boolean(this.lastUserTranscriptV41),
-      irreversible_close_prevented: true,
-      pending_close_recorded: true,
-      confirmation_prompt_owned_by_backend: true,
+      presence_must_not_resolve: true,
+      restaurant_input_ignored_forbidden: true,
     });
   }
 
@@ -154,15 +139,58 @@ export class CallSession extends BaseConstructor {
         call_id: callId,
         output: JSON.stringify({
           ok: true,
-          status: "USER_CONFIRMATION_PENDING",
-          instruction: "La confirmación de cierre ya está pendiente. No vuelvas a solicitar restaurant_end_call y espera un nuevo turno del usuario.",
+          status: "CLOSE_INTENT_CONFIRMATION_PENDING",
+          instruction: "La pregunta de cierre ya está pendiente. Espera la respuesta del usuario.",
         }),
       },
     });
-    session.diagnostics?.checkpoint?.("END_CALL_DUPLICATE_SUPPRESSED_WHILE_CONFIRMATION_PENDING_V41", {
-      irreversible_close_prevented: true,
+    session.diagnostics?.checkpoint?.("CLOSE_INTENT_DUPLICATE_SUPPRESSED_V41", {
       confirmation_still_pending: true,
       response_create_emitted: false,
+    });
+  }
+
+  private resolvePendingCloseFromCallerV41(transcript: string): boolean {
+    if (!this.closingConfirmationPendingV41) return false;
+    const session = this as any;
+
+    if (isExplicitClosingConfirmation(transcript)) {
+      this.closingConfirmationPendingV41 = false;
+      this.controllerCloseSignalV41 = "CLOSE";
+      session.diagnostics?.checkpoint?.("CLOSE_AMBIGUITY_RESOLVED_BY_CALLER_V41", {
+        caller_resolution: "CLOSE",
+        consensus: true,
+      });
+      session.beginClosing?.("agent_end_confirmed_v41", "caller_resolved_close_ambiguity_v41");
+      return true;
+    }
+
+    if (isExplicitClosingRejection(transcript)) {
+      this.closingConfirmationPendingV41 = false;
+      this.controllerCloseSignalV41 = "CONTINUE";
+      session.diagnostics?.checkpoint?.("CLOSE_AMBIGUITY_RESOLVED_BY_CALLER_V41", {
+        caller_resolution: "CONTINUE",
+        consensus: true,
+      });
+      return false;
+    }
+
+    // The question was yes/no. An unrelated or unclear answer ends the pending
+    // state and returns to normal semantics instead of trapping the caller.
+    this.closingConfirmationPendingV41 = false;
+    this.controllerCloseSignalV41 = classifyControllerCloseSignal(transcript);
+    session.diagnostics?.checkpoint?.("CLOSE_AMBIGUITY_RELEASED_TO_NORMAL_TURN_V41", {
+      controller_signal: this.controllerCloseSignalV41,
+    });
+    return false;
+  }
+
+  private recordUserTranscriptV41(transcript: string): void {
+    this.lastUserTranscriptV41 = transcript;
+    this.controllerCloseSignalV41 = classifyControllerCloseSignal(transcript);
+    (this as any).diagnostics?.checkpoint?.("CONTROLLER_CLOSE_SIGNAL_EVALUATED_V41", {
+      controller_signal: this.controllerCloseSignalV41,
+      courtesy_is_not_close: this.controllerCloseSignalV41 === "COURTESY",
     });
   }
 
@@ -172,7 +200,10 @@ export class CallSession extends BaseConstructor {
     if (event?.type === "conversation.item.input_audio_transcription.completed") {
       const transcript = usableTranscript(event.transcript);
       if (transcript) {
-        if (this.commitConfirmedPendingCloseV41(transcript)) return;
+        if (this.closingConfirmationPendingV41) {
+          const closed = this.resolvePendingCloseFromCallerV41(transcript);
+          if (closed) return;
+        }
         this.recordUserTranscriptV41(transcript);
       }
     }
@@ -181,11 +212,10 @@ export class CallSession extends BaseConstructor {
       const session = this as any;
       if (session.state === "closing" || session.hangupStarted) return;
 
-      const args = parseArgs(event.arguments);
-      const decision = decideEndCallProposal(
+      const decision = decideCloseConsensus(
         this.closingConfirmationPendingV41,
-        this.userClosingEvidenceV41,
-        args.confirmed === true,
+        this.controllerCloseSignalV41,
+        true,
       );
 
       if (decision.action === "ACK_PENDING") {
@@ -193,19 +223,19 @@ export class CallSession extends BaseConstructor {
         return;
       }
 
-      if (decision.action === "ASK_CONFIRMATION") {
-        this.rejectUngroundedEndCallV41(event.call_id);
+      if (decision.action === "AMBIGUOUS_CONFIRM") {
+        this.emitAmbiguousConfirmationV41(event.call_id);
         return;
       }
 
-      session.diagnostics?.checkpoint?.("END_CALL_AUTHORIZED_BY_USER_EVIDENCE_V41", {
-        model_confirmed: true,
-        caller_evidence_present: true,
-        authority_source: "direct_user_evidence_before_tool",
-        model_retry_required: false,
+      session.diagnostics?.checkpoint?.("CLOSE_CONSENSUS_REACHED_V41", {
+        lucia_signal: "CLOSE",
+        controller_signal: this.controllerCloseSignalV41,
+        consensus: true,
+        last_user_transcript_present: Boolean(this.lastUserTranscriptV41),
       });
-      this.userClosingEvidenceV41 = false;
       this.closingConfirmationPendingV41 = false;
+      this.controllerCloseSignalV41 = "UNRESOLVED";
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
