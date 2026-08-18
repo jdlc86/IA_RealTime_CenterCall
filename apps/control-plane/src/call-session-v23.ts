@@ -357,6 +357,11 @@ export class CallSession extends BaseConstructor {
     }
     this.sendOutputV23(callId, { ok: true, status: "CLOSING" }, false);
     (this as any).diagnostics?.checkpoint?.("DIRECT_END_CALL_CONFIRMED_V23", { source: "lucia_agent_tool" });
+    const observeEndCall = (this as any).observeEndCallConfirmedV18;
+    if (typeof observeEndCall === "function") {
+      observeEndCall.call(this, "agent_end_confirmed_v23");
+      return;
+    }
     (this as any).beginClosing?.("agent_end_confirmed_v23", "lucia_agent_tool_v23");
   }
 
