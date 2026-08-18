@@ -34,6 +34,17 @@ test("closing authority: v23 retains beginClosing only as compatibility fallback
   assert.ok(fallbackIndex > observerIndex, "legacy beginClosing must remain only after lifecycle observer fallback");
 });
 
+test("closing authority: v41 caller-resolved close paths enter lifecycle instead of direct closing", async () => {
+  const v41 = await source("call-session-v41-closure-guard.ts");
+
+  assert.match(v41, /private commitCloseThroughLifecycleV41\(reason: string, source: string\): void/);
+  assert.match(v41, /session\.observeEndCallConfirmedV18\(reason\)/);
+  assert.match(v41, /this\.commitCloseThroughLifecycleV41\(\"contextual_close_resolved_v41\", \"caller_declined_more_help_v41\"\)/);
+  assert.match(v41, /this\.commitCloseThroughLifecycleV41\(\"agent_end_confirmed_v41\", \"caller_resolved_close_ambiguity_v41\"\)/);
+  assert.equal((v41.match(/session\.beginClosing\?\.\(/g) ?? []).length, 1, "v41 may retain only one beginClosing compatibility fallback");
+  assert.match(v41, /V41_CLOSE_LIFECYCLE_COMPATIBILITY_FALLBACK/);
+});
+
 test("closing authority: lifecycle HANGUP executes transport hangup instead of reopening beginClosing", async () => {
   const v18 = await source("call-session-v18.ts");
   const hangupCase = caseBody(v18, "HANGUP", "RESET_IGNORED_COUNT");
