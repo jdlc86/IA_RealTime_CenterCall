@@ -21,6 +21,8 @@ export class CallSession extends BaseConstructor {
   private presenceRequestPendingV18 = false;
   private lifecycleInstalledV18 = false;
   private assistantSpeechKindsByResponseIdV18 = new Map<string, AssistantSpeechKind>();
+  private terminalPlaybackPendingV18 = false;
+  private terminalPlaybackActiveV18 = false;
 
   async fetch(request: Request): Promise<Response> {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
@@ -46,6 +48,8 @@ export class CallSession extends BaseConstructor {
   }
   protected observeHumanHandoffStartedV18(): void { this.dispatchLifecycleV18({ type: "handoff_started" }); }
   protected observeRealtimeTransportClosedV18(reason: string): void {
+    this.terminalPlaybackPendingV18 = false;
+    this.terminalPlaybackActiveV18 = false;
     this.dispatchLifecycleV18({ type: "transport_closed", reason });
   }
 
@@ -105,11 +109,19 @@ export class CallSession extends BaseConstructor {
         break;
       case "SPEAK_TERMINAL_FAREWELL":
         this.clearPresenceTimersV18();
-        (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_REQUESTED_V18", { reason: effect.reason });
+        this.terminalPlaybackPendingV18 = true;
+        this.terminalPlaybackActiveV18 = false;
+        (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_REQUESTED_V18", {
+          reason: effect.reason,
+          terminal_playback_tracking: "pending",
+          provider_response_id_required: false,
+        });
         (this as any).beginClosing?.(effect.reason, "conversation_turn_lifecycle");
         break;
       case "HANGUP":
         this.clearPresenceTimersV18();
+        this.terminalPlaybackPendingV18 = false;
+        this.terminalPlaybackActiveV18 = false;
         (this as any).diagnostics?.checkpoint?.("LIFECYCLE_HANGUP_DISPATCHED_V18", {
           authority: "ConversationTurnLifecycle",
           transport_executor: "performHangup",
@@ -156,6 +168,40 @@ export class CallSession extends BaseConstructor {
     return this.assistantSpeechKindsByResponseIdV18.get(event.responseId) ?? event.kind;
   }
 
+  private lifecycleAssistantSpeechKindV18(event: RealtimeProviderEvent, fallbackKind: AssistantSpeechKind | undefined): AssistantSpeechKind | undefined {
+    const correlatedKind = this.effectiveAssistantSpeechKindV18(event) ?? fallbackKind;
+    const lifecycleState = this.turnLifecycleV18.snapshot().state;
+
+    if (
+      event.type === "ASSISTANT_AUDIO_STARTED" &&
+      lifecycleState === "TERMINAL_SPEAKING" &&
+      (this.terminalPlaybackPendingV18 || correlatedKind === "TERMINAL")
+    ) {
+      this.terminalPlaybackPendingV18 = false;
+      this.terminalPlaybackActiveV18 = true;
+      (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_PLAYBACK_BOUND_V18", {
+        response_id: event.responseId ?? null,
+        provider_kind: event.kind,
+        correlated_kind: correlatedKind ?? null,
+        binding_source: correlatedKind === "TERMINAL" ? "provider_or_response_correlation" : "lifecycle_pending_terminal_playback",
+      });
+      return "TERMINAL";
+    }
+
+    if (event.type === "ASSISTANT_AUDIO_STOPPED" && this.terminalPlaybackActiveV18) {
+      this.terminalPlaybackActiveV18 = false;
+      (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_PLAYBACK_STOPPED_V18", {
+        response_id: event.responseId ?? null,
+        provider_kind: event.kind,
+        correlated_kind: correlatedKind ?? null,
+        authoritative_kind: "TERMINAL",
+      });
+      return "TERMINAL";
+    }
+
+    return correlatedKind;
+  }
+
   private releaseAssistantSpeechKindV18(event: RealtimeProviderEvent): void {
     if ((event.type === "ASSISTANT_AUDIO_STOPPED" || event.type === "ASSISTANT_AUDIO_CLEARED") && event.responseId) {
       this.assistantSpeechKindsByResponseIdV18.delete(event.responseId);
@@ -174,14 +220,16 @@ export class CallSession extends BaseConstructor {
       const adapted = adaptRealtimeTurnEvent(providerEvent);
       for (const lifecycleEvent of adapted) {
         if (lifecycleEvent.type === "assistant_audio_started" || lifecycleEvent.type === "assistant_audio_stopped") {
-          const correlatedKind = this.effectiveAssistantSpeechKindV18(providerEvent);
           const isPresenceAudio =
             Boolean(this.presenceResponseIdV18) &&
             "responseId" in providerEvent &&
             providerEvent.responseId === this.presenceResponseIdV18;
+          const authoritativeKind = isPresenceAudio
+            ? "PRESENCE"
+            : this.lifecycleAssistantSpeechKindV18(providerEvent, lifecycleEvent.kind);
           this.dispatchLifecycleV18({
             type: lifecycleEvent.type,
-            kind: isPresenceAudio ? "PRESENCE" : correlatedKind ?? lifecycleEvent.kind,
+            kind: authoritativeKind ?? lifecycleEvent.kind,
           });
         } else {
           this.dispatchLifecycleV18(lifecycleEvent);
