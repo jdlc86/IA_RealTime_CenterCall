@@ -29,6 +29,16 @@ function usableTranscript(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 1500) : "";
 }
 
+function readEndCallConfirmedV41(argumentsText: string | undefined): boolean | null {
+  if (typeof argumentsText !== "string" || !argumentsText.trim()) return null;
+  try {
+    const parsed = JSON.parse(argumentsText) as { confirmed?: unknown };
+    return typeof parsed.confirmed === "boolean" ? parsed.confirmed : null;
+  } catch {
+    return null;
+  }
+}
+
 function stripClosingGuidance(instructions: string): string {
   const start = instructions.indexOf(CLOSING_GUIDANCE_START);
   if (start < 0) return instructions.trim();
@@ -52,6 +62,7 @@ function withClosingGuidance(instructions: string): string {
 export class CallSession extends BaseConstructor {
   private closingConfirmationPendingV41 = false;
   private moreHelpAnswerPendingV41 = false;
+  private moreHelpSemanticResolutionPendingV41 = false;
   private controllerCloseAssessmentV41: ControllerCloseAssessment = { courtesy: false, closeIntent: "ABSTAIN" };
   private lastUserTranscriptV41 = "";
   private closingSendBoundaryInstalledV41 = false;
@@ -112,7 +123,7 @@ export class CallSession extends BaseConstructor {
   }
 
   private markMoreHelpQuestionV41(source: string, transcript?: string): void {
-    if (this.moreHelpAnswerPendingV41) {
+    if (this.moreHelpAnswerPendingV41 || this.moreHelpSemanticResolutionPendingV41) {
       (this as any).diagnostics?.checkpoint?.("MORE_HELP_QUESTION_DUPLICATE_OBSERVED_V41", {
         source,
         assistant_transcript_present: Boolean(transcript),
@@ -123,6 +134,7 @@ export class CallSession extends BaseConstructor {
     }
 
     this.moreHelpAnswerPendingV41 = true;
+    this.moreHelpSemanticResolutionPendingV41 = false;
     (this as any).diagnostics?.checkpoint?.("MORE_HELP_QUESTION_OPENED_V41", {
       source,
       assistant_transcript_present: Boolean(transcript),
@@ -133,11 +145,12 @@ export class CallSession extends BaseConstructor {
 
   private resolveMoreHelpAnswerV41(transcript: string): boolean {
     if (!this.moreHelpAnswerPendingV41) return false;
-    this.moreHelpAnswerPendingV41 = false;
     const resolution = resolveReplyToMoreHelpQuestion(transcript);
     const session = this as any;
 
     if (resolution === "CLOSE") {
+      this.moreHelpAnswerPendingV41 = false;
+      this.moreHelpSemanticResolutionPendingV41 = false;
       this.closingConfirmationPendingV41 = false;
       this.controllerCloseAssessmentV41 = { courtesy: /gracias/i.test(transcript), closeIntent: "CLOSE" };
       session.diagnostics?.checkpoint?.("CONTEXTUAL_CLOSE_RESOLVED_V41", {
@@ -150,9 +163,35 @@ export class CallSession extends BaseConstructor {
       return true;
     }
 
+    if (resolution === "CONTINUE") {
+      this.moreHelpAnswerPendingV41 = false;
+      this.moreHelpSemanticResolutionPendingV41 = false;
+      session.diagnostics?.checkpoint?.("MORE_HELP_QUESTION_RESOLVED_V41", {
+        caller_resolution: resolution,
+        close_committed: false,
+        context_preserved: false,
+      });
+      return false;
+    }
+
+    // An ASR transcript can be usable but still too weak for the deterministic
+    // resolver even when the model correctly understands the same caller turn.
+    // Do not downgrade that turn to a spontaneous close. Preserve contextual
+    // authority only until the model's semantic decision for this response is
+    // known, then release it so it can never leak into a later caller turn.
+    this.moreHelpAnswerPendingV41 = false;
+    this.moreHelpSemanticResolutionPendingV41 = true;
     session.diagnostics?.checkpoint?.("MORE_HELP_QUESTION_RESOLVED_V41", {
       caller_resolution: resolution,
       close_committed: false,
+      context_preserved: true,
+      awaiting_semantic_resolution: true,
+    });
+    session.diagnostics?.checkpoint?.("CONTEXTUAL_MORE_HELP_AWAITING_SEMANTIC_RESOLUTION_V41", {
+      contextual_authority: "MORE_HELP_REPLY",
+      transcript_resolution: "UNRESOLVED",
+      context_preserved: true,
+      confirmation_question_emitted: false,
     });
     return false;
   }
@@ -193,6 +232,7 @@ export class CallSession extends BaseConstructor {
 
   private emitAmbiguousConfirmationV41(callId: string | undefined): void {
     this.moreHelpAnswerPendingV41 = false;
+    this.moreHelpSemanticResolutionPendingV41 = false;
     this.closingConfirmationPendingV41 = true;
     const session = this as any;
     this.submitEndCallToolResultV41(callId, {
@@ -246,6 +286,40 @@ export class CallSession extends BaseConstructor {
       extra_audio_emitted: false,
       artificial_wait_ms: 0,
     });
+  }
+
+  private resolveContextualSemanticEndCallV41(callId: string | undefined, modelConfirmed: boolean | null): boolean {
+    if (!this.moreHelpSemanticResolutionPendingV41) return false;
+
+    this.moreHelpSemanticResolutionPendingV41 = false;
+    const session = this as any;
+    if (modelConfirmed !== true) {
+      session.diagnostics?.checkpoint?.("CONTEXTUAL_MORE_HELP_SEMANTIC_CONTEXT_RELEASED_V41", {
+        reason: "END_CALL_NOT_CONFIRMED",
+        model_confirmed: modelConfirmed,
+        contextual_close_committed: false,
+      });
+      return false;
+    }
+
+    this.moreHelpAnswerPendingV41 = false;
+    this.closingConfirmationPendingV41 = false;
+    this.controllerCloseAssessmentV41 = { courtesy: false, closeIntent: "CLOSE" };
+    this.submitEndCallToolResultV41(callId, {
+      ok: true,
+      status: "CONTEXTUAL_CLOSE_RESOLVED",
+      speak: false,
+      mutation: false,
+    });
+    session.diagnostics?.checkpoint?.("CONTEXTUAL_CLOSE_RESOLVED_V41", {
+      context: "ANSWER_TO_MORE_HELP_QUESTION",
+      caller_resolution: "NO_MORE_HELP",
+      resolution_source: "LUCIA_CONFIRMED_END_CALL_AFTER_UNRESOLVED_CONTEXTUAL_TRANSCRIPT",
+      arbitration_required: false,
+      explicit_close_confirmation_required: false,
+    });
+    this.commitCloseThroughLifecycleV41("contextual_close_semantic_resolution_v41", "lucia_confirmed_contextual_end_call_v41");
+    return true;
   }
 
   private resolvePendingCloseFromCallerV41(transcript: string): PendingCloseResolutionV41 {
@@ -327,9 +401,30 @@ export class CallSession extends BaseConstructor {
         }
       }
 
+      if (
+        event.type === "SEMANTIC_TOOL_SELECTED"
+        && this.moreHelpSemanticResolutionPendingV41
+        && event.name !== END_CALL
+        && event.name !== "restaurant_input_ignored"
+      ) {
+        this.moreHelpSemanticResolutionPendingV41 = false;
+        (this as any).diagnostics?.checkpoint?.("CONTEXTUAL_MORE_HELP_SEMANTIC_CONTEXT_RELEASED_V41", {
+          reason: "SUBSTANTIVE_TOOL_SELECTED",
+          tool: event.name,
+          contextual_close_committed: false,
+          lower_semantic_pipeline_preserved: true,
+        });
+      }
+
       if (event.type === "SEMANTIC_TOOL_SELECTED" && event.name === END_CALL) {
         const session = this as any;
         if (session.state === "closing" || session.hangupStarted) return;
+
+        const modelConfirmed = readEndCallConfirmedV41(event.arguments);
+        if (this.moreHelpSemanticResolutionPendingV41) {
+          const contextualClosed = this.resolveContextualSemanticEndCallV41(event.callId, modelConfirmed);
+          if (contextualClosed) return;
+        }
 
         if (this.moreHelpAnswerPendingV41) {
           this.acknowledgeContextualReplyPendingV41(event.callId);
@@ -365,7 +460,17 @@ export class CallSession extends BaseConstructor {
         });
         this.closingConfirmationPendingV41 = false;
         this.moreHelpAnswerPendingV41 = false;
+        this.moreHelpSemanticResolutionPendingV41 = false;
         this.controllerCloseAssessmentV41 = { courtesy: false, closeIntent: "ABSTAIN" };
+      }
+
+      if (event.type === "ASSISTANT_RESPONSE_COMPLETED" && this.moreHelpSemanticResolutionPendingV41) {
+        this.moreHelpSemanticResolutionPendingV41 = false;
+        (this as any).diagnostics?.checkpoint?.("CONTEXTUAL_MORE_HELP_SEMANTIC_CONTEXT_RELEASED_V41", {
+          reason: "ASSISTANT_RESPONSE_COMPLETED_WITHOUT_CONTEXTUAL_CLOSE",
+          contextual_close_committed: false,
+          context_leaked_to_next_turn: false,
+        });
       }
     }
 
