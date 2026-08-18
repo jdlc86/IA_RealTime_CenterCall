@@ -1,6 +1,7 @@
 import type {
   RealtimeInputDetectionSettings,
   RealtimeProviderCommandPort,
+  RealtimeSessionPolicyUpdate,
   RealtimeSpeechRequest,
   RealtimeTextDecisionRequest,
   RealtimeToolResultRequest,
@@ -14,31 +15,41 @@ export type RealtimeToolResultPolicyDecision =
   | { action: "PASS" }
   | { action: "REPLACE_DEFAULT_RESPONSE"; speech: RealtimeSpeechRequest };
 export type RealtimeToolResultPolicy = (request: RealtimeToolResultRequest) => RealtimeToolResultPolicyDecision;
+export type RealtimeSessionPolicyTransform = (update: RealtimeSessionPolicyUpdate) => RealtimeSessionPolicyUpdate;
 
 export const ACTIVE_REALTIME_PROVIDER: RealtimeProviderName = "OPENAI";
 export type RealtimeProviderHost = object & { send(event: Record<string, unknown>): void };
 
 class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
   private toolResultPolicy: RealtimeToolResultPolicy | null = null;
+  private sessionPolicyTransform: RealtimeSessionPolicyTransform | null = null;
   private pendingDefaultResponseReplacement: RealtimeSpeechRequest | null = null;
+
   constructor(private readonly delegate: RealtimeProviderCommandPort) {}
+
   setToolResultPolicy(policy: RealtimeToolResultPolicy): void { this.toolResultPolicy = policy; }
+  setSessionPolicyTransform(transform: RealtimeSessionPolicyTransform): void { this.sessionPolicyTransform = transform; }
   speak(request: RealtimeSpeechRequest): void { this.delegate.speak(request); }
   requestTextDecision(request: RealtimeTextDecisionRequest): void { this.delegate.requestTextDecision(request); }
+
   submitToolResult(request: RealtimeToolResultRequest): void {
     const decision = this.toolResultPolicy?.(request) ?? { action: "PASS" as const };
     this.pendingDefaultResponseReplacement = decision.action === "REPLACE_DEFAULT_RESPONSE" ? decision.speech : null;
     this.delegate.submitToolResult(request);
   }
-  updateSessionPolicy(update: { instructions?: string; toolChoice?: "AUTO" | "NONE" | "REQUIRED" }): void {
-    (this.delegate as any).updateSessionPolicy(update);
+
+  updateSessionPolicy(update: RealtimeSessionPolicyUpdate): void {
+    const governed = this.sessionPolicyTransform ? this.sessionPolicyTransform(update) : update;
+    this.delegate.updateSessionPolicy(governed);
   }
+
   createDefaultResponse(): void {
     const replacement = this.pendingDefaultResponseReplacement;
     this.pendingDefaultResponseReplacement = null;
     if (replacement) { this.delegate.speak(replacement); return; }
     this.delegate.createDefaultResponse();
   }
+
   cancelResponse(responseId: string): void { this.delegate.cancelResponse(responseId); }
   clearPlayback(): void { this.delegate.clearPlayback(); }
   clearInput(): void { this.delegate.clearInput(); }
@@ -49,6 +60,7 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
 }
 
 const RUNTIME_BY_HOST = new WeakMap<object, RealtimeProviderCommandRuntime>();
+
 function commandRuntimeFor(host: RealtimeProviderHost): RealtimeProviderCommandRuntime {
   let runtime = RUNTIME_BY_HOST.get(host);
   if (!runtime) {
@@ -57,6 +69,8 @@ function commandRuntimeFor(host: RealtimeProviderHost): RealtimeProviderCommandR
   }
   return runtime;
 }
+
 export function realtimeCommandPortFor(host: RealtimeProviderHost): RealtimeProviderCommandPort { return commandRuntimeFor(host); }
 export function installRealtimeToolResultPolicy(host: RealtimeProviderHost, policy: RealtimeToolResultPolicy): void { commandRuntimeFor(host).setToolResultPolicy(policy); }
+export function installRealtimeSessionPolicyTransform(host: RealtimeProviderHost, transform: RealtimeSessionPolicyTransform): void { commandRuntimeFor(host).setSessionPolicyTransform(transform); }
 export function adaptRealtimeProviderEvents(data: unknown): RealtimeProviderEvent[] { return adaptOpenAIRealtimeEvent(data); }
