@@ -26,6 +26,12 @@ export type RealtimeTextDecisionRequest = {
   maxOutputTokens?: number;
 };
 
+export type RealtimeToolResultRequest = {
+  callId?: string;
+  toolName?: string;
+  output: unknown;
+};
+
 /**
  * Provider-neutral command boundary for live conversational runtimes.
  *
@@ -36,6 +42,7 @@ export type RealtimeTextDecisionRequest = {
 export interface RealtimeProviderCommandPort {
   speak(request: RealtimeSpeechRequest): void;
   requestTextDecision(request: RealtimeTextDecisionRequest): void;
+  submitToolResult(request: RealtimeToolResultRequest): void;
   createDefaultResponse(): void;
   cancelResponse(responseId: string): void;
   clearPlayback(): void;
