@@ -70,8 +70,30 @@ test("assistant continuity questions are recognized as context", () => {
 });
 
 test("negative answer to more-help question resolves close without arbitration", () => {
-  for (const phrase of ["No", "No gracias", "No no gracias", "Nada más", "No necesito nada más", "Eso es todo, gracias"]) {
+  for (const phrase of [
+    "No",
+    "No gracias",
+    "No no gracias",
+    "Nada más",
+    "No necesito nada más",
+    "No, no necesito nada más",
+    "No necesito nada más, muchas gracias",
+    "No, no necesito nada más, muchas gracias",
+    "Muchas gracias, no necesito nada más",
+    "Eso es todo, gracias",
+    "Pues ya está, muchas gracias",
+  ]) {
     assert.equal(resolveReplyToMoreHelpQuestion(phrase), "CLOSE", phrase);
+  }
+});
+
+test("new request still outranks completion language in more-help context", () => {
+  for (const phrase of [
+    "No necesito nada más, pero dime el horario",
+    "Eso es todo, aunque quiero saber el menú",
+    "Nada más, espera, una cosa más",
+  ]) {
+    assert.equal(resolveReplyToMoreHelpQuestion(phrase), "CONTINUE", phrase);
   }
 });
 
