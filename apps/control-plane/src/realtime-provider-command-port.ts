@@ -32,17 +32,17 @@ export type RealtimeToolResultRequest = {
   output: unknown;
 };
 
-/**
- * Provider-neutral command boundary for live conversational runtimes.
- *
- * Call lifecycle, response ownership and business policies describe intent in
- * these terms. Provider adapters are solely responsible for translating that
- * intent to OpenAI Realtime, Gemini Live, or another realtime protocol.
- */
+export type RealtimeSessionPolicyUpdate = {
+  instructions?: string;
+  toolChoice?: "AUTO" | "NONE" | "REQUIRED";
+};
+
+/** Provider-neutral command boundary for live conversational runtimes. */
 export interface RealtimeProviderCommandPort {
   speak(request: RealtimeSpeechRequest): void;
   requestTextDecision(request: RealtimeTextDecisionRequest): void;
   submitToolResult(request: RealtimeToolResultRequest): void;
+  updateSessionPolicy(update: RealtimeSessionPolicyUpdate): void;
   createDefaultResponse(): void;
   cancelResponse(responseId: string): void;
   clearPlayback(): void;
