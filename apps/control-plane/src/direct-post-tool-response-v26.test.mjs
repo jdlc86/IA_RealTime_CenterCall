@@ -11,14 +11,17 @@ test("v26 owns one common structured direct post-tool response boundary", async 
 
   assert.match(v26, /decideDirectPostToolResponse/);
   assert.match(v26, /installPostToolResponseBoundaryV26/);
-  assert.match(v26, /conversation\.item\.create/);
-  assert.match(v26, /function_call_output/);
-  assert.match(v26, /isBareResponseCreateV26/);
+  assert.match(v26, /installRealtimeToolResultPolicy\(session/);
+  assert.match(v26, /decideDirectPostToolResponse\(tool, request\.output\)/);
+  assert.match(v26, /action: "REPLACE_DEFAULT_RESPONSE"/);
   assert.match(v26, /DIRECT_POST_TOOL_RESPONSE_GOVERNED_V26/);
-  assert.match(v26, /realtimeCommandPortFor\(session\)\.speak/);
+  assert.match(v26, /purpose: "direct_post_tool_terminal_v26"/);
   assert.match(v26, /tools: "DISABLED"/);
   assert.match(v26, /exact_continuation_question: true/);
   assert.match(v26, /post_tool_response_policy: "structured_terminal_continuation"/);
+  assert.doesNotMatch(v26, /readFunctionOutputV26/);
+  assert.doesNotMatch(v26, /isBareResponseCreateV26/);
+  assert.doesNotMatch(v26, /pendingGovernedPostToolResponseV26/);
 });
 
 test("v26 preserves marketing subflow and adds no timing heuristic", async () => {
