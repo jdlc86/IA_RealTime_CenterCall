@@ -104,7 +104,12 @@ export class CallSession extends BaseConstructor {
         break;
       case "HANGUP":
         this.clearPresenceTimersV18();
-        (this as any).beginClosing?.("lifecycle_terminal_audio_stopped", "conversation_turn_lifecycle");
+        (this as any).diagnostics?.checkpoint?.("LIFECYCLE_HANGUP_DISPATCHED_V18", {
+          authority: "ConversationTurnLifecycle",
+          transport_executor: "performHangup",
+          trigger: "lifecycle_terminal_audio_stopped",
+        });
+        void (this as any).performHangup?.("lifecycle_terminal_audio_stopped");
         break;
       case "RESET_IGNORED_COUNT":
       case "IGNORED_COUNT_CHANGED":
