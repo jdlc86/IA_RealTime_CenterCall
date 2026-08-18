@@ -25,8 +25,9 @@ function nonEmpty(value: unknown): string | null {
  * - call.bridged is only an intermediate transport signal;
  * - only call.answered on the target leg marks TRANSFERRED and closes Lucía;
  * - target call.hangup before answer falls through to v38 NO_ANSWER/BUSY/FAILED;
- * - when target call.hangup arrives, the older v37 result watchdog is cancelled
+ * - when target call.hangup arrives, the v37 transfer-result watchdog is cancelled
  *   immediately so it cannot later overwrite the precise failure result;
+ * - v39 never mutates v37 handoff phase, runtime closing flags, or sideband directly;
  * - hangups after confirmed TRANSFERRED are terminal telephony bookkeeping only.
  */
 export class CallSession extends BaseConstructor {
@@ -38,16 +39,14 @@ export class CallSession extends BaseConstructor {
   private settleTargetFailureLifecycleV39(handoffId: string): void {
     // v37 owns the transfer-result watchdog. v38 owns terminal TTS after a real
     // target-leg hangup. Once that hangup exists, waiting for a transfer-result
-    // webhook is no longer meaningful and must not be allowed to fire later.
+    // webhook is no longer meaningful. Do not mutate v37's active handoff phase:
+    // the precise failure result is owned by v38 and terminality by the lifecycle.
     (this as any).clearTransferWatchdogV37?.();
-    const active = (this as any).activeHandoffV37 as { id?: string; phase?: string } | null | undefined;
-    if (active?.id === handoffId && active.phase === "DIALING") {
-      active.phase = "FAILURE_SPEAKING";
-    }
     (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_TARGET_RESULT_SETTLED_V39", {
       handoff_id: handoffId,
       transfer_result_watchdog_cancelled: true,
       precise_failure_result_preserved: true,
+      direct_v37_state_mutation: false,
     });
   }
 
@@ -94,25 +93,16 @@ export class CallSession extends BaseConstructor {
         return Response.json({ ok: true, ignored: true, reason: "already_transferred" });
       }
       if (state && (state.status === "DIALING" || state.status === "ANSWERED")) {
-        const now = new Date().toISOString();
-        (this as any).clearTransferWatchdogV37?.();
-        await this.storeV39().update(handoffId, tenantId, {
-          status: "TRANSFERRED",
-          answered_at: now,
-          transfer_ended_at: now,
-          callback_required: false,
-          callback_status: null,
-          failure_reason: null,
-          target_call_control_id: eventCallControlId,
-        });
-        (this as any).hangupStarted = true;
-        (this as any).state = "closing";
-        try { (this as any).socket?.close?.(1000, "human_handoff_answered_v39"); } catch { /* best effort */ }
+        // v37 already owns the atomic transfer-completion operation: watchdogs,
+        // durable status, handoff phase and AI-sideband closure. v39 supplies only
+        // the authoritative Telnyx answer classification.
+        await (this as any).markHandoffTransferredV37?.(eventCallControlId);
         (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_TRANSFERRED_V39", {
           handoff_id: handoffId,
           human_answer_confirmed: true,
           confirmation_event: "call.answered",
-          ai_sideband_closed: true,
+          terminal_operation_owner: "v37",
+          direct_runtime_closing_mutation: false,
           callback_required: false,
           lucia_conversation_resumes: false,
         });
