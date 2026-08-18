@@ -56,6 +56,25 @@ function hasCourtesyEvidence(value: string): boolean {
   return /\b(?:gracias|muchas gracias|te lo agradezco|se lo agradezco|muy amable)\b/.test(text);
 }
 
+function hasContextualNewRequestEvidence(value: string): boolean {
+  const text = normalizeClosingText(value);
+  if (!text) return false;
+  if (hasExplicitContinueEvidence(value) || hasFollowupRequest(value)) return true;
+
+  // The caller may answer the more-help question with courtesy and a direct
+  // request but without a connector such as "pero": "gracias, dime el horario".
+  // Treat that substantive request as authoritative over the courtesy.
+  return /\b(?:dime|cuentame|explicame|quiero saber|quisiera saber|necesito saber|puedes decirme|podrias decirme|me puedes decir|me podrias decir|tengo (?:otra|una) (?:pregunta|consulta)|una cosa mas|otra cosa)\b/.test(text)
+    || /\b(?:a que hora|donde|cuando|cuanto|cuantos|cual|cuales|como puedo|que (?:horario|menu|direccion|precio|telefono))\b/.test(text);
+}
+
+function hasContextualPositiveEvidence(value: string): boolean {
+  const text = normalizeClosingText(value);
+  if (!text) return false;
+  if (/^(?:si|si claro|claro|vale|de acuerdo)(?:\b|$)/.test(text)) return true;
+  return /^(?:gracias|muchas gracias|muy amable|perfecto gracias)\s+(?:si|claro)(?:\b|$)/.test(text);
+}
+
 export function isAssistantMoreHelpQuestion(value: string): boolean {
   const text = normalizeClosingText(value);
   if (!text) return false;
@@ -67,15 +86,22 @@ export function isAssistantMoreHelpQuestion(value: string): boolean {
 export function resolveReplyToMoreHelpQuestion(value: string): ContextualCloseResolution {
   const text = normalizeClosingText(value);
   if (!text) return "UNRESOLVED";
-  if (hasFollowupRequest(value)) return "CONTINUE";
 
-  // In an explicit more-help context, the same completion language that the
-  // independent close controller already treats as CLOSE is sufficient. Keep
-  // follow-up requests authoritative above so phrases such as
-  // "no necesito nada más, pero dime el horario" continue normally.
+  // While an explicit more-help question is pending, resolve the caller's
+  // contextual meaning before generic courtesy/closing arbitration. A new
+  // request always wins, including terse forms such as "gracias, dime el horario".
+  if (hasContextualNewRequestEvidence(value) || hasContextualPositiveEvidence(value)) return "CONTINUE";
+
+  // In this context, clear completion language and direct negative answers
+  // resolve NO_MORE_HELP without asking an additional closing question.
   if (hasCompletionLanguage(value)) return "CLOSE";
   if (/^(?:no)(?: no)*(?: gracias)?$/.test(text)) return "CLOSE";
-  if (/^(?:si|si claro|claro|vale|de acuerdo)(?:\b|$)/.test(text)) return "CONTINUE";
+
+  // Courtesy alone is not global close evidence, but as the direct answer to
+  // "¿Necesitas algo más...?" it naturally means no more help is requested.
+  // assessControllerCloseIntent intentionally continues to ABSTAIN on these
+  // same phrases outside the explicit more-help context.
+  if (hasCourtesyEvidence(value)) return "CLOSE";
   return "UNRESOLVED";
 }
 
