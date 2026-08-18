@@ -5,13 +5,15 @@ const BaseConstructor = CallSessionV45 as unknown as new (...args: any[]) => any
 
 /**
  * v46 owns only the transport observation boundary. Once the OpenAI realtime
- * sideband closes, it reports that deterministic fact to v18; it does not know
- * or mutate conversation timers, presence state, or semantic lifecycle fields.
+ * sideband closes, it reports that deterministic fact to v18 and detaches any
+ * turn-concurrency ownership that can no longer complete. It does not mutate
+ * conversation timers, presence state, or semantic lifecycle fields directly.
  *
  * Live incident: a call entered WAITING_FOR_CALLER, its sideband closed, and a
  * stale silence-close deadline later attempted spoken closing against socket=null.
  * The lifecycle now owns invalidation of all realtime-dependent deadlines when
- * it receives transport_closed.
+ * it receives transport_closed. The same terminal boundary also detaches v36's
+ * semantic turn lock so its watchdog cannot survive after transport death.
  */
 export class CallSession extends BaseConstructor {
   private observedSidebandSocketV46: WebSocket | null = null;
@@ -20,11 +22,13 @@ export class CallSession extends BaseConstructor {
     const session = this as any;
     const lifecycleEvent = sidebandCloseLifecycleEvent(reason);
     session.observeRealtimeTransportClosedV18?.(lifecycleEvent.reason);
+    session.detachTurnConcurrencyForTerminalV36?.(`transport_closed:${lifecycleEvent.reason}`);
     session.diagnostics?.checkpoint?.("SIDEBAND_LIFECYCLE_QUIESCED_V46", {
       reason,
       lifecycle_event: lifecycleEvent.type,
       realtime_speech_possible: false,
       lifecycle_authority: "ConversationTurnLifecycle",
+      turn_concurrency_detached: true,
       direct_v18_state_mutation: false,
       stale_deadline_speech_blocked_by_state_invalidation: true,
     });
