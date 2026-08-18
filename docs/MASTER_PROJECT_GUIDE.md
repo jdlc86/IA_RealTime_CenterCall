@@ -6,240 +6,266 @@ Este archivo es la puerta de entrada permanente a la documentación del proyecto
 
 ## Continuación operativa más reciente
 
-Estado actualizado al **18 de agosto de 2026**.
+Estado actualizado al **19 de agosto de 2026**.
 
-Para continuar el trabajo técnico leer primero:
+Antes de hacer cualquier cambio técnico leer, en este orden:
 
-- [`docs/PROJECT_STATUS.md`](./PROJECT_STATUS.md)
-- [`docs/SESSION_HANDOFF_2026-08-17.md`](./SESSION_HANDOFF_2026-08-17.md) como contexto histórico de la reconstrucción v39+.
+1. [`docs/MASTER_PROJECT_GUIDE.md`](./MASTER_PROJECT_GUIDE.md)
+2. [`docs/SESSION_HANDOFF_2026-08-19.md`](./SESSION_HANDOFF_2026-08-19.md)
+3. [`docs/PROJECT_STATUS.md`](./PROJECT_STATUS.md)
+
+El handoff del 17 de agosto se conserva como contexto histórico de la reconstrucción v39+:
+
+- [`docs/SESSION_HANDOFF_2026-08-17.md`](./SESSION_HANDOFF_2026-08-17.md)
 
 ## Fuentes de verdad arquitectónicas
 
-- [`docs/architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — arquitectura y roadmap.
-- [`docs/architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — reglas no negociables de implementación.
-- [`docs/architecture/BUSINESS_VERTICALS.md`](./architecture/BUSINESS_VERTICALS.md) — `CLINIC | RESTAURANT`.
-- [`docs/architecture/HUMAN_HANDOFF.md`](./architecture/HUMAN_HANDOFF.md) — diseño transversal de handoff humano.
+- [`docs/architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — arquitectura normativa y media/control plane.
+- [`docs/architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — reglas no negociables.
+- [`docs/architecture/BUSINESS_VERTICALS.md`](./architecture/BUSINESS_VERTICALS.md) — verticales de negocio.
+- [`docs/architecture/HUMAN_HANDOFF.md`](./architecture/HUMAN_HANDOFF.md) — handoff humano transversal.
 - [`docs/README.md`](./README.md) — índice documental.
 
-## Checkpoint operativo — 2026-08-18
+## Baseline estable pre-Gemini — 2026-08-19
 
-Repositorio y rama:
+Repositorio y rama de trabajo:
 
 ```text
 jdlc86/IA_RealTime_CenterCall
 rebuild/v39-stable-baseline
 ```
 
-Checkpoint funcional previo a esta actualización documental:
+Snapshot estable de recuperación:
 
 ```text
-72b2d99003d6a6d9e4e901dd856a514f0fa84c0d
-Control Plane CI #444 — SUCCESS
+stable/pre-gemini-2026-08-19
 ```
 
-Ese checkpoint incorpora la reconstrucción contextual de cierre v41 y fue probado mediante llamadas reales con resultado correcto desde la perspectiva del usuario.
-
-### Runtime conversacional relevante
+Commit funcional estable validado:
 
 ```text
-v18  user presence/watchdog
-v23  herramientas directas restaurante
-v29  semantic tool gate / input ignored
-v35  protected speech / VAD
-v36  concurrencia de turnos normales
-v37  human handoff determinista
-v38  lifecycle de fallo de handoff
-v39  baseline estable + resultado Telnyx correcto
-v40  response owner + barge-in reconstruido
-v41  política contextual/semántica de cierre
-v42+ fronteras y hardening incremental
-v48  authoritative clock / grounding temporal Europe/Madrid
+ce23ac070558825ea909cbd7eb973b249bfe0a9e
+Control Plane CI #536 — SUCCESS
+Run tests          — SUCCESS
+Wrangler dry-run   — SUCCESS
 ```
 
-## Cierre de llamada — diseño vigente v41
-
-La política de cierre ya no se modela como “Lucía solicita y un controlador veta”. Se distinguen tres situaciones semánticas.
-
-### 1. Cierre resuelto por el propio contexto conversacional
-
-Si Lucía acaba de formular una pregunta de continuidad como:
+Validación E2E posterior al deploy correcto:
 
 ```text
-¿Hay algo más en lo que te pueda ayudar?
-¿Puedo ayudarte en algo más?
-¿Necesitas alguna otra cosa?
+call_id = rtc_u2_EENcyA4JsYIao1IsOI6n4
+fecha local ≈ 2026-08-19 01:35 Europe/Madrid
+145 eventos
+0 warn / 0 error / 0 critical
 ```
 
-y el usuario responde negativamente de forma clara:
+Secuencia clave validada:
 
 ```text
-No, gracias.
-No, no gracias.
-Nada más.
+DIRECT_POST_TOOL_RESPONSE_GOVERNED_V26
+→ MORE_HELP_QUESTION_OPENED_V41
+→ caller: "No gracias"
+→ V41_CLOSE_COMMITTED_TO_LIFECYCLE
+→ CONTEXTUAL_CLOSE_RESOLVED_V41
+   caller_resolution = NO_MORE_HELP
+   explicit_close_confirmation_required = false
+→ LIFECYCLE_END_CALL_REQUESTED_V18
+→ terminal playback
+→ drain 750 ms
+→ HANGUP_STARTED (TELNYX_SOURCE_LEG)
+→ Telnyx HTTP 200
+→ HANGUP_COMPLETED
 ```
 
-la intención queda resuelta por el contexto de la conversación. No se vuelve a arbitrar ni se pregunta “¿Quieres terminar la llamada?”. Lucía se despide de forma natural y se ejecuta el hangup.
+Este commit es el **punto de partida estable previo a provider selection/Gemini**. Si un gate posterior rompe comportamiento, comparar contra el snapshot antes de introducir un parche. No hacer rollback ciego sin reconstruir la llamada real.
 
-Este camino fue validado E2E el 18 de agosto de 2026.
+## Estado Realtime actual
 
-### 2. Cierre espontáneo
+Objetivo comercial: soportar múltiples proveedores realtime por tenant/configuración, manteniendo OpenAI y añadiendo Gemini como alternativa futura.
 
-Si el usuario decide terminar inesperadamente, incluso interrumpiendo a Lucía, por ejemplo:
+Actualmente:
 
 ```text
-Ya, ya, hasta luego.
+ACTIVE_REALTIME_PROVIDER = OPENAI
 ```
 
-se combinan dos evaluaciones independientes:
+OpenAI sigue siendo el único provider activo.
 
-- comprensión de Lucía;
-- controlador semántico.
-
-Si ambos detectan `CLOSE`, existe consenso fuerte: Lucía produce una despedida breve y se ejecuta el hangup sin una confirmación artificial adicional.
-
-Este camino también fue validado E2E el 18 de agosto de 2026.
-
-### 3. Desacuerdo real
-
-La pregunta explícita:
+La limpieza provider-neutral completada incluye:
 
 ```text
-¿Quieres terminar la llamada?
+v19  create reservation tool executor
+v23  query/cancel/modify/business_info/end-call compatibility executor
+v24  marketing
+v25  tool authorization
+v26  direct agent runtime / post-tool / session bootstrap
+v35  provider-neutral observation/configuration path
+v41  contextual closing policy + neutral tool/session/event path
+v45  barge-in tool deferral
+v48  authoritative clock/session transform path
 ```
 
-queda reservada para el caso excepcional en que Lucía interpreta intención de cierre pero el controlador semántico no dispone de evidencia suficiente o discrepa. No debe ser el camino normal de finalización.
+La lógica funcional de reservas, marketing, closing y hangup no fue reemplazada por Gemini ni alterada deliberadamente durante esta limpieza.
 
-Mientras esta resolución está pendiente, `restaurant_input_ignored`, presence recovery u otras decisiones semánticas no deben apropiarse de la respuesta de confirmación.
+## Componentes deliberadamente preservados
 
-### Cortesía e intención son dimensiones distintas
-
-Una cortesía aislada no es cierre:
+No modificar sin evidencia directa:
 
 ```text
-Muchas gracias.
-Gracias por la información.
+v36 turn concurrency
+v46 terminal sideband close observation
+ConversationTurnLifecycle v18
+HangupController
+TERMINAL_TRANSPORT_DRAIN_MS = 750
+Telnyx → OpenAI direct SIP media path
+human handoff transport
 ```
 
-Debe conducir normalmente a una pregunta natural de continuidad, no a hangup ni a una declaración artificial de ambigüedad.
+El drain de 750 ms sigue siendo una heurística provisional, pero está validado en la topología OpenAI actual. No usar este trabajo de multi-provider como excusa para tocarlo.
 
-En cambio una frase puede contener cortesía y cierre simultáneamente:
+## Cierre contextual v41 — invariantes vigentes
+
+Después de una pregunta explícita de continuidad como:
 
 ```text
-Muchas gracias, no necesito nada más.
+¿Necesitas algo más en lo que pueda ayudarte?
 ```
 
-En ese caso `courtesy=true` puede coexistir con `close_intent=CLOSE`. Si Lucía y el controlador coinciden, se cierra directamente.
-
-Una nueva intención posterior invalida un falso cierre, por ejemplo:
+una respuesta clara como:
 
 ```text
-No necesito nada más sobre la reserva, pero dime el horario.
-Hasta luego... espera, una cosa más.
+No gracias
+No, gracias
+Nada más
 ```
 
-La intención final del usuario prevalece mientras el hangup irreversible no haya sido ejecutado.
-
-### Invariantes de cierre
+debe resolverse como cierre contextual directo:
 
 ```text
-contexto conversacional ya resuelto -> actuar directamente
-cierre espontáneo + consenso       -> despedida + hangup
-cierre espontáneo + desacuerdo     -> confirmar explícitamente
-cortesía pura                       -> follow-up natural
-nueva petición                      -> continuar
-usuario cuelga físicamente          -> cleanup, sin diálogo adicional
+contexto ya resuelto
+→ no nueva arbitraje
+→ no segunda confirmación
+→ despedida
+→ lifecycle terminal
+→ hangup
 ```
 
-No ampliar regex como mecanismo principal de comprensión. Las expresiones deterministas pueden aportar evidencia, pero el diseño debe preservar el contexto semántico y las fronteras de estado.
-
-## Authoritative Clock — v48
-
-El Worker aporta a Lucía un contexto temporal autoritativo en `Europe/Madrid`, actualizado durante la conversación. Incluye fecha/hora actuales y evita depender del conocimiento temporal del modelo para interpretar expresiones como “mañana”, “este domingo” o “el viernes”.
-
-El reloj ayuda al modelo a razonar, pero no sustituye las validaciones backend. La arquitectura mantiene:
+Una nueva petición prevalece y debe continuar la conversación:
 
 ```text
-AuthoritativeClock -> TemporalContext -> provider adapter -> Lucía
-Lucía propone fecha -> backend valida -> operación
+No necesito nada más, pero dime el horario
+Gracias, ¿a qué hora cerráis?
 ```
 
-La defensa backend debe seguir rechazando fechas inválidas o incoherentes aunque el modelo se equivoque.
+Fuera del contexto de la pregunta de continuidad, el cierre espontáneo sigue usando las reglas de consenso/ambigüedad definidas por v41.
 
 ## Barge-in
 
-La arquitectura reconstruida v40 usa un único owner. VAD bruto no cancela una respuesta. Durante playback se escucha sin auto-interrumpir y la transcripción candidata se clasifica fuera de conversación como `INTERRUPT` o `IGNORE`.
+La arquitectura v40 sigue siendo autoridad para response ownership/barge-in.
 
-Evidencia E2E positiva observada:
+Invariantes:
 
 ```text
-BARGE_IN_CLASSIFIER_REQUESTED_V40_REBUILD
-BARGE_IN_CLASSIFIER_BOUND_V40_REBUILD
-TURN_CONCURRENCY_BYPASSED_V36
-BARGE_IN_CONFIRMED_V40_REBUILD
-response_done_gate=false
+VAD bruto no autoriza interrupción semántica
+protected speech no se interrumpe
+INTERRUPT no espera response.done
+IGNORE no entra al pipeline semántico
+un único response owner
 ```
 
-Los cierres espontáneos durante barge-in deben cancelar limpiamente la respuesta en curso antes de producir una única despedida y ejecutar el hangup.
+V40/V44 todavía requieren limpieza provider-neutral cuidadosa antes de considerar Gemini plug-and-play. No hacer un refactor grande de esas capas sin gate y E2E específico.
 
-## Presence recovery
+## Media plane
 
-Presence recovery no debe intervenir mientras existe una resolución explícita de cierre, una respuesta protegida o actividad conversacional válida. No usar “¿Sigues ahí?” para compensar errores de ownership o respuestas de confirmación que no llegaron a emitirse.
+Arquitectura estable actual:
 
-## Human handoff
+```text
+PSTN → Telnyx → OpenAI Realtime vía SIP/RTP
+```
 
-El handoff humano está implementado y activo. v37 ejecuta el transporte determinista y v39 corrige la clasificación del resultado Telnyx (`call.answered` del target leg es la evidencia autoritativa de transferencia contestada).
+Cloudflare permanece fuera del transporte continuo de audio.
 
-Una petición de handoff válida constituye una nueva intención y no debe confundirse con cierre por contener expresiones negativas como “no”.
+Para Gemini se debe separar formalmente:
 
-## Metodología de trabajo obligatoria
+```text
+TelephonyProvider
+MediaTransport
+RealtimeProvider
+```
 
-1. **No modificar código al recibir un síntoma.** Primero recuperar la llamada real de `public.call_diagnostic_events`.
-2. Reconstruir cronológicamente el lifecycle y encontrar la capa que tomó la decisión errónea.
-3. Distinguir causa raíz de síntoma. No asumir que fallos parecidos tienen la misma causa.
-4. No apilar parches ni timers. Preferir ownership único, contratos de estado y fronteras deterministas.
-5. Añadir prueba de regresión que reproduzca el incidente.
-6. Exigir CI verde (`Run tests` + `Wrangler dry-run`) antes de pedir una llamada real.
-7. Confirmar el SHA realmente desplegado antes de interpretar una llamada.
-8. Después de la llamada, revisar diagnósticos **antes** de cambiar código.
-9. Diferenciar siempre `IMPLEMENTADO`, `CI VERDE`, `DESPLEGADO` y `VALIDADO E2E`.
-10. Para decisiones irreversibles (hangup, handoff, WRITE) el modelo/prompt no debe ser la única autoridad.
-11. No arbitrar de nuevo una intención que el propio contexto conversacional ya haya resuelto inequívocamente.
-12. La confirmación explícita debe ser una ruta excepcional de resolución de desacuerdo, no el camino normal.
+Cualquier media bridge nuevo requiere benchmark, justificación y ADR conforme a `RA-003` y `RA-005`.
 
-## Infraestructura y conectores
+## Gates pre-Gemini acordados
+
+Ejecutar secuencialmente, manteniendo OpenAI como único provider activo:
+
+### Gate A — ProviderSelector tenant/KV
+
+- resolver provider desde `TenantConfiguration` y override operativo explícito;
+- registry centralizado;
+- solo `OPENAI` registrable inicialmente;
+- unknown/unsupported provider con política explícita testeada;
+- ningún `if (provider === ...)` disperso por CallSession.
+
+### Gate B — V40/V44 provider-neutral
+
+- neutralizar acoplamientos estrictamente necesarios;
+- preservar autoridad actual de barge-in;
+- CI + E2E con INTERRUPT/IGNORE.
+
+### Gate C — ProviderCapabilities
+
+Contrato explícito de capacidades: audio, VAD, interruption, function calling, transcription, direct SIP, etc.
+
+### Gate D — MediaTransport contract
+
+Separar RealtimeProvider de transporte de audio sin modificar la topología OpenAI estable.
+
+Solo después de cerrar A-D comienza la implementación Gemini.
+
+## Metodología obligatoria
+
+1. Verificar HEAD real de `rebuild/v39-stable-baseline` antes de escribir.
+2. No asumir que un SHA documentado sigue siendo el HEAD.
+3. Ante un síntoma E2E, recuperar primero `public.call_diagnostic_events`.
+4. Reconstruir cronología y ownership antes de cambiar código.
+5. Distinguir causa raíz de síntoma.
+6. No apilar condiciones/timers para tapar carreras.
+7. Un gate = cambio mínimo + prueba + CI verde antes del siguiente.
+8. Diferenciar siempre `IMPLEMENTADO`, `CI VERDE`, `DESPLEGADO` y `VALIDADO E2E`.
+9. Para hangup/handoff/WRITE el modelo no es autoridad irreversible única.
+10. No ampliar media plane sin ADR + benchmark.
+11. OpenAI y otros proveedores deben permanecer detrás de contratos/adaptadores.
+12. No crear forks del Core por tenant.
+
+## Infraestructura conocida
 
 ### GitHub
 
-Repositorio: `jdlc86/IA_RealTime_CenterCall`.
+```text
+repo = jdlc86/IA_RealTime_CenterCall
+work branch = rebuild/v39-stable-baseline
+stable snapshot = stable/pre-gemini-2026-08-19
+```
 
 ### Supabase
 
-Proyecto operativo:
-
 ```text
 project_id = vutekfkbtvfogouwcfvc
+diagnostics = public.call_diagnostic_events
 ```
-
-Diagnósticos E2E:
-
-```text
-public.call_diagnostic_events
-```
-
-Cloudflare Worker → Supabase está operativo. No modificar datos de negocio durante una investigación salvo instrucción explícita.
 
 ### Cloudflare
 
-El control-plane se ejecuta en Workers. Configuración rápida por tenant usa `TENANT_CONFIG` KV. El repositorio valida con `wrangler deploy --dry-run` y despliega con `wrangler deploy`.
+El control-plane vive en Workers. Configuración rápida por tenant usa `TENANT_CONFIG` KV.
 
-No afirmar que un deploy fue ejecutado si no existe evidencia o herramienta de escritura capaz de verificarlo.
+No afirmar que un deploy real se ejecutó si la sesión no dispone de una herramienta capaz de ejecutarlo/verificarlo. `Wrangler dry-run` en CI no equivale a deploy.
 
 ## Regla de mantenimiento
 
 1. Este archivo no se elimina ni se renombra.
-2. Arquitectura canónica: `SYSTEM_ARCHITECTURE.md`.
-3. Estado operativo: `PROJECT_STATUS.md` y el handoff de sesión más reciente.
-4. Una funcionalidad no es `VALIDADA E2E` solo porque exista código o CI verde.
-5. No crear forks del Core por tenant; usar `businessType`, configuración, módulos y allowlists.
-6. El handoff telefónico es una capacidad transversal única; los verticales pueden aportar razones/reglas, no duplicar el transporte.
-7. Cierre, handoff y otras acciones irreversibles deben conservar ownership y evidencia explícitos.
+2. La arquitectura normativa sigue en `SYSTEM_ARCHITECTURE.md` y `DESIGN_RULES.md`.
+3. El estado operativo actual se mantiene en `PROJECT_STATUS.md` y el handoff más reciente.
+4. Una conducta no es `VALIDADA E2E` por tener tests o CI verde.
+5. El snapshot `stable/pre-gemini-2026-08-19` no es rama de desarrollo.
+6. Antes de modificar el snapshot estable, crear otro checkpoint explícito; no moverlo silenciosamente.
