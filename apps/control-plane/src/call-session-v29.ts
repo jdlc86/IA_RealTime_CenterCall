@@ -209,6 +209,47 @@ export class CallSession extends BaseConstructor {
     (this as any).observeSemanticIgnoredV18?.(reason);
   }
 
+  /**
+   * Single runtime authority for selecting a public restaurant tool in the
+   * current caller turn. Higher executors that must intercept a tool before the
+   * event reaches v29 (notably reservation search in v31) must delegate here
+   * instead of creating a parallel turn-authority state.
+   *
+   * true  -> the caller turn authorizes this tool and the executor may proceed.
+   * false -> v29 already rejected/handled the decision; the executor must stop.
+   */
+  protected authorizePublicRestaurantToolV29(event: RealtimeEvent): boolean {
+    if (!event.name || !isPublicRestaurantTool(event.name)) return true;
+
+    if (this.debugEnabledV29()) {
+      (this as any).diagnostics?.checkpoint?.("DEBUG_MODEL_TOOL_DECISION_V29", {
+        tool: event.name,
+        arguments: (event.arguments ?? "{}").slice(0, 2000),
+        call_id: event.call_id ?? null,
+      });
+    }
+
+    if (event.name === INPUT_IGNORED && this.callerDirectedAuthorityAppliesV29()) {
+      this.rejectIgnoredInputForDirectedTurnV29(event);
+      return false;
+    }
+
+    const decision = selectSemanticTool(this.semanticTurnDecisionV29, event.name);
+    this.semanticTurnDecisionV29 = decision.next;
+    if (!decision.allowed) {
+      this.rejectDuplicateSemanticDecisionV29(event, decision.duplicateOf);
+      return false;
+    }
+
+    this.releaseSemanticGateV29(event.name);
+    if (event.name === INPUT_IGNORED) {
+      this.handleIgnoredInputV29(event);
+      return false;
+    }
+
+    return true;
+  }
+
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const event = parseEvent(data);
     if (event?.type === "input_audio_buffer.speech_started") {
@@ -249,31 +290,7 @@ export class CallSession extends BaseConstructor {
     }
 
     if (event?.type === "response.function_call_arguments.done" && event.name && isPublicRestaurantTool(event.name)) {
-      if (this.debugEnabledV29()) {
-        (this as any).diagnostics?.checkpoint?.("DEBUG_MODEL_TOOL_DECISION_V29", {
-          tool: event.name,
-          arguments: (event.arguments ?? "{}").slice(0, 2000),
-          call_id: event.call_id ?? null,
-        });
-      }
-
-      if (event.name === INPUT_IGNORED && this.callerDirectedAuthorityAppliesV29()) {
-        this.rejectIgnoredInputForDirectedTurnV29(event);
-        return;
-      }
-
-      const decision = selectSemanticTool(this.semanticTurnDecisionV29, event.name);
-      this.semanticTurnDecisionV29 = decision.next;
-      if (!decision.allowed) {
-        this.rejectDuplicateSemanticDecisionV29(event, decision.duplicateOf);
-        return;
-      }
-
-      this.releaseSemanticGateV29(event.name);
-      if (event.name === INPUT_IGNORED) {
-        this.handleIgnoredInputV29(event);
-        return;
-      }
+      if (!this.authorizePublicRestaurantToolV29(event)) return;
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
