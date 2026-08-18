@@ -43,21 +43,6 @@ CIERRE: si el usuario expresa de manera inequívoca que quiere terminar —por e
 Nunca mantengas conversación por rellenar tiempo. Resuelve, comunica y cede el turno.`;
 }
 
-/**
- * v26 is the direct-agent runtime boundary.
- *
- * Root fix:
- * - prevents v13 from installing the legacy conversation_intent classifier before
- *   the direct Lucia tool surface is installed;
- * - blocks any residual conversation_intent function event from reaching the
- *   historical CoreIntent state machine;
- * - reapplies one final direct-agent instruction set after startup so Realtime has
- *   a single conversational authority;
- * - owns the common direct post-tool response boundary so terminal tool results
- *   cannot bypass deterministic conversational continuation policy;
- * - keeps post-tool speech concise and removes redundant close confirmation for
- *   unequivocal user farewells.
- */
 export class CallSession extends BaseConstructor {
   private directRuntimePolicyInstalledV26 = false;
   private postToolResponseBoundaryInstalledV26 = false;
@@ -116,9 +101,6 @@ export class CallSession extends BaseConstructor {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
 
     if (isStart) {
-      // v13 checks this field before publishing its classifier session.update.
-      // Set it before entering the inherited fetch chain so conversation_intent
-      // and tool_choice=required never become active in this session.
       (this as any).coreIntentSessionUpdateV13Sent = true;
       this.installPostToolResponseBoundaryV26();
     }
@@ -127,13 +109,9 @@ export class CallSession extends BaseConstructor {
 
     if (isStart && response.ok && !this.directRuntimePolicyInstalledV26) {
       this.directRuntimePolicyInstalledV26 = true;
-      (this as any).send?.({
-        type: "session.update",
-        session: {
-          type: "realtime",
-          instructions: directAgentInstructions(this as any),
-          tool_choice: "auto",
-        },
+      realtimeCommandPortFor(this as any).updateSessionPolicy({
+        instructions: directAgentInstructions(this as any),
+        toolChoice: "AUTO",
       });
       (this as any).diagnostics?.checkpoint?.("DIRECT_AGENT_RUNTIME_V26_ENABLED", {
         conversational_authority: "lucia_direct_tools",

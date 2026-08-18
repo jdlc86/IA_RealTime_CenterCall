@@ -17,8 +17,10 @@ test("v26 post-tool policy runs on the provider-neutral semantic boundary", () =
   assert.doesNotMatch(source, /response\.create/);
 });
 
-test("v26 keeps session bootstrap deliberately separate for the next gate", () => {
-  assert.match(source, /type: "session\.update"/);
+test("v26 session bootstrap uses the provider-neutral command boundary", () => {
+  assert.match(source, /updateSessionPolicy/);
+  assert.match(source, /toolChoice: "AUTO"/);
   assert.match(source, /DIRECT_AGENT_RUNTIME_V26_ENABLED/);
   assert.match(source, /tool_choice: "auto"/);
+  assert.doesNotMatch(source, /type: "session\.update"/);
 });

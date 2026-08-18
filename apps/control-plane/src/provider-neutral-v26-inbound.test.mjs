@@ -12,12 +12,13 @@ test("v26 consumes provider-neutral tool-selection events on its inbound boundar
   assert.doesNotMatch(source, /response\.function_call_arguments\.done/);
 });
 
-test("v26 inbound neutrality is preserved after post-tool output is moved before provider translation", () => {
+test("v26 has no direct OpenAI wire dependency after post-tool and session gates", () => {
   assert.match(source, /installRealtimeToolResultPolicy/);
+  assert.match(source, /updateSessionPolicy/);
   assert.match(source, /REPLACE_DEFAULT_RESPONSE/);
   assert.match(source, /DIRECT_POST_TOOL_RESPONSE_GOVERNED_V26/);
   assert.match(source, /LEGACY_CORE_INTENT_EVENT_BLOCKED_V26/);
-  assert.match(source, /session\.update/);
+  assert.doesNotMatch(source, /session\.update/);
   assert.doesNotMatch(source, /conversation\.item\.create/);
   assert.doesNotMatch(source, /function_call_output/);
   assert.doesNotMatch(source, /response\.create/);
