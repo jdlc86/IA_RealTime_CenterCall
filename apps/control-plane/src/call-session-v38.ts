@@ -22,17 +22,19 @@ function nonEmpty(value: unknown): string | null {
 }
 
 /**
- * v38 fixes the terminal NO_ANSWER/BUSY/FAILED lifecycle.
+ * v38 owns the terminal NO_ANSWER/BUSY/FAILED presentation policy.
  *
- * Root cause: a Telnyx transfer can detach/close the OpenAI SIP sideband before
- * the target leg later reports timeout/busy. Therefore Realtime is no longer a
- * reliable transport for the terminal failure sentence. v37 tried to create a
- * Realtime response after that detachment and then waited for its watchdog.
+ * A transfer may detach/close the OpenAI SIP sideband before the target leg later
+ * reports timeout/busy. Realtime therefore cannot be relied on for the terminal
+ * failure sentence. When the source leg is still alive, v38 plays that sentence
+ * through Telnyx and waits for call.speak.ended before hanging up.
  *
- * v38 keeps the successful TRANSFERRED path untouched. Only failed target-leg
- * handoffs are intercepted. Their configured terminal sentence is played by
- * Telnyx directly on the still-live source leg. call.speak.ended is the atomic
- * completion event; only then is the source call hung up. Lucía never resumes.
+ * The source leg is not guaranteed to survive until the target result arrives.
+ * ConversationTurnLifecycle is the authority for that terminality: once its state
+ * is CLOSING there is no caller left to speak to. In that case the failure/callback
+ * is persisted and no speech/hangup command is attempted. Telnyx 90018 is treated
+ * as equivalent transport evidence for the unavoidable check-to-command race.
+ * Lucía never resumes after a configured handoff has crossed point-of-no-return.
  */
 export class CallSession extends BaseConstructor {
   private terminalSpeechTimersV38 = new Map<string, ReturnType<typeof setTimeout>>();
@@ -40,6 +42,11 @@ export class CallSession extends BaseConstructor {
   private storeV38(): HumanHandoffStore {
     const env = (this as any).env ?? {};
     return new HumanHandoffStore({ SUPABASE_URL: env.SUPABASE_URL, SUPABASE_SECRET_KEY: env.SUPABASE_SECRET_KEY });
+  }
+
+  private sourceLifecycleTerminalV38(): boolean {
+    const snapshot = (this as any).snapshotTurnLifecycleV18?.() as { state?: string } | undefined;
+    return snapshot?.state === "CLOSING";
   }
 
   private async failureMessageV38(tenantId: string): Promise<string | null> {
@@ -56,6 +63,17 @@ export class CallSession extends BaseConstructor {
     const timer = this.terminalSpeechTimersV38.get(handoffId);
     if (timer) clearTimeout(timer);
     this.terminalSpeechTimersV38.delete(handoffId);
+  }
+
+  private async recordSourceAlreadyTerminalV38(handoffId: string, tenantId: string, evidence: string): Promise<void> {
+    this.clearTerminalSpeechTimerV38(handoffId);
+    await this.storeV38().update(handoffId, tenantId, { call_terminated_at: new Date().toISOString() });
+    (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_FAILURE_SOURCE_ALREADY_TERMINAL_V38", {
+      handoff_id: handoffId,
+      evidence,
+      terminal_speech_attempted: false,
+      lucia_conversation_resumes: false,
+    });
   }
 
   private async hangupSourceV38(event: HandoffTelnyxEvent, trigger: string): Promise<void> {
@@ -122,6 +140,11 @@ export class CallSession extends BaseConstructor {
       failure_reason: failureReason,
     });
 
+    if (this.sourceLifecycleTerminalV38()) {
+      await this.recordSourceAlreadyTerminalV38(handoffId, tenantId, "conversation_lifecycle_closing");
+      return Response.json({ ok: true, action: "failure_recorded_source_already_terminal", status });
+    }
+
     const message = await this.failureMessageV38(tenantId);
     if (!message) {
       await this.hangupSourceV38(event, "failure_message_configuration_unavailable");
@@ -154,6 +177,10 @@ export class CallSession extends BaseConstructor {
       });
       if (!response.ok) {
         const body = await response.text();
+        if (response.status === 422 && body.includes("90018")) {
+          await this.recordSourceAlreadyTerminalV38(handoffId, tenantId, "telnyx_90018_call_already_ended");
+          return Response.json({ ok: true, action: "failure_recorded_source_ended_during_speak", status });
+        }
         throw new Error(`Telnyx speak HTTP ${response.status}: ${body.slice(0, 250)}`);
       }
 
