@@ -16,6 +16,8 @@ type OpenAIRealtimeEvent = {
   name?: string;
   arguments?: string;
   transcript?: string;
+  call_id?: string;
+  item_id?: string;
   response_id?: string;
   response?: { id?: string; status?: string; metadata?: Record<string, unknown> | null };
   session?: { audio?: { input?: { turn_detection?: OpenAITurnDetection } } };
@@ -85,8 +87,23 @@ export function adaptOpenAIRealtimeEvent(data: unknown): RealtimeProviderEvent[]
       return [{ type: "CALLER_SPEECH_STARTED" }];
     case "input_audio_buffer.speech_stopped":
       return [{ type: "CALLER_SPEECH_STOPPED" }];
-    case "conversation.item.input_audio_transcription.completed":
-      return [{ type: "CALLER_TRANSCRIPT_COMPLETED", transcript: typeof event.transcript === "string" ? event.transcript : "" }];
+    case "conversation.item.input_audio_transcription.completed": {
+      const adapted: RealtimeProviderEvent = {
+        type: "CALLER_TRANSCRIPT_COMPLETED",
+        transcript: typeof event.transcript === "string" ? event.transcript : "",
+      };
+      if (event.item_id) adapted.itemId = event.item_id;
+      return [adapted];
+    }
+    case "response.output_audio_transcript.done": {
+      const adapted: RealtimeProviderEvent = {
+        type: "ASSISTANT_TRANSCRIPT_COMPLETED",
+        transcript: typeof event.transcript === "string" ? event.transcript : "",
+      };
+      const id = responseId(event);
+      if (id) adapted.responseId = id;
+      return [adapted];
+    }
     case "output_audio_buffer.started":
       return [{ type: "ASSISTANT_AUDIO_STARTED", kind: assistantKind(event), responseId: responseId(event) }];
     case "output_audio_buffer.stopped":
@@ -109,8 +126,12 @@ export function adaptOpenAIRealtimeEvent(data: unknown): RealtimeProviderEvent[]
         responseId: responseId(event),
         status: typeof event.response?.status === "string" ? event.response.status : undefined,
       }];
-    case "response.function_call_arguments.done":
-      return event.name ? [{ type: "SEMANTIC_TOOL_SELECTED", name: event.name, arguments: event.arguments }] : [];
+    case "response.function_call_arguments.done": {
+      if (!event.name) return [];
+      const adapted: RealtimeProviderEvent = { type: "SEMANTIC_TOOL_SELECTED", name: event.name, arguments: event.arguments };
+      if (event.call_id) adapted.callId = event.call_id;
+      return [adapted];
+    }
     default:
       return [];
   }

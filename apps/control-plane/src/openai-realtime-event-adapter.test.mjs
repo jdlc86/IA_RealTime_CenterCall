@@ -10,6 +10,26 @@ test("OpenAI speech and transcript events become provider-neutral events", () =>
   assert.deepEqual(adaptOpenAIRealtimeEvent(wire({ type: "conversation.item.input_audio_transcription.completed", transcript: "hola" })), [{ type: "CALLER_TRANSCRIPT_COMPLETED", transcript: "hola" }]);
 });
 
+test("OpenAI caller transcript identity is preserved only when provider supplies it", () => {
+  assert.deepEqual(adaptOpenAIRealtimeEvent(wire({
+    type: "conversation.item.input_audio_transcription.completed",
+    item_id: "item-1",
+    transcript: "hola",
+  })), [{ type: "CALLER_TRANSCRIPT_COMPLETED", transcript: "hola", itemId: "item-1" }]);
+});
+
+test("OpenAI assistant audio transcript becomes provider-neutral transcript evidence", () => {
+  assert.deepEqual(adaptOpenAIRealtimeEvent(wire({
+    type: "response.output_audio_transcript.done",
+    response_id: "resp-1",
+    transcript: "¿Necesitas algo más en lo que pueda ayudarte?",
+  })), [{
+    type: "ASSISTANT_TRANSCRIPT_COMPLETED",
+    transcript: "¿Necesitas algo más en lo que pueda ayudarte?",
+    responseId: "resp-1",
+  }]);
+});
+
 test("OpenAI response metadata maps protected speech and purpose without leaking wire names", () => {
   assert.deepEqual(adaptOpenAIRealtimeEvent(wire({ type: "response.created", response: { id: "r1", metadata: { purpose: "presence_recovery_v18" } } })), [{ type: "ASSISTANT_RESPONSE_STARTED", kind: "PRESENCE", responseId: "r1", purpose: "presence_recovery_v18" }]);
   assert.deepEqual(adaptOpenAIRealtimeEvent(wire({ type: "response.created", response: { id: "g1", metadata: { protected_speech_v35: "GREETING" } } })), [{ type: "ASSISTANT_RESPONSE_STARTED", kind: "GREETING", responseId: "g1", purpose: undefined }]);
@@ -54,4 +74,13 @@ test("OpenAI completion and playback clear become provider-neutral terminal obse
 
 test("OpenAI tool selection becomes semantic tool event", () => {
   assert.deepEqual(adaptOpenAIRealtimeEvent(wire({ type: "response.function_call_arguments.done", name: "restaurant_business_info", arguments: "{}" })), [{ type: "SEMANTIC_TOOL_SELECTED", name: "restaurant_business_info", arguments: "{}" }]);
+});
+
+test("OpenAI tool call identity is preserved for provider-neutral tool response correlation", () => {
+  assert.deepEqual(adaptOpenAIRealtimeEvent(wire({
+    type: "response.function_call_arguments.done",
+    name: "restaurant_business_info",
+    arguments: "{}",
+    call_id: "call-1",
+  })), [{ type: "SEMANTIC_TOOL_SELECTED", name: "restaurant_business_info", arguments: "{}", callId: "call-1" }]);
 });
