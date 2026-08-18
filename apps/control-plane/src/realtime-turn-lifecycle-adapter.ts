@@ -43,6 +43,8 @@ export function adaptRealtimeTurnEvent(event: RealtimeProviderEvent): LifecycleE
       return [{ type: "assistant_audio_started", kind: event.kind }];
     case "ASSISTANT_AUDIO_STOPPED":
       return [{ type: "assistant_audio_stopped", kind: event.kind }];
+    case "ASSISTANT_AUDIO_CLEARED":
+      return [{ type: "assistant_audio_cleared", kind: event.kind }];
     case "SEMANTIC_TOOL_SELECTED": {
       if (event.name === "restaurant_input_ignored") {
         return [{ type: "semantic_ignored", reason: ignoredReason(event.arguments) }];

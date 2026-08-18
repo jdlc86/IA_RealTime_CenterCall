@@ -216,6 +216,23 @@ export class CallSession extends BaseConstructor {
       return "TERMINAL";
     }
 
+    if (
+      event.type === "ASSISTANT_AUDIO_CLEARED" &&
+      lifecycleState === "TERMINAL_SPEAKING" &&
+      this.terminalPlaybackActiveV18
+    ) {
+      this.terminalPlaybackActiveV18 = false;
+      this.terminalPlaybackPendingV18 = true;
+      (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_PLAYBACK_CLEARED_V18", {
+        response_id: event.responseId ?? null,
+        provider_kind: event.kind,
+        correlated_kind: correlatedKind ?? null,
+        authoritative_kind: "TERMINAL",
+        terminal_playback_tracking: "rearmed",
+      });
+      return "TERMINAL";
+    }
+
     if (event.type === "ASSISTANT_AUDIO_STOPPED" && this.terminalPlaybackActiveV18) {
       this.terminalPlaybackActiveV18 = false;
       (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_PLAYBACK_STOPPED_V18", {
@@ -247,7 +264,11 @@ export class CallSession extends BaseConstructor {
 
       const adapted = adaptRealtimeTurnEvent(providerEvent);
       for (const lifecycleEvent of adapted) {
-        if (lifecycleEvent.type === "assistant_audio_started" || lifecycleEvent.type === "assistant_audio_stopped") {
+        if (
+          lifecycleEvent.type === "assistant_audio_started" ||
+          lifecycleEvent.type === "assistant_audio_stopped" ||
+          lifecycleEvent.type === "assistant_audio_cleared"
+        ) {
           const isPresenceAudio =
             Boolean(this.presenceResponseIdV18) &&
             "responseId" in providerEvent &&

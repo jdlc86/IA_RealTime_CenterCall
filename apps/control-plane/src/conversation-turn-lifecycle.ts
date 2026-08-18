@@ -20,6 +20,7 @@ export type IgnoredReason =
 export type LifecycleEvent =
   | { type: "assistant_audio_started"; kind?: "NORMAL" | "GREETING" | "RECOVERY" | "TERMINAL" | "PRESENCE" }
   | { type: "assistant_audio_stopped"; kind?: "NORMAL" | "GREETING" | "RECOVERY" | "TERMINAL" | "PRESENCE" }
+  | { type: "assistant_audio_cleared"; kind?: "NORMAL" | "GREETING" | "RECOVERY" | "TERMINAL" | "PRESENCE" }
   | { type: "speech_started" }
   | { type: "speech_stopped" }
   | { type: "transcript_usable" }
@@ -97,6 +98,7 @@ export class ConversationTurnLifecycle {
 
     if (this.state === "TERMINAL_SPEAKING") {
       if (event.type === "assistant_audio_started" && event.kind === "TERMINAL") return effects;
+      if (event.type === "assistant_audio_cleared" && event.kind === "TERMINAL") return effects;
       if (event.type === "assistant_audio_stopped" && event.kind === "TERMINAL") {
         this.state = "CLOSING";
         effects.push({ type: "HANGUP" });
