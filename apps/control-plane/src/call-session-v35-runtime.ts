@@ -1,7 +1,6 @@
 import { CallSession as CallSessionV35 } from "./call-session-v35";
 import { KvTenantRepository } from "./tenant-kv";
-import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
-import { adaptOpenAIRealtimeEvent } from "./openai-realtime-event-adapter";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import type { RealtimeInputDetectionSettings } from "./realtime-provider-command-port";
 import type { RealtimeProviderEvent } from "./realtime-provider-event";
 
@@ -16,8 +15,8 @@ const PROTECTED_METADATA_KEY = "protected_speech_v35";
  *
  * Provider wire events are translated before this layer sees them. v35 owns only
  * the protected-greeting lifecycle and observes provider-neutral input-detection,
- * response and playback events. OpenAI-specific event names and field shapes stay
- * behind OpenAIRealtimeEventAdapter.
+ * response and playback events. Provider-specific event names and field shapes stay
+ * behind the active RealtimeProvider adapter.
  */
 export class CallSession extends BaseConstructor {
   private tenantVadV35: RealtimeInputDetectionSettings = {};
@@ -245,7 +244,7 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    for (const event of adaptOpenAIRealtimeEvent(data)) {
+    for (const event of adaptRealtimeProviderEvents(data)) {
       this.handleNeutralEventV35(event);
     }
     await BasePrototype.handleRealtimeMessage.call(this, data);
