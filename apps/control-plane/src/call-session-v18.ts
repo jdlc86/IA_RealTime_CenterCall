@@ -11,12 +11,18 @@ const BasePrototype = CallSessionV17.prototype as any;
 const FIRST_PRESENCE_CHECK_MS = 8_000;
 const MAX_UNANSWERED_WAIT_MS = 26_000;
 const MAX_CALL_DURATION_MS = 15 * 60_000;
+// output_audio_buffer.stopped only guarantees that OpenAI's server-side output
+// buffer is drained. It is not an end-to-end PSTN playout acknowledgement.
+// Keep the transport drain isolated to terminal hangup so normal Lucia turns
+// receive no additional latency.
+const TERMINAL_TRANSPORT_DRAIN_MS = 750;
 
 export class CallSession extends BaseConstructor {
   private turnLifecycleV18 = new ConversationTurnLifecycle();
   private presenceTimerV18: ReturnType<typeof setTimeout> | null = null;
   private silenceCloseTimerV18: ReturnType<typeof setTimeout> | null = null;
   private maxCallTimerV18: ReturnType<typeof setTimeout> | null = null;
+  private terminalDrainTimerV18: ReturnType<typeof setTimeout> | null = null;
   private presenceResponseIdV18: string | null = null;
   private presenceRequestPendingV18 = false;
   private lifecycleInstalledV18 = false;
@@ -33,6 +39,7 @@ export class CallSession extends BaseConstructor {
       (this as any).diagnostics?.checkpoint?.("CONVERSATION_TURN_LIFECYCLE_V18_ENABLED", {
         authority: "ConversationTurnLifecycle", presence_check_ms: FIRST_PRESENCE_CHECK_MS,
         silence_close_ms: MAX_UNANSWERED_WAIT_MS, max_call_duration_ms: MAX_CALL_DURATION_MS,
+        terminal_transport_drain_ms: TERMINAL_TRANSPORT_DRAIN_MS,
         epoch_scoped_deadlines: true, legacy_presence_stages_removed: true, provider_command_port: true,
         provider_event_adapter: true,
       });
@@ -62,6 +69,10 @@ export class CallSession extends BaseConstructor {
   private clearMaxCallTimerV18(): void {
     if (this.maxCallTimerV18 !== null) clearTimeout(this.maxCallTimerV18);
     this.maxCallTimerV18 = null;
+  }
+  private clearTerminalDrainTimerV18(): void {
+    if (this.terminalDrainTimerV18 !== null) clearTimeout(this.terminalDrainTimerV18);
+    this.terminalDrainTimerV18 = null;
   }
   private resetPresenceResponseStateV18(): void {
     this.presenceRequestPendingV18 = false;
@@ -109,6 +120,7 @@ export class CallSession extends BaseConstructor {
         break;
       case "SPEAK_TERMINAL_FAREWELL":
         this.clearPresenceTimersV18();
+        this.clearTerminalDrainTimerV18();
         this.terminalPlaybackPendingV18 = true;
         this.terminalPlaybackActiveV18 = false;
         (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_REQUESTED_V18", {
@@ -122,12 +134,28 @@ export class CallSession extends BaseConstructor {
         this.clearPresenceTimersV18();
         this.terminalPlaybackPendingV18 = false;
         this.terminalPlaybackActiveV18 = false;
-        (this as any).diagnostics?.checkpoint?.("LIFECYCLE_HANGUP_DISPATCHED_V18", {
+        this.clearTerminalDrainTimerV18();
+        (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_DRAIN_ARMED_V18", {
           authority: "ConversationTurnLifecycle",
-          transport_executor: "performHangup",
-          trigger: "lifecycle_terminal_audio_stopped",
+          source_event: "output_audio_buffer.stopped",
+          source_guarantee: "openai_server_buffer_drained",
+          end_to_end_playout_ack_available: false,
+          drain_ms: TERMINAL_TRANSPORT_DRAIN_MS,
+          normal_response_latency_affected: false,
         });
-        void (this as any).performHangup?.("lifecycle_terminal_audio_stopped");
+        this.terminalDrainTimerV18 = setTimeout(() => {
+          this.terminalDrainTimerV18 = null;
+          (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_DRAIN_COMPLETED_V18", {
+            authority: "ConversationTurnLifecycle",
+            drain_ms: TERMINAL_TRANSPORT_DRAIN_MS,
+          });
+          (this as any).diagnostics?.checkpoint?.("LIFECYCLE_HANGUP_DISPATCHED_V18", {
+            authority: "ConversationTurnLifecycle",
+            transport_executor: "performHangup",
+            trigger: "lifecycle_terminal_transport_drained",
+          });
+          void (this as any).performHangup?.("lifecycle_terminal_transport_drained");
+        }, TERMINAL_TRANSPORT_DRAIN_MS);
         break;
       case "RESET_IGNORED_COUNT":
       case "IGNORED_COUNT_CHANGED":
