@@ -3,6 +3,7 @@ import { ConversationTurnLifecycle, type LifecycleEffect, type LifecycleEvent } 
 import { adaptRealtimeTurnEvent } from "./realtime-turn-lifecycle-adapter";
 import { adaptOpenAIRealtimeEvent } from "./openai-realtime-event-adapter";
 import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
+import type { AssistantSpeechKind, RealtimeProviderEvent } from "./realtime-provider-event";
 
 const BaseConstructor = CallSessionV17 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV17.prototype as any;
@@ -19,6 +20,7 @@ export class CallSession extends BaseConstructor {
   private presenceResponseIdV18: string | null = null;
   private presenceRequestPendingV18 = false;
   private lifecycleInstalledV18 = false;
+  private assistantSpeechKindsByResponseIdV18 = new Map<string, AssistantSpeechKind>();
 
   async fetch(request: Request): Promise<Response> {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
@@ -134,24 +136,58 @@ export class CallSession extends BaseConstructor {
     for (const effect of effects) this.executeLifecycleEffectV18(effect);
   }
 
+  private rememberAssistantSpeechKindV18(event: RealtimeProviderEvent): void {
+    if (event.type !== "ASSISTANT_RESPONSE_STARTED" || !event.responseId) return;
+    this.assistantSpeechKindsByResponseIdV18.set(event.responseId, event.kind);
+    (this as any).diagnostics?.checkpoint?.("ASSISTANT_SPEECH_KIND_CORRELATED_V18", {
+      response_id: event.responseId,
+      kind: event.kind,
+      source: "assistant_response_started",
+    });
+  }
+
+  private effectiveAssistantSpeechKindV18(event: RealtimeProviderEvent): AssistantSpeechKind | undefined {
+    if (
+      event.type !== "ASSISTANT_AUDIO_STARTED" &&
+      event.type !== "ASSISTANT_AUDIO_STOPPED" &&
+      event.type !== "ASSISTANT_AUDIO_CLEARED"
+    ) return undefined;
+    if (!event.responseId) return event.kind;
+    return this.assistantSpeechKindsByResponseIdV18.get(event.responseId) ?? event.kind;
+  }
+
+  private releaseAssistantSpeechKindV18(event: RealtimeProviderEvent): void {
+    if ((event.type === "ASSISTANT_AUDIO_STOPPED" || event.type === "ASSISTANT_AUDIO_CLEARED") && event.responseId) {
+      this.assistantSpeechKindsByResponseIdV18.delete(event.responseId);
+    }
+  }
+
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const providerEvents = adaptOpenAIRealtimeEvent(data);
     for (const providerEvent of providerEvents) {
+      this.rememberAssistantSpeechKindV18(providerEvent);
+
       if (providerEvent.type === "ASSISTANT_RESPONSE_STARTED" && this.presenceRequestPendingV18 && !this.presenceResponseIdV18 && providerEvent.purpose === "presence_recovery_v18") {
         this.presenceResponseIdV18 = providerEvent.responseId ?? null;
       }
 
       const adapted = adaptRealtimeTurnEvent(providerEvent);
       for (const lifecycleEvent of adapted) {
-        const isPresenceAudio =
-          (providerEvent.type === "ASSISTANT_AUDIO_STARTED" || providerEvent.type === "ASSISTANT_AUDIO_STOPPED") &&
-          Boolean(this.presenceResponseIdV18) && providerEvent.responseId === this.presenceResponseIdV18;
-        if (isPresenceAudio && (lifecycleEvent.type === "assistant_audio_started" || lifecycleEvent.type === "assistant_audio_stopped")) {
-          this.dispatchLifecycleV18({ type: lifecycleEvent.type, kind: "PRESENCE" });
+        if (lifecycleEvent.type === "assistant_audio_started" || lifecycleEvent.type === "assistant_audio_stopped") {
+          const correlatedKind = this.effectiveAssistantSpeechKindV18(providerEvent);
+          const isPresenceAudio =
+            Boolean(this.presenceResponseIdV18) &&
+            "responseId" in providerEvent &&
+            providerEvent.responseId === this.presenceResponseIdV18;
+          this.dispatchLifecycleV18({
+            type: lifecycleEvent.type,
+            kind: isPresenceAudio ? "PRESENCE" : correlatedKind ?? lifecycleEvent.kind,
+          });
         } else {
           this.dispatchLifecycleV18(lifecycleEvent);
         }
       }
+      this.releaseAssistantSpeechKindV18(providerEvent);
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
