@@ -22,13 +22,13 @@ export type RealtimeProviderHost = object & { send(event: Record<string, unknown
 
 class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
   private toolResultPolicy: RealtimeToolResultPolicy | null = null;
-  private sessionPolicyTransform: RealtimeSessionPolicyTransform | null = null;
+  private sessionPolicyTransforms: RealtimeSessionPolicyTransform[] = [];
   private pendingDefaultResponseReplacement: RealtimeSpeechRequest | null = null;
 
   constructor(private readonly delegate: RealtimeProviderCommandPort) {}
 
   setToolResultPolicy(policy: RealtimeToolResultPolicy): void { this.toolResultPolicy = policy; }
-  setSessionPolicyTransform(transform: RealtimeSessionPolicyTransform): void { this.sessionPolicyTransform = transform; }
+  addSessionPolicyTransform(transform: RealtimeSessionPolicyTransform): void { this.sessionPolicyTransforms.push(transform); }
   speak(request: RealtimeSpeechRequest): void { this.delegate.speak(request); }
   requestTextDecision(request: RealtimeTextDecisionRequest): void { this.delegate.requestTextDecision(request); }
 
@@ -39,7 +39,10 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
   }
 
   updateSessionPolicy(update: RealtimeSessionPolicyUpdate): void {
-    const governed = this.sessionPolicyTransform ? this.sessionPolicyTransform(update) : update;
+    const governed = this.sessionPolicyTransforms.reduce(
+      (current, transform) => transform(current),
+      update,
+    );
     this.delegate.updateSessionPolicy(governed);
   }
 
@@ -72,5 +75,5 @@ function commandRuntimeFor(host: RealtimeProviderHost): RealtimeProviderCommandR
 
 export function realtimeCommandPortFor(host: RealtimeProviderHost): RealtimeProviderCommandPort { return commandRuntimeFor(host); }
 export function installRealtimeToolResultPolicy(host: RealtimeProviderHost, policy: RealtimeToolResultPolicy): void { commandRuntimeFor(host).setToolResultPolicy(policy); }
-export function installRealtimeSessionPolicyTransform(host: RealtimeProviderHost, transform: RealtimeSessionPolicyTransform): void { commandRuntimeFor(host).setSessionPolicyTransform(transform); }
+export function installRealtimeSessionPolicyTransform(host: RealtimeProviderHost, transform: RealtimeSessionPolicyTransform): void { commandRuntimeFor(host).addSessionPolicyTransform(transform); }
 export function adaptRealtimeProviderEvents(data: unknown): RealtimeProviderEvent[] { return adaptOpenAIRealtimeEvent(data); }
