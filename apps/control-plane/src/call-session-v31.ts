@@ -71,6 +71,10 @@ function requireString(value: unknown, name: string): string {
  * Business hours are also authoritative here: table availability must never be
  * consulted for a closed day/out-of-hours request, and an automatic alternative
  * search may not silently cross into another local calendar date.
+ *
+ * Tool-selection authority is NOT owned here. Search is executed directly in
+ * v31 for compatibility, but every search must first delegate to v29's single
+ * semantic caller-turn authority.
  */
 export class CallSession extends BaseConstructor {
   private planV31: TablePlanRow[] | null = null;
@@ -163,9 +167,6 @@ export class CallSession extends BaseConstructor {
         const key = JSON.stringify({ party_size: partySize, starts_at: startsAt, duration_minutes: duration });
         this.planV31 = plan.length ? plan : null;
         this.planKeyV31 = plan.length ? key : null;
-
-        // Keep the older multi-table booking executor synchronized so it can
-        // perform the final atomic write after the customer accepts separation.
         (this as any).multitablePlanV16 = plan.length > 1 ? plan : null;
         (this as any).multitableKeyV16 = plan.length > 1 ? key : null;
 
@@ -439,13 +440,19 @@ export class CallSession extends BaseConstructor {
     if (textData) { try { event = JSON.parse(textData) as RealtimeEvent; } catch { event = null; } }
 
     if (event?.type === "response.function_call_arguments.done" && event.name === SEARCH_RESERVATION) {
+      if (!this.authorizePublicRestaurantToolV29(event)) return;
+
       let args: Record<string, unknown>;
       try { args = parseObject(event.arguments); }
       catch (error) {
         this.sendOutputV31(event.call_id, { ok: false, status: "ERROR", error: "INVALID_ARGUMENTS", message: error instanceof Error ? error.message : String(error) });
         return;
       }
-      (this as any).diagnostics?.checkpoint?.("LUCIA_AGENT_TOOL_SELECTED", { tool: SEARCH_RESERVATION, compatibility_executor: "direct_reservation_search_v31" });
+      (this as any).diagnostics?.checkpoint?.("LUCIA_AGENT_TOOL_SELECTED", {
+        tool: SEARCH_RESERVATION,
+        compatibility_executor: "direct_reservation_search_v31",
+        semantic_authority: "v29",
+      });
       try { await this.executeSearchV31(event.call_id, args); }
       catch (error) {
         this.sendOutputV31(event.call_id, { ok: false, status: "ERROR", error: "SEARCH_FAILED", message: error instanceof Error ? error.message : String(error) });
