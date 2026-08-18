@@ -1,211 +1,291 @@
 # IA_RealTime_CenterCall — PROJECT STATUS
 
 > **Estado operativo actual del proyecto**
-> **Fecha:** 2026-08-17
-> La arquitectura normativa pertenece a `docs/architecture/SYSTEM_ARCHITECTURE.md`.
-> Para continuidad entre sesiones leer también `docs/SESSION_HANDOFF_2026-08-17.md`.
+> **Fecha:** 2026-08-19
+> Arquitectura normativa: `docs/architecture/SYSTEM_ARCHITECTURE.md`
+> Reglas obligatorias: `docs/architecture/DESIGN_RULES.md`
+> Continuación operativa: `docs/SESSION_HANDOFF_2026-08-19.md`
 
 ## Estado resumido
 
 ```text
 F0 Voz E2E                                   ✅ CERRADA
 F1 Baseline + observabilidad + TenantResolver ✅ CERRADA
-F2 Latencia + barge-in                       🟡 REABIERTO OPERATIVAMENTE PARA HARDENING v40
-F3 ToolGateway                               🟡 EN CURSO
-F4 Clínica + validación multi-negocio        🟡 EN CURSO
+F2 Latencia + barge-in                       🟡 ESTABLE / pendiente neutralización V40/V44
+F3 ToolGateway / direct tools                🟡 EN CURSO, frontera realtime neutralizada
+F4 Clínica + multi-negocio                   🟡 EN CURSO
 F5 Persistencia empresarial + Supabase       🟡 EN CURSO
-F6 Handoff humano                            🟡 IMPLEMENTADO / VALIDADO PARCIALMENTE E2E
-F7 Concurrencia                              🟡 IMPLEMENTACIÓN PARCIAL v36/v40
+F6 Handoff humano                            🟡 IMPLEMENTADO / validado parcialmente E2E
+F7 Concurrencia                              🟡 ESTABLE en baseline, no tocar sin evidencia
 F8 Hardening producción                      🟡 EN CURSO
 F9 App de gestión                            ⬜ NO INICIADA
+Multi-provider Realtime                      🟡 PREPARACIÓN PRE-GEMINI
 ```
 
-## Estado de código/CI actual
+## Baseline estable actual
 
-Rama:
+Rama de trabajo:
 
 ```text
 rebuild/v39-stable-baseline
 ```
 
-Último SHA funcional con CI verde antes de los commits documentales:
+Snapshot de recuperación previo a Gemini:
 
 ```text
-f69f37de06cc953d50dd18884cb7bcd2132251c3
-Control Plane CI #254 — SUCCESS
+stable/pre-gemini-2026-08-19
 ```
 
-Estado de `f69f37de...`:
-
-- IMPLEMENTADO: sí;
-- CI VERDE: sí;
-- DESPLEGADO: no confirmado al generar este documento;
-- VALIDADO E2E: pendiente de nueva llamada posterior al despliegue.
-
-## RESTAURANT — reservas
-
-Estado funcional vigente:
-
-- CREATE con disponibilidad, datos incrementales, caller ID confiable y confirmación explícita;
-- QUERY por `tenant_id + caller_phone`;
-- CANCEL individual/múltiple/ALL;
-- `reservation_code` público `R-######` separado del UUID interno;
-- grounding temporal en `Europe/Madrid`;
-- Truth Guard para no afirmar BOOKED/CANCELLED sin evidencia backend;
-- marketing separado de reservas.
-
-Última llamada registrada durante la sesión 2026-08-17 completó una reserva `BOOKED` y permitió continuar conversación; el cierre automático indebido fue bloqueado por v41.
-
-## Barge-in — reconstrucción v40
-
-Objetivo: recuperar interrupción natural sin volver a introducir silencios, cancelaciones espurias ni dependencia de `response.done`.
-
-Arquitectura actual:
-
-- escucha durante playback con auto-interrupt y auto-create desactivados;
-- clasificación semántica `INTERRUPT | IGNORE` fuera de conversación;
-- un único response owner;
-- v36 cede ownership para un barge-in confirmado;
-- `response.done` es reconciliación, no gate;
-- candidato sin transcript útil -> `IGNORE` inmediato;
-- saludo/recovery/handoff protegidos no son interruptibles.
-
-Evidencia E2E positiva observada:
+Runtime estable validado:
 
 ```text
-BARGE_IN_CLASSIFIER_REQUESTED_V40_REBUILD
-BARGE_IN_CLASSIFIER_BOUND_V40_REBUILD
-TURN_CONCURRENCY_BYPASSED_V36
-BARGE_IN_CONFIRMED_V40_REBUILD
-response_done_gate=false
+ce23ac070558825ea909cbd7eb973b249bfe0a9e
 ```
 
-También:
+Validación:
 
 ```text
-BARGE_IN_UNCLASSIFIABLE_IGNORED_V40_REBUILD
-resolved_without_watchdog=true
+Control Plane CI #536 — SUCCESS
+Run tests          — SUCCESS
+Wrangler dry-run   — SUCCESS
 ```
 
-## Concurrencia v36/v40
+E2E confirmado tras deploy actualizado:
 
-v36 sigue protegiendo turnos normales. Cuando v40 confirma un barge-in, el `item_id` queda bajo ownership superior y v36 no adquiere lock ni puede descartarlo como solapado.
+```text
+call_id = rtc_u2_EENcyA4JsYIao1IsOI6n4
+fecha local ≈ 2026-08-19 01:35 Europe/Madrid
+145 eventos
+warn/error/critical = 0
+```
 
-Aun se han observado `TURN_CONCURRENCY_OVERLAPPING_TURN_DROPPED_V36` en turnos normales. No se deben eliminar esas defensas sin nueva evidencia; deben investigarse caso por caso.
+Estado del baseline:
 
-## User presence / “¿Sigues ahí?”
+- IMPLEMENTADO: ✅
+- CI VERDE: ✅
+- DESPLEGADO: ✅ confirmado por la prueba posterior al deploy actualizado
+- VALIDADO E2E: ✅ para el flujo probado de business info → continuidad → `No gracias` → cierre → hangup
 
-Se detectó un defecto real: presence recovery podía activarse durante una conversación todavía activa y generar respuestas concurrentes.
+## Objetivo multi-provider
 
-Correcciones:
+El producto debe soportar selección de proveedor realtime por tenant/configuración comercial, manteniendo OpenAI como opción y añadiendo Gemini como alternativa.
 
-- guardas para no recuperar presencia mientras Lucía está reproduciendo/procesando/herramienta activa;
-- v42 impide que `background_input_ignored_v29` vuelva a armar/reiniciar el deadline como un periodo nuevo de espera.
+Objetivo:
 
-Pendiente: validar E2E que tras `f69f37de...` ya no aparece `USER_PRESENCE_RECOVERY_REQUESTED` inducido por background ignored.
-
-## Cierre de llamada — v41
-
-Incidente: después de `BOOKED`, el modelo seleccionó `restaurant_end_call {confirmed:true}` sin despedida del usuario y el runtime colgó.
-
-v41 añade autorización determinista:
-
-- `confirmed:true` del modelo no basta;
-- se exige evidencia del último transcript útil del usuario;
-- despedida explícita o confirmación a una pregunta de cierre pendiente permiten cerrar;
-- reserva terminada, marketing o cortesía de Lucía no autorizan hangup.
-
-En la llamada posterior la defensa funcionó: `closing_authorized=false` y no hubo cierre automático.
-
-## Human handoff — F6 ya activo
-
-La documentación anterior que decía “F6 no iniciada / no hay transferencia activa” quedó obsoleta.
+```text
+TenantConfiguration / KV override
+              │
+              ▼
+      RealtimeProviderSelector
+          ┌──────┴──────┐
+          ▼             ▼
+       OpenAI         Gemini Live
+```
 
 Estado actual:
 
-- v37: transporte determinista, trazabilidad, anuncio protegido y transferencia Telnyx;
-- v38: manejo de fallos terminales;
-- v39: `call.bridged` es señal intermedia; solo `call.answered` en target leg confirma transferencia contestada;
-- existen llamadas reales donde el flujo de handoff llegó a `HUMAN_HANDOFF_TRANSFER_STARTED_V37`.
-
-### Regresión detectada
-
-En una llamada del 2026-08-17:
-
 ```text
-usuario pregunta horario
-→ restaurant_business_info(HOURS)
-→ backend FOUND
-→ respuesta correcta disponible
-→ modelo selecciona restaurant_human_assistance
-→ v37 acepta OTHER_RESTAURANT_MATTER
-→ comienza transferencia
+ACTIVE_REALTIME_PROVIDER = OPENAI
 ```
 
-El transporte v37/v39 funcionó; el defecto estaba en la frontera de autorización: el modelo podía pedir una acción irreversible aunque el turno ya estuviera resuelto.
+**Gemini todavía no está habilitado. OpenAI es el único provider activo.**
 
-### Corrección v42
+## Limpieza provider-neutral completada
 
-Si el turno actual acaba de resolverse con:
+Las capas siguientes ya disponen de frontera neutral para los aspectos relevantes de Realtime:
 
 ```text
-restaurant_business_info -> FOUND
+v19  create reservation
+v23  query/cancel/modify/business_info/end-call executor compatibility
+v24  marketing
+v25  tool authorization
+v26  direct-agent runtime, tool ingress, post-tool policy y session bootstrap
+v35  provider-neutral observation/configuration
+v41  contextual closing, tool/session/event boundary
+v45  tool deferral durante barge-in
+v48  authoritative clock + session transform
 ```
 
-y la respuesta ya terminó, `restaurant_human_assistance` queda bloqueado en ese mismo turno. Un nuevo transcript útil del usuario inicia un turno nuevo y vuelve a permitir handoff legítimo.
+El adaptador OpenAI sigue siendo la única traducción activa hacia el protocolo realtime real.
 
-La política es intencionadamente conservadora: no extenderla a todas las tools sin evidencia.
+## Cierre v41 — estado validado
+
+Regla formal vigente:
+
+```text
+Lucía: ¿Necesitas algo más en lo que pueda ayudarte?
+Caller: No gracias
+```
+
+Debe producir:
+
+```text
+MORE_HELP_QUESTION_OPENED_V41
+→ V41_CLOSE_COMMITTED_TO_LIFECYCLE
+→ CONTEXTUAL_CLOSE_RESOLVED_V41
+   context = ANSWER_TO_MORE_HELP_QUESTION
+   caller_resolution = NO_MORE_HELP
+   explicit_close_confirmation_required = false
+→ LIFECYCLE_END_CALL_REQUESTED_V18
+```
+
+Esto fue validado E2E en `rtc_u2_EENcyA4JsYIao1IsOI6n4`.
+
+No debe aparecer una segunda pregunta de confirmación.
+
+Una petición sustantiva posterior sigue teniendo prioridad y debe mantener la llamada abierta.
+
+## Terminal/hangup
+
+Topología y ownership vigentes:
+
+```text
+ConversationTurnLifecycle v18
+→ terminal playback
+→ TERMINAL_TRANSPORT_DRAIN_MS = 750
+→ HangupController
+→ TELNYX_SOURCE_LEG
+```
+
+E2E del baseline:
+
+```text
+LIFECYCLE_TERMINAL_DRAIN_ARMED_V18 drain_ms=750
+→ LIFECYCLE_TERMINAL_DRAIN_COMPLETED_V18
+→ LIFECYCLE_HANGUP_DISPATCHED_V18
+→ HANGUP_STARTED transport_authority=TELNYX_SOURCE_LEG
+→ HANGUP_REQUEST_ACCEPTED http_status=200
+→ HANGUP_COMPLETED
+```
+
+El sideband `1006` posterior a `hangup_started=true` sigue siendo consecuencia del cierre.
+
+No modificar v18/HangupController/750 ms durante los gates pre-Gemini salvo nueva evidencia directa.
+
+## Barge-in v40/v44
+
+La autoridad actual se conserva y todavía requiere neutralización cuidadosa antes de Gemini.
+
+Invariantes:
+
+- VAD bruto no cancela semánticamente;
+- protected speech no se interrumpe;
+- playback normal usa escucha no interruptiva;
+- candidato se clasifica `INTERRUPT | IGNORE`;
+- `INTERRUPT` no espera `response.done`;
+- `IGNORE` no entra al pipeline semántico;
+- un único response owner.
+
+No hacer refactor masivo. El gate V40/V44 exige E2E específico de interrupción y ruido.
+
+## Reservas / restaurante
+
+Estado funcional vigente:
+
+- CREATE con disponibilidad y datos incrementales;
+- QUERY por tenant/caller;
+- CANCEL individual/múltiple;
+- MODIFY según flujo implementado;
+- código público `R-######` separado de UUID interno;
+- validación de horarios/duración en backend;
+- Truth Guard para no afirmar resultados no confirmados;
+- marketing separado del estado de reserva;
+- continuación post-tool determinista en V26.
+
+La neutralización Realtime no cambió intencionalmente estas reglas.
+
+## Human handoff
+
+Permanece implementado sobre la autoridad v37/v39. No fue modificado por la limpieza provider-neutral.
+
+Reglas mantenidas:
+
+- transporte irreversible no se duplica en capas posteriores;
+- `call.answered` del target leg es evidencia autoritativa de transferencia contestada;
+- no usar el modelo como única autoridad de handoff irreversible.
+
+## Media plane
+
+Topología estable actual:
+
+```text
+PSTN → Telnyx → OpenAI Realtime vía SIP/RTP
+```
+
+Cloudflare no transporta audio continuo.
+
+Gemini requerirá separar formalmente `RealtimeProvider` de `MediaTransport`; cualquier relay nuevo debe cumplir RA-003/RA-005 y requiere benchmark + ADR.
 
 ## Supabase / observabilidad
 
-Proyecto:
-
 ```text
-vutekfkbtvfogouwcfvc
+project_id = vutekfkbtvfogouwcfvc
+principal diagnostic table = public.call_diagnostic_events
 ```
 
-Fuente principal de diagnóstico:
-
-```text
-public.call_diagnostic_events
-```
-
-Regla operativa: toda regresión de llamada debe reconstruirse desde esta tabla antes de modificar código.
+Toda regresión de llamada se investiga primero en esta tabla.
 
 ## Cloudflare
 
-- Worker control-plane activo en Cloudflare;
-- tenant config rápida en KV `TENANT_CONFIG`;
-- CI ejecuta `wrangler deploy --dry-run`;
-- deploy real: `wrangler deploy` por el flujo disponible;
-- la disponibilidad de un conector Cloudflare de escritura depende de la sesión de ChatGPT; no afirmar un deploy si no existe herramienta capaz de ejecutarlo/verificarlo.
+- control-plane en Workers;
+- configuración rápida por tenant en `TENANT_CONFIG` KV;
+- CI valida con Wrangler dry-run;
+- CI verde NO equivale a deploy real;
+- no afirmar despliegue si la sesión no dispone de herramienta de despliegue/verificación.
+
+## Gates pre-Gemini activos
+
+### Gate A — ProviderSelector tenant/KV
+
+Estado: **SIGUIENTE**.
+
+Objetivo:
+
+```text
+TenantConfiguration + optional KV override
+→ RealtimeProviderSelector
+→ OPENAI
+```
+
+Condiciones:
+
+- solo OpenAI registrable inicialmente;
+- unsupported/unknown provider con política centralizada y tests;
+- no dispersar condicionales por CallSession;
+- cero cambio funcional.
+
+### Gate B — V40/V44 provider-neutral
+
+Estado: PENDIENTE Gate A.
+
+Debe conservar barge-in actual y validarse con llamada real INTERRUPT/IGNORE.
+
+### Gate C — ProviderCapabilities
+
+Estado: PENDIENTE Gate B.
+
+Contrato explícito para capacidades distintas entre proveedores.
+
+### Gate D — MediaTransport contract
+
+Estado: PENDIENTE Gate C.
+
+Separar transporte de audio de RealtimeProvider sin alterar OpenAI SIP actual.
+
+### Gemini
+
+Estado: **NO INICIAR hasta cerrar A-D**.
 
 ## Metodología obligatoria
 
-1. Recibir síntoma.
-2. No cambiar código.
-3. Consultar `call_diagnostic_events` de la llamada afectada.
-4. Reconstruir orden de eventos.
-5. Identificar la capa que tomó la decisión errónea.
-6. Comparar con v39 cuando aporte información, distinguiendo garantías reales de comportamiento de facto.
-7. Crear una corrección estructural mínima.
-8. Añadir test de regresión.
-9. Exigir CI verde: tests + Wrangler dry-run.
-10. Confirmar SHA desplegado.
-11. Realizar llamada controlada.
-12. Revisar logs antes de cualquier siguiente modificación.
-
-No apilar timers/parches. Para acciones irreversibles (WRITE, hangup, handoff) el modelo/prompt no debe ser la única autoridad.
-
-## Próximo paso operativo
-
-1. Confirmar si `f69f37de06cc953d50dd18884cb7bcd2132251c3` está realmente desplegado.
-2. Si procede, repetir la llamada controlada.
-3. Revisar la nueva traza completa sin hacer cambios.
-4. Verificar:
-   - background ignored no provoca un nuevo presence recovery;
-   - `business_info -> FOUND` no desemboca en handoff en el mismo turno;
-   - un turno nuevo sí puede solicitar handoff legítimo;
-   - barge-in v40 sigue funcionando;
-   - v41 sigue bloqueando cierre sin despedida real.
-5. No avanzar a otra corrección hasta tener evidencia de esa llamada.
+1. Leer Master + handoff actual + Project Status antes de cambios.
+2. Verificar HEAD real en GitHub.
+3. Un gate por vez.
+4. Añadir tests/regresión apropiada.
+5. Exigir `Run tests` + `Wrangler dry-run` verdes.
+6. Confirmar deploy antes de interpretar E2E.
+7. Consultar diagnósticos antes de corregir cualquier llamada.
+8. No apilar timers/parches.
+9. Distinguir garantía codificada de comportamiento histórico de facto.
+10. Mantener una sola autoridad por comportamiento irreversible.
+11. Si un gate rompe algo, comparar contra `stable/pre-gemini-2026-08-19` / `ce23ac07...` antes de ampliar el cambio.
