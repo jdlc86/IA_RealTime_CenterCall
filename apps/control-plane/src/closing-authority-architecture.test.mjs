@@ -45,6 +45,17 @@ test("closing authority: v41 caller-resolved close paths enter lifecycle instead
   assert.match(v41, /V41_CLOSE_LIFECYCLE_COMPATIBILITY_FALLBACK/);
 });
 
+test("closing authority: v41 explicit continue resolution is atomic within one caller turn", async () => {
+  const v41 = await source("call-session-v41-closure-guard.ts");
+
+  assert.match(v41, /type PendingCloseResolutionV41 = \"CLOSE\" \| \"CONTINUE\" \| \"RELEASE\"/);
+  assert.match(v41, /return \"CONTINUE\";/);
+  assert.match(v41, /closeTurnConsumed = resolution === \"CONTINUE\"/);
+  assert.match(v41, /if \(!closeTurnConsumed\) this\.recordUserTranscriptV41\(transcript\)/);
+  assert.match(v41, /CLOSE_RESOLUTION_TURN_CONSUMED_V41/);
+  assert.match(v41, /controller_reassessment_skipped: true/);
+});
+
 test("closing authority: terminal audio keeps response kind across metadata-less buffer events", async () => {
   const v18 = await source("call-session-v18.ts");
 
@@ -52,6 +63,18 @@ test("closing authority: terminal audio keeps response kind across metadata-less
   assert.match(v18, /ASSISTANT_SPEECH_KIND_CORRELATED_V18/);
   assert.match(v18, /this\.assistantSpeechKindsByResponseIdV18\.get\(event\.responseId\) \?\? event\.kind/);
   assert.match(v18, /this\.releaseAssistantSpeechKindV18\(providerEvent\)/);
+});
+
+test("closing authority: terminal playback ownership does not require provider response id", async () => {
+  const v18 = await source("call-session-v18.ts");
+
+  assert.match(v18, /terminalPlaybackPendingV18 = false/);
+  assert.match(v18, /terminalPlaybackActiveV18 = false/);
+  assert.match(v18, /this\.terminalPlaybackPendingV18 = true/);
+  assert.match(v18, /LIFECYCLE_TERMINAL_PLAYBACK_BOUND_V18/);
+  assert.match(v18, /provider_response_id_required: false/);
+  assert.match(v18, /event\.type === \"ASSISTANT_AUDIO_STOPPED\" && this\.terminalPlaybackActiveV18/);
+  assert.match(v18, /authoritative_kind: \"TERMINAL\"/);
 });
 
 test("closing authority: lifecycle HANGUP executes transport hangup instead of reopening beginClosing", async () => {
