@@ -39,6 +39,14 @@ function hasExplicitContinueEvidence(value: string): boolean {
     || /\b(?:no cuelgues|no cuelgue|sigue|continua|continuemos)\b/.test(text);
 }
 
+function hasFollowupRequestAfterCompletion(value: string): boolean {
+  const text = normalizeClosingText(value);
+  const completion = /\b(?:no necesito nada mas|no necesito mas nada|eso es todo|nada mas|ya esta|hemos terminado|ya hemos terminado)\b/.test(text);
+  if (!completion) return false;
+  return /\b(?:pero|aunque|ahora|ademas|tambien)\b.*\b(?:dime|cuentame|quiero|necesito|puedes|podrias|quisiera|preguntar|saber|consultar)\b/.test(text)
+    || /\b(?:pero|ahora|ademas|tambien)\b.*\b(?:menu|horario|reserva|reservas|direccion|precio|precios|telefono)\b/.test(text);
+}
+
 function hasCourtesyEvidence(value: string): boolean {
   const text = normalizeClosingText(value);
   if (!text) return false;
@@ -51,7 +59,7 @@ function hasCourtesyEvidence(value: string): boolean {
  */
 export function hasExplicitUserFarewellEvidence(value: string): boolean {
   const text = normalizeClosingText(value);
-  if (!text || hasExplicitContinueEvidence(text)) return false;
+  if (!text || hasExplicitContinueEvidence(text) || hasFollowupRequestAfterCompletion(text)) return false;
 
   const strongFarewell = /(?:^|\b)(?:adios|hasta luego|hasta pronto|me despido|que tengas buen dia|que tenga buen dia)(?:\b|$)/.test(text);
   const explicitHangup = /(?:^|\b)(?:puedes colgar|puede colgar|podemos colgar|cuelga|cuelgue)(?:\b|$)/.test(text);
@@ -70,6 +78,7 @@ export function hasExplicitUserFarewellEvidence(value: string): boolean {
 export function assessControllerCloseIntent(value: string): ControllerCloseAssessment {
   const courtesy = hasCourtesyEvidence(value);
   if (hasExplicitContinueEvidence(value)) return { courtesy, closeIntent: "CONTINUE" };
+  if (hasFollowupRequestAfterCompletion(value)) return { courtesy, closeIntent: "ABSTAIN" };
   if (hasExplicitUserFarewellEvidence(value)) return { courtesy, closeIntent: "CLOSE" };
   return { courtesy, closeIntent: "ABSTAIN" };
 }
