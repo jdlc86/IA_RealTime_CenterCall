@@ -15,7 +15,23 @@ test("v41 consumes provider-neutral realtime observations instead of OpenAI inbo
   assert.doesNotMatch(source, /response\.function_call_arguments\.done/);
 });
 
-test("v41 provider-neutral observation refactor preserves closing authorities", () => {
+test("v41 emits synthetic tool results through the provider-neutral command boundary", () => {
+  assert.match(source, /submitEndCallToolResultV41/);
+  assert.match(source, /submitToolResult/);
+  assert.match(source, /toolName: END_CALL/);
+  assert.doesNotMatch(source, /conversation\.item\.create/);
+  assert.doesNotMatch(source, /function_call_output/);
+});
+
+test("v41 governs migrated session instructions neutrally while retaining a raw compatibility fallback", () => {
+  assert.match(source, /installRealtimeSessionPolicyTransform/);
+  assert.match(source, /instructions: withClosingGuidance\(update\.instructions\)/);
+  assert.match(source, /Compatibility fallback for historical layers/);
+  assert.match(source, /message\?\.type === "session\.update"/);
+  assert.match(source, /withClosingGuidance\(message\.session\.instructions\)/);
+});
+
+test("v41 provider-neutral refactor preserves closing authorities", () => {
   assert.match(source, /resolveReplyToMoreHelpQuestion/);
   assert.match(source, /decideCloseConsensus/);
   assert.match(source, /V41_CLOSE_COMMITTED_TO_LIFECYCLE/);

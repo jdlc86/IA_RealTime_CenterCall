@@ -1,5 +1,9 @@
 import { CallSession as CallSessionV40 } from "./call-session-v40-rebuild";
-import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import {
+  adaptRealtimeProviderEvents,
+  installRealtimeSessionPolicyTransform,
+  realtimeCommandPortFor,
+} from "./realtime-provider-runtime.js";
 import {
   assessControllerCloseIntent,
   decideCloseConsensus,
@@ -59,6 +63,16 @@ export class CallSession extends BaseConstructor {
     const currentSend = session.send;
     if (typeof currentSend !== "function") return;
     this.closingSendBoundaryInstalledV41 = true;
+
+    // Provider-neutral authority for all migrated session policy updates.
+    installRealtimeSessionPolicyTransform(session, (update) => {
+      if (typeof update.instructions !== "string") return update;
+      return { ...update, instructions: withClosingGuidance(update.instructions) };
+    });
+
+    // Compatibility fallback for historical layers that still emit raw OpenAI
+    // session.update messages. withClosingGuidance is idempotent, so migrated
+    // updates may safely pass through both boundaries with no behavior change.
     this.originalSendV41 = currentSend.bind(this);
     session.send = (message: any) => {
       if (message?.type === "session.update" && typeof message?.session?.instructions === "string") {
@@ -143,19 +157,20 @@ export class CallSession extends BaseConstructor {
     return false;
   }
 
+  private submitEndCallToolResultV41(callId: string | undefined, output: Record<string, unknown>): void {
+    realtimeCommandPortFor(this as any).submitToolResult({
+      callId,
+      toolName: END_CALL,
+      output,
+    });
+  }
+
   private emitCourtesyFollowupV41(callId: string | undefined): void {
     const session = this as any;
-    session.send?.({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify({
-          ok: true,
-          status: "COURTESY_FOLLOWUP_REQUIRED",
-          instruction: "El usuario fue cortés pero no expresó intención de cierre. Pregunta si puedes ayudarle en algo más y continúa la conversación.",
-        }),
-      },
+    this.submitEndCallToolResultV41(callId, {
+      ok: true,
+      status: "COURTESY_FOLLOWUP_REQUIRED",
+      instruction: "El usuario fue cortés pero no expresó intención de cierre. Pregunta si puedes ayudarle en algo más y continúa la conversación.",
     });
     realtimeCommandPortFor(session).speak({
       instructions: COURTESY_FOLLOWUP_INSTRUCTION,
@@ -180,17 +195,10 @@ export class CallSession extends BaseConstructor {
     this.moreHelpAnswerPendingV41 = false;
     this.closingConfirmationPendingV41 = true;
     const session = this as any;
-    session.send?.({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify({
-          ok: true,
-          status: "CLOSE_INTENT_AMBIGUOUS",
-          instruction: "Lucía detectó cierre pero el controlador no confirmó una intención clara. La capa v41 preguntará al usuario si quiere terminar y esperará su respuesta.",
-        }),
-      },
+    this.submitEndCallToolResultV41(callId, {
+      ok: true,
+      status: "CLOSE_INTENT_AMBIGUOUS",
+      instruction: "Lucía detectó cierre pero el controlador no confirmó una intención clara. La capa v41 preguntará al usuario si quiere terminar y esperará su respuesta.",
     });
     realtimeCommandPortFor(session).speak({
       instructions: `Pronuncia exactamente esta pregunta y nada más: ${JSON.stringify(CLOSE_CONFIRMATION_PROMPT)}`,
@@ -214,30 +222,23 @@ export class CallSession extends BaseConstructor {
 
   private acknowledgePendingEndCallV41(callId: string | undefined): void {
     const session = this as any;
-    session.send?.({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify({ ok: true, status: "CLOSE_INTENT_CONFIRMATION_PENDING", instruction: "La pregunta de cierre ya está pendiente. Espera la respuesta del usuario." }),
-      },
+    this.submitEndCallToolResultV41(callId, {
+      ok: true,
+      status: "CLOSE_INTENT_CONFIRMATION_PENDING",
+      instruction: "La pregunta de cierre ya está pendiente. Espera la respuesta del usuario.",
     });
-    session.diagnostics?.checkpoint?.("CLOSE_INTENT_DUPLICATE_SUPPRESSED_V41", { confirmation_still_pending: true, response_create_emitted: false });
+    session.diagnostics?.checkpoint?.("CLOSE_INTENT_DUPLICATE_SUPPRESSED_V41", {
+      confirmation_still_pending: true,
+      response_create_emitted: false,
+    });
   }
 
   private acknowledgeContextualReplyPendingV41(callId: string | undefined): void {
     const session = this as any;
-    session.send?.({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify({
-          ok: true,
-          status: "CONTEXTUAL_CLOSE_REPLY_PENDING",
-          instruction: "La respuesta del usuario a tu pregunta de continuidad es la autoridad de este turno. No generes otra pregunta de cierre.",
-        }),
-      },
+    this.submitEndCallToolResultV41(callId, {
+      ok: true,
+      status: "CONTEXTUAL_CLOSE_REPLY_PENDING",
+      instruction: "La respuesta del usuario a tu pregunta de continuidad es la autoridad de este turno. No generes otra pregunta de cierre.",
     });
     session.diagnostics?.checkpoint?.("PREMATURE_END_CALL_SUPERSEDED_BY_MORE_HELP_CONTEXT_V41", {
       contextual_authority: "MORE_HELP_REPLY",
@@ -254,7 +255,11 @@ export class CallSession extends BaseConstructor {
     if (isExplicitClosingConfirmation(transcript)) {
       this.closingConfirmationPendingV41 = false;
       this.controllerCloseAssessmentV41 = { courtesy: false, closeIntent: "CLOSE" };
-      session.diagnostics?.checkpoint?.("CLOSE_AMBIGUITY_RESOLVED_BY_CALLER_V41", { caller_resolution: "CLOSE", consensus: true, turn_consumed: true });
+      session.diagnostics?.checkpoint?.("CLOSE_AMBIGUITY_RESOLVED_BY_CALLER_V41", {
+        caller_resolution: "CLOSE",
+        consensus: true,
+        turn_consumed: true,
+      });
       this.commitCloseThroughLifecycleV41("agent_end_confirmed_v41", "caller_resolved_close_ambiguity_v41");
       return "CLOSE";
     }
@@ -262,7 +267,11 @@ export class CallSession extends BaseConstructor {
     if (isExplicitClosingRejection(transcript)) {
       this.closingConfirmationPendingV41 = false;
       this.controllerCloseAssessmentV41 = { courtesy: false, closeIntent: "CONTINUE" };
-      session.diagnostics?.checkpoint?.("CLOSE_AMBIGUITY_RESOLVED_BY_CALLER_V41", { caller_resolution: "CONTINUE", consensus: true, turn_consumed: true });
+      session.diagnostics?.checkpoint?.("CLOSE_AMBIGUITY_RESOLVED_BY_CALLER_V41", {
+        caller_resolution: "CONTINUE",
+        consensus: true,
+        turn_consumed: true,
+      });
       return "CONTINUE";
     }
 
@@ -289,9 +298,6 @@ export class CallSession extends BaseConstructor {
     const providerEvents = adaptRealtimeProviderEvents(data);
 
     for (const event of providerEvents) {
-      // Observe Lucia's naturally generated continuity question. This is context,
-      // not a new closing authority. It lets the caller's next answer resolve the
-      // dialogue without forcing another model/controller vote.
       if (event.type === "ASSISTANT_TRANSCRIPT_COMPLETED") {
         const assistantTranscript = usableTranscript(event.transcript);
         if (assistantTranscript && isAssistantMoreHelpQuestion(assistantTranscript)) {
@@ -325,15 +331,16 @@ export class CallSession extends BaseConstructor {
         const session = this as any;
         if (session.state === "closing" || session.hangupStarted) return;
 
-        // Context already established by Lucia's own continuity question outranks a
-        // premature model tool call. We do not sleep or buffer: the normal completed
-        // caller transcription event already in flight resolves this same turn.
         if (this.moreHelpAnswerPendingV41) {
           this.acknowledgeContextualReplyPendingV41(event.callId);
           return;
         }
 
-        const decision = decideCloseConsensus(this.closingConfirmationPendingV41, this.controllerCloseAssessmentV41, true);
+        const decision = decideCloseConsensus(
+          this.closingConfirmationPendingV41,
+          this.controllerCloseAssessmentV41,
+          true,
+        );
 
         if (decision.action === "ACK_PENDING") {
           this.acknowledgePendingEndCallV41(event.callId);
