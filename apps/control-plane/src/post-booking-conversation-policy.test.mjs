@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyTerminalConversationPolicy } from "../.test-dist/post-booking-conversation-policy.js";
+import {
+  CONTINUATION_QUESTION,
+  applyTerminalConversationPolicy,
+  decideDirectPostToolResponse,
+} from "../.test-dist/post-booking-conversation-policy.js";
 
 const EXPECTED_FOLLOW_UP = /¿Necesitas algo más en lo que pueda ayudarte\?/;
 
@@ -38,4 +42,75 @@ test("reservation query with results remains proactive", () => {
 test("non-terminal workflow prompts are unchanged", () => {
   const input = "Pregunta a qué hora desea reservar.";
   assert.equal(applyTerminalConversationPolicy(input), input);
+});
+
+test("direct post-tool BOOKED without marketing enforces exact continuation", () => {
+  const decision = decideDirectPostToolResponse("restaurant_reservation_create", {
+    ok: true,
+    stage: "BOOKED",
+    ask_marketing_consent: false,
+  });
+  assert.equal(decision.action, "GOVERN");
+  if (decision.action !== "GOVERN") return;
+  assert.equal(decision.reason, "BOOKED");
+  assert.match(decision.instructions, new RegExp(CONTINUATION_QUESTION.replace(/[?]/g, "\\?")));
+  assert.match(decision.instructions, /pregunta exactamente/i);
+  assert.match(decision.instructions, /No añadas ninguna otra pregunta/i);
+});
+
+test("direct post-tool BOOKED with marketing pending preserves the marketing subflow", () => {
+  assert.deepEqual(
+    decideDirectPostToolResponse("restaurant_reservation_create", {
+      ok: true,
+      stage: "BOOKED",
+      ask_marketing_consent: true,
+    }),
+    { action: "DEFAULT", reason: "MARKETING_CONSENT_PENDING" },
+  );
+});
+
+test("direct marketing completion deterministically returns to more-help question", () => {
+  const decision = decideDirectPostToolResponse("restaurant_marketing_preferences", {
+    ok: true,
+    status: "MARKETING_UPDATED",
+    action: "DECLINE",
+    preference_status: "DECLINED",
+  });
+  assert.equal(decision.action, "GOVERN");
+  if (decision.action !== "GOVERN") return;
+  assert.equal(decision.reason, "MARKETING_COMPLETED");
+  assert.match(decision.instructions, EXPECTED_FOLLOW_UP);
+});
+
+test("direct non-terminal confirmation state remains model-driven", () => {
+  assert.deepEqual(
+    decideDirectPostToolResponse("restaurant_marketing_preferences", {
+      ok: true,
+      status: "EXPLICIT_DECISION_REQUIRED",
+    }),
+    { action: "DEFAULT", reason: "NON_TERMINAL" },
+  );
+  assert.deepEqual(
+    decideDirectPostToolResponse("restaurant_reservation_create", {
+      ok: true,
+      status: "READY_TO_CONFIRM",
+    }),
+    { action: "DEFAULT", reason: "NON_TERMINAL" },
+  );
+});
+
+test("direct query, cancellation, modification and business-info terminal results are governed", () => {
+  const cases = [
+    ["restaurant_reservation_query", { ok: true, status: "FOUND" }],
+    ["restaurant_reservation_query", { ok: true, status: "NONE" }],
+    ["restaurant_reservation_cancel", { ok: true, status: "CANCELLED" }],
+    ["restaurant_reservation_cancel", { ok: true, status: "NO_RESERVATIONS" }],
+    ["restaurant_reservation_cancel", { ok: false, status: "PARTIAL_FAILURE" }],
+    ["restaurant_reservation_modify", { ok: true, status: "MODIFIED" }],
+    ["restaurant_business_info", { ok: true, status: "FOUND" }],
+  ];
+  for (const [tool, output] of cases) {
+    const decision = decideDirectPostToolResponse(tool, output);
+    assert.equal(decision.action, "GOVERN", `${tool} should be governed`);
+  }
 });

@@ -6,7 +6,109 @@ const TERMINAL_RESULT_MARKERS = [
   "Informa de las reservas futuras confirmadas asociadas a esta llamada usando únicamente estos resultados verificados:",
 ];
 
-const CONTINUATION_INSTRUCTION = " Después de comunicar el resultado, pregunta exactamente: ¿Necesitas algo más en lo que pueda ayudarte? No dejes la llamada abierta en silencio. No esperes a que el usuario hable para devolverle el control de la conversación.";
+export const CONTINUATION_QUESTION = "¿Necesitas algo más en lo que pueda ayudarte?";
+
+const CONTINUATION_INSTRUCTION =
+  ` Después de comunicar el resultado, pregunta exactamente: ${CONTINUATION_QUESTION} ` +
+  "No dejes la llamada abierta en silencio. No esperes a que el usuario hable para devolverle el control de la conversación.";
+
+const STRUCTURED_CONTINUATION_INSTRUCTIONS =
+  `Comunica de forma breve y natural únicamente el resultado autorizado de la herramienta que acabas de recibir. ` +
+  `Después pregunta exactamente: ${CONTINUATION_QUESTION} ` +
+  "No añadas ninguna otra pregunta ni llames herramientas en esta respuesta.";
+
+export type DirectPostToolResponseDecision =
+  | {
+      action: "GOVERN";
+      reason:
+        | "BOOKED"
+        | "MARKETING_COMPLETED"
+        | "RESERVATION_QUERY_COMPLETED"
+        | "RESERVATION_CANCEL_COMPLETED"
+        | "RESERVATION_MODIFY_COMPLETED"
+        | "BUSINESS_INFO_COMPLETED";
+      instructions: string;
+    }
+  | {
+      action: "DEFAULT";
+      reason: "MARKETING_CONSENT_PENDING" | "NON_TERMINAL" | "ERROR_OR_INVALID";
+    };
+
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringField(value: Record<string, unknown>, key: string): string {
+  return typeof value[key] === "string" ? value[key] as string : "";
+}
+
+function governed(reason: Extract<DirectPostToolResponseDecision, { action: "GOVERN" }>["reason"]): DirectPostToolResponseDecision {
+  return { action: "GOVERN", reason, instructions: STRUCTURED_CONTINUATION_INSTRUCTIONS };
+}
+
+/**
+ * Structured post-tool policy for the direct-agent runtime.
+ *
+ * This is intentionally based on backend result fields instead of generated
+ * speech text. Non-terminal states keep the model's normal tool workflow.
+ * BOOKED with a pending marketing proposal also stays in the marketing subflow;
+ * the deterministic continuation question is enforced after that subflow
+ * completes.
+ */
+export function decideDirectPostToolResponse(
+  toolName: string,
+  output: unknown,
+): DirectPostToolResponseDecision {
+  const payload = recordOf(output);
+  if (!payload) return { action: "DEFAULT", reason: "ERROR_OR_INVALID" };
+
+  const status = stringField(payload, "status");
+  const stage = stringField(payload, "stage");
+
+  if (toolName === "restaurant_reservation_create" && stage === "BOOKED") {
+    if (payload.ask_marketing_consent === true) {
+      return { action: "DEFAULT", reason: "MARKETING_CONSENT_PENDING" };
+    }
+    return governed("BOOKED");
+  }
+
+  if (
+    toolName === "restaurant_marketing_preferences" &&
+    (status === "MARKETING_UPDATED" || status === "MARKETING_STATUS")
+  ) {
+    return governed("MARKETING_COMPLETED");
+  }
+
+  if (
+    toolName === "restaurant_reservation_query" &&
+    (status === "FOUND" || status === "NONE")
+  ) {
+    return governed("RESERVATION_QUERY_COMPLETED");
+  }
+
+  if (
+    toolName === "restaurant_reservation_cancel" &&
+    (status === "CANCELLED" || status === "NO_RESERVATIONS" || status === "PARTIAL_FAILURE")
+  ) {
+    return governed("RESERVATION_CANCEL_COMPLETED");
+  }
+
+  if (
+    toolName === "restaurant_reservation_modify" &&
+    (status === "MODIFIED" || status === "NO_RESERVATIONS")
+  ) {
+    return governed("RESERVATION_MODIFY_COMPLETED");
+  }
+
+  if (toolName === "restaurant_business_info" && status === "FOUND") {
+    return governed("BUSINESS_INFO_COMPLETED");
+  }
+
+  if (payload.ok === false) return { action: "DEFAULT", reason: "ERROR_OR_INVALID" };
+  return { action: "DEFAULT", reason: "NON_TERMINAL" };
+}
 
 export function applyTerminalConversationPolicy(instructions: string): string {
   if (instructions.includes(BOOKED_MARKER)) {
