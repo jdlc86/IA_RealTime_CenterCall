@@ -17,7 +17,7 @@ const CLOSE_CONFIRMATION_PROMPT = "¿Quieres terminar la llamada?";
 const COURTESY_FOLLOWUP_INSTRUCTION = "Responde de forma breve y natural preguntando si puedes ayudar al usuario en algo más. No menciones terminar, colgar ni cerrar la llamada.";
 const CLOSING_GUIDANCE_START = "[[V41_CLOSING_GUIDANCE_START]]";
 const CLOSING_GUIDANCE_END = "[[V41_CLOSING_GUIDANCE_END]]";
-const CLOSING_GUIDANCE = `${CLOSING_GUIDANCE_START}\nPROTOCOLO NATURAL DE CIERRE:\n- La cortesía y la intención de cierre son dimensiones distintas. Un simple agradecimiento NO implica cierre: pregunta de forma natural si puedes ayudar en algo más.\n- Si acabas de preguntar si el usuario necesita algo más y responde negativamente (por ejemplo 'no, gracias' o 'nada más'), ese contexto YA resuelve el cierre: despídete de forma natural y termina la llamada; no vuelvas a preguntar si quiere terminar.\n- Una frase puede contener cortesía y cierre a la vez. Por ejemplo 'muchas gracias, no necesito nada más' o 'gracias, hasta luego' expresa cierre claro: puedes proponer restaurant_end_call.\n- Para un cierre espontáneo, si tú y el controlador detectáis CLOSE hay consenso fuerte y se cierra. Solo si tú propones cierre y el controlador no lo confirma se pedirá '¿Quieres terminar la llamada?'; esa ruta debe ser excepcional.\n- Si el usuario corrige el cierre con una nueva petición ('hasta luego... espera, una cosa más'), prevalece la nueva petición.\n- Nunca uses restaurant_input_ignored para resolver una intención de cierre.\n${CLOSING_GUIDANCE_END}`;
+const CLOSING_GUIDANCE = `${CLOSING_GUIDANCE_START}\nPROTOCOLO NATURAL DE CIERRE:\n- La cortesía y la intención de cierre son dimensiones distintas. Un simple agradecimiento NO implica cierre: pregunta de forma natural si puedes ayudar al usuario en algo más.\n- Si acabas de preguntar si el usuario necesita algo más y responde negativamente (por ejemplo 'no, gracias' o 'nada más'), ese contexto YA resuelve el cierre: despídete de forma natural y termina la llamada; no vuelvas a preguntar si quiere terminar.\n- Una frase puede contener cortesía y cierre a la vez. Por ejemplo 'muchas gracias, no necesito nada más' o 'gracias, hasta luego' expresa cierre claro: puedes proponer restaurant_end_call.\n- Para un cierre espontáneo, si tú y el controlador detectáis CLOSE hay consenso fuerte y se cierra. Solo si tú propones cierre y el controlador no lo confirma se pedirá '¿Quieres terminar la llamada?'; esa ruta debe ser excepcional.\n- Si el usuario corrige el cierre con una nueva petición ('hasta luego... espera, una cosa más'), prevalece la nueva petición.\n- Nunca uses restaurant_input_ignored para resolver una intención de cierre.\n${CLOSING_GUIDANCE_END}`;
 
 type RealtimeEvent = {
   type?: string;
@@ -26,6 +26,8 @@ type RealtimeEvent = {
   arguments?: string;
   transcript?: unknown;
 };
+
+type PendingCloseResolutionV41 = "CLOSE" | "CONTINUE" | "RELEASE";
 
 function readRealtimeText(data: unknown): string | null {
   if (typeof data === "string") return data;
@@ -234,23 +236,23 @@ export class CallSession extends BaseConstructor {
     session.diagnostics?.checkpoint?.("CLOSE_INTENT_DUPLICATE_SUPPRESSED_V41", { confirmation_still_pending: true, response_create_emitted: false });
   }
 
-  private resolvePendingCloseFromCallerV41(transcript: string): boolean {
-    if (!this.closingConfirmationPendingV41) return false;
+  private resolvePendingCloseFromCallerV41(transcript: string): PendingCloseResolutionV41 {
+    if (!this.closingConfirmationPendingV41) return "RELEASE";
     const session = this as any;
 
     if (isExplicitClosingConfirmation(transcript)) {
       this.closingConfirmationPendingV41 = false;
       this.controllerCloseAssessmentV41 = { courtesy: false, closeIntent: "CLOSE" };
-      session.diagnostics?.checkpoint?.("CLOSE_AMBIGUITY_RESOLVED_BY_CALLER_V41", { caller_resolution: "CLOSE", consensus: true });
+      session.diagnostics?.checkpoint?.("CLOSE_AMBIGUITY_RESOLVED_BY_CALLER_V41", { caller_resolution: "CLOSE", consensus: true, turn_consumed: true });
       this.commitCloseThroughLifecycleV41("agent_end_confirmed_v41", "caller_resolved_close_ambiguity_v41");
-      return true;
+      return "CLOSE";
     }
 
     if (isExplicitClosingRejection(transcript)) {
       this.closingConfirmationPendingV41 = false;
       this.controllerCloseAssessmentV41 = { courtesy: false, closeIntent: "CONTINUE" };
-      session.diagnostics?.checkpoint?.("CLOSE_AMBIGUITY_RESOLVED_BY_CALLER_V41", { caller_resolution: "CONTINUE", consensus: true });
-      return false;
+      session.diagnostics?.checkpoint?.("CLOSE_AMBIGUITY_RESOLVED_BY_CALLER_V41", { caller_resolution: "CONTINUE", consensus: true, turn_consumed: true });
+      return "CONTINUE";
     }
 
     this.closingConfirmationPendingV41 = false;
@@ -259,7 +261,7 @@ export class CallSession extends BaseConstructor {
       controller_close_intent: this.controllerCloseAssessmentV41.closeIntent,
       courtesy: this.controllerCloseAssessmentV41.courtesy,
     });
-    return false;
+    return "RELEASE";
   }
 
   private recordUserTranscriptV41(transcript: string): void {
@@ -292,11 +294,18 @@ export class CallSession extends BaseConstructor {
           const closed = this.resolveMoreHelpAnswerV41(transcript);
           if (closed) return;
         }
+        let closeTurnConsumed = false;
         if (this.closingConfirmationPendingV41) {
-          const closed = this.resolvePendingCloseFromCallerV41(transcript);
-          if (closed) return;
+          const resolution = this.resolvePendingCloseFromCallerV41(transcript);
+          if (resolution === "CLOSE") return;
+          closeTurnConsumed = resolution === "CONTINUE";
         }
-        this.recordUserTranscriptV41(transcript);
+        if (!closeTurnConsumed) this.recordUserTranscriptV41(transcript);
+        else (this as any).diagnostics?.checkpoint?.("CLOSE_RESOLUTION_TURN_CONSUMED_V41", {
+          resolution: "CONTINUE",
+          controller_reassessment_skipped: true,
+          lower_semantic_pipeline_preserved: true,
+        });
       }
     }
 
