@@ -14,10 +14,32 @@ const DEFAULT_PREFIX_PADDING_MS = 300;
 const DEFAULT_SILENCE_DURATION_MS = 500;
 const DEFAULT_IDLE_TIMEOUT_MS = 10_000;
 
-function responseMetadata(request: { purpose?: string; metadata?: Record<string, unknown> }): Record<string, unknown> | undefined {
-  const metadata = { ...(request.metadata ?? {}) };
+function normalizeMetadataValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+export function normalizeOpenAIResponseMetadata(
+  metadata: Record<string, unknown> | undefined,
+): Record<string, string> | undefined {
+  if (!metadata) return undefined;
+  const normalized = Object.fromEntries(
+    Object.entries(metadata).map(([key, value]) => [key, normalizeMetadataValue(value)]),
+  );
+  return Object.keys(normalized).length ? normalized : undefined;
+}
+
+function responseMetadata(request: { purpose?: string; metadata?: Record<string, unknown> }): Record<string, string> | undefined {
+  const metadata: Record<string, unknown> = { ...(request.metadata ?? {}) };
   if (request.purpose && metadata.purpose === undefined) metadata.purpose = request.purpose;
-  return Object.keys(metadata).length ? metadata : undefined;
+  return normalizeOpenAIResponseMetadata(metadata);
 }
 
 function openAIServerVad(settings: RealtimeInputDetectionSettings = {}): Record<string, unknown> {
