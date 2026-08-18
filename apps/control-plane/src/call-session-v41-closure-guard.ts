@@ -17,7 +17,7 @@ const CLOSE_CONFIRMATION_PROMPT = "¿Quieres terminar la llamada?";
 const COURTESY_FOLLOWUP_INSTRUCTION = "Responde de forma breve y natural preguntando si puedes ayudar al usuario en algo más. No menciones terminar, colgar ni cerrar la llamada.";
 const CLOSING_GUIDANCE_START = "[[V41_CLOSING_GUIDANCE_START]]";
 const CLOSING_GUIDANCE_END = "[[V41_CLOSING_GUIDANCE_END]]";
-const CLOSING_GUIDANCE = `${CLOSING_GUIDANCE_START}\nPROTOCOLO NATURAL DE CIERRE:\n- La cortesía y la intención de cierre son dimensiones distintas. Un simple agradecimiento NO implica cierre: pregunta de forma natural si puedes ayudar al usuario en algo más.\n- Si acabas de preguntar si el usuario necesita algo más y responde negativamente (por ejemplo 'no, gracias' o 'nada más'), ese contexto YA resuelve el cierre: despídete de forma natural y termina la llamada; no vuelvas a preguntar si quiere terminar.\n- Una frase puede contener cortesía y cierre a la vez. Por ejemplo 'muchas gracias, no necesito nada más' o 'gracias, hasta luego' expresa cierre claro: puedes proponer restaurant_end_call.\n- Para un cierre espontáneo, si tú y el controlador detectáis CLOSE hay consenso fuerte y se cierra. Solo si tú propones cierre y el controlador no lo confirma se pedirá '¿Quieres terminar la llamada?'; esa ruta debe ser excepcional.\n- Si el usuario corrige el cierre con una nueva petición ('hasta luego... espera, una cosa más'), prevalece la nueva petición.\n- Nunca uses restaurant_input_ignored para resolver una intención de cierre.\n${CLOSING_GUIDANCE_END}`;
+const CLOSING_GUIDANCE = `${CLOSING_GUIDANCE_START}\nPROTOCOLO NATURAL DE CIERRE:\n- La cortesía y la intención de cierre son dimensiones distintas. Un simple agradecimiento NO implica cierre: pregunta de forma natural si puedes ayudar en algo más.\n- Si acabas de preguntar si el usuario necesita algo más y responde negativamente (por ejemplo 'no, gracias' o 'nada más'), ese contexto YA resuelve el cierre: despídete de forma natural y termina la llamada; no vuelvas a preguntar si quiere terminar.\n- Una frase puede contener cortesía y cierre a la vez. Por ejemplo 'muchas gracias, no necesito nada más' o 'gracias, hasta luego' expresa cierre claro: puedes proponer restaurant_end_call.\n- Para un cierre espontáneo, si tú y el controlador detectáis CLOSE hay consenso fuerte y se cierra. Solo si tú propones cierre y el controlador no lo confirma se pedirá '¿Quieres terminar la llamada?'; esa ruta debe ser excepcional.\n- Si el usuario corrige el cierre con una nueva petición ('hasta luego... espera, una cosa más'), prevalece la nueva petición.\n- Nunca uses restaurant_input_ignored para resolver una intención de cierre.\n${CLOSING_GUIDANCE_END}`;
 
 type RealtimeEvent = {
   type?: string;
@@ -236,6 +236,28 @@ export class CallSession extends BaseConstructor {
     session.diagnostics?.checkpoint?.("CLOSE_INTENT_DUPLICATE_SUPPRESSED_V41", { confirmation_still_pending: true, response_create_emitted: false });
   }
 
+  private acknowledgeContextualReplyPendingV41(callId: string | undefined): void {
+    const session = this as any;
+    session.send?.({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify({
+          ok: true,
+          status: "CONTEXTUAL_CLOSE_REPLY_PENDING",
+          instruction: "La respuesta del usuario a tu pregunta de continuidad es la autoridad de este turno. No generes otra pregunta de cierre.",
+        }),
+      },
+    });
+    session.diagnostics?.checkpoint?.("PREMATURE_END_CALL_SUPERSEDED_BY_MORE_HELP_CONTEXT_V41", {
+      contextual_authority: "MORE_HELP_REPLY",
+      arbitration_started: false,
+      extra_audio_emitted: false,
+      artificial_wait_ms: 0,
+    });
+  }
+
   private resolvePendingCloseFromCallerV41(transcript: string): PendingCloseResolutionV41 {
     if (!this.closingConfirmationPendingV41) return "RELEASE";
     const session = this as any;
@@ -312,6 +334,14 @@ export class CallSession extends BaseConstructor {
     if (event?.type === "response.function_call_arguments.done" && event.name === END_CALL) {
       const session = this as any;
       if (session.state === "closing" || session.hangupStarted) return;
+
+      // Context already established by Lucia's own continuity question outranks a
+      // premature model tool call. We do not sleep or buffer: the normal completed
+      // caller transcription event already in flight resolves this same turn.
+      if (this.moreHelpAnswerPendingV41) {
+        this.acknowledgeContextualReplyPendingV41(event.call_id);
+        return;
+      }
 
       const decision = decideCloseConsensus(this.closingConfirmationPendingV41, this.controllerCloseAssessmentV41, true);
 
