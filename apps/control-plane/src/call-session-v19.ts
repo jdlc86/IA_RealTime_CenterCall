@@ -7,7 +7,6 @@ const BasePrototype = CallSessionV18.prototype as any;
 const CREATE_RESERVATION = "restaurant_reservation_create";
 const CHECK_AVAILABILITY = "check_reservation_availability";
 const MANAGE_RESERVATION = "manage_reservation";
-const LUCIA_PROCESSING_MAX_MS = 12_000;
 
 type RealtimeEvent = {
   type?: string;
@@ -57,35 +56,6 @@ export class CallSession extends BaseConstructor {
   private reservationDraftV19: ReservationDraft = {};
   private reservationAvailabilityFingerprintV19: string | null = null;
   private reservationAvailabilityResultV19: Record<string, unknown> | null = null;
-  private luciaProcessingTimerV19: ReturnType<typeof setTimeout> | null = null;
-
-  private clearLuciaProcessingTimerV19(): void {
-    if (this.luciaProcessingTimerV19 !== null) {
-      clearTimeout(this.luciaProcessingTimerV19);
-      this.luciaProcessingTimerV19 = null;
-    }
-  }
-
-  private suspendPresenceWhileLuciaProcessesV19(): void {
-    this.clearLuciaProcessingTimerV19();
-    // Reuse the v18 relative-suspension flag WITHOUT resetting inactivityStartedAtV18.
-    // This prevents presence prompts while Lucia is processing a real transcript while
-    // preserving the original absolute unanswered deadline and the 15-minute call cap.
-    (this as any).toolExecutionActiveV18 = true;
-    (this as any).diagnostics?.checkpoint?.("USER_PRESENCE_SUSPENDED_WHILE_LUCIA_PROCESSING", {
-      max_processing_ms: LUCIA_PROCESSING_MAX_MS,
-      absolute_deadline_preserved: true,
-    });
-    this.luciaProcessingTimerV19 = setTimeout(() => {
-      this.luciaProcessingTimerV19 = null;
-      if ((this as any).state === "closing" || (this as any).hangupStarted) return;
-      (this as any).toolExecutionActiveV18 = false;
-      (this as any).diagnostics?.checkpoint?.("LUCIA_PROCESSING_WATCHDOG_RELEASED", {
-        max_processing_ms: LUCIA_PROCESSING_MAX_MS,
-      });
-      (this as any).scheduleNextInactivityCheckV18?.();
-    }, LUCIA_PROCESSING_MAX_MS);
-  }
 
   private mergeReservationDraftV19(args: Record<string, unknown>): ReservationDraft {
     const allowed = [
@@ -268,13 +238,7 @@ export class CallSession extends BaseConstructor {
       try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
     }
 
-    if (event?.type === "conversation.item.input_audio_transcription.completed") {
-      this.suspendPresenceWhileLuciaProcessesV19();
-    }
-
     if (event?.type === "response.function_call_arguments.done" && event.name === CREATE_RESERVATION) {
-      this.clearLuciaProcessingTimerV19();
-      (this as any).toolExecutionActiveV18 = true;
       let args: Record<string, unknown>;
       try {
         args = parseObject(event.arguments);
@@ -306,10 +270,6 @@ export class CallSession extends BaseConstructor {
         });
       }
       return;
-    }
-
-    if (event?.type === "response.output_audio_transcript.done" || event?.type === "response.function_call_arguments.done") {
-      this.clearLuciaProcessingTimerV19();
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
