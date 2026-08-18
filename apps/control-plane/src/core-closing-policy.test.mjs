@@ -60,21 +60,20 @@ test("explicit continuation is not close even if courteous", () => {
   assert.deepEqual(assessControllerCloseIntent("Continúa"), { courtesy: false, closeIntent: "CONTINUE" });
 });
 
-test("business completion with a new request remains abstain, not close", () => {
+test("completion language followed by a new request is not call closing", () => {
   for (const phrase of [
     "No necesito nada más sobre la reserva pero dime el horario",
     "Eso es todo sobre las reservas, ahora dime el menú",
-    "La primera opción me vale",
-    "¿A qué hora cerráis?",
+    "Nada más de la reserva, pero quiero saber la dirección",
   ]) {
-    // Context-specific completion followed by another request must not be a call close.
-    if (phrase.includes("pero") || phrase.includes("ahora")) {
-      assert.equal(classifyControllerCloseSignal(phrase), "CLOSE", phrase);
-      // Legacy signal is intentionally coarse; runtime prompt/model semantics handle
-      // the appended request. The new two-dimensional policy is validated elsewhere.
-    } else {
-      assert.equal(assessControllerCloseIntent(phrase).closeIntent, "ABSTAIN", phrase);
-    }
+    assert.equal(hasExplicitUserFarewellEvidence(phrase), false, phrase);
+    assert.equal(assessControllerCloseIntent(phrase).closeIntent, "ABSTAIN", phrase);
+  }
+});
+
+test("ordinary business request abstains from close intent", () => {
+  for (const phrase of ["La primera opción me vale", "¿A qué hora cerráis?"]) {
+    assert.deepEqual(assessControllerCloseIntent(phrase), { courtesy: false, closeIntent: "ABSTAIN" }, phrase);
   }
 });
 
