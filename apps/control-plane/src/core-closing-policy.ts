@@ -10,6 +10,13 @@ export type EndCallProposalDecision =
   | { action: "ASK_CONFIRMATION" }
   | { action: "ACK_PENDING" };
 
+export type ControllerCloseSignal = "CLOSE" | "CONTINUE" | "COURTESY" | "UNRESOLVED";
+export type CloseConsensusDecision =
+  | { action: "CONSENSUS_CLOSE"; pending: false }
+  | { action: "AMBIGUOUS_CONFIRM"; pending: true }
+  | { action: "CONTINUE"; pending: false }
+  | { action: "ACK_PENDING"; pending: true };
+
 function normalizeClosingText(value: string): string {
   return value
     .normalize("NFD")
@@ -20,35 +27,52 @@ function normalizeClosingText(value: string): string {
     .trim();
 }
 
+function hasExplicitContinueEvidence(value: string): boolean {
+  const text = normalizeClosingText(value);
+  return /\b(?:no|todavia no|aun no) (?:quiero )?(?:terminar|finalizar|colgar|que cuelgues|que cuelgue)\b/.test(text)
+    || /\b(?:no cuelgues|no cuelgue|sigue|continua|continuemos)\b/.test(text);
+}
+
+function isCourtesyOnly(value: string): boolean {
+  const text = normalizeClosingText(value);
+  if (!text) return false;
+  return /^(?:(?:vale|ok|perfecto|genial|muy bien)[ ,]*)?(?:muchas )?gracias(?: por (?:la )?(?:informacion|ayuda|atencion|respuesta))?$/.test(text);
+}
+
 /**
- * Strong farewell expressions remain evidence even when surrounded by natural
- * courtesy language. Vague completion expressions stay end-anchored so phrases
- * such as "no necesito nada más sobre la reserva, pero..." cannot close a call.
+ * Deterministic strong evidence. It is intentionally not the sole closing
+ * authority: v41 combines this controller signal with Lucia's semantic proposal.
  */
 export function hasExplicitUserFarewellEvidence(value: string): boolean {
   const text = normalizeClosingText(value);
-  if (!text) return false;
+  if (!text || hasExplicitContinueEvidence(text)) return false;
 
-  const strongFarewell = /(?:^|\b)(?:adios|hasta luego|hasta pronto|me despido)(?:\b|$)/.test(text);
+  const strongFarewell = /(?:^|\b)(?:adios|hasta luego|hasta pronto|me despido|que tengas buen dia|que tenga buen dia)(?:\b|$)/.test(text);
   const explicitHangup = /(?:^|\b)(?:puedes colgar|puede colgar|podemos colgar|cuelga|cuelgue)(?:\b|$)/.test(text);
   const explicitCallEnd = /(?:^|\b)(?:termina|termine|finaliza|finalice) (?:ya )?(?:la )?llamada(?:\b|$)/.test(text)
     || /(?:^|\b)quiero (?:terminar|finalizar) (?:ya )?(?:la )?llamada(?:\b|$)/.test(text);
 
-  if (strongFarewell || explicitHangup || explicitCallEnd) {
-    // Explicit negation must win over a matching phrase.
-    if (/\b(?:no|todavia no|aun no) (?:quiero )?(?:terminar|finalizar|colgar|cuelgues|cuelgue)\b/.test(text)) return false;
-    if (/\b(?:no|todavia no|aun no) (?:me despido|adios|hasta luego|hasta pronto)\b/.test(text)) return false;
-    return true;
-  }
+  if (strongFarewell || explicitHangup || explicitCallEnd) return true;
 
-  // These are intentionally terminal-only because they can also close a topic,
-  // not necessarily the phone call, when followed by another request.
   return /(?:^|\b)(?:eso es todo|nada mas|no necesito nada mas|ya esta|hemos terminado|ya hemos terminado)(?: gracias| muchas gracias)?$/.test(text);
+}
+
+/** Independent controller interpretation of the caller turn. */
+export function classifyControllerCloseSignal(value: string): ControllerCloseSignal {
+  if (hasExplicitContinueEvidence(value)) return "CONTINUE";
+  if (hasExplicitUserFarewellEvidence(value)) return "CLOSE";
+  if (isCourtesyOnly(value)) return "COURTESY";
+  return "UNRESOLVED";
 }
 
 export function isExplicitClosingConfirmation(value: string): boolean {
   const text = normalizeClosingText(value);
   return /^(?:si|si claro|claro|de acuerdo|vale|ok|correcto|confirmo)(?:\b|$)/.test(text);
+}
+
+export function isExplicitClosingRejection(value: string): boolean {
+  const text = normalizeClosingText(value);
+  return /^(?:no|no gracias|todavia no|aun no|mejor no)(?:\b|$)/.test(text);
 }
 
 export function shouldCommitPendingClose(
@@ -59,20 +83,36 @@ export function shouldCommitPendingClose(
 }
 
 /**
- * Backend authority for restaurant_end_call.
- *
- * Once a confirmation question is pending, repeated model proposals are merely
- * acknowledged. They must not create another assistant response because only a
- * new caller turn may resolve or replace the pending decision.
+ * Consensus policy. Lucia expresses CLOSE by selecting restaurant_end_call.
+ * The controller independently classifies the caller's latest turn. Neither
+ * side vetoes the other: agreement closes; disagreement or insufficient
+ * evidence becomes AMBIGUOUS_CONFIRM and is resolved by the caller.
  */
+export function decideCloseConsensus(
+  confirmationPending: boolean,
+  controllerSignal: ControllerCloseSignal,
+  luciaProposesClose: boolean,
+): CloseConsensusDecision {
+  if (confirmationPending) return { action: "ACK_PENDING", pending: true };
+  if (!luciaProposesClose) return { action: "CONTINUE", pending: false };
+  if (controllerSignal === "CLOSE") return { action: "CONSENSUS_CLOSE", pending: false };
+  return { action: "AMBIGUOUS_CONFIRM", pending: true };
+}
+
+/** Backward-compatible adapter retained for older tests/callers. */
 export function decideEndCallProposal(
   closingConfirmationPending: boolean,
   userClosingEvidence: boolean,
   modelConfirmed: boolean,
 ): EndCallProposalDecision {
-  if (closingConfirmationPending) return { action: "ACK_PENDING" };
-  if (!modelConfirmed || !userClosingEvidence) return { action: "ASK_CONFIRMATION" };
-  return { action: "ALLOW_CLOSE" };
+  const decision = decideCloseConsensus(
+    closingConfirmationPending,
+    userClosingEvidence ? "CLOSE" : "UNRESOLVED",
+    modelConfirmed,
+  );
+  if (decision.action === "CONSENSUS_CLOSE") return { action: "ALLOW_CLOSE" };
+  if (decision.action === "ACK_PENDING") return { action: "ACK_PENDING" };
+  return { action: "ASK_CONFIRMATION" };
 }
 
 export function decideClosingTransition(
@@ -81,13 +121,7 @@ export function decideClosingTransition(
   closingPending: boolean,
   explicitClosingConfirmed = false,
 ): ClosingDecision {
-  if (requestedWorkflow !== "CLOSING") {
-    return { action: "CONTINUE", pending: false };
-  }
-
-  if (explicitClosingConfirmed || closingPending) {
-    return { action: "ALLOW_CLOSE", pending: false };
-  }
-
+  if (requestedWorkflow !== "CLOSING") return { action: "CONTINUE", pending: false };
+  if (explicitClosingConfirmed || closingPending) return { action: "ALLOW_CLOSE", pending: false };
   return { action: "ASK_CONFIRMATION", pending: true };
 }
