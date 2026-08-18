@@ -1,5 +1,9 @@
 import { CallSession as CallSessionV25 } from "./call-session-v25";
-import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import {
+  adaptRealtimeProviderEvents,
+  installRealtimeToolResultPolicy,
+  realtimeCommandPortFor,
+} from "./realtime-provider-runtime.js";
 import { decideDirectPostToolResponse } from "./post-booking-conversation-policy";
 
 const BaseConstructor = CallSessionV25 as unknown as new (...args: any[]) => any;
@@ -13,37 +17,6 @@ const POST_TOOL_POLICY_TOOLS = new Set([
   "restaurant_business_info",
   "restaurant_marketing_preferences",
 ]);
-
-type PendingGovernedPostToolResponseV26 = {
-  tool: string;
-  reason: string;
-  instructions: string;
-};
-
-type FunctionOutputV26 = {
-  callId: string;
-  output: unknown;
-};
-
-function readFunctionOutputV26(message: any): FunctionOutputV26 | null {
-  if (
-    message?.type !== "conversation.item.create" ||
-    message?.item?.type !== "function_call_output" ||
-    typeof message.item.call_id !== "string"
-  ) return null;
-
-  const rawOutput = message.item.output;
-  if (typeof rawOutput !== "string") return { callId: message.item.call_id, output: rawOutput };
-  try {
-    return { callId: message.item.call_id, output: JSON.parse(rawOutput) };
-  } catch {
-    return { callId: message.item.call_id, output: null };
-  }
-}
-
-function isBareResponseCreateV26(message: any): boolean {
-  return message?.type === "response.create" && message.response === undefined;
-}
 
 function directAgentInstructions(session: any): string {
   const assistantName = typeof session.assistantName === "string" && session.assistantName.trim()
@@ -87,86 +60,56 @@ Nunca mantengas conversación por rellenar tiempo. Resuelve, comunica y cede el 
  */
 export class CallSession extends BaseConstructor {
   private directRuntimePolicyInstalledV26 = false;
-  private postToolSendBoundaryInstalledV26 = false;
-  private emittingGovernedPostToolResponseV26 = false;
+  private postToolResponseBoundaryInstalledV26 = false;
   private directToolByCallIdV26 = new Map<string, string>();
-  private pendingGovernedPostToolResponseV26: PendingGovernedPostToolResponseV26 | null = null;
 
   private installPostToolResponseBoundaryV26(): void {
-    if (this.postToolSendBoundaryInstalledV26) return;
+    if (this.postToolResponseBoundaryInstalledV26) return;
+    this.postToolResponseBoundaryInstalledV26 = true;
     const session = this as any;
-    const currentSend = session.send;
-    if (typeof currentSend !== "function") return;
 
-    const downstreamSend = currentSend.bind(this);
-    this.postToolSendBoundaryInstalledV26 = true;
+    installRealtimeToolResultPolicy(session, (request) => {
+      const mappedTool = request.callId ? this.directToolByCallIdV26.get(request.callId) : undefined;
+      if (request.callId && mappedTool) this.directToolByCallIdV26.delete(request.callId);
+      const tool = request.toolName ?? mappedTool;
+      if (!tool || !POST_TOOL_POLICY_TOOLS.has(tool)) return { action: "PASS" };
 
-    session.send = (message: any) => {
-      if (this.emittingGovernedPostToolResponseV26) {
-        downstreamSend(message);
-        return;
-      }
-
-      const functionOutput = readFunctionOutputV26(message);
-      if (functionOutput) {
-        const tool = this.directToolByCallIdV26.get(functionOutput.callId);
-        if (tool) this.directToolByCallIdV26.delete(functionOutput.callId);
-        this.pendingGovernedPostToolResponseV26 = null;
-
-        if (tool) {
-          const decision = decideDirectPostToolResponse(tool, functionOutput.output);
-          if (decision.action === "GOVERN") {
-            this.pendingGovernedPostToolResponseV26 = {
-              tool,
-              reason: decision.reason,
-              instructions: decision.instructions,
-            };
-            session.diagnostics?.checkpoint?.("DIRECT_POST_TOOL_RESPONSE_GOVERNED_V26", {
-              tool,
-              reason: decision.reason,
-              response_boundary: "direct_agent_runtime_v26",
-              exact_continuation_question: true,
-              tools_disabled: true,
-              timing_heuristic: false,
-            });
-          } else if (decision.reason === "MARKETING_CONSENT_PENDING") {
-            session.diagnostics?.checkpoint?.("DIRECT_POST_TOOL_RESPONSE_DEFERRED_TO_MARKETING_V26", {
-              tool,
-              reason: decision.reason,
-              structured_policy_applied: true,
-              continuation_question_deferred_until_marketing_resolution: true,
-            });
-          }
-        }
-
-        downstreamSend(message);
-        return;
-      }
-
-      if (isBareResponseCreateV26(message) && this.pendingGovernedPostToolResponseV26) {
-        const pending = this.pendingGovernedPostToolResponseV26;
-        this.pendingGovernedPostToolResponseV26 = null;
-        this.emittingGovernedPostToolResponseV26 = true;
-        try {
-          realtimeCommandPortFor(session).speak({
-            instructions: pending.instructions,
+      const decision = decideDirectPostToolResponse(tool, request.output);
+      if (decision.action === "GOVERN") {
+        session.diagnostics?.checkpoint?.("DIRECT_POST_TOOL_RESPONSE_GOVERNED_V26", {
+          tool,
+          reason: decision.reason,
+          response_boundary: "direct_agent_runtime_v26",
+          exact_continuation_question: true,
+          tools_disabled: true,
+          timing_heuristic: false,
+        });
+        return {
+          action: "REPLACE_DEFAULT_RESPONSE",
+          speech: {
+            instructions: decision.instructions,
             tools: "DISABLED",
             purpose: "direct_post_tool_terminal_v26",
             metadata: {
               authority: "direct_agent_runtime_v26",
-              tool: pending.tool,
-              reason: pending.reason,
+              tool,
+              reason: decision.reason,
               exact_continuation_question: true,
             },
-          });
-        } finally {
-          this.emittingGovernedPostToolResponseV26 = false;
-        }
-        return;
+          },
+        };
       }
 
-      downstreamSend(message);
-    };
+      if (decision.reason === "MARKETING_CONSENT_PENDING") {
+        session.diagnostics?.checkpoint?.("DIRECT_POST_TOOL_RESPONSE_DEFERRED_TO_MARKETING_V26", {
+          tool,
+          reason: decision.reason,
+          structured_policy_applied: true,
+          continuation_question_deferred_until_marketing_resolution: true,
+        });
+      }
+      return { action: "PASS" };
+    });
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -198,7 +141,7 @@ export class CallSession extends BaseConstructor {
         legacy_conversation_intent_allowed: false,
         tool_choice: "auto",
         post_tool_response_policy: "structured_terminal_continuation",
-        direct_post_tool_response_boundary: this.postToolSendBoundaryInstalledV26,
+        direct_post_tool_response_boundary: this.postToolResponseBoundaryInstalledV26,
         explicit_farewell_requires_second_confirmation: false,
       });
     }
@@ -224,17 +167,14 @@ export class CallSession extends BaseConstructor {
           direct_agent_runtime: true,
         });
         if (event.callId) {
-          (this as any).send?.({
-            type: "conversation.item.create",
-            item: {
-              type: "function_call_output",
-              call_id: event.callId,
-              output: JSON.stringify({
-                ok: false,
-                status: "DISABLED",
-                error: "LEGACY_CONVERSATION_PATH_DISABLED",
-                retryable: false,
-              }),
+          realtimeCommandPortFor(this as any).submitToolResult({
+            callId: event.callId,
+            toolName: LEGACY_CONVERSATION_INTENT,
+            output: {
+              ok: false,
+              status: "DISABLED",
+              error: "LEGACY_CONVERSATION_PATH_DISABLED",
+              retryable: false,
             },
           });
         }
