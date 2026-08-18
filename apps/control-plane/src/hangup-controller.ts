@@ -7,6 +7,8 @@ export type HangupControllerHost = {
   getCallId(): string | null;
   getSocketConnected(): boolean;
   getApiKey(): string;
+  getSourceCallControlId?(): string | null;
+  getTelnyxApiKey?(): string;
   isHangupStarted(): boolean;
   setHangupStarted(value: boolean): void;
   clearFinalFarewellWatchdog(): void;
@@ -37,6 +39,11 @@ async function sleep(ms: number): Promise<void> {
 
 /**
  * Transport-level hangup controller.
+ *
+ * The physical Telnyx source leg is authoritative when its call_control_id was
+ * propagated into the realtime session. Direct/OpenAI-only sessions retain the
+ * historical OpenAI hangup endpoint as a compatibility fallback.
+ *
  * HTTP 2xx only acknowledges the hangup request; completion is emitted only
  * after the realtime sideband is actually disconnected.
  */
@@ -74,7 +81,38 @@ export class HangupController {
     return !this.host.getSocketConnected();
   }
 
-  private async sendHangupRequest(callId: string, attempt: number, trigger: string): Promise<void> {
+  private sourceCallControlId(): string | null {
+    const value = this.host.getSourceCallControlId?.();
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+
+  private async sendTelnyxHangupRequest(sourceCallControlId: string, attempt: number, trigger: string): Promise<void> {
+    const started = Date.now();
+    const apiKey = requiredString(this.host.getTelnyxApiKey?.(), "TELNYX_API_KEY");
+    const response = await fetch(`https://api.telnyx.com/v2/calls/${encodeURIComponent(sourceCallControlId)}/actions/hangup`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({}),
+    });
+    const body = await response.text();
+    if (!response.ok) {
+      throw new Error(`Telnyx hangup failed with HTTP ${response.status}: ${body.slice(0, 250)}`);
+    }
+    this.host.diagnostics?.checkpoint?.("HANGUP_REQUEST_ACCEPTED", {
+      attempt,
+      trigger,
+      transport: "TELNYX_SOURCE_LEG",
+      http_status: response.status,
+      elapsed_ms: Date.now() - started,
+      completion_claimed: false,
+    });
+  }
+
+  private async sendOpenAIHangupRequest(callId: string, attempt: number, trigger: string): Promise<void> {
     const started = Date.now();
     const apiKey = requiredString(this.host.getApiKey(), "OPENAI_API_KEY");
     const response = await fetch(`https://api.openai.com/v1/realtime/calls/${encodeURIComponent(callId)}/hangup`, {
@@ -88,10 +126,20 @@ export class HangupController {
     this.host.diagnostics?.checkpoint?.("HANGUP_REQUEST_ACCEPTED", {
       attempt,
       trigger,
+      transport: "OPENAI_REALTIME_FALLBACK",
       http_status: response.status,
       elapsed_ms: Date.now() - started,
       completion_claimed: false,
     });
+  }
+
+  private async sendHangupRequest(callId: string, attempt: number, trigger: string): Promise<void> {
+    const sourceCallControlId = this.sourceCallControlId();
+    if (sourceCallControlId && this.host.getTelnyxApiKey) {
+      await this.sendTelnyxHangupRequest(sourceCallControlId, attempt, trigger);
+      return;
+    }
+    await this.sendOpenAIHangupRequest(callId, attempt, trigger);
   }
 
   private scheduleBackgroundRetry(): void {
@@ -119,6 +167,7 @@ export class HangupController {
     this.host.resetExternalFlow();
     this.host.diagnostics?.checkpoint?.("HANGUP_STARTED", {
       trigger,
+      transport_authority: this.sourceCallControlId() ? "TELNYX_SOURCE_LEG" : "OPENAI_REALTIME_FALLBACK",
       confirmation_required: true,
       confirmation_source: "sideband_close",
     });
@@ -137,8 +186,9 @@ export class HangupController {
         await this.sendHangupRequest(callId, attempt, trigger);
       } catch (error) {
         lastError = error;
-        this.host.diagnostics?.fail?.("HANGUP_ATTEMPT_FAILED", "OPENAI_HANGUP_REQUEST_FAILED", {
+        this.host.diagnostics?.fail?.("HANGUP_ATTEMPT_FAILED", "HANGUP_REQUEST_FAILED", {
           attempt,
+          transport_authority: this.sourceCallControlId() ? "TELNYX_SOURCE_LEG" : "OPENAI_REALTIME_FALLBACK",
           error: error instanceof Error ? error.message : String(error),
         });
         if (attempt < this.maxImmediateAttempts) await sleep(this.retryDelayMs);
