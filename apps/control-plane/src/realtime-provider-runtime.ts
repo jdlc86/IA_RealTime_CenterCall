@@ -1,7 +1,7 @@
-import type { RealtimeProviderCommandPort } from "./realtime-provider-command-port";
-import type { RealtimeProviderEvent } from "./realtime-provider-event";
-import { realtimeCommandPortFor as openAIRealtimeCommandPortFor } from "./openai-realtime-command-adapter";
-import { adaptOpenAIRealtimeEvent } from "./openai-realtime-event-adapter";
+import type { RealtimeProviderCommandPort } from "./realtime-provider-command-port.js";
+import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
+import { realtimeCommandPortFor as openAIRealtimeCommandPortFor } from "./openai-realtime-command-adapter.js";
+import { adaptOpenAIRealtimeEvent } from "./openai-realtime-event-adapter.js";
 
 export type RealtimeProviderName = "OPENAI";
 
