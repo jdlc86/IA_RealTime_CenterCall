@@ -45,6 +45,15 @@ test("closing authority: v41 caller-resolved close paths enter lifecycle instead
   assert.match(v41, /V41_CLOSE_LIFECYCLE_COMPATIBILITY_FALLBACK/);
 });
 
+test("closing authority: terminal audio keeps response kind across metadata-less buffer events", async () => {
+  const v18 = await source("call-session-v18.ts");
+
+  assert.match(v18, /assistantSpeechKindsByResponseIdV18 = new Map<string, AssistantSpeechKind>\(\)/);
+  assert.match(v18, /ASSISTANT_SPEECH_KIND_CORRELATED_V18/);
+  assert.match(v18, /this\.assistantSpeechKindsByResponseIdV18\.get\(event\.responseId\) \?\? event\.kind/);
+  assert.match(v18, /this\.releaseAssistantSpeechKindV18\(providerEvent\)/);
+});
+
 test("closing authority: lifecycle HANGUP executes transport hangup instead of reopening beginClosing", async () => {
   const v18 = await source("call-session-v18.ts");
   const hangupCase = caseBody(v18, "HANGUP", "RESET_IGNORED_COUNT");
