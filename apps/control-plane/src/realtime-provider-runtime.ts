@@ -10,96 +10,45 @@ import { realtimeCommandPortFor as openAIRealtimeCommandPortFor } from "./openai
 import { adaptOpenAIRealtimeEvent } from "./openai-realtime-event-adapter.js";
 
 export type RealtimeProviderName = "OPENAI";
-
 export type RealtimeToolResultPolicyDecision =
   | { action: "PASS" }
   | { action: "REPLACE_DEFAULT_RESPONSE"; speech: RealtimeSpeechRequest };
+export type RealtimeToolResultPolicy = (request: RealtimeToolResultRequest) => RealtimeToolResultPolicyDecision;
 
-export type RealtimeToolResultPolicy = (
-  request: RealtimeToolResultRequest,
-) => RealtimeToolResultPolicyDecision;
-
-/**
- * Provider selection boundary for the current production runtime.
- *
- * IMPORTANT: this refactor deliberately keeps OpenAI as the only active
- * provider. Tenant/KV provider selection and Gemini are not enabled here.
- * Consumers depend on this neutral module so adding another provider later
- * does not require business/lifecycle layers to import a provider adapter.
- */
 export const ACTIVE_REALTIME_PROVIDER: RealtimeProviderName = "OPENAI";
-
-export type RealtimeProviderHost = object & {
-  send(event: Record<string, unknown>): void;
-};
+export type RealtimeProviderHost = object & { send(event: Record<string, unknown>): void };
 
 class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
   private toolResultPolicy: RealtimeToolResultPolicy | null = null;
   private pendingDefaultResponseReplacement: RealtimeSpeechRequest | null = null;
-
   constructor(private readonly delegate: RealtimeProviderCommandPort) {}
-
-  setToolResultPolicy(policy: RealtimeToolResultPolicy): void {
-    this.toolResultPolicy = policy;
-  }
-
-  speak(request: RealtimeSpeechRequest): void {
-    this.delegate.speak(request);
-  }
-
-  requestTextDecision(request: RealtimeTextDecisionRequest): void {
-    this.delegate.requestTextDecision(request);
-  }
-
+  setToolResultPolicy(policy: RealtimeToolResultPolicy): void { this.toolResultPolicy = policy; }
+  speak(request: RealtimeSpeechRequest): void { this.delegate.speak(request); }
+  requestTextDecision(request: RealtimeTextDecisionRequest): void { this.delegate.requestTextDecision(request); }
   submitToolResult(request: RealtimeToolResultRequest): void {
     const decision = this.toolResultPolicy?.(request) ?? { action: "PASS" as const };
-    this.pendingDefaultResponseReplacement = decision.action === "REPLACE_DEFAULT_RESPONSE"
-      ? decision.speech
-      : null;
+    this.pendingDefaultResponseReplacement = decision.action === "REPLACE_DEFAULT_RESPONSE" ? decision.speech : null;
     this.delegate.submitToolResult(request);
   }
-
+  updateSessionPolicy(update: { instructions?: string; toolChoice?: "AUTO" | "NONE" | "REQUIRED" }): void {
+    (this.delegate as any).updateSessionPolicy(update);
+  }
   createDefaultResponse(): void {
     const replacement = this.pendingDefaultResponseReplacement;
     this.pendingDefaultResponseReplacement = null;
-    if (replacement) {
-      this.delegate.speak(replacement);
-      return;
-    }
+    if (replacement) { this.delegate.speak(replacement); return; }
     this.delegate.createDefaultResponse();
   }
-
-  cancelResponse(responseId: string): void {
-    this.delegate.cancelResponse(responseId);
-  }
-
-  clearPlayback(): void {
-    this.delegate.clearPlayback();
-  }
-
-  clearInput(): void {
-    this.delegate.clearInput();
-  }
-
-  discardInputItem(itemId: string): void {
-    this.delegate.discardInputItem(itemId);
-  }
-
-  suspendInputDetection(): void {
-    this.delegate.suspendInputDetection();
-  }
-
-  beginNonInterruptingListening(settings?: RealtimeInputDetectionSettings): void {
-    this.delegate.beginNonInterruptingListening(settings);
-  }
-
-  restoreInputDetection(settings?: RealtimeInputDetectionSettings): void {
-    this.delegate.restoreInputDetection(settings);
-  }
+  cancelResponse(responseId: string): void { this.delegate.cancelResponse(responseId); }
+  clearPlayback(): void { this.delegate.clearPlayback(); }
+  clearInput(): void { this.delegate.clearInput(); }
+  discardInputItem(itemId: string): void { this.delegate.discardInputItem(itemId); }
+  suspendInputDetection(): void { this.delegate.suspendInputDetection(); }
+  beginNonInterruptingListening(settings?: RealtimeInputDetectionSettings): void { this.delegate.beginNonInterruptingListening(settings); }
+  restoreInputDetection(settings?: RealtimeInputDetectionSettings): void { this.delegate.restoreInputDetection(settings); }
 }
 
 const RUNTIME_BY_HOST = new WeakMap<object, RealtimeProviderCommandRuntime>();
-
 function commandRuntimeFor(host: RealtimeProviderHost): RealtimeProviderCommandRuntime {
   let runtime = RUNTIME_BY_HOST.get(host);
   if (!runtime) {
@@ -108,18 +57,6 @@ function commandRuntimeFor(host: RealtimeProviderHost): RealtimeProviderCommandR
   }
   return runtime;
 }
-
-export function realtimeCommandPortFor(host: RealtimeProviderHost): RealtimeProviderCommandPort {
-  return commandRuntimeFor(host);
-}
-
-export function installRealtimeToolResultPolicy(
-  host: RealtimeProviderHost,
-  policy: RealtimeToolResultPolicy,
-): void {
-  commandRuntimeFor(host).setToolResultPolicy(policy);
-}
-
-export function adaptRealtimeProviderEvents(data: unknown): RealtimeProviderEvent[] {
-  return adaptOpenAIRealtimeEvent(data);
-}
+export function realtimeCommandPortFor(host: RealtimeProviderHost): RealtimeProviderCommandPort { return commandRuntimeFor(host); }
+export function installRealtimeToolResultPolicy(host: RealtimeProviderHost, policy: RealtimeToolResultPolicy): void { commandRuntimeFor(host).setToolResultPolicy(policy); }
+export function adaptRealtimeProviderEvents(data: unknown): RealtimeProviderEvent[] { return adaptOpenAIRealtimeEvent(data); }
