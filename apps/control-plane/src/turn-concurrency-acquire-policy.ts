@@ -48,3 +48,20 @@ export function shouldClearInputOnTurnConcurrencyRelease(
 ): boolean {
   return reason !== "normal_assistant_playback_started";
 }
+
+/**
+ * v36 owns semantic serialization, not playback barge-in input policy.
+ *
+ * On normal assistant playback the higher v40 response owner is responsible
+ * for establishing non-interrupting VAD (VAD events on, provider auto-response
+ * and auto-interrupt off). v36 must only release its semantic lock and must not
+ * race v40 with a competing restoreInputDetection() session.update.
+ *
+ * Protected/recovery/watchdog releases have no v40 normal-playback owner, so
+ * v36 still restores ordinary tenant input detection there.
+ */
+export function shouldRestoreInputDetectionOnTurnConcurrencyRelease(
+  reason: TurnConcurrencyReleaseReason,
+): boolean {
+  return reason !== "normal_assistant_playback_started";
+}
