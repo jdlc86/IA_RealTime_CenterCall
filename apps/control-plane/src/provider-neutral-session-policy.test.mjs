@@ -55,6 +55,20 @@ test("session policy transform governs instructions before provider translation"
   });
 });
 
+test("multiple session policy transforms compose in installation order", () => {
+  const h = host();
+  installRealtimeSessionPolicyTransform(h, (update) => ({
+    ...update,
+    instructions: update.instructions ? `${update.instructions}\nclock` : update.instructions,
+  }));
+  installRealtimeSessionPolicyTransform(h, (update) => ({
+    ...update,
+    instructions: update.instructions ? `${update.instructions}\nclosing` : update.instructions,
+  }));
+  realtimeCommandPortFor(h).updateSessionPolicy({ instructions: "direct-agent", toolChoice: "AUTO" });
+  assert.deepEqual(h.events[0].session.instructions, "direct-agent\nclock\nclosing");
+});
+
 test("session policy transform leaves updates without instructions structurally intact", () => {
   const h = host();
   installRealtimeSessionPolicyTransform(h, (update) => ({
