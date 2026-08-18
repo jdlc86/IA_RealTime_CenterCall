@@ -1,22 +1,11 @@
-export type SidebandLifecycleQuiescenceAction =
-  | "CLEAR_PRESENCE_TIMER"
-  | "CLEAR_SILENCE_CLOSE_TIMER"
-  | "CLEAR_MAX_CALL_TIMER"
-  | "CLEAR_PRESENCE_RESPONSE_STATE";
+import type { LifecycleEvent } from "./conversation-turn-lifecycle";
 
 /**
- * Transport closure is a terminal boundary for realtime speech. Once the
- * sideband is gone, conversational deadlines must become inert: none may later
- * request speech or closing audio against a disconnected provider socket.
- *
- * This policy deliberately does not reconnect, speak, hang up, or infer a
- * semantic call outcome. It only quiesces local realtime-dependent deadlines.
+ * The transport layer observes sideband closure but does not own conversation
+ * timers or presence state. It translates the transport fact into a lifecycle
+ * event; ConversationTurnLifecycle remains the sole authority for deciding how
+ * realtime-dependent conversation state becomes inert.
  */
-export function sidebandCloseQuiescenceActions(): SidebandLifecycleQuiescenceAction[] {
-  return [
-    "CLEAR_PRESENCE_TIMER",
-    "CLEAR_SILENCE_CLOSE_TIMER",
-    "CLEAR_MAX_CALL_TIMER",
-    "CLEAR_PRESENCE_RESPONSE_STATE",
-  ];
+export function sidebandCloseLifecycleEvent(reason: string): LifecycleEvent {
+  return { type: "transport_closed", reason };
 }
