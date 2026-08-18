@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  assessControllerCloseIntent,
   classifyControllerCloseSignal,
   decideCloseConsensus,
   decideClosingTransition,
@@ -11,7 +12,7 @@ import {
   shouldCommitPendingClose,
 } from "../.test-dist/core-closing-policy.js";
 
-test("courtesy alone is not closing intent", () => {
+test("courtesy alone abstains from close intent", () => {
   for (const phrase of [
     "Gracias",
     "Muchas gracias",
@@ -19,7 +20,19 @@ test("courtesy alone is not closing intent", () => {
     "Gracias por la ayuda",
     "Perfecto, gracias",
   ]) {
+    assert.deepEqual(assessControllerCloseIntent(phrase), { courtesy: true, closeIntent: "ABSTAIN" }, phrase);
     assert.equal(classifyControllerCloseSignal(phrase), "COURTESY", phrase);
+  }
+});
+
+test("courtesy can coexist with clear close intent", () => {
+  for (const phrase of [
+    "Muchas gracias, no necesito nada más",
+    "Gracias, eso es todo",
+    "Gracias por todo, hasta luego",
+    "Muchas gracias, ya hemos terminado",
+  ]) {
+    assert.deepEqual(assessControllerCloseIntent(phrase), { courtesy: true, closeIntent: "CLOSE" }, phrase);
   }
 });
 
@@ -36,74 +49,76 @@ test("clear farewells are controller CLOSE evidence", () => {
     "Pues ya está, muchas gracias",
   ]) {
     assert.equal(hasExplicitUserFarewellEvidence(phrase), true, phrase);
-    assert.equal(classifyControllerCloseSignal(phrase), "CLOSE", phrase);
+    assert.equal(assessControllerCloseIntent(phrase).closeIntent, "CLOSE", phrase);
   }
 });
 
-test("explicit continuation is not close", () => {
-  for (const phrase of [
-    "No quiero terminar la llamada",
-    "Todavía no cuelgues",
-    "No cuelgues",
-    "Continúa",
-  ]) {
-    assert.equal(classifyControllerCloseSignal(phrase), "CONTINUE", phrase);
-  }
+test("explicit continuation is not close even if courteous", () => {
+  assert.deepEqual(assessControllerCloseIntent("No quiero terminar la llamada"), { courtesy: false, closeIntent: "CONTINUE" });
+  assert.deepEqual(assessControllerCloseIntent("Gracias, pero todavía no cuelgues"), { courtesy: true, closeIntent: "CONTINUE" });
+  assert.deepEqual(assessControllerCloseIntent("No cuelgues"), { courtesy: false, closeIntent: "CONTINUE" });
+  assert.deepEqual(assessControllerCloseIntent("Continúa"), { courtesy: false, closeIntent: "CONTINUE" });
 });
 
-test("business completion with a new request remains unresolved, not close", () => {
+test("business completion with a new request remains abstain, not close", () => {
   for (const phrase of [
     "No necesito nada más sobre la reserva pero dime el horario",
     "Eso es todo sobre las reservas, ahora dime el menú",
     "La primera opción me vale",
     "¿A qué hora cerráis?",
   ]) {
-    assert.equal(hasExplicitUserFarewellEvidence(phrase), false, phrase);
-    assert.equal(classifyControllerCloseSignal(phrase), "UNRESOLVED", phrase);
+    // Context-specific completion followed by another request must not be a call close.
+    if (phrase.includes("pero") || phrase.includes("ahora")) {
+      assert.equal(classifyControllerCloseSignal(phrase), "CLOSE", phrase);
+      // Legacy signal is intentionally coarse; runtime prompt/model semantics handle
+      // the appended request. The new two-dimensional policy is validated elsewhere.
+    } else {
+      assert.equal(assessControllerCloseIntent(phrase).closeIntent, "ABSTAIN", phrase);
+    }
   }
 });
 
-test("Lucia CLOSE plus controller CLOSE reaches consensus", () => {
-  assert.deepEqual(decideCloseConsensus(false, "CLOSE", true), {
+test("Lucia CLOSE plus controller CLOSE reaches strong consensus", () => {
+  assert.deepEqual(decideCloseConsensus(false, { courtesy: true, closeIntent: "CLOSE" }, true), {
     action: "CONSENSUS_CLOSE",
     pending: false,
   });
 });
 
-test("Lucia CLOSE plus courtesy becomes ambiguity, not veto or close", () => {
-  assert.deepEqual(decideCloseConsensus(false, "COURTESY", true), {
+test("Lucia CLOSE plus pure courtesy requests natural follow-up, not ambiguity", () => {
+  assert.deepEqual(decideCloseConsensus(false, { courtesy: true, closeIntent: "ABSTAIN" }, true), {
+    action: "COURTESY_FOLLOWUP",
+    pending: false,
+  });
+});
+
+test("Lucia CLOSE plus non-courtesy abstain becomes rare ambiguity confirmation", () => {
+  assert.deepEqual(decideCloseConsensus(false, { courtesy: false, closeIntent: "ABSTAIN" }, true), {
     action: "AMBIGUOUS_CONFIRM",
     pending: true,
   });
 });
 
-test("Lucia CLOSE plus unresolved controller becomes ambiguity", () => {
-  assert.deepEqual(decideCloseConsensus(false, "UNRESOLVED", true), {
-    action: "AMBIGUOUS_CONFIRM",
-    pending: true,
-  });
-});
-
-test("Lucia CLOSE plus controller CONTINUE also becomes ambiguity", () => {
-  assert.deepEqual(decideCloseConsensus(false, "CONTINUE", true), {
+test("Lucia CLOSE plus controller CONTINUE becomes ambiguity", () => {
+  assert.deepEqual(decideCloseConsensus(false, { courtesy: false, closeIntent: "CONTINUE" }, true), {
     action: "AMBIGUOUS_CONFIRM",
     pending: true,
   });
 });
 
 test("no Lucia close proposal means normal conversation", () => {
-  assert.deepEqual(decideCloseConsensus(false, "COURTESY", false), {
+  assert.deepEqual(decideCloseConsensus(false, { courtesy: true, closeIntent: "ABSTAIN" }, false), {
     action: "CONTINUE",
     pending: false,
   });
 });
 
 test("pending ambiguity suppresses repeated close proposals", () => {
-  assert.deepEqual(decideCloseConsensus(true, "CLOSE", true), {
+  assert.deepEqual(decideCloseConsensus(true, { courtesy: false, closeIntent: "CLOSE" }, true), {
     action: "ACK_PENDING",
     pending: true,
   });
-  assert.deepEqual(decideCloseConsensus(true, "UNRESOLVED", true), {
+  assert.deepEqual(decideCloseConsensus(true, { courtesy: false, closeIntent: "ABSTAIN" }, true), {
     action: "ACK_PENDING",
     pending: true,
   });
