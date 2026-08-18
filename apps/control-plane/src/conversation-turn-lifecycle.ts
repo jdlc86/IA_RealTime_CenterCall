@@ -87,7 +87,6 @@ export class ConversationTurnLifecycle {
     const effects: LifecycleEffect[] = [];
 
     if (event.type === "transport_closed") {
-      if (this.state === "CLOSING") return effects;
       this.cancelSilence(effects);
       effects.push({ type: "CANCEL_MAX_CALL_TIMER" });
       effects.push({ type: "RESET_PRESENCE_RESPONSE_STATE" });
