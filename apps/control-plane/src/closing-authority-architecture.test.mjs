@@ -77,11 +77,14 @@ test("closing authority: terminal playback ownership does not require provider r
   assert.match(v18, /authoritative_kind: \"TERMINAL\"/);
 });
 
-test("closing authority: lifecycle HANGUP executes transport hangup instead of reopening beginClosing", async () => {
+test("closing authority: lifecycle HANGUP drains terminal transport before executing hangup", async () => {
   const v18 = await source("call-session-v18.ts");
   const hangupCase = caseBody(v18, "HANGUP", "RESET_IGNORED_COUNT");
 
-  assert.match(hangupCase, /performHangup\?\.\(\"lifecycle_terminal_audio_stopped\"\)/);
+  assert.match(hangupCase, /LIFECYCLE_TERMINAL_DRAIN_ARMED_V18/);
+  assert.match(hangupCase, /normal_response_latency_affected: false/);
+  assert.match(hangupCase, /performHangup\?\.\(\"lifecycle_terminal_transport_drained\"\)/);
+  assert.doesNotMatch(hangupCase, /performHangup\?\.\(\"lifecycle_terminal_audio_stopped\"\)/);
   assert.doesNotMatch(hangupCase, /beginClosing/);
   assert.match(hangupCase, /LIFECYCLE_HANGUP_DISPATCHED_V18/);
 });
