@@ -97,6 +97,25 @@ export class CallSession extends BaseConstructor {
     return super.fetch(request);
   }
 
+  private commitCloseThroughLifecycleV41(reason: string, source: string): void {
+    const session = this as any;
+    if (typeof session.observeEndCallConfirmedV18 === "function") {
+      session.diagnostics?.checkpoint?.("V41_CLOSE_COMMITTED_TO_LIFECYCLE", {
+        reason,
+        source,
+        authority: "ConversationTurnLifecycle",
+      });
+      session.observeEndCallConfirmedV18(reason);
+      return;
+    }
+    session.diagnostics?.checkpoint?.("V41_CLOSE_LIFECYCLE_COMPATIBILITY_FALLBACK", {
+      reason,
+      source,
+      authority: "legacy_beginClosing",
+    });
+    session.beginClosing?.(reason, source);
+  }
+
   private markMoreHelpQuestionV41(source: string, transcript?: string): void {
     this.moreHelpAnswerPendingV41 = true;
     (this as any).diagnostics?.checkpoint?.("MORE_HELP_QUESTION_OPENED_V41", {
@@ -122,7 +141,7 @@ export class CallSession extends BaseConstructor {
         arbitration_required: false,
         explicit_close_confirmation_required: false,
       });
-      session.beginClosing?.("contextual_close_resolved_v41", "caller_declined_more_help_v41");
+      this.commitCloseThroughLifecycleV41("contextual_close_resolved_v41", "caller_declined_more_help_v41");
       return true;
     }
 
@@ -223,7 +242,7 @@ export class CallSession extends BaseConstructor {
       this.closingConfirmationPendingV41 = false;
       this.controllerCloseAssessmentV41 = { courtesy: false, closeIntent: "CLOSE" };
       session.diagnostics?.checkpoint?.("CLOSE_AMBIGUITY_RESOLVED_BY_CALLER_V41", { caller_resolution: "CLOSE", consensus: true });
-      session.beginClosing?.("agent_end_confirmed_v41", "caller_resolved_close_ambiguity_v41");
+      this.commitCloseThroughLifecycleV41("agent_end_confirmed_v41", "caller_resolved_close_ambiguity_v41");
       return true;
     }
 
