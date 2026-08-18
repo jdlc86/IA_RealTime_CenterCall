@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { OpenAIRealtimeCommandAdapter, realtimeCommandPortFor } from "../.test-dist/openai-realtime-command-adapter.js";
+import {
+  OpenAIRealtimeCommandAdapter,
+  normalizeOpenAIResponseMetadata,
+  realtimeCommandPortFor,
+} from "../.test-dist/openai-realtime-command-adapter.js";
 
 function host() {
   const events = [];
@@ -31,6 +35,42 @@ test("isolated speech is translated without leaking OpenAI protocol into caller"
   }]);
 });
 
+test("OpenAI response metadata values are always strings", () => {
+  assert.deepEqual(normalizeOpenAIResponseMetadata({
+    pending_close: true,
+    turn_id: 7,
+    purpose: "close_confirmation_v41",
+    nested: { source: "v41" },
+  }), {
+    pending_close: "true",
+    turn_id: "7",
+    purpose: "close_confirmation_v41",
+    nested: '{"source":"v41"}',
+  });
+});
+
+test("v41 close confirmation metadata cannot emit invalid boolean metadata", () => {
+  const h = host();
+  const port = new OpenAIRealtimeCommandAdapter(h);
+  port.speak({
+    purpose: "close_confirmation_v41",
+    isolated: true,
+    tools: "DISABLED",
+    instructions: "Pregunta si quiere terminar",
+    exactText: "¿Quieres terminar la llamada?",
+    metadata: {
+      pending_close: true,
+      confidence: 1,
+    },
+  });
+
+  assert.deepEqual(h.events[0].response.metadata, {
+    pending_close: "true",
+    confidence: "1",
+    purpose: "close_confirmation_v41",
+  });
+});
+
 test("provider-neutral text decision maps to isolated OpenAI text response", () => {
   const h = host();
   const port = new OpenAIRealtimeCommandAdapter(h);
@@ -56,6 +96,21 @@ test("provider-neutral text decision maps to isolated OpenAI text response", () 
       metadata: { source_item_id: "item-1", purpose: "barge_in_classifier_rebuild" },
     },
   }]);
+});
+
+test("text-decision metadata is normalized through the same adapter boundary", () => {
+  const h = host();
+  const port = new OpenAIRealtimeCommandAdapter(h);
+  port.requestTextDecision({
+    instructions: "Clasifica",
+    inputText: "hasta luego",
+    metadata: { semantic_turn: 3, confirmed: false },
+  });
+
+  assert.deepEqual(h.events[0].response.metadata, {
+    semantic_turn: "3",
+    confirmed: "false",
+  });
 });
 
 test("provider commands preserve current OpenAI VAD playback and input-discard semantics", () => {
