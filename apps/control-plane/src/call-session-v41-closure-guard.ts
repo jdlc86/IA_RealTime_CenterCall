@@ -119,6 +119,16 @@ export class CallSession extends BaseConstructor {
   }
 
   private markMoreHelpQuestionV41(source: string, transcript?: string): void {
+    if (this.moreHelpAnswerPendingV41) {
+      (this as any).diagnostics?.checkpoint?.("MORE_HELP_QUESTION_DUPLICATE_OBSERVED_V41", {
+        source,
+        assistant_transcript_present: Boolean(transcript),
+        state_reopened: false,
+        contextual_authority_unchanged: true,
+      });
+      return;
+    }
+
     this.moreHelpAnswerPendingV41 = true;
     (this as any).diagnostics?.checkpoint?.("MORE_HELP_QUESTION_OPENED_V41", {
       source,
