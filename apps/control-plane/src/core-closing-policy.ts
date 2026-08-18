@@ -65,7 +65,7 @@ export function hasExplicitUserFarewellEvidence(value: string): boolean {
   const explicitHangup = /(?:^|\b)(?:puedes colgar|puede colgar|podemos colgar|cuelga|cuelgue)(?:\b|$)/.test(text);
   const explicitCallEnd = /(?:^|\b)(?:termina|termine|finaliza|finalice) (?:ya )?(?:la )?llamada(?:\b|$)/.test(text)
     || /(?:^|\b)quiero (?:terminar|finalizar) (?:ya )?(?:la )?llamada(?:\b|$)/.test(text);
-  const explicitNoMoreNeeded = /\b(?:no necesito nada mas|no necesito mas nada|no hace falta nada mas|eso es todo|nada mas|ya hemos terminado|hemos terminado)\b/.test(text);
+  const explicitNoMoreNeeded = /\b(?:no necesito nada mas|no necesito mas nada|no hace falta nada mas|eso es todo|nada mas|ya esta|ya hemos terminado|hemos terminado)\b/.test(text);
 
   return strongFarewell || explicitHangup || explicitCallEnd || explicitNoMoreNeeded;
 }
