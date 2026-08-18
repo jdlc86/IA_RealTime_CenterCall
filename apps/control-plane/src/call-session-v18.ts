@@ -38,12 +38,23 @@ export class CallSession extends BaseConstructor {
 
   protected snapshotTurnLifecycleV18(): ReturnType<ConversationTurnLifecycle["snapshot"]> { return this.turnLifecycleV18.snapshot(); }
   protected observeSemanticIgnoredV18(reason: string): void { this.dispatchLifecycleV18({ type: "semantic_ignored", reason }); }
+  protected observeRealtimeTransportClosedV18(reason: string): void {
+    this.dispatchLifecycleV18({ type: "transport_closed", reason });
+  }
 
   private clearPresenceTimersV18(): void {
     if (this.presenceTimerV18 !== null) clearTimeout(this.presenceTimerV18);
     if (this.silenceCloseTimerV18 !== null) clearTimeout(this.silenceCloseTimerV18);
     this.presenceTimerV18 = null;
     this.silenceCloseTimerV18 = null;
+  }
+  private clearMaxCallTimerV18(): void {
+    if (this.maxCallTimerV18 !== null) clearTimeout(this.maxCallTimerV18);
+    this.maxCallTimerV18 = null;
+  }
+  private resetPresenceResponseStateV18(): void {
+    this.presenceRequestPendingV18 = false;
+    this.presenceResponseIdV18 = null;
   }
   private armSilenceEpochV18(epoch: number): void {
     this.clearPresenceTimersV18();
@@ -52,7 +63,7 @@ export class CallSession extends BaseConstructor {
     (this as any).diagnostics?.checkpoint?.("LIFECYCLE_SILENCE_EPOCH_ARMED_V18", { epoch, presence_check_ms: FIRST_PRESENCE_CHECK_MS, silence_close_ms: MAX_UNANSWERED_WAIT_MS });
   }
   private armMaxCallDurationV18(): void {
-    if (this.maxCallTimerV18 !== null) clearTimeout(this.maxCallTimerV18);
+    this.clearMaxCallTimerV18();
     this.maxCallTimerV18 = setTimeout(() => { this.maxCallTimerV18 = null; this.dispatchLifecycleV18({ type: "max_call_duration" }); }, MAX_CALL_DURATION_MS);
   }
   private commandsV18() { return realtimeCommandPortFor(this as any); }
@@ -76,6 +87,8 @@ export class CallSession extends BaseConstructor {
     switch (effect.type) {
       case "ARM_SILENCE_TIMER": this.armSilenceEpochV18(effect.epoch); break;
       case "CANCEL_SILENCE_TIMER": this.clearPresenceTimersV18(); break;
+      case "CANCEL_MAX_CALL_TIMER": this.clearMaxCallTimerV18(); break;
+      case "RESET_PRESENCE_RESPONSE_STATE": this.resetPresenceResponseStateV18(); break;
       case "SPEAK_PRESENCE_CHECK": this.issuePresenceCheckV18(); break;
       case "SPEAK_IGNORED_RECOVERY":
         this.commandsV18().speak({
@@ -135,8 +148,7 @@ export class CallSession extends BaseConstructor {
 
     for (const providerEvent of providerEvents) {
       if (providerEvent.type === "ASSISTANT_AUDIO_STOPPED" && this.presenceResponseIdV18 && providerEvent.responseId === this.presenceResponseIdV18) {
-        this.presenceRequestPendingV18 = false;
-        this.presenceResponseIdV18 = null;
+        this.resetPresenceResponseStateV18();
       }
     }
   }
