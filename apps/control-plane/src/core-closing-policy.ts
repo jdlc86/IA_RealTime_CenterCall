@@ -23,6 +23,8 @@ export type CloseConsensusDecision =
   | { action: "CONTINUE"; pending: false }
   | { action: "ACK_PENDING"; pending: true };
 
+export type ContextualCloseResolution = "CLOSE" | "CONTINUE" | "UNRESOLVED";
+
 function normalizeClosingText(value: string): string {
   return value
     .normalize("NFD")
@@ -39,12 +41,19 @@ function hasExplicitContinueEvidence(value: string): boolean {
     || /\b(?:no cuelgues|no cuelgue|sigue|continua|continuemos)\b/.test(text);
 }
 
-function hasFollowupRequestAfterCompletion(value: string): boolean {
+function hasFollowupRequest(value: string): boolean {
   const text = normalizeClosingText(value);
-  const completion = /\b(?:no necesito nada mas|no necesito mas nada|eso es todo|nada mas|ya esta|hemos terminado|ya hemos terminado)\b/.test(text);
-  if (!completion) return false;
-  return /\b(?:pero|aunque|ahora|ademas|tambien)\b.*\b(?:dime|cuentame|quiero|necesito|puedes|podrias|quisiera|preguntar|saber|consultar)\b/.test(text)
-    || /\b(?:pero|ahora|ademas|tambien)\b.*\b(?:menu|horario|reserva|reservas|direccion|precio|precios|telefono)\b/.test(text);
+  return /\b(?:pero|aunque|ahora|ademas|tambien|espera|un momento)\b.*\b(?:dime|cuentame|quiero|necesito|puedes|podrias|quisiera|preguntar|saber|consultar|una cosa|otra cosa)\b/.test(text)
+    || /\b(?:pero|ahora|ademas|tambien|espera)\b.*\b(?:menu|horario|reserva|reservas|direccion|precio|precios|telefono)\b/.test(text);
+}
+
+function hasCompletionLanguage(value: string): boolean {
+  const text = normalizeClosingText(value);
+  return /\b(?:no necesito nada mas|no necesito mas nada|no hace falta nada mas|eso es todo|nada mas|ya esta|hemos terminado|ya hemos terminado)\b/.test(text);
+}
+
+function hasFollowupRequestAfterCompletion(value: string): boolean {
+  return hasCompletionLanguage(value) && hasFollowupRequest(value);
 }
 
 function hasCourtesyEvidence(value: string): boolean {
@@ -53,19 +62,36 @@ function hasCourtesyEvidence(value: string): boolean {
   return /\b(?:gracias|muchas gracias|te lo agradezco|se lo agradezco|muy amable)\b/.test(text);
 }
 
+export function isAssistantMoreHelpQuestion(value: string): boolean {
+  const text = normalizeClosingText(value);
+  if (!text) return false;
+  return /\b(?:algo mas|alguna cosa mas|alguna otra cosa|en algo mas)\b/.test(text)
+    && /\b(?:puedo ayudarte|pueda ayudarte|te puedo ayudar|necesitas|necesita|quieres|quiere)\b/.test(text);
+}
+
+export function resolveReplyToMoreHelpQuestion(value: string): ContextualCloseResolution {
+  const text = normalizeClosingText(value);
+  if (!text) return "UNRESOLVED";
+  if (hasFollowupRequest(value)) return "CONTINUE";
+  if (/^(?:no)(?: no)*(?: gracias)?$/.test(text)) return "CLOSE";
+  if (/^(?:nada mas|no necesito nada mas|no necesito mas nada|eso es todo|ya esta)(?: gracias)?$/.test(text)) return "CLOSE";
+  if (/^(?:si|si claro|claro|vale|de acuerdo)(?:\b|$)/.test(text)) return "CONTINUE";
+  return "UNRESOLVED";
+}
+
 /**
  * Deterministic strong close evidence. Courtesy may coexist with closing intent:
  * "muchas gracias, no necesito nada más" is both courteous and clearly closing.
  */
 export function hasExplicitUserFarewellEvidence(value: string): boolean {
   const text = normalizeClosingText(value);
-  if (!text || hasExplicitContinueEvidence(text) || hasFollowupRequestAfterCompletion(text)) return false;
+  if (!text || hasExplicitContinueEvidence(text) || hasFollowupRequest(text)) return false;
 
   const strongFarewell = /(?:^|\b)(?:adios|hasta luego|hasta pronto|me despido|que tengas buen dia|que tenga buen dia)(?:\b|$)/.test(text);
   const explicitHangup = /(?:^|\b)(?:puedes colgar|puede colgar|podemos colgar|cuelga|cuelgue)(?:\b|$)/.test(text);
   const explicitCallEnd = /(?:^|\b)(?:termina|termine|finaliza|finalice) (?:ya )?(?:la )?llamada(?:\b|$)/.test(text)
     || /(?:^|\b)quiero (?:terminar|finalizar) (?:ya )?(?:la )?llamada(?:\b|$)/.test(text);
-  const explicitNoMoreNeeded = /\b(?:no necesito nada mas|no necesito mas nada|no hace falta nada mas|eso es todo|nada mas|ya esta|ya hemos terminado|hemos terminado)\b/.test(text);
+  const explicitNoMoreNeeded = hasCompletionLanguage(text);
 
   return strongFarewell || explicitHangup || explicitCallEnd || explicitNoMoreNeeded;
 }
@@ -110,12 +136,9 @@ export function shouldCommitPendingClose(
 }
 
 /**
- * Consensus policy.
- * - Lucia CLOSE + controller CLOSE => strong consensus, close immediately.
- * - Courtesy + controller ABSTAIN => not an ambiguity: ask naturally whether
- *   the caller needs anything else.
- * - Lucia CLOSE + controller ABSTAIN/CONTINUE without courtesy => real
- *   disagreement/insufficient evidence, so explicitly confirm closing.
+ * Consensus policy for spontaneous closing only.
+ * Context-resolved closing (for example a negative reply to Lucia's explicit
+ * "anything else?" question) bypasses this arbitration entirely.
  */
 export function decideCloseConsensus(
   confirmationPending: boolean,
