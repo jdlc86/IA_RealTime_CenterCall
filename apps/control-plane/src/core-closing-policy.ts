@@ -68,8 +68,13 @@ export function resolveReplyToMoreHelpQuestion(value: string): ContextualCloseRe
   const text = normalizeClosingText(value);
   if (!text) return "UNRESOLVED";
   if (hasFollowupRequest(value)) return "CONTINUE";
+
+  // In an explicit more-help context, the same completion language that the
+  // independent close controller already treats as CLOSE is sufficient. Keep
+  // follow-up requests authoritative above so phrases such as
+  // "no necesito nada más, pero dime el horario" continue normally.
+  if (hasCompletionLanguage(value)) return "CLOSE";
   if (/^(?:no)(?: no)*(?: gracias)?$/.test(text)) return "CLOSE";
-  if (/^(?:nada mas|no necesito nada mas|no necesito mas nada|eso es todo|ya esta)(?: gracias)?$/.test(text)) return "CLOSE";
   if (/^(?:si|si claro|claro|vale|de acuerdo)(?:\b|$)/.test(text)) return "CONTINUE";
   return "UNRESOLVED";
 }
