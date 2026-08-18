@@ -1,5 +1,5 @@
 import { CallSession as CallSessionV40 } from "./call-session-v40-rebuild";
-import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import {
   assessControllerCloseIntent,
   decideCloseConsensus,
@@ -19,28 +19,7 @@ const CLOSING_GUIDANCE_START = "[[V41_CLOSING_GUIDANCE_START]]";
 const CLOSING_GUIDANCE_END = "[[V41_CLOSING_GUIDANCE_END]]";
 const CLOSING_GUIDANCE = `${CLOSING_GUIDANCE_START}\nPROTOCOLO NATURAL DE CIERRE:\n- La cortesía y la intención de cierre son dimensiones distintas. Un simple agradecimiento NO implica cierre: pregunta de forma natural si puedes ayudar en algo más.\n- Si acabas de preguntar si el usuario necesita algo más y responde negativamente (por ejemplo 'no, gracias' o 'nada más'), ese contexto YA resuelve el cierre: despídete de forma natural y termina la llamada; no vuelvas a preguntar si quiere terminar.\n- Una frase puede contener cortesía y cierre a la vez. Por ejemplo 'muchas gracias, no necesito nada más' o 'gracias, hasta luego' expresa cierre claro: puedes proponer restaurant_end_call.\n- Para un cierre espontáneo, si tú y el controlador detectáis CLOSE hay consenso fuerte y se cierra. Solo si tú propones cierre y el controlador no lo confirma se pedirá '¿Quieres terminar la llamada?'; esa ruta debe ser excepcional.\n- Si el usuario corrige el cierre con una nueva petición ('hasta luego... espera, una cosa más'), prevalece la nueva petición.\n- Nunca uses restaurant_input_ignored para resolver una intención de cierre.\n${CLOSING_GUIDANCE_END}`;
 
-type RealtimeEvent = {
-  type?: string;
-  name?: string;
-  call_id?: string;
-  arguments?: string;
-  transcript?: unknown;
-};
-
 type PendingCloseResolutionV41 = "CLOSE" | "CONTINUE" | "RELEASE";
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
-
-function parseEvent(data: unknown): RealtimeEvent | null {
-  const text = readRealtimeText(data);
-  if (!text) return null;
-  try { return JSON.parse(text) as RealtimeEvent; } catch { return null; }
-}
 
 function usableTranscript(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 1500) : "";
@@ -307,78 +286,80 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const event = parseEvent(data);
+    const providerEvents = adaptRealtimeProviderEvents(data);
 
-    // Observe Lucia's naturally generated continuity question. This is context,
-    // not a new closing authority. It lets the caller's next answer resolve the
-    // dialogue without forcing another model/controller vote.
-    if (event?.type === "response.output_audio_transcript.done") {
-      const assistantTranscript = usableTranscript(event.transcript);
-      if (assistantTranscript && isAssistantMoreHelpQuestion(assistantTranscript)) {
-        this.markMoreHelpQuestionV41("LUCIA_ASSISTANT_TRANSCRIPT", assistantTranscript);
+    for (const event of providerEvents) {
+      // Observe Lucia's naturally generated continuity question. This is context,
+      // not a new closing authority. It lets the caller's next answer resolve the
+      // dialogue without forcing another model/controller vote.
+      if (event.type === "ASSISTANT_TRANSCRIPT_COMPLETED") {
+        const assistantTranscript = usableTranscript(event.transcript);
+        if (assistantTranscript && isAssistantMoreHelpQuestion(assistantTranscript)) {
+          this.markMoreHelpQuestionV41("LUCIA_ASSISTANT_TRANSCRIPT", assistantTranscript);
+        }
       }
-    }
 
-    if (event?.type === "conversation.item.input_audio_transcription.completed") {
-      const transcript = usableTranscript(event.transcript);
-      if (transcript) {
+      if (event.type === "CALLER_TRANSCRIPT_COMPLETED") {
+        const transcript = usableTranscript(event.transcript);
+        if (transcript) {
+          if (this.moreHelpAnswerPendingV41) {
+            const closed = this.resolveMoreHelpAnswerV41(transcript);
+            if (closed) return;
+          }
+          let closeTurnConsumed = false;
+          if (this.closingConfirmationPendingV41) {
+            const resolution = this.resolvePendingCloseFromCallerV41(transcript);
+            if (resolution === "CLOSE") return;
+            closeTurnConsumed = resolution === "CONTINUE";
+          }
+          if (!closeTurnConsumed) this.recordUserTranscriptV41(transcript);
+          else (this as any).diagnostics?.checkpoint?.("CLOSE_RESOLUTION_TURN_CONSUMED_V41", {
+            resolution: "CONTINUE",
+            controller_reassessment_skipped: true,
+            lower_semantic_pipeline_preserved: true,
+          });
+        }
+      }
+
+      if (event.type === "SEMANTIC_TOOL_SELECTED" && event.name === END_CALL) {
+        const session = this as any;
+        if (session.state === "closing" || session.hangupStarted) return;
+
+        // Context already established by Lucia's own continuity question outranks a
+        // premature model tool call. We do not sleep or buffer: the normal completed
+        // caller transcription event already in flight resolves this same turn.
         if (this.moreHelpAnswerPendingV41) {
-          const closed = this.resolveMoreHelpAnswerV41(transcript);
-          if (closed) return;
+          this.acknowledgeContextualReplyPendingV41(event.callId);
+          return;
         }
-        let closeTurnConsumed = false;
-        if (this.closingConfirmationPendingV41) {
-          const resolution = this.resolvePendingCloseFromCallerV41(transcript);
-          if (resolution === "CLOSE") return;
-          closeTurnConsumed = resolution === "CONTINUE";
+
+        const decision = decideCloseConsensus(this.closingConfirmationPendingV41, this.controllerCloseAssessmentV41, true);
+
+        if (decision.action === "ACK_PENDING") {
+          this.acknowledgePendingEndCallV41(event.callId);
+          return;
         }
-        if (!closeTurnConsumed) this.recordUserTranscriptV41(transcript);
-        else (this as any).diagnostics?.checkpoint?.("CLOSE_RESOLUTION_TURN_CONSUMED_V41", {
-          resolution: "CONTINUE",
-          controller_reassessment_skipped: true,
-          lower_semantic_pipeline_preserved: true,
+        if (decision.action === "COURTESY_FOLLOWUP") {
+          this.emitCourtesyFollowupV41(event.callId);
+          return;
+        }
+        if (decision.action === "AMBIGUOUS_CONFIRM") {
+          this.emitAmbiguousConfirmationV41(event.callId);
+          return;
+        }
+
+        session.diagnostics?.checkpoint?.("CLOSE_CONSENSUS_REACHED_V41", {
+          lucia_signal: "CLOSE",
+          controller_close_intent: this.controllerCloseAssessmentV41.closeIntent,
+          courtesy: this.controllerCloseAssessmentV41.courtesy,
+          consensus: true,
+          strong_close_consensus: true,
+          last_user_transcript_present: Boolean(this.lastUserTranscriptV41),
         });
+        this.closingConfirmationPendingV41 = false;
+        this.moreHelpAnswerPendingV41 = false;
+        this.controllerCloseAssessmentV41 = { courtesy: false, closeIntent: "ABSTAIN" };
       }
-    }
-
-    if (event?.type === "response.function_call_arguments.done" && event.name === END_CALL) {
-      const session = this as any;
-      if (session.state === "closing" || session.hangupStarted) return;
-
-      // Context already established by Lucia's own continuity question outranks a
-      // premature model tool call. We do not sleep or buffer: the normal completed
-      // caller transcription event already in flight resolves this same turn.
-      if (this.moreHelpAnswerPendingV41) {
-        this.acknowledgeContextualReplyPendingV41(event.call_id);
-        return;
-      }
-
-      const decision = decideCloseConsensus(this.closingConfirmationPendingV41, this.controllerCloseAssessmentV41, true);
-
-      if (decision.action === "ACK_PENDING") {
-        this.acknowledgePendingEndCallV41(event.call_id);
-        return;
-      }
-      if (decision.action === "COURTESY_FOLLOWUP") {
-        this.emitCourtesyFollowupV41(event.call_id);
-        return;
-      }
-      if (decision.action === "AMBIGUOUS_CONFIRM") {
-        this.emitAmbiguousConfirmationV41(event.call_id);
-        return;
-      }
-
-      session.diagnostics?.checkpoint?.("CLOSE_CONSENSUS_REACHED_V41", {
-        lucia_signal: "CLOSE",
-        controller_close_intent: this.controllerCloseAssessmentV41.closeIntent,
-        courtesy: this.controllerCloseAssessmentV41.courtesy,
-        consensus: true,
-        strong_close_consensus: true,
-        last_user_transcript_present: Boolean(this.lastUserTranscriptV41),
-      });
-      this.closingConfirmationPendingV41 = false;
-      this.moreHelpAnswerPendingV41 = false;
-      this.controllerCloseAssessmentV41 = { courtesy: false, closeIntent: "ABSTAIN" };
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
