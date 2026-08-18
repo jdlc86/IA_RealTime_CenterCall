@@ -113,6 +113,25 @@ test("text-decision metadata is normalized through the same adapter boundary", (
   });
 });
 
+test("provider-neutral tool result preserves current OpenAI function output wire format", () => {
+  const h = host();
+  const port = new OpenAIRealtimeCommandAdapter(h);
+  port.submitToolResult({
+    callId: "call-17",
+    toolName: "restaurant_reservation_query",
+    output: { ok: true, status: "FOUND", count: 1 },
+  });
+
+  assert.deepEqual(h.events, [{
+    type: "conversation.item.create",
+    item: {
+      type: "function_call_output",
+      call_id: "call-17",
+      output: '{"ok":true,"status":"FOUND","count":1}',
+    },
+  }]);
+});
+
 test("provider commands preserve current OpenAI VAD playback and input-discard semantics", () => {
   const h = host();
   const port = new OpenAIRealtimeCommandAdapter(h);
