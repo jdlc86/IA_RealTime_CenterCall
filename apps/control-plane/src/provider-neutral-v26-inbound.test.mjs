@@ -12,11 +12,13 @@ test("v26 consumes provider-neutral tool-selection events on its inbound boundar
   assert.doesNotMatch(source, /response\.function_call_arguments\.done/);
 });
 
-test("v26 inbound neutrality keeps outbound post-tool and session gates intentionally unchanged", () => {
-  assert.match(source, /conversation\.item\.create/);
-  assert.match(source, /function_call_output/);
-  assert.match(source, /response\.create/);
-  assert.match(source, /session\.update/);
+test("v26 inbound neutrality is preserved after post-tool output is moved before provider translation", () => {
+  assert.match(source, /installRealtimeToolResultPolicy/);
+  assert.match(source, /REPLACE_DEFAULT_RESPONSE/);
   assert.match(source, /DIRECT_POST_TOOL_RESPONSE_GOVERNED_V26/);
   assert.match(source, /LEGACY_CORE_INTENT_EVENT_BLOCKED_V26/);
+  assert.match(source, /session\.update/);
+  assert.doesNotMatch(source, /conversation\.item\.create/);
+  assert.doesNotMatch(source, /function_call_output/);
+  assert.doesNotMatch(source, /response\.create/);
 });
