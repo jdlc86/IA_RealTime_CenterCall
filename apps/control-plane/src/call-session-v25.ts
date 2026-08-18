@@ -1,17 +1,9 @@
 import { CallSession as CallSessionV24 } from "./call-session-v24";
 import { authorizePublicRestaurantTool, isPublicRestaurantTool } from "./public-tool-authorization";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 
 const BaseConstructor = CallSessionV24 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV24.prototype as any;
-
-type RealtimeEvent = { type?: string; name?: string; call_id?: string; arguments?: string };
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
 
 function parseObject(raw: string | undefined): Record<string, unknown> {
   if (!raw?.trim()) return {};
@@ -27,32 +19,28 @@ function parseObject(raw: string | undefined): Record<string, unknown> {
  */
 export class CallSession extends BaseConstructor {
   private sendAuthorizationFailureV25(callId: string | undefined, tool: string, requiredCapabilities: string[]): void {
-    (this as any).send?.({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify({
-          ok: false,
-          status: "ERROR",
-          error: "TOOL_NOT_ALLOWED",
-          tool,
-          required_capabilities: requiredCapabilities,
-          retryable: false,
-        }),
+    const port = realtimeCommandPortFor(this as any);
+    port.submitToolResult({
+      callId,
+      toolName: tool,
+      output: {
+        ok: false,
+        status: "ERROR",
+        error: "TOOL_NOT_ALLOWED",
+        tool,
+        required_capabilities: requiredCapabilities,
+        retryable: false,
       },
     });
-    (this as any).send?.({ type: "response.create" });
+    port.createDefaultResponse();
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) {
-      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
-    }
+    const event = adaptRealtimeProviderEvents(data).find(
+      (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && isPublicRestaurantTool(candidate.name),
+    );
 
-    if (event?.type === "response.function_call_arguments.done" && isPublicRestaurantTool(event.name)) {
+    if (event?.type === "SEMANTIC_TOOL_SELECTED" && isPublicRestaurantTool(event.name)) {
       let args: Record<string, unknown>;
       try {
         args = parseObject(event.arguments);
@@ -61,15 +49,13 @@ export class CallSession extends BaseConstructor {
           tool: event.name,
           error: error instanceof Error ? error.message : String(error),
         });
-        (this as any).send?.({
-          type: "conversation.item.create",
-          item: {
-            type: "function_call_output",
-            call_id: event.call_id,
-            output: JSON.stringify({ ok: false, status: "ERROR", error: "INVALID_ARGUMENTS", retryable: false }),
-          },
+        const port = realtimeCommandPortFor(this as any);
+        port.submitToolResult({
+          callId: event.callId,
+          toolName: event.name,
+          output: { ok: false, status: "ERROR", error: "INVALID_ARGUMENTS", retryable: false },
         });
-        (this as any).send?.({ type: "response.create" });
+        port.createDefaultResponse();
         return;
       }
 
@@ -92,7 +78,7 @@ export class CallSession extends BaseConstructor {
           required_capabilities: decision.requiredCapabilities,
           configured_allowed_tools: configuredAllowedTools,
         });
-        this.sendAuthorizationFailureV25(event.call_id, event.name, decision.requiredCapabilities);
+        this.sendAuthorizationFailureV25(event.callId, event.name, decision.requiredCapabilities);
         return;
       }
     }
