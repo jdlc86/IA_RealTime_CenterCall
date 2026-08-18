@@ -1,5 +1,5 @@
 import { CallSession as CallSessionV25 } from "./call-session-v25";
-import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import { decideDirectPostToolResponse } from "./post-booking-conversation-policy";
 
 const BaseConstructor = CallSessionV25 as unknown as new (...args: any[]) => any;
@@ -14,12 +14,6 @@ const POST_TOOL_POLICY_TOOLS = new Set([
   "restaurant_marketing_preferences",
 ]);
 
-type RealtimeEvent = {
-  type?: string;
-  name?: string;
-  call_id?: string;
-};
-
 type PendingGovernedPostToolResponseV26 = {
   tool: string;
   reason: string;
@@ -30,15 +24,6 @@ type FunctionOutputV26 = {
   callId: string;
   output: unknown;
 };
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) {
-    return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  }
-  return null;
-}
 
 function readFunctionOutputV26(message: any): FunctionOutputV26 | null {
   if (
@@ -222,42 +207,39 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) {
-      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
-    }
+    const providerEvents = adaptRealtimeProviderEvents(data);
 
-    if (
-      event?.type === "response.function_call_arguments.done" &&
-      event.call_id &&
-      event.name &&
-      POST_TOOL_POLICY_TOOLS.has(event.name)
-    ) {
-      this.directToolByCallIdV26.set(event.call_id, event.name);
-    }
-
-    if (event?.type === "response.function_call_arguments.done" && event.name === LEGACY_CONVERSATION_INTENT) {
-      (this as any).diagnostics?.fail?.("LEGACY_CORE_INTENT_EVENT_BLOCKED_V26", "LEGACY_CONVERSATION_PATH_DISABLED", {
-        tool: LEGACY_CONVERSATION_INTENT,
-        direct_agent_runtime: true,
-      });
-      if (event.call_id) {
-        (this as any).send?.({
-          type: "conversation.item.create",
-          item: {
-            type: "function_call_output",
-            call_id: event.call_id,
-            output: JSON.stringify({
-              ok: false,
-              status: "DISABLED",
-              error: "LEGACY_CONVERSATION_PATH_DISABLED",
-              retryable: false,
-            }),
-          },
-        });
+    for (const event of providerEvents) {
+      if (
+        event.type === "SEMANTIC_TOOL_SELECTED" &&
+        event.callId &&
+        POST_TOOL_POLICY_TOOLS.has(event.name)
+      ) {
+        this.directToolByCallIdV26.set(event.callId, event.name);
       }
-      return;
+
+      if (event.type === "SEMANTIC_TOOL_SELECTED" && event.name === LEGACY_CONVERSATION_INTENT) {
+        (this as any).diagnostics?.fail?.("LEGACY_CORE_INTENT_EVENT_BLOCKED_V26", "LEGACY_CONVERSATION_PATH_DISABLED", {
+          tool: LEGACY_CONVERSATION_INTENT,
+          direct_agent_runtime: true,
+        });
+        if (event.callId) {
+          (this as any).send?.({
+            type: "conversation.item.create",
+            item: {
+              type: "function_call_output",
+              call_id: event.callId,
+              output: JSON.stringify({
+                ok: false,
+                status: "DISABLED",
+                error: "LEGACY_CONVERSATION_PATH_DISABLED",
+                retryable: false,
+              }),
+            },
+          });
+        }
+        return;
+      }
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
