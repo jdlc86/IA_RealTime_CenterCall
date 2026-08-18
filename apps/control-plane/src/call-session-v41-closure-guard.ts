@@ -1,20 +1,21 @@
 import { CallSession as CallSessionV40 } from "./call-session-v40-rebuild";
 import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
 import {
-  classifyControllerCloseSignal,
+  assessControllerCloseIntent,
   decideCloseConsensus,
   isExplicitClosingConfirmation,
   isExplicitClosingRejection,
-  type ControllerCloseSignal,
+  type ControllerCloseAssessment,
 } from "./core-closing-policy.js";
 
 const BaseConstructor = CallSessionV40 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV40.prototype as any;
 const END_CALL = "restaurant_end_call";
 const CLOSE_CONFIRMATION_PROMPT = "¿Quieres terminar la llamada?";
+const COURTESY_FOLLOWUP_INSTRUCTION = "Responde de forma breve y natural preguntando si puedes ayudar al usuario en algo más. No menciones terminar, colgar ni cerrar la llamada.";
 const CLOSING_GUIDANCE_START = "[[V41_CLOSING_GUIDANCE_START]]";
 const CLOSING_GUIDANCE_END = "[[V41_CLOSING_GUIDANCE_END]]";
-const CLOSING_GUIDANCE = `${CLOSING_GUIDANCE_START}\nPROTOCOLO NATURAL DE CIERRE:\n- Un agradecimiento por sí solo (por ejemplo, 'gracias por la información' o 'gracias por la ayuda') NO significa que el usuario quiera terminar. Responde de forma natural preguntando si necesita algo más.\n- Si el usuario expresa de forma clara que quiere terminar (despedida inequívoca, petición de colgar o equivalente), puedes proponer restaurant_end_call.\n- Si dudas sobre si quiere terminar, no inventes el cierre: pregunta brevemente si necesita algo más o, si ya estás proponiendo cierre y hay discrepancia con el controlador, deja que la capa v41 formule la confirmación.\n- Nunca uses restaurant_input_ignored para resolver una intención de cierre.\n${CLOSING_GUIDANCE_END}`;
+const CLOSING_GUIDANCE = `${CLOSING_GUIDANCE_START}\nPROTOCOLO NATURAL DE CIERRE:\n- La cortesía y la intención de cierre son dimensiones distintas. Un simple agradecimiento como 'gracias', 'muchas gracias' o 'gracias por la información' NO implica cierre. En ese caso pregunta de forma natural si puedes ayudar en algo más.\n- Una frase puede contener cortesía y cierre a la vez. Por ejemplo 'muchas gracias, no necesito nada más' o 'gracias, hasta luego' expresa cierre claro: puedes proponer restaurant_end_call.\n- Si el usuario expresa de forma clara que quiere terminar (despedida inequívoca, petición de colgar, no necesitar nada más o equivalente), puedes proponer restaurant_end_call.\n- Solo si tú propones cierre y el controlador no confirma una intención clara se pedirá confirmación explícita. Esa ruta debe ser excepcional.\n- Nunca uses restaurant_input_ignored para resolver una intención de cierre.\n${CLOSING_GUIDANCE_END}`;
 
 type RealtimeEvent = {
   type?: string;
@@ -55,15 +56,14 @@ function withClosingGuidance(instructions: string): string {
 }
 
 /**
- * v41 models call closing as agreement between two independent interpretations:
- * Lucia's semantic CLOSE proposal (restaurant_end_call) and a deterministic
- * controller reading of the caller's latest turn. Agreement closes. Any
- * disagreement/insufficient evidence becomes an explicit ambiguity state owned
- * by v41 and resolved only by the caller's next answer.
+ * v41 models closing as consensus between Lucia's semantic proposal and an
+ * independent controller assessment. Courtesy is contextual only and never a
+ * close verdict by itself. A pure courtesy redirects to a natural follow-up;
+ * explicit close agreement closes; only real disagreement asks for confirmation.
  */
 export class CallSession extends BaseConstructor {
   private closingConfirmationPendingV41 = false;
-  private controllerCloseSignalV41: ControllerCloseSignal = "UNRESOLVED";
+  private controllerCloseAssessmentV41: ControllerCloseAssessment = { courtesy: false, closeIntent: "ABSTAIN" };
   private lastUserTranscriptV41 = "";
   private closingSendBoundaryInstalledV41 = false;
   private originalSendV41: ((message: unknown) => void) | null = null;
@@ -96,6 +96,42 @@ export class CallSession extends BaseConstructor {
     return super.fetch(request);
   }
 
+  private emitCourtesyFollowupV41(callId: string | undefined): void {
+    const session = this as any;
+    session.send?.({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify({
+          ok: true,
+          status: "COURTESY_FOLLOWUP_REQUIRED",
+          instruction: "El usuario fue cortés pero no expresó intención de cierre. Pregunta si puedes ayudarle en algo más y continúa la conversación.",
+        }),
+      },
+    });
+    realtimeCommandPortFor(session).speak({
+      instructions: COURTESY_FOLLOWUP_INSTRUCTION,
+      tools: "DISABLED",
+      isolated: true,
+      purpose: "courtesy_followup_v41",
+      metadata: {
+        authority: "closing_consensus_v41",
+        courtesy: true,
+        close_intent: "ABSTAIN",
+      },
+    });
+    session.diagnostics?.checkpoint?.("COURTESY_FOLLOWUP_REQUESTED_V41", {
+      courtesy: true,
+      controller_close_intent: "ABSTAIN",
+      lucia_close_proposal_redirected: true,
+      close_confirmation_asked: false,
+      next_action: "ASK_IF_MORE_HELP_NEEDED",
+      tools_disabled: true,
+    });
+    this.controllerCloseAssessmentV41 = { courtesy: false, closeIntent: "ABSTAIN" };
+  }
+
   private emitAmbiguousConfirmationV41(callId: string | undefined): void {
     this.closingConfirmationPendingV41 = true;
     const session = this as any;
@@ -107,7 +143,7 @@ export class CallSession extends BaseConstructor {
         output: JSON.stringify({
           ok: true,
           status: "CLOSE_INTENT_AMBIGUOUS",
-          instruction: "Lucía y el controlador no tienen consenso suficiente. La capa v41 preguntará al usuario si quiere terminar y esperará su respuesta.",
+          instruction: "Lucía detectó cierre pero el controlador no confirmó una intención clara. La capa v41 preguntará al usuario si quiere terminar y esperará su respuesta.",
         }),
       },
     });
@@ -121,7 +157,8 @@ export class CallSession extends BaseConstructor {
     });
     session.diagnostics?.checkpoint?.("CLOSE_INTENT_AMBIGUOUS_V41", {
       lucia_signal: "CLOSE",
-      controller_signal: this.controllerCloseSignalV41,
+      controller_close_intent: this.controllerCloseAssessmentV41.closeIntent,
+      courtesy: this.controllerCloseAssessmentV41.courtesy,
       next_action: "ASK_CALLER",
       confirmation_prompt: CLOSE_CONFIRMATION_PROMPT,
       tool_choice: "none",
@@ -156,7 +193,7 @@ export class CallSession extends BaseConstructor {
 
     if (isExplicitClosingConfirmation(transcript)) {
       this.closingConfirmationPendingV41 = false;
-      this.controllerCloseSignalV41 = "CLOSE";
+      this.controllerCloseAssessmentV41 = { courtesy: false, closeIntent: "CLOSE" };
       session.diagnostics?.checkpoint?.("CLOSE_AMBIGUITY_RESOLVED_BY_CALLER_V41", {
         caller_resolution: "CLOSE",
         consensus: true,
@@ -167,7 +204,7 @@ export class CallSession extends BaseConstructor {
 
     if (isExplicitClosingRejection(transcript)) {
       this.closingConfirmationPendingV41 = false;
-      this.controllerCloseSignalV41 = "CONTINUE";
+      this.controllerCloseAssessmentV41 = { courtesy: false, closeIntent: "CONTINUE" };
       session.diagnostics?.checkpoint?.("CLOSE_AMBIGUITY_RESOLVED_BY_CALLER_V41", {
         caller_resolution: "CONTINUE",
         consensus: true,
@@ -175,22 +212,22 @@ export class CallSession extends BaseConstructor {
       return false;
     }
 
-    // The question was yes/no. An unrelated or unclear answer ends the pending
-    // state and returns to normal semantics instead of trapping the caller.
     this.closingConfirmationPendingV41 = false;
-    this.controllerCloseSignalV41 = classifyControllerCloseSignal(transcript);
+    this.controllerCloseAssessmentV41 = assessControllerCloseIntent(transcript);
     session.diagnostics?.checkpoint?.("CLOSE_AMBIGUITY_RELEASED_TO_NORMAL_TURN_V41", {
-      controller_signal: this.controllerCloseSignalV41,
+      controller_close_intent: this.controllerCloseAssessmentV41.closeIntent,
+      courtesy: this.controllerCloseAssessmentV41.courtesy,
     });
     return false;
   }
 
   private recordUserTranscriptV41(transcript: string): void {
     this.lastUserTranscriptV41 = transcript;
-    this.controllerCloseSignalV41 = classifyControllerCloseSignal(transcript);
-    (this as any).diagnostics?.checkpoint?.("CONTROLLER_CLOSE_SIGNAL_EVALUATED_V41", {
-      controller_signal: this.controllerCloseSignalV41,
-      courtesy_is_not_close: this.controllerCloseSignalV41 === "COURTESY",
+    this.controllerCloseAssessmentV41 = assessControllerCloseIntent(transcript);
+    (this as any).diagnostics?.checkpoint?.("CONTROLLER_CLOSE_ASSESSMENT_V41", {
+      close_intent: this.controllerCloseAssessmentV41.closeIntent,
+      courtesy: this.controllerCloseAssessmentV41.courtesy,
+      courtesy_is_independent_dimension: true,
     });
   }
 
@@ -214,12 +251,17 @@ export class CallSession extends BaseConstructor {
 
       const decision = decideCloseConsensus(
         this.closingConfirmationPendingV41,
-        this.controllerCloseSignalV41,
+        this.controllerCloseAssessmentV41,
         true,
       );
 
       if (decision.action === "ACK_PENDING") {
         this.acknowledgePendingEndCallV41(event.call_id);
+        return;
+      }
+
+      if (decision.action === "COURTESY_FOLLOWUP") {
+        this.emitCourtesyFollowupV41(event.call_id);
         return;
       }
 
@@ -230,12 +272,14 @@ export class CallSession extends BaseConstructor {
 
       session.diagnostics?.checkpoint?.("CLOSE_CONSENSUS_REACHED_V41", {
         lucia_signal: "CLOSE",
-        controller_signal: this.controllerCloseSignalV41,
+        controller_close_intent: this.controllerCloseAssessmentV41.closeIntent,
+        courtesy: this.controllerCloseAssessmentV41.courtesy,
         consensus: true,
+        strong_close_consensus: true,
         last_user_transcript_present: Boolean(this.lastUserTranscriptV41),
       });
       this.closingConfirmationPendingV41 = false;
-      this.controllerCloseSignalV41 = "UNRESOLVED";
+      this.controllerCloseAssessmentV41 = { courtesy: false, closeIntent: "ABSTAIN" };
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
