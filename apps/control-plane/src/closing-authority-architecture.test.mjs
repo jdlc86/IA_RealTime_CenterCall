@@ -23,10 +23,25 @@ test("closing authority: lifecycle HANGUP executes transport hangup instead of r
   assert.match(hangupCase, /LIFECYCLE_HANGUP_DISPATCHED_V18/);
 });
 
-test("closing authority: v22 remains the single transport adapter to HangupController", async () => {
+test("closing authority: v22 keeps HangupController as the sole transport executor", async () => {
   const v22 = await source("call-session-v22.ts");
 
   assert.match(v22, /new HangupController\(/);
   assert.match(v22, /private async performHangup\(trigger: string\): Promise<void>/);
   assert.match(v22, /await this\.getHangupControllerV22\(\)\.perform\(trigger\)/);
+});
+
+test("closing authority: legacy audio-stop hangup is superseded after lifecycle reaches CLOSING", async () => {
+  const v22 = await source("call-session-v22.ts");
+
+  assert.match(v22, /snapshotTurnLifecycleV18\?\.\(\)\?\.state/);
+  assert.match(v22, /trigger === \"output_audio_buffer_stopped\" && lifecycleState === \"CLOSING\"/);
+  assert.match(v22, /LEGACY_AUDIO_STOP_HANGUP_SUPERSEDED_V22/);
+});
+
+test("closing authority: v2 legacy audio-stop path remains only as compatibility and safety fallback", async () => {
+  const v2 = await source("call-session-v2.ts");
+
+  assert.match(v2, /performHangup\(\"output_audio_buffer_stopped\"\)/);
+  assert.match(v2, /armHangupAfterCurrentAudio/);
 });

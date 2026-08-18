@@ -29,6 +29,24 @@ export class CallSession extends BaseConstructor {
   }
 
   private async performHangup(trigger: string): Promise<void> {
+    const session = this as any;
+    const lifecycleState = session.snapshotTurnLifecycleV18?.()?.state as string | undefined;
+
+    // v2 historically inferred terminal intent from output_audio_buffer.stopped.
+    // Once ConversationTurnLifecycle has already reached CLOSING, that inference
+    // is superseded: only the explicit lifecycle HANGUP effect may reach transport.
+    // Keep the legacy path available when lifecycle has not claimed terminality so
+    // the assistant-hangup-commitment safety guard remains intact.
+    if (trigger === "output_audio_buffer_stopped" && lifecycleState === "CLOSING") {
+      session.diagnostics?.checkpoint?.("LEGACY_AUDIO_STOP_HANGUP_SUPERSEDED_V22", {
+        trigger,
+        lifecycle_state: lifecycleState,
+        authority: "ConversationTurnLifecycle",
+        transport_dispatched: false,
+      });
+      return;
+    }
+
     await this.getHangupControllerV22().perform(trigger);
   }
 }
