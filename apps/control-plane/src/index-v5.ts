@@ -3,6 +3,11 @@ export { CallSession } from "./call-session-v48-authoritative-clock";
 
 type WorkerEnv = {
   CALL_SESSIONS: DurableObjectNamespace;
+  CF_VERSION_METADATA?: {
+    id?: string;
+    tag?: string;
+    timestamp?: string;
+  };
 };
 
 type HandoffTransportContext = {
@@ -51,9 +56,37 @@ async function attachHandoffTransportContext(env: WorkerEnv, context: HandoffTra
   if (!response.ok) throw new Error(`Human handoff transport context failed with HTTP ${response.status}`);
 }
 
+async function healthWithVersion(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
+  const response = await baseHandler.fetch(request, env as never, ctx);
+  if (!response.ok) return response;
+
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) return response;
+
+  let body: unknown;
+  try { body = await response.clone().json(); } catch { return response; }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return response;
+
+  const metadata = env.CF_VERSION_METADATA;
+  return Response.json({
+    ...(body as Record<string, unknown>),
+    worker_version: {
+      id: metadata?.id ?? null,
+      tag: metadata?.tag ?? null,
+      timestamp: metadata?.timestamp ?? null,
+    },
+  }, {
+    status: response.status,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
+
 export default {
   async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/health") {
+      return healthWithVersion(request, env, ctx);
+    }
     if (request.method === "POST" && url.pathname === "/webhooks/openai") {
       const inspected = inspectHandoffTransportContext(request.clone());
       const response = await baseHandler.fetch(request, env as never, ctx);
