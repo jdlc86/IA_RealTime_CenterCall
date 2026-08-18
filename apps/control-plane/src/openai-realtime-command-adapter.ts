@@ -3,6 +3,7 @@ import type {
   RealtimeProviderCommandPort,
   RealtimeSpeechRequest,
   RealtimeTextDecisionRequest,
+  RealtimeToolResultRequest,
 } from "./realtime-provider-command-port";
 
 export type OpenAIRealtimeCommandHost = {
@@ -110,6 +111,17 @@ export class OpenAIRealtimeCommandAdapter implements RealtimeProviderCommandPort
     const event: Record<string, unknown> = { type: "response.create", response };
     if (request.requestId) event.event_id = request.requestId;
     this.host.send(event);
+  }
+
+  submitToolResult(request: RealtimeToolResultRequest): void {
+    this.host.send({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: request.callId,
+        output: typeof request.output === "string" ? request.output : JSON.stringify(request.output),
+      },
+    });
   }
 
   createDefaultResponse(): void {
