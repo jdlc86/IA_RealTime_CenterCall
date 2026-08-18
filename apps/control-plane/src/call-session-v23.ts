@@ -1,5 +1,6 @@
 import { CallSession as CallSessionV22 } from "./call-session-v22";
 import { SupabaseAdapter, type BookedReservationSummary } from "./supabase-adapter";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 
 const BaseConstructor = CallSessionV22 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV22.prototype as any;
@@ -13,7 +14,6 @@ const OUT_OF_SCOPE = "restaurant_out_of_scope";
 const DIRECT_TOOLS = new Set([QUERY, CANCEL, MODIFY, BUSINESS_INFO, END_CALL, OUT_OF_SCOPE]);
 const RESTAURANT_TIMEZONE = "Europe/Madrid";
 
-type RealtimeEvent = { type?: string; name?: string; call_id?: string; arguments?: string };
 type ModifyPatch = {
   party_size?: number;
   starts_at?: string;
@@ -35,12 +35,6 @@ type TablePlanRow = {
   ends_at: string;
 };
 
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
 function parseObject(raw: string | undefined): Record<string, unknown> {
   if (!raw?.trim()) return {};
   const parsed = JSON.parse(raw) as unknown;
@@ -124,8 +118,9 @@ export class CallSession extends BaseConstructor {
   }
 
   private sendOutputV23(callId: string | undefined, output: Record<string, unknown>, createResponse = true): void {
-    (this as any).send?.({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: JSON.stringify(output) } });
-    if (createResponse) (this as any).send?.({ type: "response.create" });
+    const port = realtimeCommandPortFor(this as any);
+    port.submitToolResult({ callId, output });
+    if (createResponse) port.createDefaultResponse();
   }
 
   private markDirectToolV23(tool: string): void {
@@ -370,29 +365,29 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) { try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; } }
+    const event = adaptRealtimeProviderEvents(data).find(
+      (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && DIRECT_TOOLS.has(candidate.name),
+    );
 
-    if (event?.type === "response.function_call_arguments.done" && event.name && DIRECT_TOOLS.has(event.name)) {
+    if (event?.type === "SEMANTIC_TOOL_SELECTED" && DIRECT_TOOLS.has(event.name)) {
       let args: Record<string, unknown>;
       try { args = parseObject(event.arguments); }
       catch (error) {
-        this.sendOutputV23(event.call_id, { ok: false, status: "ERROR", error: "INVALID_ARGUMENTS", message: error instanceof Error ? error.message : String(error) });
+        this.sendOutputV23(event.callId, { ok: false, status: "ERROR", error: "INVALID_ARGUMENTS", message: error instanceof Error ? error.message : String(error) });
         return;
       }
 
       this.markDirectToolV23(event.name);
       try {
-        if (event.name === QUERY) await this.executeQueryV23(event.call_id);
-        else if (event.name === CANCEL) await this.executeCancelV23(event.call_id, args);
-        else if (event.name === MODIFY) await this.executeModifyV23(event.call_id, args);
-        else if (event.name === BUSINESS_INFO) await this.executeBusinessInfoV23(event.call_id, args);
-        else if (event.name === END_CALL) this.executeEndCallV23(event.call_id, args);
-        else if (event.name === OUT_OF_SCOPE) this.executeOutOfScopeV23(event.call_id);
+        if (event.name === QUERY) await this.executeQueryV23(event.callId);
+        else if (event.name === CANCEL) await this.executeCancelV23(event.callId, args);
+        else if (event.name === MODIFY) await this.executeModifyV23(event.callId, args);
+        else if (event.name === BUSINESS_INFO) await this.executeBusinessInfoV23(event.callId, args);
+        else if (event.name === END_CALL) this.executeEndCallV23(event.callId, args);
+        else if (event.name === OUT_OF_SCOPE) this.executeOutOfScopeV23(event.callId);
       } catch (error) {
         (this as any).diagnostics?.fail?.("DIRECT_AGENT_TOOL_FAILED_V23", "DIRECT_AGENT_TOOL_EXECUTION_FAILED", { tool: event.name, error: error instanceof Error ? error.message : String(error) });
-        this.sendOutputV23(event.call_id, { ok: false, status: "ERROR", error: "EXECUTION_FAILED", message: error instanceof Error ? error.message : String(error) });
+        this.sendOutputV23(event.callId, { ok: false, status: "ERROR", error: "EXECUTION_FAILED", message: error instanceof Error ? error.message : String(error) });
       }
       return;
     }
