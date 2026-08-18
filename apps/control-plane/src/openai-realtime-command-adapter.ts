@@ -60,11 +60,7 @@ function openAITurnDetectionUpdate(turnDetection: Record<string, unknown> | null
     type: "session.update",
     session: {
       type: "realtime",
-      audio: {
-        input: {
-          turn_detection: turnDetection,
-        },
-      },
+      audio: { input: { turn_detection: turnDetection } },
     },
   };
 }
@@ -74,19 +70,13 @@ export class OpenAIRealtimeCommandAdapter implements RealtimeProviderCommandPort
   constructor(private readonly host: OpenAIRealtimeCommandHost) {}
 
   speak(request: RealtimeSpeechRequest): void {
-    const response: Record<string, unknown> = {
-      instructions: request.instructions,
-    };
+    const response: Record<string, unknown> = { instructions: request.instructions };
     if (request.isolated) response.conversation = "none";
     if (request.tools === "DISABLED") response.tool_choice = "none";
     const metadata = responseMetadata(request);
     if (metadata) response.metadata = metadata;
     if (request.exactText) {
-      response.input = [{
-        type: "message",
-        role: "user",
-        content: [{ type: "input_text", text: request.exactText }],
-      }];
+      response.input = [{ type: "message", role: "user", content: [{ type: "input_text", text: request.exactText }] }];
     }
     const event: Record<string, unknown> = { type: "response.create", response };
     if (request.requestId) event.event_id = request.requestId;
@@ -99,11 +89,7 @@ export class OpenAIRealtimeCommandAdapter implements RealtimeProviderCommandPort
       output_modalities: ["text"],
       tool_choice: "none",
       instructions: request.instructions,
-      input: [{
-        type: "message",
-        role: "user",
-        content: [{ type: "input_text", text: request.inputText }],
-      }],
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: request.inputText }] }],
     };
     if (request.maxOutputTokens !== undefined) response.max_output_tokens = request.maxOutputTokens;
     const metadata = responseMetadata(request);
@@ -124,29 +110,19 @@ export class OpenAIRealtimeCommandAdapter implements RealtimeProviderCommandPort
     });
   }
 
-  createDefaultResponse(): void {
-    this.host.send({ type: "response.create" });
+  updateSessionPolicy(update: { instructions?: string; toolChoice?: "AUTO" | "NONE" | "REQUIRED" }): void {
+    const session: Record<string, unknown> = { type: "realtime" };
+    if (update.instructions !== undefined) session.instructions = update.instructions;
+    if (update.toolChoice !== undefined) session.tool_choice = update.toolChoice.toLowerCase();
+    this.host.send({ type: "session.update", session });
   }
 
-  cancelResponse(responseId: string): void {
-    this.host.send({ type: "response.cancel", response_id: responseId });
-  }
-
-  clearPlayback(): void {
-    this.host.send({ type: "output_audio_buffer.clear" });
-  }
-
-  clearInput(): void {
-    this.host.send({ type: "input_audio_buffer.clear" });
-  }
-
-  discardInputItem(itemId: string): void {
-    this.host.send({ type: "conversation.item.delete", item_id: itemId });
-  }
-
-  suspendInputDetection(): void {
-    this.host.send(openAITurnDetectionUpdate(null));
-  }
+  createDefaultResponse(): void { this.host.send({ type: "response.create" }); }
+  cancelResponse(responseId: string): void { this.host.send({ type: "response.cancel", response_id: responseId }); }
+  clearPlayback(): void { this.host.send({ type: "output_audio_buffer.clear" }); }
+  clearInput(): void { this.host.send({ type: "input_audio_buffer.clear" }); }
+  discardInputItem(itemId: string): void { this.host.send({ type: "conversation.item.delete", item_id: itemId }); }
+  suspendInputDetection(): void { this.host.send(openAITurnDetectionUpdate(null)); }
 
   beginNonInterruptingListening(settings: RealtimeInputDetectionSettings = {}): void {
     this.host.send(openAITurnDetectionUpdate({
@@ -163,11 +139,6 @@ export class OpenAIRealtimeCommandAdapter implements RealtimeProviderCommandPort
 
 const BUS_BY_HOST = new WeakMap<object, OpenAIRealtimeCommandAdapter>();
 
-/**
- * Compatibility factory for the current OpenAI runtime. Every CallSession
- * instance gets exactly one adapter even while historical inheritance layers
- * are being retired incrementally.
- */
 export function realtimeCommandPortFor(host: object & { send(event: Record<string, unknown>): void }): RealtimeProviderCommandPort {
   let port = BUS_BY_HOST.get(host);
   if (!port) {
