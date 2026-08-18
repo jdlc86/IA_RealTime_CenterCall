@@ -34,11 +34,14 @@ export type LifecycleEvent =
   | { type: "handoff_started" }
   | { type: "handoff_completed" }
   | { type: "end_call" }
-  | { type: "max_call_duration" };
+  | { type: "max_call_duration" }
+  | { type: "transport_closed"; reason: string };
 
 export type LifecycleEffect =
   | { type: "ARM_SILENCE_TIMER"; epoch: number }
   | { type: "CANCEL_SILENCE_TIMER"; epoch: number }
+  | { type: "CANCEL_MAX_CALL_TIMER" }
+  | { type: "RESET_PRESENCE_RESPONSE_STATE" }
   | { type: "SPEAK_PRESENCE_CHECK" }
   | { type: "SPEAK_IGNORED_RECOVERY"; protected: true }
   | { type: "SPEAK_TERMINAL_FAREWELL"; protected: true; reason: string }
@@ -82,6 +85,15 @@ export class ConversationTurnLifecycle {
 
   dispatch(event: LifecycleEvent): LifecycleEffect[] {
     const effects: LifecycleEffect[] = [];
+
+    if (event.type === "transport_closed") {
+      if (this.state === "CLOSING") return effects;
+      this.cancelSilence(effects);
+      effects.push({ type: "CANCEL_MAX_CALL_TIMER" });
+      effects.push({ type: "RESET_PRESENCE_RESPONSE_STATE" });
+      this.state = "CLOSING";
+      return effects;
+    }
 
     if (this.state === "CLOSING") return effects;
 
