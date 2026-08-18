@@ -258,8 +258,7 @@ export class CallSession extends BaseConstructor {
     // The semantic decision is complete. From here onward the deterministic
     // handoff controller owns the call and Lucía never resumes conversation.
     (this as any).releaseSemanticGateV29?.(HUMAN_ASSISTANCE);
-    (this as any).validateUserTurnV18?.("agent_tool");
-    (this as any).suspendForToolV18?.(HUMAN_ASSISTANCE);
+    (this as any).observeHumanHandoffStartedV18?.();
     (this as any).detachTurnConcurrencyForTerminalV36?.("human_handoff_v37");
 
     (this as any).send?.({
@@ -297,7 +296,6 @@ export class CallSession extends BaseConstructor {
     });
     return true;
   }
-
   private emitHandoffSpeechV37(kind: HandoffSpeechKind, text: string): void {
     const handoff = this.activeHandoffV37;
     if (!handoff) return;
