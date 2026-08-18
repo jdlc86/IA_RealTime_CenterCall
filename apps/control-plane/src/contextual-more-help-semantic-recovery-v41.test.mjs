@@ -14,10 +14,10 @@ test("v41 keeps unresolved more-help context for semantic resolution of the same
 
 test("v41 semantic recovery requires confirmed end-call and cannot leak into later turns", () => {
   assert.match(source, /readEndCallConfirmedV41\(event\.arguments\)/);
-  assert.match(source, /modelConfirmed === true/);
+  assert.match(source, /if \(modelConfirmed !== true\)/);
   assert.match(source, /CONTEXTUAL_MORE_HELP_SEMANTIC_CONTEXT_RELEASED_V41/);
   assert.match(source, /event\.type === "ASSISTANT_RESPONSE_COMPLETED"/);
-  assert.match(source, /event\.name !== END_CALL && event\.name !== "restaurant_input_ignored"/);
+  assert.match(source, /event\.name !== END_CALL\s*&&\s*event\.name !== "restaurant_input_ignored"/);
 });
 
 test("v41 retains the pre-transcript ordering guard for premature end-call", () => {
