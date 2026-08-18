@@ -29,12 +29,11 @@ function nonEmpty(value: unknown): string | null {
  * failure sentence. When the source leg is still alive, v38 plays that sentence
  * through Telnyx and waits for call.speak.ended before hanging up.
  *
- * The source leg is not guaranteed to survive until the target result arrives.
- * ConversationTurnLifecycle is the authority for that terminality: once its state
- * is CLOSING there is no caller left to speak to. In that case the failure/callback
- * is persisted and no speech/hangup command is attempted. Telnyx 90018 is treated
- * as equivalent transport evidence for the unavoidable check-to-command race.
- * Lucía never resumes after a configured handoff has crossed point-of-no-return.
+ * ConversationTurnLifecycle owns AI-conversation terminality only. Its CLOSING
+ * state is not evidence that the Telnyx source leg has ended during handoff.
+ * Source-leg terminality is established by Telnyx transport evidence: an actual
+ * source call.hangup event, or error 90018 if the leg ends in the check-to-command
+ * race while starting terminal speech. Lucía never resumes after point-of-no-return.
  */
 export class CallSession extends BaseConstructor {
   private terminalSpeechTimersV38 = new Map<string, ReturnType<typeof setTimeout>>();
@@ -42,11 +41,6 @@ export class CallSession extends BaseConstructor {
   private storeV38(): HumanHandoffStore {
     const env = (this as any).env ?? {};
     return new HumanHandoffStore({ SUPABASE_URL: env.SUPABASE_URL, SUPABASE_SECRET_KEY: env.SUPABASE_SECRET_KEY });
-  }
-
-  private sourceLifecycleTerminalV38(): boolean {
-    const snapshot = (this as any).snapshotTurnLifecycleV18?.() as { state?: string } | undefined;
-    return snapshot?.state === "CLOSING";
   }
 
   private async failureMessageV38(tenantId: string): Promise<string | null> {
@@ -139,11 +133,6 @@ export class CallSession extends BaseConstructor {
       callback_status: "PENDING",
       failure_reason: failureReason,
     });
-
-    if (this.sourceLifecycleTerminalV38()) {
-      await this.recordSourceAlreadyTerminalV38(handoffId, tenantId, "conversation_lifecycle_closing");
-      return Response.json({ ok: true, action: "failure_recorded_source_already_terminal", status });
-    }
 
     const message = await this.failureMessageV38(tenantId);
     if (!message) {
