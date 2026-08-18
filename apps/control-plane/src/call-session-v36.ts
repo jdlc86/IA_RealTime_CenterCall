@@ -4,6 +4,7 @@ import { TurnConcurrencyLifecycle } from "./turn-concurrency-lifecycle";
 import {
   decideTurnConcurrencyAcquire,
   shouldClearInputOnTurnConcurrencyRelease,
+  shouldRestoreInputDetectionOnTurnConcurrencyRelease,
 } from "./turn-concurrency-acquire-policy";
 
 const BaseConstructor = CallSessionV35Runtime as unknown as new (...args: any[]) => any;
@@ -46,12 +47,18 @@ function hasUsableTranscript(value: unknown): boolean {
 }
 
 /**
- * v36 is a semantic serialization guard, not a conversation-state authority.
+ * v36 is a semantic serialization guard, not a conversation-state or playback
+ * input-policy authority.
+ *
  * Only usable completed transcripts may acquire ownership and suspend turn
  * detection. Unusable transcripts cannot own the pipeline or disable VAD.
  * A transcript that arrives after normal assistant playback already started is
  * late evidence for the turn already being answered and must not reacquire a
  * lock whose playback release boundary has already passed.
+ *
+ * When normal playback starts, v36 releases only semantic serialization. v40
+ * owns the barge-in listening configuration and is the sole writer of the
+ * non-interrupting VAD mode for that playback boundary.
  * ConversationTurnLifecycle remains the authority for caller/waiting state.
  */
 export class CallSession extends BaseConstructor {
@@ -92,15 +99,17 @@ export class CallSession extends BaseConstructor {
 
     const session = this as any;
     const clearInput = shouldClearInputOnTurnConcurrencyRelease(reason);
+    const restoreInputDetection = shouldRestoreInputDetectionOnTurnConcurrencyRelease(reason);
     try {
       if (session.socket && session.state !== "closing" && !session.hangupStarted) {
         const realtime = realtimeCommandPortFor(session);
         if (clearInput) realtime.clearInput();
-        realtime.restoreInputDetection(session.tenantVadV35 ?? {});
+        if (restoreInputDetection) realtime.restoreInputDetection(session.tenantVadV35 ?? {});
       }
     } catch (error) {
       session.diagnostics?.fail?.("TURN_CONCURRENCY_RELEASE_FAILED_V36", "TURN_DETECTION_RESTORE_FAILED", {
         reason,
+        restore_input_detection_requested: restoreInputDetection,
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -109,7 +118,9 @@ export class CallSession extends BaseConstructor {
       reason,
       input_buffer_cleared: clearInput,
       immediate_barge_in_audio_preserved: !clearInput,
-      normal_barge_in_restored: true,
+      input_detection_restored_by_v36: restoreInputDetection,
+      input_detection_owner: restoreInputDetection ? "v36_recovery_boundary" : "v40_barge_in_playback",
+      normal_barge_in_restored: !restoreInputDetection,
     });
   }
 
