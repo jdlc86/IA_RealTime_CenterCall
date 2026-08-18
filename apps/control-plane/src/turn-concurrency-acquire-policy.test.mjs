@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   decideTurnConcurrencyAcquire,
   shouldClearInputOnTurnConcurrencyRelease,
+  shouldRestoreInputDetectionOnTurnConcurrencyRelease,
 } from "../.test-dist/turn-concurrency-acquire-policy.js";
 
 test("usable transcript before playback acquires semantic serialization", () => {
@@ -41,7 +42,13 @@ test("normal playback release preserves immediately arriving barge-in audio", ()
   assert.equal(shouldClearInputOnTurnConcurrencyRelease("normal_assistant_playback_started"), false);
 });
 
-test("recovery releases may still discard stale buffered audio", () => {
+test("normal playback release delegates input detection to v40 barge-in owner", () => {
+  assert.equal(shouldRestoreInputDetectionOnTurnConcurrencyRelease("normal_assistant_playback_started"), false);
+});
+
+test("recovery releases may still discard stale buffered audio and restore tenant VAD", () => {
   assert.equal(shouldClearInputOnTurnConcurrencyRelease("protected_playback_completed"), true);
   assert.equal(shouldClearInputOnTurnConcurrencyRelease("watchdog"), true);
+  assert.equal(shouldRestoreInputDetectionOnTurnConcurrencyRelease("protected_playback_completed"), true);
+  assert.equal(shouldRestoreInputDetectionOnTurnConcurrencyRelease("watchdog"), true);
 });
