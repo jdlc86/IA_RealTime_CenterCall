@@ -7,7 +7,8 @@ const source = async (name) => readFile(new URL(`./${name}`, import.meta.url), "
 test("v41 keeps more-help reply authoritative over premature end-call tool calls", async () => {
   const v41 = await source("call-session-v41-closure-guard.ts");
 
-  assert.match(v41, /if \(this\.moreHelpAnswerPendingV41\) \{\s*this\.acknowledgeContextualReplyPendingV41\(event\.call_id\);\s*return;\s*\}/s);
+  assert.match(v41, /if \(this\.moreHelpAnswerPendingV41\) \{\s*this\.acknowledgeContextualReplyPendingV41\(event\.callId\);\s*return;\s*\}/s);
+  assert.doesNotMatch(v41, /event\.call_id/);
   assert.match(v41, /PREMATURE_END_CALL_SUPERSEDED_BY_MORE_HELP_CONTEXT_V41/);
   assert.match(v41, /arbitration_started: false/);
   assert.match(v41, /extra_audio_emitted: false/);
