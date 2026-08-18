@@ -32,7 +32,6 @@ export type LifecycleEvent =
   | { type: "acoustic_guard_expired" }
   | { type: "processing_guard_expired" }
   | { type: "handoff_started" }
-  | { type: "handoff_completed" }
   | { type: "end_call" }
   | { type: "max_call_duration" }
   | { type: "transport_closed"; reason: string };
