@@ -15,3 +15,10 @@ test("v41 keeps more-help reply authoritative over premature end-call tool calls
   assert.match(v41, /CONTEXTUAL_CLOSE_RESOLVED_V41/);
   assert.match(v41, /explicit_close_confirmation_required: false/);
 });
+
+test("v41 treats repeated more-help observations as idempotent", async () => {
+  const v41 = await source("call-session-v41-closure-guard.ts");
+
+  assert.match(v41, /private markMoreHelpQuestionV41\([\s\S]*?if \(this\.moreHelpAnswerPendingV41\) \{[\s\S]*?MORE_HELP_QUESTION_DUPLICATE_OBSERVED_V41[\s\S]*?state_reopened: false[\s\S]*?return;[\s\S]*?this\.moreHelpAnswerPendingV41 = true;/);
+  assert.match(v41, /contextual_authority_unchanged: true/);
+});
