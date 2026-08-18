@@ -38,6 +38,7 @@ export class CallSession extends BaseConstructor {
 
   protected snapshotTurnLifecycleV18(): ReturnType<ConversationTurnLifecycle["snapshot"]> { return this.turnLifecycleV18.snapshot(); }
   protected observeSemanticIgnoredV18(reason: string): void { this.dispatchLifecycleV18({ type: "semantic_ignored", reason }); }
+  protected observeHumanHandoffStartedV18(): void { this.dispatchLifecycleV18({ type: "handoff_started" }); }
   protected observeRealtimeTransportClosedV18(reason: string): void {
     this.dispatchLifecycleV18({ type: "transport_closed", reason });
   }
