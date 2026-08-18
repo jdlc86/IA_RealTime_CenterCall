@@ -1,5 +1,6 @@
 import { CallSession as CallSessionV18 } from "./call-session-v18";
 import type { ToolGateway, ToolResult } from "./tool-gateway";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 
 const BaseConstructor = CallSessionV18 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV18.prototype as any;
@@ -7,13 +8,6 @@ const BasePrototype = CallSessionV18.prototype as any;
 const CREATE_RESERVATION = "restaurant_reservation_create";
 const CHECK_AVAILABILITY = "check_reservation_availability";
 const MANAGE_RESERVATION = "manage_reservation";
-
-type RealtimeEvent = {
-  type?: string;
-  name?: string;
-  call_id?: string;
-  arguments?: string;
-};
 
 type ReservationDraft = {
   party_size?: number;
@@ -27,15 +21,6 @@ type ReservationDraft = {
   separate_tables_acceptable?: boolean;
   tables_must_be_close?: boolean;
 };
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) {
-    return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  }
-  return null;
-}
 
 function parseObject(argumentsJson: string | undefined): Record<string, unknown> {
   if (!argumentsJson?.trim()) return {};
@@ -84,15 +69,9 @@ export class CallSession extends BaseConstructor {
   }
 
   private sendFunctionOutputV19(callId: string | undefined, output: Record<string, unknown>): void {
-    (this as any).send({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify(output),
-      },
-    });
-    (this as any).send({ type: "response.create" });
+    const port = realtimeCommandPortFor(this as any);
+    port.submitToolResult({ callId, toolName: CREATE_RESERVATION, output });
+    port.createDefaultResponse();
   }
 
   private async executeDirectCreateV19(callId: string | undefined, args: Record<string, unknown>): Promise<void> {
@@ -232,18 +211,16 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) {
-      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
-    }
+    const event = adaptRealtimeProviderEvents(data).find(
+      (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && candidate.name === CREATE_RESERVATION,
+    );
 
-    if (event?.type === "response.function_call_arguments.done" && event.name === CREATE_RESERVATION) {
+    if (event?.type === "SEMANTIC_TOOL_SELECTED" && event.name === CREATE_RESERVATION) {
       let args: Record<string, unknown>;
       try {
         args = parseObject(event.arguments);
       } catch (error) {
-        this.sendFunctionOutputV19(event.call_id, {
+        this.sendFunctionOutputV19(event.callId, {
           ok: false,
           status: "ERROR",
           error: "INVALID_ARGUMENTS",
@@ -257,12 +234,12 @@ export class CallSession extends BaseConstructor {
         compatibility_executor: "direct_reservation_controller_v19",
       });
       try {
-        await this.executeDirectCreateV19(event.call_id, args);
+        await this.executeDirectCreateV19(event.callId, args);
       } catch (error) {
         (this as any).diagnostics?.fail?.("DIRECT_RESERVATION_FAILED", "DIRECT_RESERVATION_EXECUTION_FAILED", {
           error: error instanceof Error ? error.message : String(error),
         });
-        this.sendFunctionOutputV19(event.call_id, {
+        this.sendFunctionOutputV19(event.callId, {
           ok: false,
           status: "ERROR",
           error: "EXECUTION_FAILED",
