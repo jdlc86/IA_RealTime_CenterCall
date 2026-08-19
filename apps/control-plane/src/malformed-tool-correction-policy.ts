@@ -1,5 +1,8 @@
 export type MalformedToolCorrectionState = Readonly<{
   pendingMalformedTool: string | null;
+  recoveryRequired: boolean;
+  recoveryPlaybackCompleted: boolean;
+  postRecoveryCallerSpeechObserved: boolean;
 }>;
 
 export type MalformedToolCorrectionAction =
@@ -14,13 +17,12 @@ export type MalformedToolCorrectionDecision = Readonly<{
 }>;
 
 export function initialMalformedToolCorrectionState(): MalformedToolCorrectionState {
-  return { pendingMalformedTool: null };
-}
-
-export function observeCallerTurnStarted(
-  _state: MalformedToolCorrectionState,
-): MalformedToolCorrectionState {
-  return initialMalformedToolCorrectionState();
+  return {
+    pendingMalformedTool: null,
+    recoveryRequired: false,
+    recoveryPlaybackCompleted: false,
+    postRecoveryCallerSpeechObserved: false,
+  };
 }
 
 function argumentsAreSyntacticallyValid(rawArguments: string | undefined): boolean {
@@ -33,15 +35,51 @@ function argumentsAreSyntacticallyValid(rawArguments: string | undefined): boole
   }
 }
 
+function requireRecovery(state: MalformedToolCorrectionState): MalformedToolCorrectionState {
+  return {
+    ...state,
+    recoveryRequired: true,
+    recoveryPlaybackCompleted: false,
+    postRecoveryCallerSpeechObserved: false,
+  };
+}
+
+export function observeMalformedToolRecoveryPlaybackCompleted(
+  state: MalformedToolCorrectionState,
+): MalformedToolCorrectionState {
+  if (!state.recoveryRequired || !state.pendingMalformedTool) return state;
+  return { ...state, recoveryPlaybackCompleted: true, postRecoveryCallerSpeechObserved: false };
+}
+
+export function observeCallerSpeechAfterMalformedRecovery(
+  state: MalformedToolCorrectionState,
+): MalformedToolCorrectionState {
+  if (!state.recoveryRequired || !state.recoveryPlaybackCompleted || !state.pendingMalformedTool) return state;
+  return { ...state, postRecoveryCallerSpeechObserved: true };
+}
+
+export function observeCallerTranscriptAfterMalformedRecovery(
+  state: MalformedToolCorrectionState,
+): MalformedToolCorrectionState {
+  if (
+    !state.recoveryRequired ||
+    !state.recoveryPlaybackCompleted ||
+    !state.postRecoveryCallerSpeechObserved ||
+    !state.pendingMalformedTool
+  ) return state;
+  return initialMalformedToolCorrectionState();
+}
+
 /**
  * Cross-layer contract between malformed argument handling and V29's single
  * semantic decision authority.
  *
- * A malformed payload is not executable and therefore cannot consume the V29
- * slot. However, it still establishes tool affinity for the current caller turn:
- * only the same tool may repair its serialization. A different valid tool must
- * wait for fresh caller evidence instead of silently replacing the malformed
- * semantic choice.
+ * A malformed payload is not executable and therefore cannot consume V29's
+ * slot. It does establish same-intervention tool affinity: only that tool may
+ * repair its serialization. A different tool is blocked until V51's isolated
+ * recovery has fully played and fresh caller speech plus its completed
+ * transcript provide an explicit conversational boundary. No timing heuristic
+ * is used, so late/split transcripts cannot silently reset this authority.
  */
 export function decideMalformedToolCorrection(
   state: MalformedToolCorrectionState,
@@ -52,11 +90,13 @@ export function decideMalformedToolCorrection(
 
   if (!valid) {
     if (state.pendingMalformedTool && state.pendingMalformedTool !== tool) {
-      return { action: "REJECT_CROSS_TOOL_CORRECTION", next: state };
+      return { action: "REJECT_CROSS_TOOL_CORRECTION", next: requireRecovery(state) };
     }
     return {
       action: "PASS_INVALID_WITHOUT_CONSUMING",
-      next: { pendingMalformedTool: tool },
+      next: state.pendingMalformedTool
+        ? state
+        : { ...state, pendingMalformedTool: tool },
     };
   }
 
@@ -65,7 +105,7 @@ export function decideMalformedToolCorrection(
   }
 
   if (state.pendingMalformedTool !== tool) {
-    return { action: "REJECT_CROSS_TOOL_CORRECTION", next: state };
+    return { action: "REJECT_CROSS_TOOL_CORRECTION", next: requireRecovery(state) };
   }
 
   return {
