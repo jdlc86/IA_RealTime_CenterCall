@@ -51,21 +51,21 @@ function hasUsableTranscript(value: unknown): boolean {
  * input-policy authority.
  *
  * Only usable completed transcripts may acquire ownership and suspend turn
- * detection. Unusable transcripts cannot own the pipeline or disable VAD.
+ * detection. If a newer caller speech item has already started, an older split
+ * fragment is stale as a semantic boundary: it must neither acquire ownership
+ * nor enter lower semantic layers on its own. The provider conversation still
+ * retains that item as context for the newer fragment.
+ *
  * A transcript that arrives after normal assistant playback already started is
  * late evidence for the turn already being answered and must not reacquire a
  * lock whose playback release boundary has already passed.
- *
- * When normal playback starts, v36 releases only semantic serialization. v40
- * owns the barge-in listening configuration and is the sole writer of the
- * non-interrupting VAD mode for that playback boundary.
- * ConversationTurnLifecycle remains the authority for caller/waiting state.
  */
 export class CallSession extends BaseConstructor {
   private turnConcurrencyV36 = new TurnConcurrencyLifecycle();
   private turnConcurrencyWatchdogV36: ReturnType<typeof setTimeout> | null = null;
   private protectedResponseIdsV36 = new Set<string>();
   private normalPlaybackActiveV36 = false;
+  private latestCallerSpeechItemIdV36: string | null = null;
 
   protected shouldBypassTurnConcurrencyV36(_event: RealtimeEvent): boolean {
     return false;
@@ -128,6 +128,7 @@ export class CallSession extends BaseConstructor {
     const wasActive = this.turnConcurrencyV36.release();
     this.clearTurnConcurrencyWatchdogV36();
     this.normalPlaybackActiveV36 = false;
+    this.latestCallerSpeechItemIdV36 = null;
     (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_DETACHED_FOR_TERMINAL_V36", {
       reason,
       was_active: wasActive,
@@ -177,6 +178,10 @@ export class CallSession extends BaseConstructor {
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const event = parseEvent(data);
 
+    if (event?.type === "input_audio_buffer.speech_started" && event.item_id) {
+      this.latestCallerSpeechItemIdV36 = event.item_id;
+    }
+
     if (event?.type === "response.created") {
       const id = responseId(event);
       const protectedKind = event.response?.metadata?.[PROTECTED_METADATA_KEY];
@@ -188,6 +193,11 @@ export class CallSession extends BaseConstructor {
     if (event?.type === "conversation.item.input_audio_transcription.completed") {
       const usable = hasUsableTranscript(event.transcript);
       const higherLayerOwns = this.shouldBypassTurnConcurrencyV36(event);
+      const newerCallerSpeechObserved = Boolean(
+        event.item_id &&
+        this.latestCallerSpeechItemIdV36 &&
+        event.item_id !== this.latestCallerSpeechItemIdV36,
+      );
 
       if (!higherLayerOwns && this.turnConcurrencyV36.isActive()) {
         this.discardOverlappingTurnV36(event, usable);
@@ -198,10 +208,21 @@ export class CallSession extends BaseConstructor {
         usableTranscript: usable,
         normalPlaybackActive: this.normalPlaybackActiveV36,
         higherLayerOwns,
+        newerCallerSpeechObserved,
       });
 
       if (decision === "ACQUIRE") {
         this.acquireTurnConcurrencyV36();
+      } else if (decision === "BYPASS_NEWER_CALLER_SPEECH") {
+        (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_OLDER_SPLIT_FRAGMENT_DEFERRED_V36", {
+          item_id: event.item_id ?? null,
+          latest_caller_speech_item_id: this.latestCallerSpeechItemIdV36,
+          ownership_acquired: false,
+          turn_detection_suspended: false,
+          semantic_pipeline_entered: false,
+          timing_heuristic: false,
+        });
+        return;
       } else if (decision === "BYPASS_UNUSABLE") {
         (this as any).diagnostics?.checkpoint?.("TURN_CONCURRENCY_UNUSABLE_TRANSCRIPT_BYPASSED_V36", {
           item_id: event.item_id ?? null,
