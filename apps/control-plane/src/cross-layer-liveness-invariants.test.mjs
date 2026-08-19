@@ -221,13 +221,16 @@ test("runtime wiring: invalid and rejected tool paths both preserve an explicit 
 
 test("runtime wiring: active entrypoint and critical layers consume the policies exercised above", () => {
   const index = readFileSync(new URL("./index-v6.ts", import.meta.url), "utf8");
+  const v52 = readFileSync(new URL("./call-session-v52-trusted-reservation-contact.ts", import.meta.url), "utf8");
   const v51 = readFileSync(new URL("./call-session-v51-malformed-tool-authority.ts", import.meta.url), "utf8");
   const v36 = readFileSync(new URL("./call-session-v36.ts", import.meta.url), "utf8");
   const v40 = readFileSync(new URL("./call-session-v40-rebuild.ts", import.meta.url), "utf8");
   const v26 = readFileSync(new URL("./call-session-v26.ts", import.meta.url), "utf8");
   const v50 = readFileSync(new URL("./call-session-v50-reservation-date-scope.ts", import.meta.url), "utf8");
 
-  assert.match(index, /call-session-v51-malformed-tool-authority/);
+  assert.match(index, /call-session-v52-trusted-reservation-contact/);
+  assert.match(v52, /call-session-v51-malformed-tool-authority/);
+  assert.match(v52, /rewriteReservationCreateContactEvent/);
   assert.match(v51, /decideMalformedToolCorrection/);
   assert.match(v51, /ASSISTANT_RESPONSE_STARTED/);
   assert.match(v51, /ASSISTANT_AUDIO_STOPPED/);
@@ -241,4 +244,5 @@ test("runtime wiring: active entrypoint and critical layers consume the policies
   assert.match(v26, /decideDirectPostToolResponse/);
   assert.match(v50, /decideReservationDateScope/);
   assert.doesNotMatch(v51, /setTimeout|sleep\s*\(|delay\s*\(/);
+  assert.doesNotMatch(v52, /setTimeout|sleep\s*\(|delay\s*\(/);
 });
