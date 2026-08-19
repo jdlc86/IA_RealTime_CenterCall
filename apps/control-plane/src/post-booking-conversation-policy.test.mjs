@@ -89,6 +89,24 @@ test("commit-time availability conflict has deterministic caller recovery and no
   assert.match(decision.instructions, /confirmación explícita nueva/i);
 });
 
+test("unavailable requested slot must yield speech and wait for caller before searching alternatives", () => {
+  const decision = decideDirectPostToolResponse("restaurant_reservation_create", {
+    ok: true,
+    status: "UNAVAILABLE_WITH_SEARCH_OPTION",
+    requested_available: false,
+    suggestion: "SEARCH_ALTERNATIVE_SLOTS",
+    structural_fit_available: true,
+  });
+  assert.equal(decision.action, "RECOVER");
+  if (decision.action !== "RECOVER") return;
+  assert.equal(decision.reason, "RESERVATION_SLOT_UNAVAILABLE");
+  assert.match(decision.exactText, /no (?:tengo|hay) disponibilidad/i);
+  assert.match(decision.exactText, /otros horarios/i);
+  assert.match(decision.instructions, /No llames herramientas en esta misma respuesta/i);
+  assert.match(decision.instructions, /Espera la respuesta del cliente/i);
+  assert.match(decision.instructions, /restaurant_reservation_search/i);
+});
+
 test("reservation MISSING_INFORMATION must yield one governed caller question instead of another tool", () => {
   const decision = decideDirectPostToolResponse("restaurant_reservation_create", {
     ok: true,
