@@ -43,3 +43,14 @@ test("V44 preserves V29 per-item bookkeeping when raw VAD is suppressed", async 
   assert.match(v29, /semantic_authority_acquired: false/);
   assert.match(v29, /transcript_still_required: true/);
 });
+
+test("provider-cleared false barge-in cannot strand the call in dead air", async () => {
+  const v40 = await source("call-session-v40-rebuild.ts");
+  assert.match(v40, /decideIgnoredBargeInPlaybackRecovery/);
+  assert.match(v40, /providerClearedPlaybackBeforeDecisionV40/);
+  assert.match(v40, /BARGE_IN_PROVIDER_CLEAR_BEFORE_DECISION_V40_REBUILD/);
+  assert.match(v40, /BARGE_IN_PROVIDER_CLEAR_LIVENESS_RECOVERY_V40_REBUILD/);
+  assert.match(v40, /RECOVER_LIVENESS/);
+  assert.doesNotMatch(v40, /setTimeout\s*\(/);
+  assert.doesNotMatch(v40, /\bsleep\s*\(/);
+});
