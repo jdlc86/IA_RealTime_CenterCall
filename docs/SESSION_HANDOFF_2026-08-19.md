@@ -56,7 +56,7 @@ Hasta cerrar los gates pre-Gemini, `OPENAI` sigue siendo el único provider regi
 
 ```text
 A ProviderSelector tenant/KV       ✅ IMPLEMENTADO + CI VERDE
-B V40/V44 provider-neutral         🟡 IMPLEMENTADO + CI VERDE / DEPLOY+E2E PENDIENTE
+B V40/V44 provider-neutral         🟡 REABIERTO / FIX CI VERDE / NUEVO E2E PENDIENTE
 C ProviderCapabilities             ⛔ NO INICIAR HASTA CERRAR B
 D MediaTransport contract          ⛔ NO INICIAR HASTA CERRAR C
 Gemini                              ⛔ NO INICIAR HASTA CERRAR A-D
@@ -88,18 +88,9 @@ Implementación:
 - `index-v6.ts` es el entrypoint configurado en Wrangler.
 - media path sin cambios.
 
-Estado:
+### Gate B — neutralización provider-neutral
 
-```text
-IMPLEMENTADO = sí
-CI VERDE = sí
-DESPLEGADO = no confirmado
-VALIDADO E2E = no afirmado
-```
-
-### Gate B
-
-Commits:
+Commits base:
 
 ```text
 43e5d64cd209f4da0b6932f542192278dd601cc0
@@ -109,7 +100,7 @@ refactor(gate-b): neutralize v40 v44 realtime boundary
 fix(gate-b): preserve lifecycle speech-kind contract
 ```
 
-CI:
+CI base:
 
 ```text
 #541 — FAILURE
@@ -120,21 +111,16 @@ Run tests        — SUCCESS
 Wrangler dry-run — SUCCESS
 ```
 
-Causa del fallo #541 y resolución:
-
-- V40/V44 necesitaban conservar la protección del anuncio de handoff que antes provenía de metadata OpenAI.
-- El primer cambio representó `HANDOFF` como `AssistantSpeechKind`, lo que amplió accidentalmente el contrato consumido por el lifecycle.
-- La corrección no modificó `ConversationTurnLifecycle`: `realtime-turn-lifecycle-adapter.ts` proyecta `HANDOFF → NORMAL` únicamente para lifecycle, preservando su comportamiento histórico; V40/V44 siguen viendo `HANDOFF` y lo tratan como speech protegido.
-
 Neutralización Gate B:
 
 - V40 usa `adaptRealtimeProviderEvents()` y `realtimeCommandPortFor()` de la fachada neutral.
 - V44 usa eventos neutrales para raw VAD/playback.
 - `raw-vad-barge-in-routing.ts` decide sobre `CALLER_SPEECH_STARTED`, no sobre `input_audio_buffer.speech_started`.
 - El adapter OpenAI expone `TEXT_DECISION_COMPLETED` y `sourceItemId` para el clasificador de barge-in.
-- tests de regresión impiden reintroducir nombres wire OpenAI en V40/V44.
+- V40/V44 conservan la protección del handoff; lifecycle conserva su contrato histórico.
+- reducers/effects de response ownership no se modificaron.
 
-Invariantes preservados:
+Invariantes:
 
 ```text
 raw VAD = evidencia acústica, no autoridad semántica
@@ -157,37 +143,95 @@ Telnyx → OpenAI direct SIP
 business/reservation semantics
 ```
 
-## 4. Gate B todavía NO está cerrado
+## 4. Gate B reabierto por falso IGNORE E2E
 
-La metodología acordada exige llamada E2E real con:
-
-1. turno normal;
-2. interrupción legítima (`INTERRUPT`);
-3. ruido/background input (`IGNORE`);
-4. continuación correcta después de la interrupción.
-
-La sesión que implementó el código comprobó que:
-
-- GitHub solo contiene `.github/workflows/control-plane-ci.yml`;
-- ese workflow hace tests + Wrangler dry-run, no deploy;
-- no había Wrangler autenticado ni credenciales Cloudflare disponibles en la sesión.
-
-Por tanto no afirmar:
+Llamada que revela la regresión:
 
 ```text
-DESPLEGADO
-VALIDADO E2E
+call_id = rtc_u7_EEU8v4REv6CCm7t4Ssb80
+fecha local ≈ 2026-08-19 08:32 Europe/Madrid
 ```
 
-para Gate B hasta tener evidencia real.
+Caso real:
 
-## 5. Próximo paso exacto
+```text
+caller pide MENU
+→ restaurant_business_info topics=[MENU]
+→ Lucía empieza a responder
+→ caller interrumpe: pregunta por horario
+→ RAW_VAD_ROUTED_TO_V40_ONLY_V44
+→ BARGE_IN_CLASSIFIER_REQUESTED_V40_REBUILD
+→ BARGE_IN_CLASSIFIER_BOUND_V40_REBUILD
+→ BARGE_IN_IGNORED_V40_REBUILD
+   semantic_pipeline_entered=false
+→ la primera pregunta de horario se pierde
+```
 
-1. Verificar HEAD real de `rebuild/v39-stable-baseline`.
-2. Desplegar el HEAD que contiene Gate B.
-3. Ejecutar llamada E2E de barge-in.
-4. Consultar `public.call_diagnostic_events` antes de cualquier corrección.
-5. Buscar al menos:
+Al repetir la pregunta:
+
+```text
+→ BARGE_IN_CONFIRMED_V40_REBUILD
+→ CONFIRMED_BARGE_IN_SEMANTIC_TURN_STARTED_V29
+→ restaurant_business_info topics=[HOURS]
+```
+
+Conclusión: la neutralización mecánica V40/V44 funcionaba, pero un único `IGNORE` del clasificador auxiliar tenía autoridad destructiva suficiente para borrar una transcripción usable del caller.
+
+### Causa raíz
+
+Antes del fix, `barge-in-confirmation.ts`:
+
+- pedía `IGNORE` ante duda;
+- `parseBargeInDecision()` trataba cualquier salida distinta de `INTERRUPT` como `IGNORE`;
+- V40 podía entonces descartar el item y no promoverlo a la semántica V29.
+
+La petición real podía perderse por una sola clasificación conservadora o salida imperfecta del modelo.
+
+### Fix aplicado
+
+Estado de código tras la corrección:
+
+```text
+188ae177fda6544b40c3f014ebe8d36edcd3a520
+Control Plane CI #547 — SUCCESS
+Run tests          — SUCCESS
+Wrangler dry-run   — SUCCESS
+```
+
+La política nueva exige una certificación positiva para una decisión destructiva:
+
+```text
+INTERRUPT                       → INTERRUPT
+IGNORE_CONFIRMED                → IGNORE
+IGNORE antiguo                  → INTERRUPT
+salida ambigua/malformada       → INTERRUPT
+sin texto/fallback del classifier → INTERRUPT
+```
+
+El prompt solo permite `IGNORE_CONFIRMED` cuando el contenido es inequívocamente fondo/eco/TV/radio/ruido o no dirigido. Ante duda se conserva el turno como `INTERRUPT`.
+
+No se añadió un segundo clasificador. Se consideró y se descartó ese diseño para no crear una segunda autoridad paralela. El diff funcional final respecto al checkpoint documental previo afecta solo:
+
+```text
+apps/control-plane/src/barge-in-confirmation.ts
+apps/control-plane/src/barge-in-confirmation.test.mjs
+```
+
+V40/V44, reducers, v36, V41, lifecycle, hangup y 750 ms quedan sin cambios.
+
+## 5. Gate B todavía NO está cerrado
+
+El fix está IMPLEMENTADO y CI-verde, pero exige un nuevo deploy + E2E.
+
+Prueba obligatoria:
+
+1. pedir menú;
+2. durante la respuesta interrumpir con `¿A qué hora cierran?`;
+3. comprobar que la primera interrupción llega a `BARGE_IN_CONFIRMED_V40_REBUILD` y luego a `restaurant_business_info topics=[HOURS]`;
+4. durante otra respuesta generar una frase realmente de fondo y comprobar que solo se ignora si el classifier certifica fondo;
+5. verificar continuación normal y ausencia de warnings/errors.
+
+Eventos clave:
 
 ```text
 BARGE_IN_PLAYBACK_WINDOW_OPENED_V40_REBUILD
@@ -197,10 +241,11 @@ BARGE_IN_CLASSIFIER_BOUND_V40_REBUILD
 BARGE_IN_CONFIRMED_V40_REBUILD
 BARGE_IN_IGNORED_V40_REBUILD
 BARGE_IN_UNCLASSIFIABLE_IGNORED_V40_REBUILD
+CONFIRMED_BARGE_IN_SEMANTIC_TURN_STARTED_V29
+DEBUG_MODEL_TOOL_DECISION_V29
 ```
 
-6. Confirmar ausencia de warning/error y ownership incoherente.
-7. Solo entonces cerrar B y comenzar Gate C automáticamente.
+No comenzar Gate C hasta que esta prueba sea E2E-verde.
 
 ## 6. Gate C — cuando B quede E2E verde
 
@@ -252,4 +297,4 @@ Metodología:
 4. CI verde != deploy.
 5. No apilar timers/parches.
 6. No tocar v36/v46/HangupController/750 ms sin evidencia directa.
-7. No saltar Gate B por conveniencia: C permanece bloqueado hasta E2E real.
+7. No saltar Gate B: C permanece bloqueado hasta E2E real.
