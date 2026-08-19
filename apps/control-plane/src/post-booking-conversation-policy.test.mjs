@@ -89,6 +89,37 @@ test("commit-time availability conflict has deterministic caller recovery and no
   assert.match(decision.instructions, /confirmación explícita nueva/i);
 });
 
+test("reservation MISSING_INFORMATION must yield one governed caller question instead of another tool", () => {
+  const decision = decideDirectPostToolResponse("restaurant_reservation_create", {
+    ok: true,
+    status: "MISSING_INFORMATION",
+    missing: ["starts_at"],
+    draft: { party_size: 5 },
+  });
+  assert.equal(decision.action, "COLLECT");
+  if (decision.action !== "COLLECT") return;
+  assert.equal(decision.reason, "RESERVATION_MISSING_INFORMATION");
+  assert.deepEqual(decision.missing, ["starts_at"]);
+  assert.match(decision.instructions, /día/i);
+  assert.match(decision.instructions, /hora/i);
+  assert.match(decision.instructions, /No llames herramientas/i);
+});
+
+test("reservation missing-field recovery remains structural for multiple fields", () => {
+  const decision = decideDirectPostToolResponse("restaurant_reservation_create", {
+    ok: true,
+    status: "MISSING_INFORMATION",
+    missing: ["customer_name", "customer_phone"],
+    draft: { party_size: 5, starts_at: "2026-08-22T21:00:00+02:00" },
+  });
+  assert.equal(decision.action, "COLLECT");
+  if (decision.action !== "COLLECT") return;
+  assert.deepEqual(decision.missing, ["customer_name", "customer_phone"]);
+  assert.match(decision.instructions, /nombre/i);
+  assert.match(decision.instructions, /tel[eé]fono/i);
+  assert.doesNotMatch(decision.instructions, /restaurant_reservation_search/i);
+});
+
 test("malformed availability conflict evidence is not promoted to deterministic recovery", () => {
   assert.deepEqual(
     decideDirectPostToolResponse("restaurant_reservation_create", {
