@@ -174,7 +174,7 @@ test("runtime wiring: active entrypoint and critical layers consume the policies
   const index = readFileSync(new URL("./index-v6.ts", import.meta.url), "utf8");
   const v51 = readFileSync(new URL("./call-session-v51-malformed-tool-authority.ts", import.meta.url), "utf8");
   const v36 = readFileSync(new URL("./call-session-v36.ts", import.meta.url), "utf8");
-  const v40 = readFileSync(new URL("./call-session-v40-response-owner-rebuild.ts", import.meta.url), "utf8");
+  const v40 = readFileSync(new URL("./call-session-v40-rebuild.ts", import.meta.url), "utf8");
   const v26 = readFileSync(new URL("./call-session-v26.ts", import.meta.url), "utf8");
   const v50 = readFileSync(new URL("./call-session-v50-reservation-date-scope.ts", import.meta.url), "utf8");
 
