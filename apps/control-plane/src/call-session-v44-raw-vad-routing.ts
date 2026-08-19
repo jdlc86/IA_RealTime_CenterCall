@@ -21,8 +21,8 @@ function responseId(event: RealtimeProviderEvent): string | null {
  *
  * The provider-neutral speech item identity is still forwarded to v40's ordering
  * observer even when the raw VAD event itself is suppressed from lower layers.
- * This lets v40 distinguish an older classified fragment from a newer caller
- * fragment without introducing a timing window.
+ * V29 also receives only a bookkeeping reset for that acoustic item: no semantic
+ * gate or caller-directed authority is acquired until a completed transcript.
  */
 export class CallSession extends BaseConstructor {
   private protectedResponseIdsV44 = new Set<string>();
@@ -53,6 +53,11 @@ export class CallSession extends BaseConstructor {
       }
 
       if (decideRawVadRoute(event.type, this.normalPlaybackActiveV44) === "V40_ONLY") {
+        const beginSemanticBookkeeping = (this as any).beginSemanticTurnFromAcousticEvidenceV29;
+        if (typeof beginSemanticBookkeeping === "function" && event.type === "CALLER_SPEECH_STARTED") {
+          beginSemanticBookkeeping.call(this, event.itemId ?? null, "v44_v40_only_raw_vad");
+        }
+
         const reconcile = (this as any).reconcileOwnerEventV40;
         if (typeof reconcile === "function") {
           reconcile.call(this, { type: "caller_speech_started" });
@@ -62,6 +67,7 @@ export class CallSession extends BaseConstructor {
             normal_playback_active: true,
             inherited_raw_vad_suppressed: true,
             semantic_authority: "v40_classifier",
+            semantic_turn_bookkeeping_reset: true,
             provider_neutral_event: event.type,
           });
           return;

@@ -71,6 +71,18 @@ export class CallSession extends BaseConstructor {
     });
   }
 
+  protected beginSemanticTurnFromAcousticEvidenceV29(itemId: string | null, source: string): void {
+    if ((this as any).state === "closing" || (this as any).hangupStarted) return;
+    this.beginSemanticTurnV29();
+    (this as any).diagnostics?.checkpoint?.("SEMANTIC_TURN_BOOKKEEPING_RESET_FROM_ACOUSTIC_EVIDENCE_V29", {
+      item_id: itemId,
+      source,
+      semantic_authority_acquired: false,
+      tool_gate_armed: false,
+      transcript_still_required: true,
+    });
+  }
+
   async fetch(request: Request): Promise<Response> {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
     const response = await super.fetch(request);
@@ -253,7 +265,8 @@ export class CallSession extends BaseConstructor {
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const event = parseEvent(data);
     if (event?.type === "input_audio_buffer.speech_started") {
-      this.beginSemanticTurnV29();
+      const itemId = typeof event.item_id === "string" ? event.item_id : null;
+      this.beginSemanticTurnFromAcousticEvidenceV29(itemId, "v29_inherited_raw_vad");
       await V26Prototype.handleRealtimeMessage.call(this, data);
       return;
     }
