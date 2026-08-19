@@ -30,9 +30,28 @@ test("OpenAI assistant audio transcript becomes provider-neutral transcript evid
   }]);
 });
 
-test("OpenAI response metadata maps protected speech and purpose without leaking wire names", () => {
-  assert.deepEqual(adaptOpenAIRealtimeEvent(wire({ type: "response.created", response: { id: "r1", metadata: { purpose: "presence_recovery_v18" } } })), [{ type: "ASSISTANT_RESPONSE_STARTED", kind: "PRESENCE", responseId: "r1", purpose: "presence_recovery_v18" }]);
-  assert.deepEqual(adaptOpenAIRealtimeEvent(wire({ type: "response.created", response: { id: "g1", metadata: { protected_speech_v35: "GREETING" } } })), [{ type: "ASSISTANT_RESPONSE_STARTED", kind: "GREETING", responseId: "g1", purpose: undefined }]);
+test("OpenAI isolated text decision preserves correlation without leaking wire names", () => {
+  assert.deepEqual(adaptOpenAIRealtimeEvent(wire({
+    type: "response.created",
+    response: { id: "classifier-1", metadata: { purpose: "barge_in_classifier_rebuild", source_item_id: "item-1" } },
+  })), [{
+    type: "ASSISTANT_RESPONSE_STARTED",
+    kind: "NORMAL",
+    responseId: "classifier-1",
+    purpose: "barge_in_classifier_rebuild",
+    sourceItemId: "item-1",
+  }]);
+  assert.deepEqual(adaptOpenAIRealtimeEvent(wire({
+    type: "response.output_text.done",
+    response_id: "classifier-1",
+    text: "INTERRUPT",
+  })), [{ type: "TEXT_DECISION_COMPLETED", responseId: "classifier-1", text: "INTERRUPT" }]);
+});
+
+test("OpenAI response metadata maps protected speech, handoff and purpose", () => {
+  assert.deepEqual(adaptOpenAIRealtimeEvent(wire({ type: "response.created", response: { id: "r1", metadata: { purpose: "presence_recovery_v18" } } })), [{ type: "ASSISTANT_RESPONSE_STARTED", kind: "PRESENCE", responseId: "r1", purpose: "presence_recovery_v18", sourceItemId: undefined }]);
+  assert.deepEqual(adaptOpenAIRealtimeEvent(wire({ type: "response.created", response: { id: "g1", metadata: { protected_speech_v35: "GREETING" } } })), [{ type: "ASSISTANT_RESPONSE_STARTED", kind: "GREETING", responseId: "g1", purpose: undefined, sourceItemId: undefined }]);
+  assert.deepEqual(adaptOpenAIRealtimeEvent(wire({ type: "response.created", response: { id: "h1", metadata: { human_handoff_v37: "announcement" } } })), [{ type: "ASSISTANT_RESPONSE_STARTED", kind: "HANDOFF", responseId: "h1", purpose: undefined, sourceItemId: undefined }]);
   assert.deepEqual(adaptOpenAIRealtimeEvent(wire({ type: "output_audio_buffer.started", response_id: "r1", response: { metadata: { protected_speech_v35: "GREETING" } } })), [{ type: "ASSISTANT_AUDIO_STARTED", kind: "GREETING", responseId: "r1" }]);
 });
 

@@ -16,6 +16,7 @@ type OpenAIRealtimeEvent = {
   name?: string;
   arguments?: string;
   transcript?: string;
+  text?: string;
   call_id?: string;
   item_id?: string;
   response_id?: string;
@@ -48,6 +49,7 @@ function assistantKind(event: OpenAIRealtimeEvent): AssistantSpeechKind {
   if (protectedKind === "GREETING") return "GREETING";
   if (protectedKind === "RECOVERY") return "RECOVERY";
   if (protectedKind === "TERMINAL") return "TERMINAL";
+  if (metadata.human_handoff_v37) return "HANDOFF";
   const purpose = metadata.purpose;
   if (purpose === "presence_recovery_v18" || purpose === "presence_check") return "PRESENCE";
   if (purpose === "terminal_farewell" || purpose === "repeated_ignored_input_close") return "TERMINAL";
@@ -104,6 +106,15 @@ export function adaptOpenAIRealtimeEvent(data: unknown): RealtimeProviderEvent[]
       if (id) adapted.responseId = id;
       return [adapted];
     }
+    case "response.output_text.done": {
+      const adapted: RealtimeProviderEvent = {
+        type: "TEXT_DECISION_COMPLETED",
+        text: typeof event.text === "string" ? event.text : "",
+      };
+      const id = responseId(event);
+      if (id) adapted.responseId = id;
+      return [adapted];
+    }
     case "output_audio_buffer.started":
       return [{ type: "ASSISTANT_AUDIO_STARTED", kind: assistantKind(event), responseId: responseId(event) }];
     case "output_audio_buffer.stopped":
@@ -111,12 +122,15 @@ export function adaptOpenAIRealtimeEvent(data: unknown): RealtimeProviderEvent[]
     case "output_audio_buffer.cleared":
       return [{ type: "ASSISTANT_AUDIO_CLEARED", kind: assistantKind(event), responseId: responseId(event) }];
     case "response.created": {
-      const purpose = event.response?.metadata?.purpose;
+      const metadata = event.response?.metadata ?? {};
+      const purpose = metadata.purpose;
+      const sourceItemId = metadata.source_item_id;
       return [{
         type: "ASSISTANT_RESPONSE_STARTED",
         kind: assistantKind(event),
         responseId: responseId(event),
         purpose: typeof purpose === "string" ? purpose : undefined,
+        sourceItemId: typeof sourceItemId === "string" ? sourceItemId : undefined,
       }];
     }
     case "response.done":
