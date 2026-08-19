@@ -6,6 +6,7 @@ import {
   selectSemanticTool,
   shouldArmSemanticGateAfterTranscript,
   shouldBeginSemanticTurnForTranscript,
+  shouldConsumeSemanticToolDecision,
 } from "../.test-dist/semantic-turn-decision-policy.js";
 
 test("first public tool before transcript becomes authoritative for the caller turn", () => {
@@ -60,4 +61,29 @@ test("no transcript gate is armed before a caller turn exists", () => {
   const s = initialSemanticTurnDecisionState();
   assert.equal(shouldBeginSemanticTurnForTranscript(s, false), true);
   assert.equal(shouldArmSemanticGateAfterTranscript(s), false);
+});
+
+test("malformed tool arguments do not consume the semantic decision slot", () => {
+  assert.equal(shouldConsumeSemanticToolDecision('{"starts_at":"2026-08-22","party_size":'), false);
+  assert.equal(shouldConsumeSemanticToolDecision('{"starts_at":"2026-08-22","party_size":2}'), true);
+  assert.equal(shouldConsumeSemanticToolDecision(undefined), true);
+});
+
+test("malformed attempt can be followed by one valid authoritative tool, but not two", () => {
+  let s = beginSemanticCallerTurn();
+
+  if (shouldConsumeSemanticToolDecision('{"starts_at":"2026-08-22","party_size":')) {
+    ({ next: s } = selectSemanticTool(s, "restaurant_reservation_create"));
+  }
+  assert.equal(s.decisionTaken, false);
+
+  if (shouldConsumeSemanticToolDecision('{"starts_at":"2026-08-22","party_size":2}')) {
+    const corrected = selectSemanticTool(s, "restaurant_reservation_create");
+    assert.equal(corrected.allowed, true);
+    s = corrected.next;
+  }
+
+  const second = selectSemanticTool(s, "restaurant_reservation_cancel");
+  assert.equal(second.allowed, false);
+  assert.equal(second.duplicateOf, "restaurant_reservation_create");
 });
