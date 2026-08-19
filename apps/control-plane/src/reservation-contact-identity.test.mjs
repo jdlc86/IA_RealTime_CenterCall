@@ -22,6 +22,14 @@ test("trusted caller remains authoritative when use_caller_phone=true", () => {
   assert.deepEqual(result, { phone: "+34642651015", source: "TRUSTED_CALLER" });
 });
 
+test("omitted caller-contact flag never lets model replace operator identity", () => {
+  const result = resolveReservationContactIdentity({
+    trustedCallerPhone: "+34642651015",
+    suppliedPhone: "+93642651015",
+  });
+  assert.deepEqual(result, { phone: "+34642651015", source: "TRUSTED_CALLER" });
+});
+
 test("explicit alternate contact must be internationally unambiguous", () => {
   assert.throws(() => resolveReservationContactIdentity({
     trustedCallerPhone: "+34642651015",
@@ -33,13 +41,6 @@ test("explicit alternate contact must be internationally unambiguous", () => {
     trustedCallerPhone: "+34642651015",
     suppliedPhone: "00 93 642651015",
     useCallerPhone: false,
-  }), { phone: "+93642651015", source: "EXPLICIT_OTHER_CONTACT" });
-});
-
-test("legacy omitted boolean accepts only explicit international alternate contact", () => {
-  assert.deepEqual(resolveReservationContactIdentity({
-    trustedCallerPhone: "+34642651015",
-    suppliedPhone: "+93642651015",
   }), { phone: "+93642651015", source: "EXPLICIT_OTHER_CONTACT" });
 });
 
