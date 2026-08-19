@@ -85,6 +85,34 @@ export class CallSession extends BaseConstructor {
         };
       }
 
+      if (decision.action === "RECOVER") {
+        session.diagnostics?.checkpoint?.("DIRECT_POST_TOOL_RECOVERY_GOVERNED_V26", {
+          tool,
+          reason: decision.reason,
+          response_boundary: "direct_agent_runtime_v26",
+          tools_disabled: true,
+          immediate_alternative_search: false,
+          fresh_confirmation_required: true,
+          timing_heuristic: false,
+        });
+        return {
+          action: "REPLACE_DEFAULT_RESPONSE",
+          speech: {
+            instructions: decision.instructions,
+            exactText: decision.exactText,
+            tools: "DISABLED",
+            purpose: "reservation_availability_changed_v26",
+            metadata: {
+              authority: "direct_agent_runtime_v26",
+              tool,
+              reason: decision.reason,
+              immediate_alternative_search: false,
+              fresh_confirmation_required: true,
+            },
+          },
+        };
+      }
+
       if (decision.reason === "MARKETING_CONSENT_PENDING") {
         session.diagnostics?.checkpoint?.("DIRECT_POST_TOOL_RESPONSE_DEFERRED_TO_MARKETING_V26", {
           tool,
@@ -118,7 +146,7 @@ export class CallSession extends BaseConstructor {
         legacy_core_intent_classifier_installed: false,
         legacy_conversation_intent_allowed: false,
         tool_choice: "auto",
-        post_tool_response_policy: "structured_terminal_continuation",
+        post_tool_response_policy: "structured_terminal_continuation+reservation_conflict_recovery",
         direct_post_tool_response_boundary: this.postToolResponseBoundaryInstalledV26,
         explicit_farewell_requires_second_confirmation: false,
       });

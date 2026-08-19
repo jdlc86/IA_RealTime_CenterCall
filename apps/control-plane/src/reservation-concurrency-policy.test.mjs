@@ -42,6 +42,10 @@ test("reservation concurrency: losing the slot is non-terminal and requires fres
   assert.equal(output.reservation_created, false);
   assert.equal(output.requires_new_confirmation, true);
   assert.equal(output.retryable, true);
+  assert.equal(output.offer_alternative_search, true);
+  assert.equal(output.alternative_search_scope, "SAME_LOCAL_DATE");
+  assert.equal(output.auto_search_same_response, false);
   assert.match(String(output.instruction), /no se creó ninguna reserva/i);
+  assert.match(String(output.instruction), /no hagas una búsqueda automática/i);
   assert.match(String(output.instruction), /nueva confirmación explícita/i);
 });

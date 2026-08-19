@@ -7,6 +7,8 @@ const TERMINAL_RESULT_MARKERS = [
 ];
 
 export const CONTINUATION_QUESTION = "¿Necesitas algo más en lo que pueda ayudarte?";
+export const RESERVATION_AVAILABILITY_CHANGED_SPEECH =
+  "Justo al confirmar, esa disponibilidad dejó de estar disponible y no se ha creado ninguna reserva. ¿Quieres que busque horarios cercanos para ese mismo día?";
 
 const CONTINUATION_INSTRUCTION =
   ` Después de comunicar el resultado, pregunta exactamente: ${CONTINUATION_QUESTION} ` +
@@ -16,6 +18,12 @@ const STRUCTURED_CONTINUATION_INSTRUCTIONS =
   `Comunica de forma breve y natural únicamente el resultado autorizado de la herramienta que acabas de recibir. ` +
   `Después pregunta exactamente: ${CONTINUATION_QUESTION} ` +
   "No añadas ninguna otra pregunta ni llames herramientas en esta respuesta.";
+
+const AVAILABILITY_CHANGED_INSTRUCTIONS =
+  `Pronuncia exactamente: ${JSON.stringify(RESERVATION_AVAILABILITY_CHANGED_SPEECH)} ` +
+  "No llames herramientas en esta misma respuesta. Espera la respuesta del cliente. " +
+  "Si después acepta buscar alternativas, usa restaurant_reservation_search en un turno posterior, limitado inicialmente a la misma fecha. " +
+  "Cualquier alternativa elegida deberá pasar de nuevo por restaurant_reservation_create y por una confirmación explícita nueva.";
 
 export type DirectPostToolResponseDecision =
   | {
@@ -28,6 +36,12 @@ export type DirectPostToolResponseDecision =
         | "RESERVATION_MODIFY_COMPLETED"
         | "BUSINESS_INFO_COMPLETED";
       instructions: string;
+    }
+  | {
+      action: "RECOVER";
+      reason: "RESERVATION_AVAILABILITY_CHANGED";
+      instructions: string;
+      exactText: string;
     }
   | {
       action: "DEFAULT";
@@ -52,10 +66,10 @@ function governed(reason: Extract<DirectPostToolResponseDecision, { action: "GOV
  * Structured post-tool policy for the direct-agent runtime.
  *
  * This is intentionally based on backend result fields instead of generated
- * speech text. Non-terminal states keep the model's normal tool workflow.
- * BOOKED with a pending marketing proposal also stays in the marketing subflow;
- * the deterministic continuation question is enforced after that subflow
- * completes.
+ * speech text. Non-terminal states keep the model's normal tool workflow except
+ * commit-time reservation conflicts: those yield one deterministic recovery
+ * sentence and a caller choice before any alternative search. This prevents an
+ * immediate MVCC read from racing a still-uncommitted winning transaction.
  */
 export function decideDirectPostToolResponse(
   toolName: string,
@@ -66,6 +80,20 @@ export function decideDirectPostToolResponse(
 
   const status = stringField(payload, "status");
   const stage = stringField(payload, "stage");
+
+  if (
+    toolName === "restaurant_reservation_create" &&
+    (stage === "AVAILABILITY_CHANGED" || status === "AVAILABILITY_CHANGED") &&
+    payload.reservation_created === false &&
+    payload.requires_new_confirmation === true
+  ) {
+    return {
+      action: "RECOVER",
+      reason: "RESERVATION_AVAILABILITY_CHANGED",
+      instructions: AVAILABILITY_CHANGED_INSTRUCTIONS,
+      exactText: RESERVATION_AVAILABILITY_CHANGED_SPEECH,
+    };
+  }
 
   if (toolName === "restaurant_reservation_create" && stage === "BOOKED") {
     if (payload.ask_marketing_consent === true) {

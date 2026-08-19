@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   CONTINUATION_QUESTION,
+  RESERVATION_AVAILABILITY_CHANGED_SPEECH,
   applyTerminalConversationPolicy,
   decideDirectPostToolResponse,
 } from "../.test-dist/post-booking-conversation-policy.js";
@@ -66,6 +67,37 @@ test("direct post-tool BOOKED with marketing pending preserves the marketing sub
       ask_marketing_consent: true,
     }),
     { action: "DEFAULT", reason: "MARKETING_CONSENT_PENDING" },
+  );
+});
+
+test("commit-time availability conflict has deterministic caller recovery and no same-response search", () => {
+  const decision = decideDirectPostToolResponse("restaurant_reservation_create", {
+    ok: true,
+    status: "AVAILABILITY_CHANGED",
+    stage: "AVAILABILITY_CHANGED",
+    reservation_created: false,
+    requires_new_confirmation: true,
+  });
+  assert.equal(decision.action, "RECOVER");
+  if (decision.action !== "RECOVER") return;
+  assert.equal(decision.reason, "RESERVATION_AVAILABILITY_CHANGED");
+  assert.equal(decision.exactText, RESERVATION_AVAILABILITY_CHANGED_SPEECH);
+  assert.match(decision.exactText, /no se ha creado ninguna reserva/i);
+  assert.match(decision.exactText, /horarios cercanos/i);
+  assert.match(decision.instructions, /No llames herramientas en esta misma respuesta/i);
+  assert.match(decision.instructions, /restaurant_reservation_search/i);
+  assert.match(decision.instructions, /confirmación explícita nueva/i);
+});
+
+test("malformed availability conflict evidence is not promoted to deterministic recovery", () => {
+  assert.deepEqual(
+    decideDirectPostToolResponse("restaurant_reservation_create", {
+      ok: true,
+      stage: "AVAILABILITY_CHANGED",
+      reservation_created: false,
+      requires_new_confirmation: false,
+    }),
+    { action: "DEFAULT", reason: "NON_TERMINAL" },
   );
 });
 

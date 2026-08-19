@@ -18,10 +18,25 @@ test("v26 owns one common structured direct post-tool response boundary", async 
   assert.match(v26, /purpose: "direct_post_tool_terminal_v26"/);
   assert.match(v26, /tools: "DISABLED"/);
   assert.match(v26, /exact_continuation_question: true/);
-  assert.match(v26, /post_tool_response_policy: "structured_terminal_continuation"/);
   assert.doesNotMatch(v26, /readFunctionOutputV26/);
   assert.doesNotMatch(v26, /isBareResponseCreateV26/);
   assert.doesNotMatch(v26, /pendingGovernedPostToolResponseV26/);
+});
+
+test("v26 owns commit-time reservation conflict speech without a timing heuristic", async () => {
+  const v26 = await source("call-session-v26.ts");
+  assert.match(v26, /decision\.action === "RECOVER"/);
+  assert.match(v26, /DIRECT_POST_TOOL_RECOVERY_GOVERNED_V26/);
+  assert.match(v26, /purpose: "reservation_availability_changed_v26"/);
+  assert.match(v26, /exactText: decision\.exactText/);
+  assert.match(v26, /immediate_alternative_search: false/);
+  assert.match(v26, /fresh_confirmation_required: true/);
+
+  const boundaryStart = v26.indexOf("private installPostToolResponseBoundaryV26");
+  const fetchStart = v26.indexOf("async fetch(", boundaryStart);
+  assert.ok(boundaryStart >= 0 && fetchStart > boundaryStart);
+  const boundary = v26.slice(boundaryStart, fetchStart);
+  assert.doesNotMatch(boundary, /setTimeout|sleep\s*\(/);
 });
 
 test("v26 preserves marketing subflow and adds no timing heuristic", async () => {

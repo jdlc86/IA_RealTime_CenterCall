@@ -30,6 +30,10 @@ export function reservationAvailabilityChangedOutput(reservation: {
     reservation_created: false,
     requires_new_confirmation: true,
     retryable: true,
+    conflict_reason: "COMMIT_TIME_CAPACITY_CONFLICT",
+    offer_alternative_search: true,
+    alternative_search_scope: "SAME_LOCAL_DATE",
+    auto_search_same_response: false,
     requested: {
       party_size: reservation.party_size,
       starts_at: reservation.starts_at,
@@ -38,7 +42,8 @@ export function reservationAvailabilityChangedOutput(reservation: {
     },
     instruction:
       "La disponibilidad cambió durante la confirmación y no se creó ninguna reserva. " +
-      "Explícalo como un cambio de disponibilidad, no como un error técnico. " +
-      "Pide otra hora o fecha, conserva los datos de contacto ya recogidos y exige una nueva confirmación explícita antes de reservar una alternativa.",
+      "No lo presentes como un error técnico. Informa del cambio y pregunta si el cliente quiere buscar horarios cercanos en esa misma fecha. " +
+      "No hagas una búsqueda automática en esta misma respuesta: una transacción concurrente puede seguir cerrando su commit. " +
+      "Conserva los datos de contacto ya recogidos y exige una nueva confirmación explícita antes de reservar cualquier alternativa.",
   };
 }
