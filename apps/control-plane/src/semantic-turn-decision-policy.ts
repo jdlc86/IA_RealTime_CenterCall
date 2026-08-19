@@ -19,6 +19,21 @@ export function shouldBeginSemanticTurnForTranscript(
   return !state.turnOpen || higherLayerOwns;
 }
 
+/**
+ * A syntactically malformed tool call is not an executable semantic decision.
+ * Empty/omitted arguments remain valid because several public tools use an
+ * empty object payload. Object JSON is required for non-empty arguments.
+ */
+export function shouldConsumeSemanticToolDecision(rawArguments: string | undefined): boolean {
+  if (!rawArguments?.trim()) return true;
+  try {
+    const parsed = JSON.parse(rawArguments) as unknown;
+    return Boolean(parsed && typeof parsed === "object" && !Array.isArray(parsed));
+  } catch {
+    return false;
+  }
+}
+
 export function selectSemanticTool(
   state: SemanticTurnDecisionState,
   tool: string,
