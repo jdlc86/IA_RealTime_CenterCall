@@ -11,7 +11,17 @@ test("usable transcript before playback acquires semantic serialization", () => 
     usableTranscript: true,
     normalPlaybackActive: false,
     higherLayerOwns: false,
+    newerCallerSpeechObserved: false,
   }), "ACQUIRE");
+});
+
+test("older split fragment cannot acquire v36 after a newer caller item started", () => {
+  assert.equal(decideTurnConcurrencyAcquire({
+    usableTranscript: true,
+    normalPlaybackActive: false,
+    higherLayerOwns: false,
+    newerCallerSpeechObserved: true,
+  }), "BYPASS_NEWER_CALLER_SPEECH");
 });
 
 test("late transcript after normal playback started cannot reacquire v36 lock", () => {
@@ -19,6 +29,7 @@ test("late transcript after normal playback started cannot reacquire v36 lock", 
     usableTranscript: true,
     normalPlaybackActive: true,
     higherLayerOwns: false,
+    newerCallerSpeechObserved: false,
   }), "BYPASS_PLAYBACK_ALREADY_STARTED");
 });
 
@@ -27,6 +38,7 @@ test("unusable transcript never acquires ownership", () => {
     usableTranscript: false,
     normalPlaybackActive: false,
     higherLayerOwns: false,
+    newerCallerSpeechObserved: false,
   }), "BYPASS_UNUSABLE");
 });
 
@@ -35,6 +47,7 @@ test("higher-layer ownership always wins over v36", () => {
     usableTranscript: true,
     normalPlaybackActive: false,
     higherLayerOwns: true,
+    newerCallerSpeechObserved: true,
   }), "BYPASS_HIGHER_LAYER");
 });
 
