@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   initialMalformedToolCorrectionState,
-  observeCallerTurnStarted,
+  observeMalformedToolRecoveryPlaybackCompleted,
+  observeCallerSpeechAfterMalformedRecovery,
+  observeCallerTranscriptAfterMalformedRecovery,
   decideMalformedToolCorrection,
 } from "../.test-dist/malformed-tool-correction-policy.js";
 import {
@@ -29,12 +31,40 @@ test("a different valid tool cannot replace a malformed semantic choice in the s
   const crossTool = decideMalformedToolCorrection(s, "restaurant_human_assistance", '{}');
   assert.equal(crossTool.action, "REJECT_CROSS_TOOL_CORRECTION");
   assert.equal(crossTool.next.pendingMalformedTool, "restaurant_reservation_create");
+  assert.equal(crossTool.next.recoveryRequired, true);
 });
 
-test("a fresh caller turn clears malformed correction affinity", () => {
+test("late or split transcript cannot clear malformed affinity before recovery completes", () => {
   let s = initialMalformedToolCorrectionState();
   s = decideMalformedToolCorrection(s, "restaurant_reservation_create", '{"starts_at":').next;
-  s = observeCallerTurnStarted(s);
+  s = decideMalformedToolCorrection(s, "restaurant_human_assistance", '{}').next;
+
+  const lateTranscript = observeCallerTranscriptAfterMalformedRecovery(s);
+  assert.equal(lateTranscript.pendingMalformedTool, "restaurant_reservation_create");
+  assert.equal(lateTranscript.recoveryRequired, true);
+});
+
+test("caller speech before recovery playback completion cannot authorize a new intent", () => {
+  let s = initialMalformedToolCorrectionState();
+  s = decideMalformedToolCorrection(s, "restaurant_reservation_create", '{"starts_at":').next;
+  s = decideMalformedToolCorrection(s, "restaurant_human_assistance", '{}').next;
+  s = observeCallerSpeechAfterMalformedRecovery(s);
+  s = observeCallerTranscriptAfterMalformedRecovery(s);
+  assert.equal(s.pendingMalformedTool, "restaurant_reservation_create");
+});
+
+test("only recovery playback plus fresh caller speech and transcript clears malformed affinity", () => {
+  let s = initialMalformedToolCorrectionState();
+  s = decideMalformedToolCorrection(s, "restaurant_reservation_create", '{"starts_at":').next;
+  s = decideMalformedToolCorrection(s, "restaurant_human_assistance", '{}').next;
+  s = observeMalformedToolRecoveryPlaybackCompleted(s);
+
+  const transcriptWithoutSpeech = observeCallerTranscriptAfterMalformedRecovery(s);
+  assert.equal(transcriptWithoutSpeech.pendingMalformedTool, "restaurant_reservation_create");
+
+  s = observeCallerSpeechAfterMalformedRecovery(s);
+  s = observeCallerTranscriptAfterMalformedRecovery(s);
+  assert.equal(s.pendingMalformedTool, null);
 
   const nextTurn = decideMalformedToolCorrection(s, "restaurant_human_assistance", '{}');
   assert.equal(nextTurn.action, "PASS_TO_V29");
