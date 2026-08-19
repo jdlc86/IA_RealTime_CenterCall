@@ -3,6 +3,7 @@ import type { ResponseOwnerState } from "./realtime-response-owner";
 export type BargeInPublicToolRoute = "DEFER_TO_CLASSIFIER" | "ALLOW_SEMANTIC_PIPELINE";
 export type ConfirmedBargeInPromotionRoute = "PROMOTE_SOURCE" | "DEFER_TO_NEWER_SPEECH";
 export type DeferredBargeInTranscriptRoute = "WAIT_FOR_LATEST" | "PROMOTE_LATEST" | "FALLBACK_SOURCE";
+export type IgnoredBargeInPlaybackRecoveryRoute = "KEEP_SILENT" | "RECOVER_LIVENESS";
 
 /**
  * v40 is the single semantic authority while a normal-playback interruption is
@@ -44,4 +45,19 @@ export function decideDeferredBargeInTranscriptRoute(
 ): DeferredBargeInTranscriptRoute {
   if (!completedItemId || completedItemId !== targetItemId) return "WAIT_FOR_LATEST";
   return transcriptUsable ? "PROMOTE_LATEST" : "FALLBACK_SOURCE";
+}
+
+/**
+ * SIP/WebRTC can clear provider playback on a VAD start before v40 has enough
+ * semantic evidence to accept an interruption. A normal IGNORE remains silent
+ * when playback survived. If the provider already destroyed playback, silence
+ * would strand the call, so v40 must issue one bounded, non-business recovery.
+ * Terminal state is absorbing and never permits recovery speech.
+ */
+export function decideIgnoredBargeInPlaybackRecovery(options: {
+  providerClearedPlaybackBeforeDecision: boolean;
+  terminal: boolean;
+}): IgnoredBargeInPlaybackRecoveryRoute {
+  if (options.terminal) return "KEEP_SILENT";
+  return options.providerClearedPlaybackBeforeDecision ? "RECOVER_LIVENESS" : "KEEP_SILENT";
 }
