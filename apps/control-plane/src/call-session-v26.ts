@@ -86,13 +86,15 @@ export class CallSession extends BaseConstructor {
       }
 
       if (decision.action === "RECOVER") {
+        const availabilityChanged = decision.reason === "RESERVATION_AVAILABILITY_CHANGED";
         session.diagnostics?.checkpoint?.("DIRECT_POST_TOOL_RECOVERY_GOVERNED_V26", {
           tool,
           reason: decision.reason,
           response_boundary: "direct_agent_runtime_v26",
           tools_disabled: true,
           immediate_alternative_search: false,
-          fresh_confirmation_required: true,
+          caller_choice_required_before_search: true,
+          fresh_confirmation_required: availabilityChanged,
           timing_heuristic: false,
         });
         return {
@@ -101,13 +103,16 @@ export class CallSession extends BaseConstructor {
             instructions: decision.instructions,
             exactText: decision.exactText,
             tools: "DISABLED",
-            purpose: "reservation_availability_changed_v26",
+            purpose: availabilityChanged
+              ? "reservation_availability_changed_v26"
+              : "reservation_slot_unavailable_v26",
             metadata: {
               authority: "direct_agent_runtime_v26",
               tool,
               reason: decision.reason,
               immediate_alternative_search: false,
-              fresh_confirmation_required: true,
+              caller_choice_required_before_search: true,
+              fresh_confirmation_required: availabilityChanged,
             },
           },
         };
@@ -174,7 +179,7 @@ export class CallSession extends BaseConstructor {
         legacy_core_intent_classifier_installed: false,
         legacy_conversation_intent_allowed: false,
         tool_choice: "auto",
-        post_tool_response_policy: "structured_terminal_continuation+reservation_conflict_recovery+missing_information_collection",
+        post_tool_response_policy: "structured_terminal_continuation+reservation_conflict_recovery+reservation_unavailable_recovery+missing_information_collection",
         direct_post_tool_response_boundary: this.postToolResponseBoundaryInstalledV26,
         explicit_farewell_requires_second_confirmation: false,
       });
