@@ -11,7 +11,7 @@ const RESERVATION_CONFLICT_MARKERS = [
 ];
 
 export function isReservationAvailabilityConflict(result: ToolResult): boolean {
-  if (result.ok) return false;
+  if (result.ok || !("error" in result) || !("message" in result)) return false;
   const normalized = `${result.error} ${result.message}`.toLowerCase();
   return RESERVATION_CONFLICT_MARKERS.some((marker) => normalized.includes(marker));
 }
