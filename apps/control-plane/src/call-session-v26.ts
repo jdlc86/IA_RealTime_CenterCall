@@ -113,6 +113,34 @@ export class CallSession extends BaseConstructor {
         };
       }
 
+      if (decision.action === "COLLECT") {
+        session.diagnostics?.checkpoint?.("DIRECT_POST_TOOL_MISSING_INFORMATION_GOVERNED_V26", {
+          tool,
+          reason: decision.reason,
+          missing: decision.missing,
+          response_boundary: "direct_agent_runtime_v26",
+          tools_disabled: true,
+          second_tool_same_turn_forbidden: true,
+          timing_heuristic: false,
+        });
+        return {
+          action: "REPLACE_DEFAULT_RESPONSE",
+          speech: {
+            instructions: decision.instructions,
+            exactText: decision.exactText,
+            tools: "DISABLED",
+            purpose: "reservation_missing_information_v26",
+            metadata: {
+              authority: "direct_agent_runtime_v26",
+              tool,
+              reason: decision.reason,
+              missing: decision.missing,
+              second_tool_same_turn_forbidden: true,
+            },
+          },
+        };
+      }
+
       if (decision.reason === "MARKETING_CONSENT_PENDING") {
         session.diagnostics?.checkpoint?.("DIRECT_POST_TOOL_RESPONSE_DEFERRED_TO_MARKETING_V26", {
           tool,
@@ -146,7 +174,7 @@ export class CallSession extends BaseConstructor {
         legacy_core_intent_classifier_installed: false,
         legacy_conversation_intent_allowed: false,
         tool_choice: "auto",
-        post_tool_response_policy: "structured_terminal_continuation+reservation_conflict_recovery",
+        post_tool_response_policy: "structured_terminal_continuation+reservation_conflict_recovery+missing_information_collection",
         direct_post_tool_response_boundary: this.postToolResponseBoundaryInstalledV26,
         explicit_farewell_requires_second_confirmation: false,
       });
