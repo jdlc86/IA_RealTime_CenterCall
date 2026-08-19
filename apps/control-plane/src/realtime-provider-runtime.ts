@@ -9,15 +9,20 @@ import type {
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import { realtimeCommandPortFor as openAIRealtimeCommandPortFor } from "./openai-realtime-command-adapter.js";
 import { adaptOpenAIRealtimeEvent } from "./openai-realtime-event-adapter.js";
+import {
+  DEFAULT_REALTIME_PROVIDER,
+  isRegisteredRealtimeProvider,
+  type RealtimeProviderName,
+} from "./realtime-provider-selector.js";
 
-export type RealtimeProviderName = "OPENAI";
 export type RealtimeToolResultPolicyDecision =
   | { action: "PASS" }
   | { action: "REPLACE_DEFAULT_RESPONSE"; speech: RealtimeSpeechRequest };
 export type RealtimeToolResultPolicy = (request: RealtimeToolResultRequest) => RealtimeToolResultPolicyDecision;
 export type RealtimeSessionPolicyTransform = (update: RealtimeSessionPolicyUpdate) => RealtimeSessionPolicyUpdate;
 
-export const ACTIVE_REALTIME_PROVIDER: RealtimeProviderName = "OPENAI";
+/** Compatibility alias while Gate A introduces tenant-scoped selection. */
+export const ACTIVE_REALTIME_PROVIDER: RealtimeProviderName = DEFAULT_REALTIME_PROVIDER;
 export type RealtimeProviderHost = object & { send(event: Record<string, unknown>): void };
 
 class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
@@ -25,7 +30,10 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
   private sessionPolicyTransforms: RealtimeSessionPolicyTransform[] = [];
   private pendingDefaultResponseReplacement: RealtimeSpeechRequest | null = null;
 
-  constructor(private readonly delegate: RealtimeProviderCommandPort) {}
+  constructor(
+    readonly provider: RealtimeProviderName,
+    private readonly delegate: RealtimeProviderCommandPort,
+  ) {}
 
   setToolResultPolicy(policy: RealtimeToolResultPolicy): void { this.toolResultPolicy = policy; }
   addSessionPolicyTransform(transform: RealtimeSessionPolicyTransform): void { this.sessionPolicyTransforms.push(transform); }
@@ -63,11 +71,33 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
 }
 
 const RUNTIME_BY_HOST = new WeakMap<object, RealtimeProviderCommandRuntime>();
+const PROVIDER_BY_HOST = new WeakMap<object, RealtimeProviderName>();
+
+function createProviderCommandPort(provider: RealtimeProviderName, host: RealtimeProviderHost): RealtimeProviderCommandPort {
+  switch (provider) {
+    case "OPENAI":
+      return openAIRealtimeCommandPortFor(host);
+  }
+}
+
+export function bindRealtimeProvider(host: RealtimeProviderHost, provider: RealtimeProviderName): void {
+  if (!isRegisteredRealtimeProvider(provider)) throw new Error(`Realtime provider is not registered: ${String(provider)}`);
+  const runtime = RUNTIME_BY_HOST.get(host);
+  if (runtime && runtime.provider !== provider) {
+    throw new Error(`Realtime provider already initialized as ${runtime.provider}`);
+  }
+  PROVIDER_BY_HOST.set(host, provider);
+}
+
+export function realtimeProviderFor(host: RealtimeProviderHost): RealtimeProviderName {
+  return PROVIDER_BY_HOST.get(host) ?? DEFAULT_REALTIME_PROVIDER;
+}
 
 function commandRuntimeFor(host: RealtimeProviderHost): RealtimeProviderCommandRuntime {
   let runtime = RUNTIME_BY_HOST.get(host);
   if (!runtime) {
-    runtime = new RealtimeProviderCommandRuntime(openAIRealtimeCommandPortFor(host));
+    const provider = realtimeProviderFor(host);
+    runtime = new RealtimeProviderCommandRuntime(provider, createProviderCommandPort(provider, host));
     RUNTIME_BY_HOST.set(host, runtime);
   }
   return runtime;
@@ -76,4 +106,10 @@ function commandRuntimeFor(host: RealtimeProviderHost): RealtimeProviderCommandR
 export function realtimeCommandPortFor(host: RealtimeProviderHost): RealtimeProviderCommandPort { return commandRuntimeFor(host); }
 export function installRealtimeToolResultPolicy(host: RealtimeProviderHost, policy: RealtimeToolResultPolicy): void { commandRuntimeFor(host).setToolResultPolicy(policy); }
 export function installRealtimeSessionPolicyTransform(host: RealtimeProviderHost, transform: RealtimeSessionPolicyTransform): void { commandRuntimeFor(host).addSessionPolicyTransform(transform); }
+
+/**
+ * Gate A keeps wire-event adaptation on OpenAI because it is the only registered
+ * provider. Host-scoped event dispatch becomes meaningful only after another
+ * provider adapter exists; callers remain provider-neutral meanwhile.
+ */
 export function adaptRealtimeProviderEvents(data: unknown): RealtimeProviderEvent[] { return adaptOpenAIRealtimeEvent(data); }

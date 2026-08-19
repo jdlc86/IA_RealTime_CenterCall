@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import {
   ACTIVE_REALTIME_PROVIDER,
   adaptRealtimeProviderEvents,
+  bindRealtimeProvider,
   installRealtimeToolResultPolicy,
   realtimeCommandPortFor,
+  realtimeProviderFor,
 } from "../.test-dist/realtime-provider-runtime.js";
 
 function host() {
@@ -14,8 +16,23 @@ function host() {
 
 function wire(event) { return JSON.stringify(event); }
 
-test("provider runtime keeps OpenAI as the only active provider during neutrality refactor", () => {
+test("provider runtime keeps OpenAI as the only active provider during Gate A", () => {
   assert.equal(ACTIVE_REALTIME_PROVIDER, "OPENAI");
+});
+
+test("Gate A binds the selected provider before command runtime creation", () => {
+  const h = host();
+  bindRealtimeProvider(h, "OPENAI");
+  assert.equal(realtimeProviderFor(h), "OPENAI");
+  const port = realtimeCommandPortFor(h);
+  port.speak({ instructions: "hola", tools: "DISABLED", purpose: "provider-selector-gate-a" });
+  assert.equal(h.events[0]?.type, "response.create");
+});
+
+test("Gate A rejects an unregistered provider at the runtime boundary", () => {
+  const h = host();
+  assert.throws(() => bindRealtimeProvider(h, "GEMINI"), /not registered/);
+  assert.equal(realtimeProviderFor(h), "OPENAI");
 });
 
 test("neutral command access preserves the existing OpenAI wire behavior", () => {
