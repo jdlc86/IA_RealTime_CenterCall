@@ -11,7 +11,7 @@
 ```text
 F0 Voz E2E                                    ✅ CERRADA
 F1 Baseline + observabilidad + TenantResolver ✅ CERRADA
-F2 Latencia + barge-in                        🟡 GATE B FIX #557 / NUEVO E2E PENDIENTE
+F2 Latencia + barge-in                        🟡 GATE B FIX #560 / NUEVO E2E PENDIENTE
 F3 ToolGateway / direct tools                 🟡 EN CURSO, frontera realtime neutralizada
 F4 Clínica + multi-negocio                    🟡 EN CURSO
 F5 Persistencia empresarial + Supabase        🟡 EN CURSO
@@ -46,7 +46,7 @@ OpenAI sigue siendo el único provider activo/registrado. Gemini no está habili
 
 ```text
 Gate A ProviderSelector tenant/KV       ✅ IMPLEMENTADO + CI #540 SUCCESS
-Gate B V40/V44 provider-neutral         🟡 FIX #557 SUCCESS / NUEVO E2E PENDIENTE
+Gate B V40/V44 provider-neutral         🟡 FIX #560 SUCCESS / NUEVO E2E PENDIENTE
 Gate C ProviderCapabilities             ⛔ BLOQUEADO POR B
 Gate D MediaTransport contract          ⛔ BLOQUEADO POR C
 Gemini                                  ⛔ NO INICIAR
@@ -184,31 +184,106 @@ TERMINAL_TRANSPORT_DRAIN_MS = 750
 Telnyx → OpenAI direct SIP
 ```
 
+### Gate B — fix de intervención partida / item ordering
+
+E2E que reveló el fallo:
+
+```text
+call_id = rtc_u7_EEYu68y4jbqyPmYSYuePD
+fecha local ≈ 2026-08-19 13:37 Europe/Madrid
+warn/error/critical = 0
+```
+
+Patrón reproducido también en `rtc_u7_EEYqL9d7IOx0yJ1ekGYqJ`.
+
+Secuencia causal observada:
+
+```text
+fragmento A empieza durante playback
+→ A se transcribe y entra al classifier V40
+→ antes de resolver A, empieza fragmento B con un item_id nuevo
+→ classifier confirma INTERRUPT para A
+→ V40 antiguo promovía A inmediatamente
+→ V29 podía elegir una tool usando A + contexto anterior
+→ comienza respuesta de Lucía
+→ llega transcript usable de B
+→ TURN_CONCURRENCY_LATE_TRANSCRIPT_BYPASSED_V36
+→ SEMANTIC_GATE_LATE_TRANSCRIPT_BYPASSED_V29
+→ B queda perdido
+```
+
+En la llamada `rtc_u7_EEYu68y4jbqyPmYSYuePD`, el item antiguo `item_EEYueRREAypYWogKblgAm` acabó autorizando `restaurant_business_info topics=[MENU]`; el item más nuevo `item_EEYufIujElqEdD790osCc` llegó después y fue tratado como late transcript. El problema no era un timeout: era una carrera de identidad/orden entre items del caller.
+
+Corrección en dos commits:
+
+```text
+5cfc0f1190fc31827c263a03807492b92592e6a4
+fix(gate-b): preserve newest split barge-in fragment
+Control Plane CI #559 — SUCCESS
+
+5f442b1d91855acdf8c12451f45e6586b72b57f4
+fix(gate-b): reset split-turn bookkeeping on suppressed vad
+Control Plane CI #560 — SUCCESS
+```
+
+Nueva política:
+
+```text
+speech_started expone item_id provider-neutral cuando el provider lo entrega
+→ V40 conserva el item de voz más nuevo
+→ V44, aunque suprima raw VAD del lower stack, resetea solo el bookkeeping V29 del nuevo item
+   semantic_authority_acquired=false
+   tool_gate_armed=false
+   transcript_still_required=true
+→ si classifier(A)=INTERRUPT y ya empezó B
+   ├─ A puede autorizar cancel/clear del playback
+   └─ A NO puede autorizar response.create
+→ si B ya terminó, su transcript entra al pipeline y entonces se libera response.create
+→ si B aún no terminó, response.create queda diferido hasta transcript.completed(B)
+→ si aparece C antes de B, el target avanza a C
+→ un transcript intermedio no puede adquirir la decisión del turno más nuevo
+→ si el transcript exacto más nuevo es unusable, fallback al source A ya confirmado
+```
+
+No se introdujo `setTimeout`, `sleep`, ventana temporal ni segundo clasificador. El ordering usa exclusivamente `item_id`, `speech_started` y `transcript.completed`. La identidad `item_id` de `CALLER_SPEECH_STARTED` se transporta por la frontera provider-neutral; OpenAI la aporta en su evento de inicio de voz.
+
+No se modificaron:
+
+```text
+v36
+v46
+ConversationTurnLifecycle v18
+HangupController
+TERMINAL_TRANSPORT_DRAIN_MS = 750
+media path Telnyx → OpenAI SIP/RTP
+```
+
 Estado Gate B:
 
 ```text
 IMPLEMENTADO = ✅
-CI VERDE = ✅ #557
-DESPLEGADO = ❌ no afirmado para e58fc146…
-VALIDADO E2E = ❌ requiere nueva llamada limpia sobre runtime desplegado con este commit
+CI VERDE = ✅ #560
+DESPLEGADO = ❌ no afirmado para 5f442b1d…
+VALIDADO E2E = ❌ requiere nueva llamada limpia sobre runtime desplegado con este HEAD
 ```
 
 ## Bloqueo deliberado antes de Gate C
 
-Gate B exige una llamada E2E real después de desplegar el HEAD que contenga `e58fc146…`. CI verde no sustituye el deploy ni la llamada real.
+Gate B exige una llamada E2E real después de desplegar el HEAD que contenga `5f442b1d…`. CI verde no sustituye el deploy ni la llamada real.
 
 La E2E debe cubrir conjuntamente:
 
 1. turno normal de negocio;
 2. primera interrupción legítima → `INTERRUPT` y semántica correcta;
-3. frase realmente de fondo → `IGNORE_CONFIRMED`, sin `resume_assistant` sintético;
-4. continuación correcta y sin ownership conflict;
-5. cierre después de `¿Puedo ayudarte en algo más?` con despedida explícita;
-6. hangup completo por lifecycle/HangupController.
+3. intervención partida en 2 items → la respuesta debe corresponder al fragmento/turno más nuevo, nunca al contexto anterior;
+4. frase realmente de fondo → `IGNORE_CONFIRMED`, sin `resume_assistant` sintético;
+5. continuación correcta y sin ownership conflict;
+6. cierre después de `¿Puedo ayudarte en algo más?` con despedida explícita;
+7. hangup completo por lifecycle/HangupController.
 
 ## E2E Gate B — evidencia requerida
 
-Interrupción legítima:
+Interrupción legítima sin fragmentación:
 
 ```text
 BARGE_IN_PLAYBACK_WINDOW_OPENED_V40_REBUILD
@@ -219,6 +294,25 @@ BARGE_IN_CONFIRMED_V40_REBUILD
 CONFIRMED_BARGE_IN_SEMANTIC_TURN_STARTED_V29
 restaurant_business_info topics=[HOURS]
 ```
+
+Si la intervención se fragmenta en varios `item_id`, se espera según el orden real:
+
+```text
+SEMANTIC_TURN_BOOKKEEPING_RESET_FROM_ACOUSTIC_EVIDENCE_V29
+BARGE_IN_NEWER_SPEECH_OBSERVED_V40_REBUILD
+BARGE_IN_CONFIRMED_DEFERRED_TO_NEWER_SPEECH_V40_REBUILD
+→ BARGE_IN_NEWER_COMPLETED_FRAGMENT_RESPONSE_RELEASED_V40_REBUILD
+  o
+→ BARGE_IN_DEFERRED_LATEST_FRAGMENT_PROMOTED_V40_REBUILD
+```
+
+Y el item sustantivo más nuevo debe producir la tool correcta; para la prueba MENU → pregunta por cierre:
+
+```text
+restaurant_business_info topics=[HOURS]
+```
+
+No debe aparecer `SEMANTIC_GATE_LATE_TRANSCRIPT_BYPASSED_V29` para el item sustantivo más nuevo ni una nueva respuesta MENU disparada por el fragmento antiguo.
 
 Background/ruido:
 
@@ -260,7 +354,7 @@ RESPONSE_OWNERSHIP_CONFLICT_V40_REBUILD = 0
 warn/error/critical inesperados = 0
 ```
 
-`TURN_CONCURRENCY_LATE_TRANSCRIPT_BYPASSED_V36` y `MORE_HELP_QUESTION_DUPLICATE_OBSERVED_V41` deben revisarse si reaparecen, pero no se tocará v36 sin evidencia causal nueva.
+`TURN_CONCURRENCY_LATE_TRANSCRIPT_BYPASSED_V36` debe revisarse si reaparece para el item nuevo, pero v36 no se modificará sin evidencia causal directa.
 
 ## Concurrencia de reservas simultáneas
 
