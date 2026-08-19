@@ -27,27 +27,14 @@ export function resolveReservationContactIdentity(
   const caller = trustedCallerE164(input.trustedCallerPhone);
   const supplied = typeof input.suppliedPhone === "string" ? input.suppliedPhone.trim() : "";
 
-  if (input.useCallerPhone === true) {
+  // The operator-provided caller identity is the default and remains
+  // authoritative unless the model explicitly marks that the user requested a
+  // different contact. Omission is never permission to replace identity.
+  if (input.useCallerPhone !== false) {
     return { phone: caller, source: "TRUSTED_CALLER" };
   }
 
-  if (input.useCallerPhone === false) {
-    if (!supplied) throw new Error("Explicit alternate contact phone is required");
-    return { phone: explicitInternationalPhone(supplied), source: "EXPLICIT_OTHER_CONTACT" };
-  }
-
-  if (!supplied) {
-    return { phone: caller, source: "TRUSTED_CALLER" };
-  }
-
-  // Backward-compatible but safe default: a national-format number emitted by
-  // the model cannot replace the operator identity. Only an explicitly
-  // international number can represent a different contact when the legacy
-  // boolean is omitted.
-  if (!supplied.startsWith("+") && !supplied.startsWith("00")) {
-    return { phone: caller, source: "TRUSTED_CALLER" };
-  }
-
+  if (!supplied) throw new Error("Explicit alternate contact phone is required");
   return { phone: explicitInternationalPhone(supplied), source: "EXPLICIT_OTHER_CONTACT" };
 }
 
@@ -82,7 +69,7 @@ export function rewriteReservationCreateContactEvent(
     suppliedPhone: args.customer_phone,
     useCallerPhone: args.use_caller_phone,
   });
-  const changed = args.customer_phone !== decision.phone;
+  const changed = args.customer_phone !== decision.phone || (decision.source === "TRUSTED_CALLER" && args.use_caller_phone !== true);
   args.customer_phone = decision.phone;
   if (decision.source === "TRUSTED_CALLER") args.use_caller_phone = true;
   event.arguments = JSON.stringify(args);
