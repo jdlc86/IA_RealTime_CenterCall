@@ -130,7 +130,7 @@ IGNORE = no entra al pipeline semántico
 single response owner
 ```
 
-No se tocaron:
+No se tocaron durante Gate B:
 
 ```text
 v36
@@ -140,7 +140,6 @@ ConversationTurnLifecycle v18
 HangupController
 TERMINAL_TRANSPORT_DRAIN_MS = 750
 Telnyx → OpenAI direct SIP
-business/reservation semantics
 ```
 
 ## 4. Gate B reabierto por falso IGNORE E2E
@@ -201,23 +200,16 @@ Wrangler dry-run   — SUCCESS
 La política nueva exige una certificación positiva para una decisión destructiva:
 
 ```text
-INTERRUPT                       → INTERRUPT
-IGNORE_CONFIRMED                → IGNORE
-IGNORE antiguo                  → INTERRUPT
-salida ambigua/malformada       → INTERRUPT
+INTERRUPT                         → INTERRUPT
+IGNORE_CONFIRMED                  → IGNORE
+IGNORE antiguo                    → INTERRUPT
+salida ambigua/malformada         → INTERRUPT
 sin texto/fallback del classifier → INTERRUPT
 ```
 
 El prompt solo permite `IGNORE_CONFIRMED` cuando el contenido es inequívocamente fondo/eco/TV/radio/ruido o no dirigido. Ante duda se conserva el turno como `INTERRUPT`.
 
-No se añadió un segundo clasificador. Se consideró y se descartó ese diseño para no crear una segunda autoridad paralela. El diff funcional final respecto al checkpoint documental previo afecta solo:
-
-```text
-apps/control-plane/src/barge-in-confirmation.ts
-apps/control-plane/src/barge-in-confirmation.test.mjs
-```
-
-V40/V44, reducers, v36, V41, lifecycle, hangup y 750 ms quedan sin cambios.
+No se añadió un segundo clasificador. Se consideró y se descartó ese diseño para no crear una segunda autoridad paralela.
 
 ## 5. Gate B todavía NO está cerrado
 
@@ -298,3 +290,146 @@ Metodología:
 5. No apilar timers/parches.
 6. No tocar v36/v46/HangupController/750 ms sin evidencia directa.
 7. No saltar Gate B: C permanece bloqueado hasta E2E real.
+
+## 9. Concurrencia de reservas simultáneas — hardening 2026-08-19
+
+Cambio solicitado explícitamente para el caso de dos callers que intentan reservar simultáneamente la misma capacidad. **No se implementó HOLD** y no se introdujo ningún delay/retry temporal para resolver la carrera.
+
+### Política de arbitraje
+
+La disponibilidad mostrada durante la conversación es informativa; la adjudicación ocurre únicamente en el commit de reserva:
+
+```text
+consulta disponibilidad
+→ recopilar datos
+→ confirmación explícita
+→ create_restaurant_reservation / create_restaurant_reservation_multi
+→ lock PostgreSQL sobre restaurant_tables
+→ recheck de solape
+→ BOOKED o conflicto
+```
+
+Para reserva simple la RPC ya usa `FOR UPDATE ... SKIP LOCKED`; para multimesa bloquea el conjunto elegido con `FOR UPDATE`. El lock técnico dura solo la transacción de base de datos, no la conversación. No existe prioridad FIFO por hora de inicio de llamada; gana la transacción que consigue adjudicar capacidad válida al confirmar.
+
+### Capa 1 — conflicto de negocio explícito
+
+Commits:
+
+```text
+3e08c39272855ba093e7c1595ea9c1d4920ad131
+fix(reservations): handle commit-time availability races
+
+3747b0af9e31f23f3a2c870ae25f2c93c5593582
+test(reservations): compile concurrency policy in CI
+
+5bb5692d0d94b427d831e6073186159e019e8e60
+fix(reservations): narrow tool failure structurally
+```
+
+CI:
+
+```text
+#549 FAILURE — el nuevo helper no estaba en la lista explícita de tsc
+#550 FAILURE — narrowing TypeScript de ToolResult insuficiente
+#551 SUCCESS — tests + Wrangler dry-run
+```
+
+`call-session-v19.ts` convierte `no_availability`, `no_multitable_availability` y conflicto de exclusión 23P01 en:
+
+```text
+AVAILABILITY_CHANGED
+reservation_created=false
+requires_new_confirmation=true
+```
+
+También invalida la disponibilidad cacheada y desarma `confirm=true`, pero conserva nombre/teléfono ya recogidos.
+
+### Capa 2 — invariante declarativo en PostgreSQL
+
+Commit:
+
+```text
+1ec885b84ef74c4bddeffa19297470fc6a2e3bfa
+feat(reservations): enforce table overlap invariant
+Control Plane CI #552 — SUCCESS
+```
+
+Migración versionada en repo:
+
+```text
+supabase/migrations/20260819111000_reservation_table_overlap_invariant.sql
+```
+
+Aplicada en Supabase con versión registrada:
+
+```text
+20260819091029 reservation_table_overlap_invariant
+```
+
+Implementado:
+
+- `btree_gist` en schema `extensions`;
+- ventana temporal materializada por asignación en `reservation_tables`;
+- triggers hijo/padre para mantenerla sincronizada;
+- constraint `reservation_tables_no_active_overlap`:
+  - mismo `table_id`;
+  - rangos `[start,end)` que se solapan;
+  - solo asignaciones activas (`HELD`/`BOOKED` según semántica de estado ya existente);
+- `modify_restaurant_reservation` libera la asignación antigua dentro de la misma transacción antes de cambiar la ventana y reasignar mesas, evitando conflicto transitorio falso.
+
+No se creó ningún mecanismo de expiración o reserva temporal HELD.
+
+Verificación real en DB:
+
+```text
+allocation/parent mismatches = 0
+```
+
+Se intentó insertar deliberadamente una segunda asignación BOOKED sobre la misma mesa e intervalo. PostgreSQL produjo `exclusion_violation`; la subtransacción se revirtió y la comprobación posterior mostró:
+
+```text
+persisted_test_rows = 0
+```
+
+### Capa 3 — qué oye el caller que pierde la carrera
+
+Commit:
+
+```text
+98c13fee3288b04f80c650e1ab5de6402842d4cc
+feat(reservations): govern concurrent booking recovery
+Control Plane CI #553 — SUCCESS
+```
+
+V26 gobierna `AVAILABILITY_CHANGED` como recuperación no terminal, con tools deshabilitadas en esa respuesta. Frase prevista:
+
+```text
+Justo al confirmar, esa disponibilidad dejó de estar disponible y no se ha creado ninguna reserva. ¿Quieres que busque horarios cercanos para ese mismo día?
+```
+
+No se ejecuta `restaurant_reservation_search` en esa misma respuesta. Motivo: durante la carrera, la transacción ganadora podría seguir sin `COMMIT`; una lectura MVCC inmediata podría ver todavía la capacidad antigua. Si el caller acepta buscar alternativas, la búsqueda ocurre en el turno siguiente y queda limitada inicialmente a la misma fecha. Cualquier alternativa elegida vuelve a pasar por `restaurant_reservation_create` y exige una confirmación explícita nueva.
+
+Invariantes del flujo:
+
+```text
+máximo una asignación activa por mesa + intervalo solapado
+BOOKED solo con evidencia backend
+conflicto de capacidad != error técnico
+sin HOLD conversacional
+sin timer/retry para arbitraje
+sin reutilizar confirmación anterior
+sin búsqueda automática dentro del mismo instante de contención
+```
+
+No se modificaron v36, v40/v44, V41, v46, ConversationTurnLifecycle, HangupController ni `TERMINAL_TRANSPORT_DRAIN_MS=750` durante este hardening.
+
+Estado actual de este hardening:
+
+```text
+CÓDIGO APP        = ✅ CI VERDE
+INVARIANTE DB     = ✅ APLICADO + VERIFICADO
+WORKER DESPLEGADO = ❌ no afirmado
+E2E VOZ           = ⏳ pendiente; se probará junto con los cambios anteriores
+```
+
+Gate B permanece abierto hasta su E2E específico; este trabajo de reservas no autoriza saltar a Gate C.
