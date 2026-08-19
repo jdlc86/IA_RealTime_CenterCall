@@ -8,27 +8,24 @@ Este archivo es la puerta de entrada permanente a la documentación del proyecto
 
 Estado actualizado al **19 de agosto de 2026**.
 
-Antes de hacer cualquier cambio técnico leer, en este orden:
+Antes de cualquier cambio técnico leer, en este orden:
 
-1. [`docs/MASTER_PROJECT_GUIDE.md`](./MASTER_PROJECT_GUIDE.md)
-2. [`docs/SESSION_HANDOFF_2026-08-19.md`](./SESSION_HANDOFF_2026-08-19.md)
-3. [`docs/PROJECT_STATUS.md`](./PROJECT_STATUS.md)
+1. `docs/MASTER_PROJECT_GUIDE.md`
+2. `docs/SESSION_HANDOFF_2026-08-19.md`
+3. `docs/PROJECT_STATUS.md`
 
-El handoff del 17 de agosto se conserva como contexto histórico de la reconstrucción v39+:
-
-- [`docs/SESSION_HANDOFF_2026-08-17.md`](./SESSION_HANDOFF_2026-08-17.md)
+Y verificar siempre el HEAD real de `rebuild/v39-stable-baseline` en GitHub antes de escribir.
 
 ## Fuentes de verdad arquitectónicas
 
-- [`docs/architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — arquitectura normativa y media/control plane.
-- [`docs/architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — reglas no negociables.
-- [`docs/architecture/BUSINESS_VERTICALS.md`](./architecture/BUSINESS_VERTICALS.md) — verticales de negocio.
-- [`docs/architecture/HUMAN_HANDOFF.md`](./architecture/HUMAN_HANDOFF.md) — handoff humano transversal.
-- [`docs/README.md`](./README.md) — índice documental.
+- `docs/architecture/SYSTEM_ARCHITECTURE.md`
+- `docs/architecture/DESIGN_RULES.md`
+- `docs/architecture/BUSINESS_VERTICALS.md`
+- `docs/architecture/HUMAN_HANDOFF.md`
 
-## Baseline estable pre-Gemini — 2026-08-19
+## Baseline estable pre-Gemini — NO MOVER
 
-Repositorio y rama de trabajo:
+Repositorio/rama de trabajo:
 
 ```text
 jdlc86/IA_RealTime_CenterCall
@@ -39,27 +36,26 @@ Snapshot estable de recuperación:
 
 ```text
 stable/pre-gemini-2026-08-19
+→ ce23ac070558825ea909cbd7eb973b249bfe0a9e
 ```
 
-Commit funcional estable validado:
+Baseline funcional:
 
 ```text
 ce23ac070558825ea909cbd7eb973b249bfe0a9e
 Control Plane CI #536 — SUCCESS
-Run tests          — SUCCESS
-Wrangler dry-run   — SUCCESS
 ```
 
-Validación E2E posterior al deploy correcto:
+E2E estable asociado:
 
 ```text
 call_id = rtc_u2_EENcyA4JsYIao1IsOI6n4
 fecha local ≈ 2026-08-19 01:35 Europe/Madrid
 145 eventos
-0 warn / 0 error / 0 critical
+warn/error/critical = 0
 ```
 
-Secuencia clave validada:
+Secuencia validada:
 
 ```text
 DIRECT_POST_TOOL_RESPONSE_GOVERNED_V26
@@ -67,8 +63,6 @@ DIRECT_POST_TOOL_RESPONSE_GOVERNED_V26
 → caller: "No gracias"
 → V41_CLOSE_COMMITTED_TO_LIFECYCLE
 → CONTEXTUAL_CLOSE_RESOLVED_V41
-   caller_resolution = NO_MORE_HELP
-   explicit_close_confirmation_required = false
 → LIFECYCLE_END_CALL_REQUESTED_V18
 → terminal playback
 → drain 750 ms
@@ -77,93 +71,98 @@ DIRECT_POST_TOOL_RESPONSE_GOVERNED_V26
 → HANGUP_COMPLETED
 ```
 
-Este commit es el **punto de partida estable previo a provider selection/Gemini**. Si un gate posterior rompe comportamiento, comparar contra el snapshot antes de introducir un parche. No hacer rollback ciego sin reconstruir la llamada real.
+Si un gate posterior introduce una regresión, comparar primero contra este snapshot antes de añadir parches. No hacer rollback ciego.
 
-## Estado Realtime actual
+## Estado pre-Gemini actual
 
-Objetivo comercial: soportar múltiples proveedores realtime por tenant/configuración, manteniendo OpenAI y añadiendo Gemini como alternativa futura.
-
-Actualmente:
+OpenAI sigue siendo el **único provider registrable/activo**. Gemini todavía no está habilitado.
 
 ```text
-ACTIVE_REALTIME_PROVIDER = OPENAI
+Gate A — ProviderSelector tenant/KV       ✅ IMPLEMENTADO + CI VERDE
+Gate B — V40/V44 provider-neutral         🟡 IMPLEMENTADO + CI VERDE / E2E PENDIENTE
+Gate C — ProviderCapabilities             ⛔ BLOQUEADO POR E2E DE B
+Gate D — MediaTransport contract          ⛔ BLOQUEADO POR C
+Gemini                                    ⛔ NO INICIAR
 ```
 
-OpenAI sigue siendo el único provider activo.
+### Gate A
 
-La limpieza provider-neutral completada incluye:
+Commit:
 
 ```text
-v19  create reservation tool executor
-v23  query/cancel/modify/business_info/end-call compatibility executor
-v24  marketing
-v25  tool authorization
-v26  direct agent runtime / post-tool / session bootstrap
-v35  provider-neutral observation/configuration path
-v41  contextual closing policy + neutral tool/session/event path
-v45  barge-in tool deferral
-v48  authoritative clock/session transform path
+76b54a9f5eba354a2cd8b99a96094897382474d9
+feat(gate-a): add tenant realtime provider selection
+Control Plane CI #540 — SUCCESS
 ```
 
-La lógica funcional de reservas, marketing, closing y hangup no fue reemplazada por Gemini ni alterada deliberadamente durante esta limpieza.
-
-## Componentes deliberadamente preservados
-
-No modificar sin evidencia directa:
+Implementado:
 
 ```text
-v36 turn concurrency
-v46 terminal sideband close observation
-ConversationTurnLifecycle v18
-HangupController
-TERMINAL_TRANSPORT_DRAIN_MS = 750
-Telnyx → OpenAI direct SIP media path
-human handoff transport
+TenantConfiguration
+  + optional TENANT_CONFIG KV override
+        ↓
+RealtimeProviderSelector
+        ↓
+Provider registry
+        ↓
+OPENAI
 ```
 
-El drain de 750 ms sigue siendo una heurística provisional, pero está validado en la topología OpenAI actual. No usar este trabajo de multi-provider como excusa para tocarlo.
+- `OPENAI` es el único provider registrado.
+- override `OPENAI` permitido.
+- provider desconocido/no registrado falla cerrado.
+- selección/binding centralizados; no se dispersan `if (provider === ...)` por CallSession.
+- `call-session-v49-provider-selection.ts` hace el bootstrap antes de la cadena existente.
+- `index-v6.ts` es el entrypoint actual configurado por Wrangler.
+- no cambió el media path.
 
-## Cierre contextual v41 — invariantes vigentes
-
-Después de una pregunta explícita de continuidad como:
+Estado Gate A:
 
 ```text
-¿Necesitas algo más en lo que pueda ayudarte?
+IMPLEMENTADO = sí
+CI VERDE = sí
+DESPLEGADO = no confirmado en esta sesión
+VALIDADO E2E = no afirmado
 ```
 
-una respuesta clara como:
+### Gate B
+
+Commits:
 
 ```text
-No gracias
-No, gracias
-Nada más
+43e5d64cd209f4da0b6932f542192278dd601cc0
+refactor(gate-b): neutralize v40 v44 realtime boundary
+
+9de3b7829ea5031e5967b1d42722b597e15c18ef
+fix(gate-b): preserve lifecycle speech-kind contract
 ```
 
-debe resolverse como cierre contextual directo:
+CI:
 
 ```text
-contexto ya resuelto
-→ no nueva arbitraje
-→ no segunda confirmación
-→ despedida
-→ lifecycle terminal
-→ hangup
+#541 — FAILURE
+causa: HANDOFF amplió accidentalmente el speech-kind aceptado por lifecycle
+
+#542 — SUCCESS
+Run tests        — SUCCESS
+Wrangler dry-run — SUCCESS
 ```
 
-Una nueva petición prevalece y debe continuar la conversación:
+La corrección conserva el contrato del lifecycle: el adapter neutral proyecta `HANDOFF → NORMAL` únicamente al lifecycle, mientras V40/V44 siguen viendo `HANDOFF` como categoría protegida para barge-in.
+
+V40/V44 ya no dependen directamente de nombres wire OpenAI para su lógica de barge-in:
 
 ```text
-No necesito nada más, pero dime el horario
-Gracias, ¿a qué hora cerráis?
+CALLER_SPEECH_STARTED
+CALLER_TRANSCRIPT_COMPLETED
+ASSISTANT_RESPONSE_STARTED / COMPLETED
+ASSISTANT_AUDIO_STARTED / STOPPED / CLEARED
+TEXT_DECISION_COMPLETED
 ```
 
-Fuera del contexto de la pregunta de continuidad, el cierre espontáneo sigue usando las reglas de consenso/ambigüedad definidas por v41.
+El adapter OpenAI sigue siendo quien traduce el protocolo OpenAI actual a esos eventos neutrales.
 
-## Barge-in
-
-La arquitectura v40 sigue siendo autoridad para response ownership/barge-in.
-
-Invariantes:
+Invariantes preservados:
 
 ```text
 VAD bruto no autoriza interrupción semántica
@@ -173,11 +172,37 @@ IGNORE no entra al pipeline semántico
 un único response owner
 ```
 
-V40/V44 todavía requieren limpieza provider-neutral cuidadosa antes de considerar Gemini plug-and-play. No hacer un refactor grande de esas capas sin gate y E2E específico.
+No se modificaron los reducers/effects de response ownership.
+
+Gate B **NO está cerrado todavía**. Requiere deploy + llamada E2E real con:
+
+1. turno normal;
+2. interrupción legítima → `INTERRUPT`;
+3. ruido/background input → `IGNORE`;
+4. continuación correcta después de la interrupción.
+
+La sesión que implementó Gate B no disponía de credenciales/CLI Cloudflare autenticado. El repo solo contiene `.github/workflows/control-plane-ci.yml`; no existe workflow de deploy. Por tanto CI verde no se debe presentar como deploy ni como E2E.
+
+## Componentes deliberadamente preservados
+
+No modificar durante estos gates sin evidencia directa:
+
+```text
+v36 turn concurrency
+v46 terminal sideband close observation
+ConversationTurnLifecycle v18
+HangupController
+TERMINAL_TRANSPORT_DRAIN_MS = 750
+Telnyx → OpenAI direct SIP media path
+reservas/Supabase business semantics
+human handoff transport
+```
+
+El drain de 750 ms sigue siendo una heurística provisional pero validada en la topología OpenAI estable.
 
 ## Media plane
 
-Arquitectura estable actual:
+Topología estable:
 
 ```text
 PSTN → Telnyx → OpenAI Realtime vía SIP/RTP
@@ -193,79 +218,54 @@ MediaTransport
 RealtimeProvider
 ```
 
-Cualquier media bridge nuevo requiere benchmark, justificación y ADR conforme a `RA-003` y `RA-005`.
+No convertir el Worker/DO actual en relay de audio improvisado. Cualquier ampliación del media plane requiere benchmark + ADR conforme a RA-003/RA-005.
 
-## Gates pre-Gemini acordados
+## Próximo paso obligatorio
 
-Ejecutar secuencialmente, manteniendo OpenAI como único provider activo:
+No comenzar Gate C todavía.
 
-### Gate A — ProviderSelector tenant/KV
+Primero:
 
-- resolver provider desde `TenantConfiguration` y override operativo explícito;
-- registry centralizado;
-- solo `OPENAI` registrable inicialmente;
-- unknown/unsupported provider con política explícita testeada;
-- ningún `if (provider === ...)` disperso por CallSession.
+```text
+1. desplegar el HEAD que contiene Gate B;
+2. ejecutar la llamada E2E INTERRUPT/IGNORE;
+3. consultar public.call_diagnostic_events;
+4. verificar ausencia de regresiones y ownership correcto;
+5. solo entonces marcar Gate B como cerrado y abrir Gate C.
+```
 
-### Gate B — V40/V44 provider-neutral
+Eventos útiles para la validación:
 
-- neutralizar acoplamientos estrictamente necesarios;
-- preservar autoridad actual de barge-in;
-- CI + E2E con INTERRUPT/IGNORE.
-
-### Gate C — ProviderCapabilities
-
-Contrato explícito de capacidades: audio, VAD, interruption, function calling, transcription, direct SIP, etc.
-
-### Gate D — MediaTransport contract
-
-Separar RealtimeProvider de transporte de audio sin modificar la topología OpenAI estable.
-
-Solo después de cerrar A-D comienza la implementación Gemini.
-
-## Metodología obligatoria
-
-1. Verificar HEAD real de `rebuild/v39-stable-baseline` antes de escribir.
-2. No asumir que un SHA documentado sigue siendo el HEAD.
-3. Ante un síntoma E2E, recuperar primero `public.call_diagnostic_events`.
-4. Reconstruir cronología y ownership antes de cambiar código.
-5. Distinguir causa raíz de síntoma.
-6. No apilar condiciones/timers para tapar carreras.
-7. Un gate = cambio mínimo + prueba + CI verde antes del siguiente.
-8. Diferenciar siempre `IMPLEMENTADO`, `CI VERDE`, `DESPLEGADO` y `VALIDADO E2E`.
-9. Para hangup/handoff/WRITE el modelo no es autoridad irreversible única.
-10. No ampliar media plane sin ADR + benchmark.
-11. OpenAI y otros proveedores deben permanecer detrás de contratos/adaptadores.
-12. No crear forks del Core por tenant.
+```text
+BARGE_IN_PLAYBACK_WINDOW_OPENED_V40_REBUILD
+RAW_VAD_ROUTED_TO_V40_ONLY_V44
+BARGE_IN_CLASSIFIER_REQUESTED_V40_REBUILD
+BARGE_IN_CLASSIFIER_BOUND_V40_REBUILD
+BARGE_IN_CONFIRMED_V40_REBUILD
+BARGE_IN_IGNORED_V40_REBUILD
+BARGE_IN_UNCLASSIFIABLE_IGNORED_V40_REBUILD
+```
 
 ## Infraestructura conocida
 
-### GitHub
-
 ```text
-repo = jdlc86/IA_RealTime_CenterCall
-work branch = rebuild/v39-stable-baseline
-stable snapshot = stable/pre-gemini-2026-08-19
+GitHub repo  = jdlc86/IA_RealTime_CenterCall
+work branch  = rebuild/v39-stable-baseline
+stable ref   = stable/pre-gemini-2026-08-19
+Supabase     = vutekfkbtvfogouwcfvc
+Diagnostics  = public.call_diagnostic_events
+KV           = TENANT_CONFIG
 ```
 
-### Supabase
+## Metodología obligatoria
 
-```text
-project_id = vutekfkbtvfogouwcfvc
-diagnostics = public.call_diagnostic_events
-```
-
-### Cloudflare
-
-El control-plane vive en Workers. Configuración rápida por tenant usa `TENANT_CONFIG` KV.
-
-No afirmar que un deploy real se ejecutó si la sesión no dispone de una herramienta capaz de ejecutarlo/verificarlo. `Wrangler dry-run` en CI no equivale a deploy.
-
-## Regla de mantenimiento
-
-1. Este archivo no se elimina ni se renombra.
-2. La arquitectura normativa sigue en `SYSTEM_ARCHITECTURE.md` y `DESIGN_RULES.md`.
-3. El estado operativo actual se mantiene en `PROJECT_STATUS.md` y el handoff más reciente.
-4. Una conducta no es `VALIDADA E2E` por tener tests o CI verde.
-5. El snapshot `stable/pre-gemini-2026-08-19` no es rama de desarrollo.
-6. Antes de modificar el snapshot estable, crear otro checkpoint explícito; no moverlo silenciosamente.
+1. Leer Master + handoff + Project Status antes de cada write.
+2. Verificar HEAD real antes de cada write.
+3. Un gate por vez.
+4. Tests + CI verde antes de avanzar.
+5. Cuando el gate exige E2E, no sustituirlo por tests sintéticos.
+6. Diferenciar `IMPLEMENTADO`, `CI VERDE`, `DESPLEGADO`, `VALIDADO E2E`.
+7. Ante regresión E2E, consultar diagnósticos antes de cambiar código.
+8. No apilar timers/parches para esconder ownership/races.
+9. No tocar v36/v46/HangupController/750 ms sin evidencia directa.
+10. No habilitar Gemini ni ampliar media plane antes de cerrar A-D.

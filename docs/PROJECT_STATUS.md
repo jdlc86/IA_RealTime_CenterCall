@@ -1,212 +1,199 @@
 # IA_RealTime_CenterCall — PROJECT STATUS
 
-> **Estado operativo actual del proyecto**
+> **Estado operativo actual**
 > **Fecha:** 2026-08-19
 > Arquitectura normativa: `docs/architecture/SYSTEM_ARCHITECTURE.md`
-> Reglas obligatorias: `docs/architecture/DESIGN_RULES.md`
-> Continuación operativa: `docs/SESSION_HANDOFF_2026-08-19.md`
+> Reglas: `docs/architecture/DESIGN_RULES.md`
+> Handoff: `docs/SESSION_HANDOFF_2026-08-19.md`
 
 ## Estado resumido
 
 ```text
-F0 Voz E2E                                   ✅ CERRADA
+F0 Voz E2E                                    ✅ CERRADA
 F1 Baseline + observabilidad + TenantResolver ✅ CERRADA
-F2 Latencia + barge-in                       🟡 ESTABLE / pendiente neutralización V40/V44
-F3 ToolGateway / direct tools                🟡 EN CURSO, frontera realtime neutralizada
-F4 Clínica + multi-negocio                   🟡 EN CURSO
-F5 Persistencia empresarial + Supabase       🟡 EN CURSO
-F6 Handoff humano                            🟡 IMPLEMENTADO / validado parcialmente E2E
-F7 Concurrencia                              🟡 ESTABLE en baseline, no tocar sin evidencia
-F8 Hardening producción                      🟡 EN CURSO
-F9 App de gestión                            ⬜ NO INICIADA
-Multi-provider Realtime                      🟡 PREPARACIÓN PRE-GEMINI
+F2 Latencia + barge-in                        🟡 GATE B CI VERDE / E2E PENDIENTE
+F3 ToolGateway / direct tools                 🟡 EN CURSO, frontera realtime neutralizada
+F4 Clínica + multi-negocio                    🟡 EN CURSO
+F5 Persistencia empresarial + Supabase        🟡 EN CURSO
+F6 Handoff humano                             🟡 IMPLEMENTADO / validado parcialmente E2E
+F7 Concurrencia                               🟡 ESTABLE en baseline, no tocar sin evidencia
+F8 Hardening producción                       🟡 EN CURSO
+F9 App de gestión                             ⬜ NO INICIADA
+Multi-provider Realtime                       🟡 GATES PRE-GEMINI
 ```
 
-## Baseline estable actual
-
-Rama de trabajo:
-
-```text
-rebuild/v39-stable-baseline
-```
-
-Snapshot de recuperación previo a Gemini:
+## Baseline estable de recuperación
 
 ```text
 stable/pre-gemini-2026-08-19
+→ ce23ac070558825ea909cbd7eb973b249bfe0a9e
 ```
 
-Runtime estable validado:
-
-```text
-ce23ac070558825ea909cbd7eb973b249bfe0a9e
-```
-
-Validación:
+Validación baseline:
 
 ```text
 Control Plane CI #536 — SUCCESS
-Run tests          — SUCCESS
-Wrangler dry-run   — SUCCESS
-```
-
-E2E confirmado tras deploy actualizado:
-
-```text
 call_id = rtc_u2_EENcyA4JsYIao1IsOI6n4
-fecha local ≈ 2026-08-19 01:35 Europe/Madrid
 145 eventos
 warn/error/critical = 0
 ```
 
-Estado del baseline:
+Este snapshot no se mueve con la rama de desarrollo.
 
-- IMPLEMENTADO: ✅
-- CI VERDE: ✅
-- DESPLEGADO: ✅ confirmado por la prueba posterior al deploy actualizado
-- VALIDADO E2E: ✅ para el flujo probado de business info → continuidad → `No gracias` → cierre → hangup
+## Multi-provider — estado actual
 
-## Objetivo multi-provider
-
-El producto debe soportar selección de proveedor realtime por tenant/configuración comercial, manteniendo OpenAI como opción y añadiendo Gemini como alternativa.
-
-Objetivo:
+OpenAI sigue siendo el único provider activo/registrado. Gemini no está habilitado.
 
 ```text
-TenantConfiguration / KV override
-              │
-              ▼
-      RealtimeProviderSelector
-          ┌──────┴──────┐
-          ▼             ▼
-       OpenAI         Gemini Live
+Gate A ProviderSelector tenant/KV       ✅ IMPLEMENTADO + CI #540 SUCCESS
+Gate B V40/V44 provider-neutral         🟡 IMPLEMENTADO + CI #542 SUCCESS / E2E PENDIENTE
+Gate C ProviderCapabilities             ⛔ BLOQUEADO POR B
+Gate D MediaTransport contract          ⛔ BLOQUEADO POR C
+Gemini                                  ⛔ NO INICIAR
 ```
 
-Estado actual:
+### Gate A
+
+Commit:
 
 ```text
-ACTIVE_REALTIME_PROVIDER = OPENAI
+76b54a9f5eba354a2cd8b99a96094897382474d9
 ```
 
-**Gemini todavía no está habilitado. OpenAI es el único provider activo.**
+Características:
 
-## Limpieza provider-neutral completada
+- selector central por tenant/configuración;
+- override operativo en `TENANT_CONFIG`;
+- solo `OPENAI` registrado;
+- provider desconocido falla cerrado;
+- binding/factory centralizados en runtime neutral;
+- bootstrap en `call-session-v49-provider-selection.ts`;
+- entrypoint `index-v6.ts`;
+- media path sin cambios.
 
-Las capas siguientes ya disponen de frontera neutral para los aspectos relevantes de Realtime:
+Estado:
 
 ```text
-v19  create reservation
-v23  query/cancel/modify/business_info/end-call executor compatibility
-v24  marketing
-v25  tool authorization
-v26  direct-agent runtime, tool ingress, post-tool policy y session bootstrap
-v35  provider-neutral observation/configuration
-v41  contextual closing, tool/session/event boundary
-v45  tool deferral durante barge-in
-v48  authoritative clock + session transform
+IMPLEMENTADO = ✅
+CI VERDE = ✅
+DESPLEGADO = no confirmado
+VALIDADO E2E = no afirmado
 ```
 
-El adaptador OpenAI sigue siendo la única traducción activa hacia el protocolo realtime real.
+### Gate B
 
-## Cierre v41 — estado validado
-
-Regla formal vigente:
+Commits de código:
 
 ```text
-Lucía: ¿Necesitas algo más en lo que pueda ayudarte?
-Caller: No gracias
+43e5d64cd209f4da0b6932f542192278dd601cc0
+9de3b7829ea5031e5967b1d42722b597e15c18ef
 ```
 
-Debe producir:
+CI:
 
 ```text
-MORE_HELP_QUESTION_OPENED_V41
-→ V41_CLOSE_COMMITTED_TO_LIFECYCLE
-→ CONTEXTUAL_CLOSE_RESOLVED_V41
-   context = ANSWER_TO_MORE_HELP_QUESTION
-   caller_resolution = NO_MORE_HELP
-   explicit_close_confirmation_required = false
-→ LIFECYCLE_END_CALL_REQUESTED_V18
+#541 = FAILURE por incompatibilidad de tipo HANDOFF/lifecycle
+#542 = SUCCESS
+Run tests = SUCCESS
+Wrangler dry-run = SUCCESS
 ```
 
-Esto fue validado E2E en `rtc_u2_EENcyA4JsYIao1IsOI6n4`.
+Estado funcional del refactor:
 
-No debe aparecer una segunda pregunta de confirmación.
+- V40 consume `RealtimeProviderEvent` y el command port neutral.
+- V44 consume raw-VAD/playback mediante eventos neutrales.
+- `raw-vad-barge-in-routing.ts` ya no conoce nombres wire OpenAI.
+- el resultado de clasificador se representa como `TEXT_DECISION_COMPLETED`.
+- correlación del clasificador conserva `sourceItemId`.
+- anuncio de handoff sigue protegido en V40/V44.
+- lifecycle conserva su speech-kind previo mediante proyección `HANDOFF → NORMAL` en su adapter.
+- reducers/effects de response ownership no cambiaron.
 
-Una petición sustantiva posterior sigue teniendo prioridad y debe mantener la llamada abierta.
-
-## Terminal/hangup
-
-Topología y ownership vigentes:
+Invariantes Gate B:
 
 ```text
+VAD bruto no cancela semánticamente
+protected speech no se interrumpe
+INTERRUPT no espera response.done
+IGNORE no entra al pipeline semántico
+un único response owner
+```
+
+No se modificaron:
+
+```text
+v36
+v46
+V41
 ConversationTurnLifecycle v18
+HangupController
+TERMINAL_TRANSPORT_DRAIN_MS = 750
+Telnyx → OpenAI direct SIP
+```
+
+Estado Gate B:
+
+```text
+IMPLEMENTADO = ✅
+CI VERDE = ✅
+DESPLEGADO = ❌ no confirmado
+VALIDADO E2E = ❌ pendiente
+```
+
+## Bloqueo deliberado antes de Gate C
+
+Gate B exige llamada E2E real con:
+
+1. turno normal;
+2. interrupción legítima;
+3. ruido/background → IGNORE;
+4. continuación tras la interrupción.
+
+La sesión que completó el código no dispone de credenciales/CLI Cloudflare autenticado. En `.github/workflows` solo existe `control-plane-ci.yml`, que ejecuta tests y Wrangler dry-run, no deploy.
+
+Por metodología, **no comenzar Gate C hasta validar B E2E**.
+
+## E2E Gate B — evidencia requerida
+
+Después de desplegar el HEAD actual, consultar `public.call_diagnostic_events` para la llamada y verificar al menos:
+
+```text
+BARGE_IN_PLAYBACK_WINDOW_OPENED_V40_REBUILD
+RAW_VAD_ROUTED_TO_V40_ONLY_V44
+BARGE_IN_CLASSIFIER_REQUESTED_V40_REBUILD
+BARGE_IN_CLASSIFIER_BOUND_V40_REBUILD
+BARGE_IN_CONFIRMED_V40_REBUILD       # interrupción real
+BARGE_IN_IGNORED_V40_REBUILD         # ruido/background
+```
+
+También comprobar:
+
+- no `RESPONSE_OWNERSHIP_CONFLICT_V40_REBUILD` no esperado;
+- no warnings/errors críticos;
+- INTERRUPT no espera `response.done`;
+- IGNORE no entra al pipeline semántico;
+- Lucía continúa correctamente después de la interrupción.
+
+Ante cualquier fallo de llamada, consultar primero diagnósticos; no modificar código por intuición.
+
+## Cierre / terminal / hangup
+
+Baseline vigente:
+
+```text
+V41 close authority
+→ ConversationTurnLifecycle v18
 → terminal playback
 → TERMINAL_TRANSPORT_DRAIN_MS = 750
 → HangupController
 → TELNYX_SOURCE_LEG
 ```
 
-E2E del baseline:
-
-```text
-LIFECYCLE_TERMINAL_DRAIN_ARMED_V18 drain_ms=750
-→ LIFECYCLE_TERMINAL_DRAIN_COMPLETED_V18
-→ LIFECYCLE_HANGUP_DISPATCHED_V18
-→ HANGUP_STARTED transport_authority=TELNYX_SOURCE_LEG
-→ HANGUP_REQUEST_ACCEPTED http_status=200
-→ HANGUP_COMPLETED
-```
-
-El sideband `1006` posterior a `hangup_started=true` sigue siendo consecuencia del cierre.
-
-No modificar v18/HangupController/750 ms durante los gates pre-Gemini salvo nueva evidencia directa.
-
-## Barge-in v40/v44
-
-La autoridad actual se conserva y todavía requiere neutralización cuidadosa antes de Gemini.
-
-Invariantes:
-
-- VAD bruto no cancela semánticamente;
-- protected speech no se interrumpe;
-- playback normal usa escucha no interruptiva;
-- candidato se clasifica `INTERRUPT | IGNORE`;
-- `INTERRUPT` no espera `response.done`;
-- `IGNORE` no entra al pipeline semántico;
-- un único response owner.
-
-No hacer refactor masivo. El gate V40/V44 exige E2E específico de interrupción y ruido.
-
-## Reservas / restaurante
-
-Estado funcional vigente:
-
-- CREATE con disponibilidad y datos incrementales;
-- QUERY por tenant/caller;
-- CANCEL individual/múltiple;
-- MODIFY según flujo implementado;
-- código público `R-######` separado de UUID interno;
-- validación de horarios/duración en backend;
-- Truth Guard para no afirmar resultados no confirmados;
-- marketing separado del estado de reserva;
-- continuación post-tool determinista en V26.
-
-La neutralización Realtime no cambió intencionalmente estas reglas.
-
-## Human handoff
-
-Permanece implementado sobre la autoridad v37/v39. No fue modificado por la limpieza provider-neutral.
-
-Reglas mantenidas:
-
-- transporte irreversible no se duplica en capas posteriores;
-- `call.answered` del target leg es evidencia autoritativa de transferencia contestada;
-- no usar el modelo como única autoridad de handoff irreversible.
+El drain de 750 ms es provisional pero validado. No modificarlo durante gates pre-Gemini.
 
 ## Media plane
 
-Topología estable actual:
+Actual:
 
 ```text
 PSTN → Telnyx → OpenAI Realtime vía SIP/RTP
@@ -214,78 +201,33 @@ PSTN → Telnyx → OpenAI Realtime vía SIP/RTP
 
 Cloudflare no transporta audio continuo.
 
-Gemini requerirá separar formalmente `RealtimeProvider` de `MediaTransport`; cualquier relay nuevo debe cumplir RA-003/RA-005 y requiere benchmark + ADR.
+Gate D deberá formalizar, sin alterar aún este path:
+
+```text
+TelephonyProvider
+MediaTransport
+RealtimeProvider
+```
+
+Cualquier bridge Gemini futuro requiere ADR + benchmark conforme a RA-003/RA-005.
 
 ## Supabase / observabilidad
 
 ```text
 project_id = vutekfkbtvfogouwcfvc
-principal diagnostic table = public.call_diagnostic_events
+diagnostics = public.call_diagnostic_events
 ```
-
-Toda regresión de llamada se investiga primero en esta tabla.
-
-## Cloudflare
-
-- control-plane en Workers;
-- configuración rápida por tenant en `TENANT_CONFIG` KV;
-- CI valida con Wrangler dry-run;
-- CI verde NO equivale a deploy real;
-- no afirmar despliegue si la sesión no dispone de herramienta de despliegue/verificación.
-
-## Gates pre-Gemini activos
-
-### Gate A — ProviderSelector tenant/KV
-
-Estado: **SIGUIENTE**.
-
-Objetivo:
-
-```text
-TenantConfiguration + optional KV override
-→ RealtimeProviderSelector
-→ OPENAI
-```
-
-Condiciones:
-
-- solo OpenAI registrable inicialmente;
-- unsupported/unknown provider con política centralizada y tests;
-- no dispersar condicionales por CallSession;
-- cero cambio funcional.
-
-### Gate B — V40/V44 provider-neutral
-
-Estado: PENDIENTE Gate A.
-
-Debe conservar barge-in actual y validarse con llamada real INTERRUPT/IGNORE.
-
-### Gate C — ProviderCapabilities
-
-Estado: PENDIENTE Gate B.
-
-Contrato explícito para capacidades distintas entre proveedores.
-
-### Gate D — MediaTransport contract
-
-Estado: PENDIENTE Gate C.
-
-Separar transporte de audio de RealtimeProvider sin alterar OpenAI SIP actual.
-
-### Gemini
-
-Estado: **NO INICIAR hasta cerrar A-D**.
 
 ## Metodología obligatoria
 
-1. Leer Master + handoff actual + Project Status antes de cambios.
+1. Leer Master + handoff + Project Status antes de cada write.
 2. Verificar HEAD real en GitHub.
 3. Un gate por vez.
-4. Añadir tests/regresión apropiada.
-5. Exigir `Run tests` + `Wrangler dry-run` verdes.
-6. Confirmar deploy antes de interpretar E2E.
-7. Consultar diagnósticos antes de corregir cualquier llamada.
-8. No apilar timers/parches.
-9. Distinguir garantía codificada de comportamiento histórico de facto.
-10. Mantener una sola autoridad por comportamiento irreversible.
-11. Si un gate rompe algo, comparar contra `stable/pre-gemini-2026-08-19` / `ce23ac07...` antes de ampliar el cambio.
+4. Tests + Wrangler dry-run verdes.
+5. Si el gate exige llamada real, no sustituirla por test sintético.
+6. CI verde != deploy.
+7. Distinguir siempre `IMPLEMENTADO`, `CI VERDE`, `DESPLEGADO`, `VALIDADO E2E`.
+8. Consultar diagnósticos antes de corregir regresiones de llamada.
+9. Root cause; no parches/timers acumulativos.
+10. No tocar v36/v46/HangupController/750 ms sin evidencia directa.
+11. No habilitar Gemini hasta cerrar A-D.
