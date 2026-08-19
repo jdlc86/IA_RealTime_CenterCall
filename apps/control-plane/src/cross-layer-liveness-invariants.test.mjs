@@ -84,7 +84,7 @@ test("cross-layer trace: provider-destructive IGNORE has liveness recovery but t
 test("runtime wiring: active entrypoint and critical layers consume the policies exercised above", () => {
   const index = readFileSync(new URL("./index-v6.ts", import.meta.url), "utf8");
   const v51 = readFileSync(new URL("./call-session-v51-malformed-tool-authority.ts", import.meta.url), "utf8");
-  const v36 = readFileSync(new URL("./call-session-v36-turn-concurrency.ts", import.meta.url), "utf8");
+  const v36 = readFileSync(new URL("./call-session-v36-turn-serialization.ts", import.meta.url), "utf8");
   const v40 = readFileSync(new URL("./call-session-v40-response-owner-rebuild.ts", import.meta.url), "utf8");
 
   assert.match(index, /call-session-v51-malformed-tool-authority/);
