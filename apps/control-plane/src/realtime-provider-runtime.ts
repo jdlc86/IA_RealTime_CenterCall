@@ -10,6 +10,10 @@ import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import { realtimeCommandPortFor as openAIRealtimeCommandPortFor } from "./openai-realtime-command-adapter.js";
 import { adaptOpenAIRealtimeEvent } from "./openai-realtime-event-adapter.js";
 import {
+  realtimeProviderCapabilities,
+  type ProviderCapabilities,
+} from "./realtime-provider-capabilities.js";
+import {
   DEFAULT_REALTIME_PROVIDER,
   isRegisteredRealtimeProvider,
   type RealtimeProviderName,
@@ -29,11 +33,14 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
   private toolResultPolicy: RealtimeToolResultPolicy | null = null;
   private sessionPolicyTransforms: RealtimeSessionPolicyTransform[] = [];
   private pendingDefaultResponseReplacement: RealtimeSpeechRequest | null = null;
+  readonly capabilities: ProviderCapabilities;
 
   constructor(
     readonly provider: RealtimeProviderName,
     private readonly delegate: RealtimeProviderCommandPort,
-  ) {}
+  ) {
+    this.capabilities = realtimeProviderCapabilities(provider);
+  }
 
   setToolResultPolicy(policy: RealtimeToolResultPolicy): void { this.toolResultPolicy = policy; }
   addSessionPolicyTransform(transform: RealtimeSessionPolicyTransform): void { this.sessionPolicyTransforms.push(transform); }
@@ -82,6 +89,9 @@ function createProviderCommandPort(provider: RealtimeProviderName, host: Realtim
 
 export function bindRealtimeProvider(host: RealtimeProviderHost, provider: RealtimeProviderName): void {
   if (!isRegisteredRealtimeProvider(provider)) throw new Error(`Realtime provider is not registered: ${String(provider)}`);
+  // Capability registration is a separate invariant from selector registration.
+  // A provider must satisfy both before a live runtime can be bound.
+  realtimeProviderCapabilities(provider);
   const runtime = RUNTIME_BY_HOST.get(host);
   if (runtime && runtime.provider !== provider) {
     throw new Error(`Realtime provider already initialized as ${runtime.provider}`);
@@ -91,6 +101,10 @@ export function bindRealtimeProvider(host: RealtimeProviderHost, provider: Realt
 
 export function realtimeProviderFor(host: RealtimeProviderHost): RealtimeProviderName {
   return PROVIDER_BY_HOST.get(host) ?? DEFAULT_REALTIME_PROVIDER;
+}
+
+export function realtimeCapabilitiesFor(host: RealtimeProviderHost): ProviderCapabilities {
+  return realtimeProviderCapabilities(realtimeProviderFor(host));
 }
 
 function commandRuntimeFor(host: RealtimeProviderHost): RealtimeProviderCommandRuntime {
@@ -108,8 +122,8 @@ export function installRealtimeToolResultPolicy(host: RealtimeProviderHost, poli
 export function installRealtimeSessionPolicyTransform(host: RealtimeProviderHost, transform: RealtimeSessionPolicyTransform): void { commandRuntimeFor(host).addSessionPolicyTransform(transform); }
 
 /**
- * Gate A keeps wire-event adaptation on OpenAI because it is the only registered
- * provider. Host-scoped event dispatch becomes meaningful only after another
- * provider adapter exists; callers remain provider-neutral meanwhile.
+ * Gate A/B keep wire-event adaptation on OpenAI because it remains the only
+ * registered provider. Gate C adds explicit capabilities without enabling a
+ * second provider or changing the media path.
  */
 export function adaptRealtimeProviderEvents(data: unknown): RealtimeProviderEvent[] { return adaptOpenAIRealtimeEvent(data); }
