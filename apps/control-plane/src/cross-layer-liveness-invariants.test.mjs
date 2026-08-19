@@ -7,7 +7,9 @@ import {
 } from "../.test-dist/semantic-turn-decision-policy.js";
 import {
   initialMalformedToolCorrectionState,
-  observeCallerTurnStarted,
+  observeMalformedToolRecoveryPlaybackCompleted,
+  observeCallerSpeechAfterMalformedRecovery,
+  observeCallerTranscriptAfterMalformedRecovery,
   decideMalformedToolCorrection,
 } from "../.test-dist/malformed-tool-correction-policy.js";
 import { decideTurnConcurrencyAcquire } from "../.test-dist/turn-concurrency-acquire-policy.js";
@@ -48,12 +50,32 @@ test("cross-layer trace: malformed mutation cannot silently become another busin
   const changed = decideMalformedToolCorrection(correction, "restaurant_reservation_cancel", '{"confirm":true}');
   assert.equal(changed.action, "REJECT_CROSS_TOOL_CORRECTION");
   assert.equal(changed.next.pendingMalformedTool, "restaurant_reservation_create");
+  assert.equal(changed.next.recoveryRequired, true);
 });
 
-test("cross-layer trace: fresh caller evidence clears malformed affinity and permits a genuinely new intent", () => {
+test("cross-layer trace: split/late transcript cannot reset malformed affinity", () => {
   let correction = initialMalformedToolCorrectionState();
   correction = decideMalformedToolCorrection(correction, "restaurant_reservation_create", '{"party_size":').next;
-  correction = observeCallerTurnStarted(correction);
+  correction = decideMalformedToolCorrection(correction, "restaurant_reservation_cancel", '{"confirm":true}').next;
+
+  correction = observeCallerTranscriptAfterMalformedRecovery(correction);
+  const stillBlocked = decideMalformedToolCorrection(correction, "restaurant_reservation_cancel", '{"confirm":true}');
+  assert.equal(stillBlocked.action, "REJECT_CROSS_TOOL_CORRECTION");
+});
+
+test("cross-layer trace: completed recovery plus fresh caller speech/transcript opens a genuinely new intent", () => {
+  let correction = initialMalformedToolCorrectionState();
+  correction = decideMalformedToolCorrection(correction, "restaurant_reservation_create", '{"party_size":').next;
+  correction = decideMalformedToolCorrection(correction, "restaurant_reservation_cancel", '{"confirm":true}').next;
+  correction = observeMalformedToolRecoveryPlaybackCompleted(correction);
+
+  correction = observeCallerTranscriptAfterMalformedRecovery(correction);
+  assert.equal(correction.pendingMalformedTool, "restaurant_reservation_create");
+
+  correction = observeCallerSpeechAfterMalformedRecovery(correction);
+  correction = observeCallerTranscriptAfterMalformedRecovery(correction);
+  assert.equal(correction.pendingMalformedTool, null);
+
   const nextIntent = decideMalformedToolCorrection(correction, "restaurant_reservation_cancel", '{"confirm":true}');
   assert.equal(nextIntent.action, "PASS_TO_V29");
 });
@@ -158,6 +180,9 @@ test("runtime wiring: active entrypoint and critical layers consume the policies
 
   assert.match(index, /call-session-v51-malformed-tool-authority/);
   assert.match(v51, /decideMalformedToolCorrection/);
+  assert.match(v51, /ASSISTANT_RESPONSE_STARTED/);
+  assert.match(v51, /ASSISTANT_AUDIO_STOPPED/);
+  assert.match(v51, /CALLER_SPEECH_STARTED/);
   assert.match(v51, /CALLER_TRANSCRIPT_COMPLETED/);
   assert.match(v51, /SEMANTIC_TOOL_CROSS_TOOL_CORRECTION_BLOCKED_V51/);
   assert.match(v51, /tools:\s*"DISABLED"/);
