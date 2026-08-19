@@ -11,6 +11,7 @@ import { applyBargeInSemanticDecision } from "./response-owner-barge-in-decision
 import {
   decideConfirmedBargeInPromotion,
   decideDeferredBargeInTranscriptRoute,
+  decideIgnoredBargeInPlaybackRecovery,
 } from "./barge-in-semantic-authority";
 import {
   BARGE_IN_METADATA_PURPOSE,
@@ -68,7 +69,9 @@ function providerResponseId(event: RealtimeProviderEvent): string | null {
  * - a classified older fragment can interrupt playback, but cannot create a
  *   response after a newer caller speech item has already started;
  * - split-utterance ordering is item/event based and never uses a timing window;
- * - IGNORE is non-destructive and never synthesizes a replacement continuation;
+ * - IGNORE never synthesizes a replacement continuation; if SIP/WebRTC already
+ *   destroyed playback before classification, one isolated liveness recovery is
+ *   allowed so the call cannot be stranded in dead air;
  * - INTERRUPT never waits for response completion.
  */
 export class CallSession extends BaseConstructor {
@@ -82,6 +85,8 @@ export class CallSession extends BaseConstructor {
   private latestCallerSpeechItemIdV40: string | null = null;
   private latestCompletedCallerItemIdV40: string | null = null;
   private deferredConfirmedBargeInV40: DeferredConfirmedBargeIn | null = null;
+  private providerClearedPlaybackBeforeDecisionV40 = false;
+  private clientClearRequestedV40 = false;
 
   protected shouldBypassTurnConcurrencyV36(event: TurnConcurrencyCompatibilityEvent): boolean {
     return Boolean(this.v40OwnedSemanticItemId && event.item_id === this.v40OwnedSemanticItemId);
@@ -203,6 +208,38 @@ export class CallSession extends BaseConstructor {
     session.diagnostics?.checkpoint?.("BARGE_IN_LISTENING_RELEASED_V40_REBUILD", { reason, provider_command_port: true });
   }
 
+  private recoverIgnoredProviderClearedPlaybackV40(source: string, itemId: string | null): void {
+    const session = this as any;
+    const route = decideIgnoredBargeInPlaybackRecovery({
+      providerClearedPlaybackBeforeDecision: this.providerClearedPlaybackBeforeDecisionV40,
+      terminal: session.state === "closing" || session.hangupStarted || this.responseOwnerV40.state === "TERMINAL",
+    });
+    this.providerClearedPlaybackBeforeDecisionV40 = false;
+
+    if (route !== "RECOVER_LIVENESS") return;
+    if (!session.socket) return;
+
+    realtimeCommandPortFor(session).speak({
+      tools: "DISABLED",
+      isolated: true,
+      purpose: "provider_clear_liveness_recovery_v40",
+      instructions:
+        "La reproducción anterior fue cortada por una detección acústica que no llegó a confirmar una intervención del usuario. " +
+        "No continúes ni repitas el contenido anterior y no ejecutes ninguna herramienta. " +
+        "Di solo una frase breve y natural equivalente a: 'Perdona, parece que se cortó el audio. Te escucho.'.",
+    });
+    session.diagnostics?.checkpoint?.("BARGE_IN_PROVIDER_CLEAR_LIVENESS_RECOVERY_V40_REBUILD", {
+      source,
+      item_id: itemId,
+      recovery_route: route,
+      isolated_response: true,
+      tools_disabled: true,
+      business_action_executed: false,
+      synthetic_continuation: false,
+      timer_used: false,
+    });
+  }
+
   private requestClassifierV40(
     event: Extract<RealtimeProviderEvent, { type: "CALLER_TRANSCRIPT_COMPLETED" }>,
     data: unknown,
@@ -255,6 +292,7 @@ export class CallSession extends BaseConstructor {
       if (effect.type === "cancel_response") {
         realtime.cancelResponse(effect.responseId);
       } else if (effect.type === "clear_playback") {
+        this.clientClearRequestedV40 = true;
         realtime.clearPlayback();
       }
     }
@@ -412,6 +450,7 @@ export class CallSession extends BaseConstructor {
       try { realtimeCommandPortFor(this as any).discardInputItem(itemId); } catch { /* best effort */ }
     }
     this.executePostSemanticEffectsV40(emission.executable);
+    this.recoverIgnoredProviderClearedPlaybackV40("unclassifiable_candidate", itemId || null);
     (this as any).diagnostics?.checkpoint?.("BARGE_IN_UNCLASSIFIABLE_IGNORED_V40_REBUILD", {
       item_id_present: Boolean(itemId),
       usable_transcript_present: Boolean(transcript),
@@ -447,6 +486,7 @@ export class CallSession extends BaseConstructor {
     if (decision === "IGNORE") {
       try { realtimeCommandPortFor(this as any).discardInputItem(pending.itemId); } catch { /* best effort */ }
       this.executePostSemanticEffectsV40(emission.executable);
+      this.recoverIgnoredProviderClearedPlaybackV40("classified_ignore", pending.itemId);
       (this as any).diagnostics?.checkpoint?.("BARGE_IN_IGNORED_V40_REBUILD", {
         item_id: pending.itemId,
         playback_cleared: result.snapshot.playbackCleared,
@@ -457,6 +497,7 @@ export class CallSession extends BaseConstructor {
       return;
     }
 
+    this.providerClearedPlaybackBeforeDecisionV40 = false;
     this.executePreSemanticEffectsV40(emission.executable);
     const promotionRoute = decideConfirmedBargeInPromotion(pending.itemId, this.latestCallerSpeechItemIdV40);
 
@@ -550,6 +591,19 @@ export class CallSession extends BaseConstructor {
         this.reconcileOwnerEventV40({ type: "assistant_response_done", responseId: id });
         this.protectedResponseIdsV40.delete(id);
       } else if (event.type === "ASSISTANT_AUDIO_CLEARED") {
+        const providerClearedBeforeDecision =
+          this.responseOwnerV40.state === "BARGE_IN_CLASSIFYING" && !this.clientClearRequestedV40;
+        if (providerClearedBeforeDecision) {
+          this.providerClearedPlaybackBeforeDecisionV40 = true;
+          (this as any).diagnostics?.checkpoint?.("BARGE_IN_PROVIDER_CLEAR_BEFORE_DECISION_V40_REBUILD", {
+            response_id: id,
+            owner_state: this.responseOwnerV40.state,
+            client_clear_requested: false,
+            semantic_decision_pending: true,
+            provider_playback_loss_irreversible: true,
+          });
+        }
+        this.clientClearRequestedV40 = false;
         this.reconcileOwnerEventV40({ type: "assistant_playback_cleared" });
         if (id) this.protectedResponseIdsV40.delete(id);
         this.playbackBargeInWindowV40 = false;
@@ -571,6 +625,8 @@ export class CallSession extends BaseConstructor {
         this.playbackBargeInWindowV40 = true;
         this.latestCallerSpeechItemIdV40 = null;
         this.latestCompletedCallerItemIdV40 = null;
+        this.providerClearedPlaybackBeforeDecisionV40 = false;
+        this.clientClearRequestedV40 = false;
         (this as any).diagnostics?.checkpoint?.("BARGE_IN_PLAYBACK_WINDOW_OPENED_V40_REBUILD", {
           response_id: id,
           authority_from: "assistant_playback_started",
@@ -579,6 +635,8 @@ export class CallSession extends BaseConstructor {
         });
       } else if (event.type === "ASSISTANT_AUDIO_STOPPED") {
         this.playbackBargeInWindowV40 = false;
+        this.providerClearedPlaybackBeforeDecisionV40 = false;
+        this.clientClearRequestedV40 = false;
       }
 
       if ((this as any).state === "closing" || (this as any).hangupStarted) {
@@ -592,6 +650,8 @@ export class CallSession extends BaseConstructor {
         this.latestCallerSpeechItemIdV40 = null;
         this.latestCompletedCallerItemIdV40 = null;
         this.deferredConfirmedBargeInV40 = null;
+        this.providerClearedPlaybackBeforeDecisionV40 = false;
+        this.clientClearRequestedV40 = false;
       }
 
       await BasePrototype.handleRealtimeMessage.call(this, data);
