@@ -92,6 +92,11 @@ export function resolveReplyToMoreHelpQuestion(value: string): ContextualCloseRe
   // request always wins, including terse forms such as "gracias, dime el horario".
   if (hasContextualNewRequestEvidence(value) || hasContextualPositiveEvidence(value)) return "CONTINUE";
 
+  // A direct farewell while answering an explicit more-help question is already
+  // a complete contextual close signal. Reuse the same deterministic evidence
+  // used by spontaneous closing instead of forcing a second model-dependent path.
+  if (hasExplicitUserFarewellEvidence(value)) return "CLOSE";
+
   // In this context, clear completion language and direct negative answers
   // resolve NO_MORE_HELP without asking an additional closing question.
   if (hasCompletionLanguage(value)) return "CLOSE";
@@ -108,7 +113,7 @@ export function resolveReplyToMoreHelpQuestion(value: string): ContextualCloseRe
 export function hasExplicitUserFarewellEvidence(value: string): boolean {
   const text = normalizeClosingText(value);
   if (!text || hasExplicitContinueEvidence(text) || hasFollowupRequest(text)) return false;
-  const strongFarewell = /(?:^|\b)(?:adios|hasta luego|hasta pronto|me despido|que tengas buen dia|que tenga buen dia)(?:\b|$)/.test(text);
+  const strongFarewell = /(?:^|\b)(?:adios|hasta luego|hasta pronto|hasta otra|nos vemos|me despido|chao|chau|que tengas buen dia|que tenga buen dia|que vaya bien)(?:\b|$)/.test(text);
   const explicitHangup = /(?:^|\b)(?:puedes colgar|puede colgar|podemos colgar|cuelga|cuelgue)(?:\b|$)/.test(text);
   const explicitCallEnd = /(?:^|\b)(?:termina|termine|finaliza|finalice) (?:ya )?(?:la )?llamada(?:\b|$)/.test(text)
     || /(?:^|\b)quiero (?:terminar|finalizar) (?:ya )?(?:la )?llamada(?:\b|$)/.test(text);
@@ -121,6 +126,19 @@ export function assessControllerCloseIntent(value: string): ControllerCloseAsses
   if (hasFollowupRequestAfterCompletion(value)) return { courtesy, closeIntent: "ABSTAIN" };
   if (hasExplicitUserFarewellEvidence(value)) return { courtesy, closeIntent: "CLOSE" };
   return { courtesy, closeIntent: "ABSTAIN" };
+}
+
+export type ContextualMoreHelpSemanticDecision = "CLOSE" | "CONTINUE";
+
+/**
+ * Dedicated semantic recovery is allowed to close only on an exact positive
+ * CLOSE decision. Malformed, missing or ambiguous model output fails safe to
+ * CONTINUE so this auxiliary classifier can never create a false hangup.
+ */
+export function parseContextualMoreHelpSemanticDecision(value: unknown): ContextualMoreHelpSemanticDecision {
+  if (typeof value !== "string") return "CONTINUE";
+  const normalized = value.trim().toUpperCase().replace(/[^A-Z]/g, "");
+  return normalized === "CLOSE" ? "CLOSE" : "CONTINUE";
 }
 
 export type ControllerCloseSignal = "CLOSE" | "CONTINUE" | "COURTESY" | "UNRESOLVED";

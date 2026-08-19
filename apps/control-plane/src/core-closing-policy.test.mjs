@@ -10,6 +10,7 @@ import {
   isAssistantMoreHelpQuestion,
   isExplicitClosingConfirmation,
   isExplicitClosingRejection,
+  parseContextualMoreHelpSemanticDecision,
   resolveReplyToMoreHelpQuestion,
   shouldCommitPendingClose,
 } from "../.test-dist/core-closing-policy.js";
@@ -28,7 +29,7 @@ test("courtesy can coexist with clear close intent", () => {
 });
 
 test("clear farewells are controller CLOSE evidence", () => {
-  for (const phrase of ["Adiós", "Hasta luego", "Puedes colgar", "Quiero terminar la llamada", "Gracias, adiós", "Bueno, pues muchas gracias y hasta luego", "Perfecto, puedes colgar ya", "Eso es todo", "Pues ya está, muchas gracias"]) {
+  for (const phrase of ["Adiós", "Hasta luego", "Hasta otra", "Nos vemos", "Chao", "Chau", "Que vaya bien", "Puedes colgar", "Quiero terminar la llamada", "Gracias, adiós", "Bueno, pues muchas gracias y hasta luego", "Perfecto, puedes colgar ya", "Eso es todo", "Pues ya está, muchas gracias"]) {
     assert.equal(hasExplicitUserFarewellEvidence(phrase), true, phrase);
     assert.equal(assessControllerCloseIntent(phrase).closeIntent, "CLOSE", phrase);
   }
@@ -84,6 +85,20 @@ test("negative answer to more-help question resolves close without arbitration",
     "Pues ya está, muchas gracias",
   ]) {
     assert.equal(resolveReplyToMoreHelpQuestion(phrase), "CLOSE", phrase);
+  }
+});
+
+test("explicit farewell answer to more-help question resolves close without model arbitration", () => {
+  for (const phrase of ["Adiós", "Hasta luego", "Hasta otra", "Nos vemos", "Chao", "Chau", "Que vaya bien"]) {
+    assert.equal(resolveReplyToMoreHelpQuestion(phrase), "CLOSE", phrase);
+  }
+});
+
+test("dedicated contextual semantic decision closes only on explicit CLOSE", () => {
+  assert.equal(parseContextualMoreHelpSemanticDecision("CLOSE"), "CLOSE");
+  assert.equal(parseContextualMoreHelpSemanticDecision(" close. "), "CLOSE");
+  for (const value of ["CONTINUE", "UNCLEAR", "maybe", "", null, undefined]) {
+    assert.equal(parseContextualMoreHelpSemanticDecision(value), "CONTINUE", String(value));
   }
 });
 
