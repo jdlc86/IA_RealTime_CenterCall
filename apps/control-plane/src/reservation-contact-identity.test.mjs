@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   resolveReservationContactIdentity,
   rewriteReservationCreateContactEvent,
-} from "../../.test-dist/reservation-contact-identity.js";
+} from "../.test-dist/reservation-contact-identity.js";
 
 test("trusted caller remains authoritative when model emits national-format phone", () => {
   const result = resolveReservationContactIdentity({
