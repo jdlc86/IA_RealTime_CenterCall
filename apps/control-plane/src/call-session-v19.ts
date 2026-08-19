@@ -1,6 +1,10 @@
 import { CallSession as CallSessionV18 } from "./call-session-v18";
 import type { ToolGateway, ToolResult } from "./tool-gateway";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import {
+  isReservationAvailabilityConflict,
+  reservationAvailabilityChangedOutput,
+} from "./reservation-concurrency-policy.js";
 
 const BaseConstructor = CallSessionV18 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV18.prototype as any;
@@ -201,6 +205,28 @@ export class CallSession extends BaseConstructor {
         ? (booking.result as Record<string, unknown>).stage
         : null,
     });
+
+    if (isReservationAvailabilityConflict(booking)) {
+      // Availability shown earlier is advisory only. The commit-time backend authority won
+      // the race for another caller, so invalidate that evidence and require a fresh explicit
+      // confirmation for any alternative while preserving already-collected contact details.
+      this.reservationAvailabilityFingerprintV19 = null;
+      this.reservationAvailabilityResultV19 = null;
+      this.reservationDraftV19.confirm = false;
+      (this as any).diagnostics?.checkpoint?.("DIRECT_RESERVATION_AVAILABILITY_CHANGED_AT_COMMIT", {
+        party_size: draft.party_size,
+        starts_at: draft.starts_at,
+        reservation_created: false,
+        confirmation_rearmed: true,
+      });
+      this.sendFunctionOutputV19(callId, reservationAvailabilityChangedOutput({
+        party_size: draft.party_size,
+        starts_at: draft.starts_at,
+        customer_name: draft.customer_name,
+        duration_minutes: draft.duration_minutes ?? 90,
+      }));
+      return;
+    }
 
     if (booking.ok && booking.result && typeof booking.result === "object" && (booking.result as Record<string, unknown>).stage === "BOOKED") {
       this.reservationDraftV19 = {};
