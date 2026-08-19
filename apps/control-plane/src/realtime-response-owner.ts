@@ -47,9 +47,10 @@ export function initialResponseOwnerSnapshot(): ResponseOwnerSnapshot {
  * - one component owns response.create/response.cancel decisions;
  * - playback state and response-generation state are independent;
  * - a confirmed interruption never waits indefinitely for response.done;
- * - an ignored candidate never creates a replacement while the original response is still active;
- * - if SIP already cleared playback for an ignored candidate, the now-inaudible active response
- *   is cancelled and continuation waits for its authoritative response.done before resuming;
+ * - an ignored candidate is non-destructive: it never cancels the authoritative
+ *   response and never synthesizes a replacement continuation;
+ * - a SIP playback clear is observation about playout, not permission to replace
+ *   an ignored assistant response;
  * - response.done is reconciliation evidence, not permission for confirmed interruption;
  * - if Realtime reports a second response while one is still active, the newest
  *   server-created response becomes authoritative and the conflict is surfaced;
@@ -105,37 +106,14 @@ export function reduceResponseOwner(
 
     case "barge_in_ignore":
       if (snapshot.state !== "BARGE_IN_CLASSIFYING") return { snapshot, effects: [] };
-      if (!snapshot.playbackCleared) {
-        return {
-          snapshot: {
-            ...snapshot,
-            state: "ASSISTANT_ACTIVE",
-            callerResponsePending: false,
-            resumeAfterActiveDone: false,
-          },
-          effects: [],
-        };
-      }
-      if (snapshot.activeResponseId) {
-        return {
-          snapshot: {
-            ...snapshot,
-            state: "ASSISTANT_ACTIVE",
-            callerResponsePending: false,
-            resumeAfterActiveDone: true,
-          },
-          effects: [{ type: "cancel_response", responseId: snapshot.activeResponseId }],
-        };
-      }
       return {
         snapshot: {
           ...snapshot,
           state: "ASSISTANT_ACTIVE",
           callerResponsePending: false,
-          playbackCleared: false,
           resumeAfterActiveDone: false,
         },
-        effects: [{ type: "resume_assistant" }],
+        effects: [],
       };
 
     case "barge_in_interrupt": {

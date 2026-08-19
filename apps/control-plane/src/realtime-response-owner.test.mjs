@@ -53,7 +53,7 @@ test("SIP-cleared playback and active response are independent", () => {
   ]);
 });
 
-test("ignored SIP-cleared candidate cancels inaudible response and resumes only after authoritative done", () => {
+test("ignored SIP-cleared candidate preserves the authoritative response without synthetic continuation", () => {
   let s = initialResponseOwnerSnapshot();
   ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
   ({ snapshot: s } = step(s, { type: "assistant_playback_cleared" }));
@@ -61,28 +61,39 @@ test("ignored SIP-cleared candidate cancels inaudible response and resumes only 
   const ignored = step(s, { type: "barge_in_ignore" });
   assert.equal(ignored.snapshot.state, "ASSISTANT_ACTIVE");
   assert.equal(ignored.snapshot.activeResponseId, "old");
-  assert.equal(ignored.snapshot.resumeAfterActiveDone, true);
-  assert.deepEqual(ignored.effects, [{ type: "cancel_response", responseId: "old" }]);
+  assert.equal(ignored.snapshot.playbackCleared, true);
+  assert.equal(ignored.snapshot.resumeAfterActiveDone, false);
+  assert.deepEqual(ignored.effects, []);
 
   const done = step(ignored.snapshot, { type: "assistant_response_done", responseId: "old" });
   assert.equal(done.snapshot.activeResponseId, null);
   assert.equal(done.snapshot.resumeAfterActiveDone, false);
-  assert.equal(done.snapshot.playbackCleared, false);
-  assert.deepEqual(done.effects, [{ type: "resume_assistant" }]);
+  assert.equal(done.snapshot.playbackCleared, true);
+  assert.deepEqual(done.effects, []);
 });
 
-test("ignored candidate with no active response may resume immediately", () => {
+test("ignored candidate with no active response never synthesizes a replacement", () => {
   let s = initialResponseOwnerSnapshot();
   ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
   ({ snapshot: s } = step(s, { type: "assistant_playback_cleared" }));
   ({ snapshot: s } = step(s, { type: "assistant_response_done", responseId: "old" }));
-  ({ snapshot: s } = step(s, { type: "caller_speech_started" }));
-  // No active assistant ownership means this speech is not a barge-in; model the accepted
-  // semantic state directly to verify the no-active-response branch.
   s = { ...s, state: "BARGE_IN_CLASSIFYING" };
   const r = step(s, { type: "barge_in_ignore" });
-  assert.deepEqual(r.effects, [{ type: "resume_assistant" }]);
+  assert.equal(r.snapshot.state, "ASSISTANT_ACTIVE");
+  assert.equal(r.snapshot.activeResponseId, null);
   assert.equal(r.snapshot.resumeAfterActiveDone, false);
+  assert.deepEqual(r.effects, []);
+});
+
+test("ignored candidate without playback clear remains non-destructive", () => {
+  let s = initialResponseOwnerSnapshot();
+  ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
+  ({ snapshot: s } = step(s, { type: "caller_speech_started" }));
+  const ignored = step(s, { type: "barge_in_ignore" });
+  assert.equal(ignored.snapshot.state, "ASSISTANT_ACTIVE");
+  assert.equal(ignored.snapshot.activeResponseId, "old");
+  assert.equal(ignored.snapshot.playbackCleared, false);
+  assert.deepEqual(ignored.effects, []);
 });
 
 test("late response.done only reconciles old response and never gates caller turn", () => {
