@@ -44,6 +44,13 @@ export type DirectPostToolResponseDecision =
       exactText: string;
     }
   | {
+      action: "COLLECT";
+      reason: "RESERVATION_MISSING_INFORMATION";
+      missing: string[];
+      instructions: string;
+      exactText: string;
+    }
+  | {
       action: "DEFAULT";
       reason: "MARKETING_CONSENT_PENDING" | "NON_TERMINAL" | "ERROR_OR_INVALID";
     };
@@ -58,18 +65,62 @@ function stringField(value: Record<string, unknown>, key: string): string {
   return typeof value[key] === "string" ? value[key] as string : "";
 }
 
+function stringArrayField(value: Record<string, unknown>, key: string): string[] {
+  const raw = value[key];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
+}
+
 function governed(reason: Extract<DirectPostToolResponseDecision, { action: "GOVERN" }>["reason"]): DirectPostToolResponseDecision {
   return { action: "GOVERN", reason, instructions: STRUCTURED_CONTINUATION_INSTRUCTIONS };
+}
+
+function reservationMissingInformationSpeech(missing: readonly string[]): string {
+  const unique = new Set(missing);
+  if (unique.size === 1 && unique.has("starts_at")) {
+    return "¿Para qué día y a qué hora quieres reservar?";
+  }
+  if (unique.size === 1 && unique.has("party_size")) {
+    return "¿Para cuántas personas sería la reserva?";
+  }
+  if (unique.size === 1 && unique.has("customer_name")) {
+    return "¿A qué nombre hago la reserva?";
+  }
+  if (unique.size === 1 && unique.has("customer_phone")) {
+    return "¿Cuál es el teléfono de contacto para la reserva?";
+  }
+  if (unique.has("customer_name") && unique.has("customer_phone") && unique.size === 2) {
+    return "¿Me dices el nombre y el teléfono de contacto para la reserva?";
+  }
+  if (unique.has("starts_at") && unique.has("party_size") && unique.size === 2) {
+    return "¿Para qué día y hora quieres reservar y para cuántas personas?";
+  }
+  return "Necesito un dato más para continuar con la reserva. ¿Puedes indicarme la información que falta?";
+}
+
+function collectMissingInformation(missing: string[]): DirectPostToolResponseDecision {
+  const exactText = reservationMissingInformationSpeech(missing);
+  return {
+    action: "COLLECT",
+    reason: "RESERVATION_MISSING_INFORMATION",
+    missing,
+    exactText,
+    instructions:
+      `Pronuncia exactamente: ${JSON.stringify(exactText)} ` +
+      "No llames herramientas en esta misma respuesta. No intentes buscar disponibilidad ni crear otra reserva todavía. " +
+      "Espera el siguiente turno del cliente; entonces conserva los datos válidos ya recogidos y continúa el flujo normal.",
+  };
 }
 
 /**
  * Structured post-tool policy for the direct-agent runtime.
  *
  * This is intentionally based on backend result fields instead of generated
- * speech text. Non-terminal states keep the model's normal tool workflow except
- * commit-time reservation conflicts: those yield one deterministic recovery
- * sentence and a caller choice before any alternative search. This prevents an
- * immediate MVCC read from racing a still-uncommitted winning transaction.
+ * speech text. A reservation MISSING_INFORMATION result is a successful
+ * conversational checkpoint: it must ask for the missing data and yield the
+ * turn, never trigger a second tool in the same caller turn. Commit-time
+ * reservation conflicts similarly yield one deterministic recovery sentence
+ * before any alternative search.
  */
 export function decideDirectPostToolResponse(
   toolName: string,
@@ -93,6 +144,11 @@ export function decideDirectPostToolResponse(
       instructions: AVAILABILITY_CHANGED_INSTRUCTIONS,
       exactText: RESERVATION_AVAILABILITY_CHANGED_SPEECH,
     };
+  }
+
+  if (toolName === "restaurant_reservation_create" && status === "MISSING_INFORMATION") {
+    const missing = stringArrayField(payload, "missing");
+    if (missing.length > 0) return collectMissingInformation(missing);
   }
 
   if (toolName === "restaurant_reservation_create" && stage === "BOOKED") {
