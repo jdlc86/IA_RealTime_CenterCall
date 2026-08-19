@@ -16,6 +16,8 @@ import {
   decideConfirmedBargeInPromotion,
   decideDeferredBargeInTranscriptRoute,
 } from "../.test-dist/barge-in-semantic-authority.js";
+import { decideDirectPostToolResponse } from "../.test-dist/post-booking-conversation-policy.js";
+import { decideReservationDateScope } from "../.test-dist/reservation-date-scope-policy.js";
 
 function validToolOnce(tool) {
   let semantic = beginSemanticCallerTurn();
@@ -81,11 +83,78 @@ test("cross-layer trace: provider-destructive IGNORE has liveness recovery but t
   }), "KEEP_SILENT");
 });
 
+test("cross-layer trace: reservation missing information yields speech and cannot trigger a second same-turn business tool", () => {
+  let semantic = beginSemanticCallerTurn();
+  const create = selectSemanticTool(semantic, "restaurant_reservation_create");
+  assert.equal(create.allowed, true);
+  semantic = create.next;
+
+  const postTool = decideDirectPostToolResponse("restaurant_reservation_create", {
+    ok: true,
+    status: "MISSING_INFORMATION",
+    missing: ["starts_at"],
+  });
+  assert.equal(postTool.action, "COLLECT");
+  assert.equal(postTool.reason, "RESERVATION_MISSING_INFORMATION");
+  assert.ok(postTool.exactText.length > 0);
+  assert.match(postTool.instructions, /No llames herramientas en esta misma respuesta/);
+  assert.match(postTool.instructions, /Espera el siguiente turno del cliente/);
+
+  const sameTurnSearch = selectSemanticTool(semantic, "restaurant_reservation_search");
+  assert.equal(sameTurnSearch.allowed, false);
+  assert.equal(sameTurnSearch.duplicateOf, "restaurant_reservation_create");
+});
+
+test("cross-layer trace: reservation date drift is blocked before a second business mutation and exact later-turn change is allowed", () => {
+  const first = decideReservationDateScope({
+    activeLocalDate: null,
+    requestedLocalDate: "2026-08-26",
+    pendingChange: null,
+    currentCallerTurnEpoch: 4,
+  });
+  assert.deepEqual(first, { action: "ALLOW_AND_SET", localDate: "2026-08-26" });
+
+  const drift = decideReservationDateScope({
+    activeLocalDate: "2026-08-26",
+    requestedLocalDate: "2026-08-25",
+    pendingChange: null,
+    currentCallerTurnEpoch: 4,
+  });
+  assert.deepEqual(drift, {
+    action: "REQUIRE_CONFIRMATION",
+    fromLocalDate: "2026-08-26",
+    toLocalDate: "2026-08-25",
+  });
+
+  const pendingChange = {
+    fromLocalDate: "2026-08-26",
+    toLocalDate: "2026-08-25",
+    requestedAtCallerTurnEpoch: 4,
+  };
+  const wrongTarget = decideReservationDateScope({
+    activeLocalDate: "2026-08-26",
+    requestedLocalDate: "2026-08-24",
+    pendingChange,
+    currentCallerTurnEpoch: 5,
+  });
+  assert.equal(wrongTarget.action, "REQUIRE_CONFIRMATION");
+
+  const confirmed = decideReservationDateScope({
+    activeLocalDate: "2026-08-26",
+    requestedLocalDate: "2026-08-25",
+    pendingChange,
+    currentCallerTurnEpoch: 5,
+  });
+  assert.deepEqual(confirmed, { action: "ALLOW_CONFIRMED_CHANGE", localDate: "2026-08-25" });
+});
+
 test("runtime wiring: active entrypoint and critical layers consume the policies exercised above", () => {
   const index = readFileSync(new URL("./index-v6.ts", import.meta.url), "utf8");
   const v51 = readFileSync(new URL("./call-session-v51-malformed-tool-authority.ts", import.meta.url), "utf8");
-  const v36 = readFileSync(new URL("./call-session-v36-turn-serialization.ts", import.meta.url), "utf8");
+  const v36 = readFileSync(new URL("./call-session-v36.ts", import.meta.url), "utf8");
   const v40 = readFileSync(new URL("./call-session-v40-response-owner-rebuild.ts", import.meta.url), "utf8");
+  const v26 = readFileSync(new URL("./call-session-v26.ts", import.meta.url), "utf8");
+  const v50 = readFileSync(new URL("./call-session-v50-reservation-date-scope.ts", import.meta.url), "utf8");
 
   assert.match(index, /call-session-v51-malformed-tool-authority/);
   assert.match(v51, /decideMalformedToolCorrection/);
@@ -95,5 +164,7 @@ test("runtime wiring: active entrypoint and critical layers consume the policies
   assert.match(v36, /decideTurnConcurrencyAcquire/);
   assert.match(v36, /TURN_CONCURRENCY_OLDER_SPLIT_FRAGMENT_DEFERRED_V36/);
   assert.match(v40, /decideIgnoredBargeInPlaybackRecovery/);
+  assert.match(v26, /decideDirectPostToolResponse/);
+  assert.match(v50, /decideReservationDateScope/);
   assert.doesNotMatch(v51, /setTimeout|sleep\s*\(|delay\s*\(/);
 });
