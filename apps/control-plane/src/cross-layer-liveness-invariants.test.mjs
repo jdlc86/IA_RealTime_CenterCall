@@ -170,6 +170,55 @@ test("cross-layer trace: reservation date drift is blocked before a second busin
   assert.deepEqual(confirmed, { action: "ALLOW_CONFIRMED_CHANGE", localDate: "2026-08-25" });
 });
 
+test("cross-layer fuzz: malformed and corrected tool sequences never execute more than one business action per caller intervention", () => {
+  const tools = [
+    "restaurant_reservation_create",
+    "restaurant_reservation_cancel",
+    "restaurant_reservation_search",
+    "restaurant_business_info",
+  ];
+  let seed = 0x51c0ffee;
+  const random = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 0x100000000;
+  };
+
+  for (let trace = 0; trace < 1000; trace += 1) {
+    let correction = initialMalformedToolCorrectionState();
+    let semantic = beginSemanticCallerTurn();
+    let businessActions = 0;
+    const length = 2 + Math.floor(random() * 8);
+
+    for (let step = 0; step < length; step += 1) {
+      const tool = tools[Math.floor(random() * tools.length)];
+      const malformed = random() < 0.4;
+      const args = malformed ? '{"value":' : JSON.stringify({ value: step + 1 });
+      const decision = decideMalformedToolCorrection(correction, tool, args);
+      correction = decision.next;
+
+      if (decision.action === "PASS_INVALID_WITHOUT_CONSUMING") continue;
+      if (decision.action === "REJECT_CROSS_TOOL_CORRECTION") continue;
+
+      const semanticDecision = selectSemanticTool(semantic, tool);
+      semantic = semanticDecision.next;
+      if (semanticDecision.allowed) businessActions += 1;
+    }
+
+    assert.ok(businessActions <= 1, `trace ${trace} executed ${businessActions} business actions`);
+  }
+});
+
+test("runtime wiring: invalid and rejected tool paths both preserve an explicit liveness route", () => {
+  const v25 = readFileSync(new URL("./call-session-v25.ts", import.meta.url), "utf8");
+  const v51 = readFileSync(new URL("./call-session-v51-malformed-tool-authority.ts", import.meta.url), "utf8");
+  assert.match(v25, /PUBLIC_TOOL_AUTHORIZATION_INVALID_ARGUMENTS_V25/);
+  assert.match(v25, /port\.submitToolResult/);
+  assert.match(v25, /port\.createDefaultResponse\(\)/);
+  assert.match(v51, /SEMANTIC_TOOL_CROSS_TOOL_CORRECTION_BLOCKED_V51/);
+  assert.match(v51, /port\.speak\(/);
+  assert.match(v51, /tools:\s*"DISABLED"/);
+});
+
 test("runtime wiring: active entrypoint and critical layers consume the policies exercised above", () => {
   const index = readFileSync(new URL("./index-v6.ts", import.meta.url), "utf8");
   const v51 = readFileSync(new URL("./call-session-v51-malformed-tool-authority.ts", import.meta.url), "utf8");
