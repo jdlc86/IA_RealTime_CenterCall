@@ -55,3 +55,14 @@ test("provider-neutral: model human-assistance selection is semantic only until 
   const events = adaptRealtimeTurnEvent({ type: "SEMANTIC_TOOL_SELECTED", name: "restaurant_human_assistance", arguments: '{"reason":"SYSTEM_LIMITATION"}' });
   assert.deepEqual(events, [{ type: "semantic_valid", tool: "restaurant_human_assistance" }]);
 });
+
+test("Gate B: handoff speech remains lifecycle-compatible while v40/v44 see its protected kind", () => {
+  assert.deepEqual(
+    adaptRealtimeTurnEvent({ type: "ASSISTANT_AUDIO_STARTED", kind: "HANDOFF", responseId: "handoff-1" }),
+    [{ type: "assistant_audio_started", kind: "NORMAL" }],
+  );
+  assert.deepEqual(
+    adaptRealtimeTurnEvent({ type: "ASSISTANT_AUDIO_STOPPED", kind: "HANDOFF", responseId: "handoff-1" }),
+    [{ type: "assistant_audio_stopped", kind: "NORMAL" }],
+  );
+});

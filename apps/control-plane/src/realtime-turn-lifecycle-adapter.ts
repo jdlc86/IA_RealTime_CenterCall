@@ -1,5 +1,5 @@
 import { type IgnoredReason, type LifecycleEvent } from "./conversation-turn-lifecycle";
-import type { RealtimeProviderEvent } from "./realtime-provider-event";
+import type { AssistantSpeechKind, RealtimeProviderEvent } from "./realtime-provider-event";
 
 const PUBLIC_SEMANTIC_TOOLS = new Set([
   "restaurant_business_info",
@@ -16,6 +16,8 @@ const PUBLIC_SEMANTIC_TOOLS = new Set([
   "restaurant_end_call",
 ]);
 
+type LifecycleAssistantSpeechKind = NonNullable<Extract<LifecycleEvent, { type: "assistant_audio_started" }>["kind"]>;
+
 function usableTranscript(value: unknown): boolean {
   return typeof value === "string" && value.replace(/\s+/g, " ").trim().length > 0;
 }
@@ -30,6 +32,16 @@ function ignoredReason(args: unknown): IgnoredReason {
   }
 }
 
+/**
+ * The conversation lifecycle intentionally does not own protected handoff speech.
+ * Before Gate B handoff announcements reached this adapter as NORMAL while v40/v44
+ * protected them through provider metadata. Preserve that lifecycle behavior while
+ * allowing the provider-neutral event layer to expose HANDOFF to the barge-in owner.
+ */
+function lifecycleAssistantSpeechKind(kind: AssistantSpeechKind): LifecycleAssistantSpeechKind {
+  return kind === "HANDOFF" ? "NORMAL" : kind;
+}
+
 /** Provider-neutral realtime event -> lifecycle mapping. */
 export function adaptRealtimeTurnEvent(event: RealtimeProviderEvent): LifecycleEvent[] {
   switch (event.type) {
@@ -40,11 +52,11 @@ export function adaptRealtimeTurnEvent(event: RealtimeProviderEvent): LifecycleE
     case "CALLER_TRANSCRIPT_COMPLETED":
       return [{ type: usableTranscript(event.transcript) ? "transcript_usable" : "transcript_unusable" }];
     case "ASSISTANT_AUDIO_STARTED":
-      return [{ type: "assistant_audio_started", kind: event.kind }];
+      return [{ type: "assistant_audio_started", kind: lifecycleAssistantSpeechKind(event.kind) }];
     case "ASSISTANT_AUDIO_STOPPED":
-      return [{ type: "assistant_audio_stopped", kind: event.kind }];
+      return [{ type: "assistant_audio_stopped", kind: lifecycleAssistantSpeechKind(event.kind) }];
     case "ASSISTANT_AUDIO_CLEARED":
-      return [{ type: "assistant_audio_cleared", kind: event.kind }];
+      return [{ type: "assistant_audio_cleared", kind: lifecycleAssistantSpeechKind(event.kind) }];
     case "SEMANTIC_TOOL_SELECTED": {
       if (event.name === "restaurant_input_ignored") {
         return [{ type: "semantic_ignored", reason: ignoredReason(event.arguments) }];
@@ -54,6 +66,10 @@ export function adaptRealtimeTurnEvent(event: RealtimeProviderEvent): LifecycleE
       return [];
     }
     case "ASSISTANT_RESPONSE_STARTED":
+    case "ASSISTANT_RESPONSE_COMPLETED":
+    case "ASSISTANT_TRANSCRIPT_COMPLETED":
+    case "TEXT_DECISION_COMPLETED":
+    case "INPUT_DETECTION_UPDATED":
       return [];
   }
 }
