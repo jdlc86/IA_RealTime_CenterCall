@@ -9,6 +9,8 @@ const TERMINAL_RESULT_MARKERS = [
 export const CONTINUATION_QUESTION = "¿Necesitas algo más en lo que pueda ayudarte?";
 export const RESERVATION_AVAILABILITY_CHANGED_SPEECH =
   "Justo al confirmar, esa disponibilidad dejó de estar disponible y no se ha creado ninguna reserva. ¿Quieres que busque horarios cercanos para ese mismo día?";
+export const RESERVATION_SLOT_UNAVAILABLE_SPEECH =
+  "No tengo disponibilidad para ese horario. ¿Quieres que busque otros horarios ese mismo día?";
 
 const CONTINUATION_INSTRUCTION =
   ` Después de comunicar el resultado, pregunta exactamente: ${CONTINUATION_QUESTION} ` +
@@ -25,6 +27,12 @@ const AVAILABILITY_CHANGED_INSTRUCTIONS =
   "Si después acepta buscar alternativas, usa restaurant_reservation_search en un turno posterior, limitado inicialmente a la misma fecha. " +
   "Cualquier alternativa elegida deberá pasar de nuevo por restaurant_reservation_create y por una confirmación explícita nueva.";
 
+const SLOT_UNAVAILABLE_INSTRUCTIONS =
+  `Pronuncia exactamente: ${JSON.stringify(RESERVATION_SLOT_UNAVAILABLE_SPEECH)} ` +
+  "No llames herramientas en esta misma respuesta. Espera la respuesta del cliente. " +
+  "Si después acepta buscar alternativas, usa restaurant_reservation_search en un turno posterior, limitado inicialmente a la misma fecha. " +
+  "No anuncies una alternativa hasta que la búsqueda del backend la confirme.";
+
 export type DirectPostToolResponseDecision =
   | {
       action: "GOVERN";
@@ -39,7 +47,7 @@ export type DirectPostToolResponseDecision =
     }
   | {
       action: "RECOVER";
-      reason: "RESERVATION_AVAILABILITY_CHANGED";
+      reason: "RESERVATION_AVAILABILITY_CHANGED" | "RESERVATION_SLOT_UNAVAILABLE";
       instructions: string;
       exactText: string;
     }
@@ -118,9 +126,9 @@ function collectMissingInformation(missing: string[]): DirectPostToolResponseDec
  * This is intentionally based on backend result fields instead of generated
  * speech text. A reservation MISSING_INFORMATION result is a successful
  * conversational checkpoint: it must ask for the missing data and yield the
- * turn, never trigger a second tool in the same caller turn. Commit-time
- * reservation conflicts similarly yield one deterministic recovery sentence
- * before any alternative search.
+ * turn, never trigger a second tool in the same caller turn. Requested-slot
+ * unavailability and commit-time conflicts similarly yield one deterministic
+ * recovery sentence before any alternative search.
  */
 export function decideDirectPostToolResponse(
   toolName: string,
@@ -143,6 +151,19 @@ export function decideDirectPostToolResponse(
       reason: "RESERVATION_AVAILABILITY_CHANGED",
       instructions: AVAILABILITY_CHANGED_INSTRUCTIONS,
       exactText: RESERVATION_AVAILABILITY_CHANGED_SPEECH,
+    };
+  }
+
+  if (
+    toolName === "restaurant_reservation_create" &&
+    status === "UNAVAILABLE_WITH_SEARCH_OPTION" &&
+    payload.requested_available === false
+  ) {
+    return {
+      action: "RECOVER",
+      reason: "RESERVATION_SLOT_UNAVAILABLE",
+      instructions: SLOT_UNAVAILABLE_INSTRUCTIONS,
+      exactText: RESERVATION_SLOT_UNAVAILABLE_SPEECH,
     };
   }
 
