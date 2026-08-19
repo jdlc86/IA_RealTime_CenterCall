@@ -85,7 +85,7 @@ Implementación:
 - unknown/unregistered provider falla cerrado.
 - `realtime-provider-runtime.ts` centraliza binding/factory.
 - `call-session-v49-provider-selection.ts` hace bootstrap antes del resto de CallSession.
-- `index-v6.ts` es el entrypoint configurado en Wrangler.
+- `index-v6.ts` es el entrypoint configurado por Wrangler.
 - media path sin cambios.
 
 ### Gate B — neutralización provider-neutral
@@ -118,7 +118,7 @@ Neutralización Gate B:
 - `raw-vad-barge-in-routing.ts` decide sobre `CALLER_SPEECH_STARTED`, no sobre `input_audio_buffer.speech_started`.
 - El adapter OpenAI expone `TEXT_DECISION_COMPLETED` y `sourceItemId` para el clasificador de barge-in.
 - V40/V44 conservan la protección del handoff; lifecycle conserva su contrato histórico.
-- reducers/effects de response ownership no se modificaron.
+- reducers/effects de response ownership se modifican únicamente cuando hay evidencia E2E de una política de ownership incorrecta; ver sección 10.
 
 Invariantes:
 
@@ -213,7 +213,7 @@ No se añadió un segundo clasificador. Se consideró y se descartó ese diseño
 
 ## 5. Gate B todavía NO está cerrado
 
-El fix está IMPLEMENTADO y CI-verde, pero exige un nuevo deploy + E2E.
+Los fixes están IMPLEMENTADOS y CI-verdes, pero exigen un nuevo deploy + E2E.
 
 Prueba obligatoria:
 
@@ -221,7 +221,8 @@ Prueba obligatoria:
 2. durante la respuesta interrumpir con `¿A qué hora cierran?`;
 3. comprobar que la primera interrupción llega a `BARGE_IN_CONFIRMED_V40_REBUILD` y luego a `restaurant_business_info topics=[HOURS]`;
 4. durante otra respuesta generar una frase realmente de fondo y comprobar que solo se ignora si el classifier certifica fondo;
-5. verificar continuación normal y ausencia de warnings/errors.
+5. verificar que IGNORE no cancela ni sintetiza una continuación nueva;
+6. verificar continuación normal, sin duplicados ni late-transcript desfasado, y ausencia de warnings/errors.
 
 Eventos clave:
 
@@ -235,6 +236,8 @@ BARGE_IN_IGNORED_V40_REBUILD
 BARGE_IN_UNCLASSIFIABLE_IGNORED_V40_REBUILD
 CONFIRMED_BARGE_IN_SEMANTIC_TURN_STARTED_V29
 DEBUG_MODEL_TOOL_DECISION_V29
+MORE_HELP_QUESTION_DUPLICATE_OBSERVED_V41
+TURN_CONCURRENCY_LATE_TRANSCRIPT_BYPASSED_V36
 ```
 
 No comenzar Gate C hasta que esta prueba sea E2E-verde.
@@ -433,3 +436,93 @@ E2E VOZ           = ⏳ pendiente; se probará junto con los cambios anteriores
 ```
 
 Gate B permanece abierto hasta su E2E específico; este trabajo de reservas no autoriza saltar a Gate C.
+
+## 10. Gate B — desfase por reanudación sintética tras IGNORE (E2E 2026-08-19)
+
+Llamada:
+
+```text
+call_id = rtc_u7_EEX3EdnY9EpeQoPn47sr7
+377 eventos diagnósticos
+warn/error/critical = 0
+```
+
+Aunque no hubo error técnico explícito, la experiencia fue caótica y los timestamps muestran un problema de ownership reproducible.
+
+### Evidencia 1 — Lucía reanuda encima de un nuevo turno del caller
+
+```text
+09:40:01.506 RAW_VAD_ROUTED_TO_V40_ONLY_V44
+09:40:02.357 BARGE_IN_UNCLASSIFIABLE_IGNORED_V40_REBUILD
+09:40:03.060 caller vuelve a empezar a hablar
+09:40:03.657 response.done de la respuesta anterior emite resume_assistant
+09:40:03.743 arranca una nueva respuesta sintética de Lucía
+09:40:04.045 empieza audio de Lucía mientras el caller sigue hablando
+09:40:05.252 llega la transcripción usable del caller
+09:40:05.318 TURN_CONCURRENCY_LATE_TRANSCRIPT_BYPASSED_V36
+```
+
+### Evidencia 2 — duplicado de la pregunta de continuación
+
+Otro `BARGE_IN_UNCLASSIFIABLE_IGNORED_V40_REBUILD` ocurrió cuando la generación original ya no tenía `active_response_id`. El reducer emitía `resume_assistant` inmediatamente; esa respuesta sintética terminó repitiendo la pregunta de continuación y apareció:
+
+```text
+MORE_HELP_QUESTION_DUPLICATE_OBSERVED_V41
+```
+
+### Causa raíz
+
+`realtime-response-owner.ts` interpretaba `playbackCleared` tras IGNORE como permiso para cancelar/reemplazar/reanudar la respuesta. Pero el runtime normal de V40 escucha con `create_response=false` e `interrupt_response=false`: raw VAD es solo evidencia, y un IGNORE no debe crear una nueva autoridad hablada.
+
+La política anterior podía:
+
+```text
+IGNORE + playback cleared + active response
+→ cancel_response
+→ esperar response.done
+→ resume_assistant (respuesta nueva)
+```
+
+o:
+
+```text
+IGNORE + playback cleared + no active response
+→ resume_assistant inmediato
+```
+
+Ambas rutas eran inseguras porque no existía una frontera fiable que impidiera que el caller comenzara un nuevo turno entre medias.
+
+### Corrección
+
+Commit:
+
+```text
+6abd28f08aed43712572d7c6d7dca57d370c0191
+fix(gate-b): keep ignored barge-ins non-destructive
+Control Plane CI #555 — SUCCESS
+```
+
+Nueva regla de ownership:
+
+```text
+barge_in_ignore
+→ conservar activeResponseId si existe
+→ no cancel_response
+→ no resume_assistant
+→ no create_caller_response
+→ resumeAfterActiveDone=false
+```
+
+`INTERRUPT` conserva su comportamiento previo: puede cancelar la respuesta activa, limpiar playback cuando corresponde y promover el turno al pipeline semántico sin esperar `response.done`.
+
+No se añadió ningún timer ni delay. No se modificaron V36, V41, V46, ConversationTurnLifecycle, HangupController ni `TERMINAL_TRANSPORT_DRAIN_MS=750`.
+
+Estado:
+
+```text
+FIX CÓDIGO = ✅
+CI #555   = ✅ SUCCESS
+DEPLOY    = ❌ no afirmado
+E2E       = ⏳ repetir después de desplegar HEAD que contenga 6abd28f0…
+Gate B    = 🟡 abierto
+```

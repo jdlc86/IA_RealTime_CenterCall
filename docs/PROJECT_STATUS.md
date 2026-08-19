@@ -11,7 +11,7 @@
 ```text
 F0 Voz E2E                                    ✅ CERRADA
 F1 Baseline + observabilidad + TenantResolver ✅ CERRADA
-F2 Latencia + barge-in                        🟡 GATE B CI VERDE / E2E PENDIENTE
+F2 Latencia + barge-in                        🟡 GATE B FIX #555 / NUEVO E2E PENDIENTE
 F3 ToolGateway / direct tools                 🟡 EN CURSO, frontera realtime neutralizada
 F4 Clínica + multi-negocio                    🟡 EN CURSO
 F5 Persistencia empresarial + Supabase        🟡 EN CURSO
@@ -46,7 +46,7 @@ OpenAI sigue siendo el único provider activo/registrado. Gemini no está habili
 
 ```text
 Gate A ProviderSelector tenant/KV       ✅ IMPLEMENTADO + CI #540 SUCCESS
-Gate B V40/V44 provider-neutral         🟡 IMPLEMENTADO + FIX #547 SUCCESS / E2E PENDIENTE
+Gate B V40/V44 provider-neutral         🟡 FIX #555 SUCCESS / NUEVO E2E PENDIENTE
 Gate C ProviderCapabilities             ⛔ BLOQUEADO POR B
 Gate D MediaTransport contract          ⛔ BLOQUEADO POR C
 Gemini                                  ⛔ NO INICIAR
@@ -89,22 +89,36 @@ Commits de código base:
 9de3b7829ea5031e5967b1d42722b597e15c18ef
 ```
 
-Fix de falso IGNORE:
+Fix de falso IGNORE usable:
 
 ```text
 188ae177fda6544b40c3f014ebe8d36edcd3a520
 Control Plane CI #547 — SUCCESS
 ```
 
-Estado funcional:
+Fix de desfase por reanudación sintética tras IGNORE:
 
-- V40/V44 consumen la frontera Realtime provider-neutral.
-- raw VAD sigue siendo evidencia acústica, no autoridad semántica.
-- `IGNORE_CONFIRMED` es la única salida del classifier que permite el descarte destructivo de una transcripción usable.
-- salida `IGNORE` antigua, ambigua, malformada o fallback conserva el turno como `INTERRUPT`.
-- reducers/effects de response ownership no cambiaron.
+```text
+6abd28f08aed43712572d7c6d7dca57d370c0191
+Control Plane CI #555 — SUCCESS
+```
 
-No se modificaron durante Gate B:
+La E2E `rtc_u7_EEX3EdnY9EpeQoPn47sr7` confirmó que el primer fix permitía que interrupciones legítimas llegaran al pipeline, pero descubrió otra política incorrecta: un `IGNORE` con playback cleared podía cancelar la respuesta original y crear una respuesta sintética `resume_assistant`. Esa reanudación podía arrancar mientras el caller ya había iniciado otro turno y también podía repetir la pregunta de continuación.
+
+Nueva política:
+
+```text
+IGNORE
+→ no cancel_response
+→ no resume_assistant
+→ no create_caller_response
+→ conservar respuesta activa si existe
+
+INTERRUPT
+→ mantiene cancel/clear/promoción semántica cuando corresponda
+```
+
+No se añadió timer/delay. No se modificaron:
 
 ```text
 v36
@@ -120,18 +134,18 @@ Estado Gate B:
 
 ```text
 IMPLEMENTADO = ✅
-CI VERDE = ✅
-DESPLEGADO = ❌ no confirmado
-VALIDADO E2E = ❌ pendiente
+CI VERDE = ✅ #555
+DESPLEGADO = ❌ no afirmado para 6abd28f0…
+VALIDADO E2E = ❌ requiere nueva llamada limpia
 ```
 
 ## Bloqueo deliberado antes de Gate C
 
-Gate B exige llamada E2E real con turno normal, interrupción legítima, background/ruido y continuación correcta. CI verde no sustituye el deploy ni la llamada real.
+Gate B exige una llamada E2E real después de desplegar el HEAD que contenga `6abd28f0…` con turno normal, interrupción legítima, background/ruido y continuación correcta. CI verde no sustituye el deploy ni la llamada real.
 
 ## E2E Gate B — evidencia requerida
 
-Después de desplegar el HEAD actual, consultar `public.call_diagnostic_events` para la llamada y verificar al menos:
+Verificar al menos:
 
 ```text
 BARGE_IN_PLAYBACK_WINDOW_OPENED_V40_REBUILD
@@ -139,10 +153,16 @@ RAW_VAD_ROUTED_TO_V40_ONLY_V44
 BARGE_IN_CLASSIFIER_REQUESTED_V40_REBUILD
 BARGE_IN_CLASSIFIER_BOUND_V40_REBUILD
 BARGE_IN_CONFIRMED_V40_REBUILD
-BARGE_IN_IGNORED_V40_REBUILD
 ```
 
-También comprobar ausencia de `RESPONSE_OWNERSHIP_CONFLICT_V40_REBUILD` inesperado, warnings/errors críticos y pérdida del primer turno legítimo.
+Para background/ruido, un IGNORE no debe producir `resume_assistant` sintético ni una nueva respuesta de Lucía. También comprobar:
+
+```text
+MORE_HELP_QUESTION_DUPLICATE_OBSERVED_V41 = 0 esperado
+TURN_CONCURRENCY_LATE_TRANSCRIPT_BYPASSED_V36 = 0 esperado por este patrón
+RESPONSE_OWNERSHIP_CONFLICT_V40_REBUILD = 0
+warn/error/critical inesperados = 0
+```
 
 ## Concurrencia de reservas simultáneas
 
@@ -186,7 +206,7 @@ APP/CI             = ✅
 DB APLICADA        = ✅
 DB VERIFICADA      = ✅
 HOLD               = ❌ no implementado
-WORKER DESPLEGADO  = ❌ no afirmado
+WORKER DESPLEGADO  = ❌ no afirmado para HEAD actual
 E2E VOZ            = ⏳ pendiente
 ```
 
