@@ -23,14 +23,17 @@ test("v26 owns one common structured direct post-tool response boundary", async 
   assert.doesNotMatch(v26, /pendingGovernedPostToolResponseV26/);
 });
 
-test("v26 owns commit-time reservation conflict speech without a timing heuristic", async () => {
+test("v26 owns reservation recovery speech without a timing heuristic", async () => {
   const v26 = await source("call-session-v26.ts");
   assert.match(v26, /decision\.action === "RECOVER"/);
   assert.match(v26, /DIRECT_POST_TOOL_RECOVERY_GOVERNED_V26/);
-  assert.match(v26, /purpose: "reservation_availability_changed_v26"/);
+  assert.match(v26, /availabilityChanged = decision\.reason === "RESERVATION_AVAILABILITY_CHANGED"/);
+  assert.match(v26, /"reservation_availability_changed_v26"/);
+  assert.match(v26, /"reservation_slot_unavailable_v26"/);
   assert.match(v26, /exactText: decision\.exactText/);
   assert.match(v26, /immediate_alternative_search: false/);
-  assert.match(v26, /fresh_confirmation_required: true/);
+  assert.match(v26, /caller_choice_required_before_search: true/);
+  assert.match(v26, /fresh_confirmation_required: availabilityChanged/);
 
   const boundaryStart = v26.indexOf("private installPostToolResponseBoundaryV26");
   const fetchStart = v26.indexOf("async fetch(", boundaryStart);
