@@ -1,8 +1,10 @@
 import { CallSession as CallSessionV51 } from "./call-session-v51-malformed-tool-authority";
 import { rewriteReservationCreateContactEvent } from "./reservation-contact-identity.js";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 
 const BaseConstructor = CallSessionV51 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV51.prototype as any;
+const CREATE_RESERVATION = "restaurant_reservation_create";
 
 /**
  * V52 makes the trusted SIP/Telnyx caller identity authoritative for the
@@ -22,11 +24,35 @@ export class CallSession extends BaseConstructor {
     try {
       rewritten = rewriteReservationCreateContactEvent(data, callerPhone);
     } catch (error) {
+      const toolEvent = adaptRealtimeProviderEvents(data).find(
+        (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && candidate.name === CREATE_RESERVATION,
+      );
       (this as any).diagnostics?.fail?.(
         "RESERVATION_CONTACT_IDENTITY_REJECTED_V52",
         "RESERVATION_CONTACT_IDENTITY_INVALID",
-        { error: error instanceof Error ? error.message : String(error) },
+        { error: error instanceof Error ? error.message : String(error), fail_closed: true },
       );
+      if (toolEvent?.type === "SEMANTIC_TOOL_SELECTED") {
+        const port = realtimeCommandPortFor(this as any);
+        port.submitToolResult({
+          callId: toolEvent.callId,
+          toolName: CREATE_RESERVATION,
+          output: {
+            ok: false,
+            status: "CONTACT_PHONE_REQUIRES_COUNTRY_CODE",
+            reservation_created: false,
+          },
+        });
+        port.speak({
+          exactText: "Para usar un teléfono distinto al número desde el que llamas, necesito el número completo con su prefijo internacional.",
+          instructions: "Di exactamente la frase indicada. No llames herramientas en esta respuesta. Espera un nuevo turno del cliente.",
+          purpose: "reservation_contact_identity_recovery_v52",
+          metadata: { reservation_contact_identity_v52: "explicit_country_required" },
+          isolated: true,
+          tools: "DISABLED",
+        });
+        return;
+      }
       await BasePrototype.handleRealtimeMessage.call(this, data);
       return;
     }
