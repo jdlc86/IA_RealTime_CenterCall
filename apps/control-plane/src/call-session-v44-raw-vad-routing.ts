@@ -18,6 +18,11 @@ function responseId(event: RealtimeProviderEvent): string | null {
  * directly to v40's response-owner transition. The completed transcript still
  * follows the inherited chain so v40 can classify INTERRUPT/IGNORE before any
  * semantic action is authorized.
+ *
+ * The provider-neutral speech item identity is still forwarded to v40's ordering
+ * observer even when the raw VAD event itself is suppressed from lower layers.
+ * This lets v40 distinguish an older classified fragment from a newer caller
+ * fragment without introducing a timing window.
  */
 export class CallSession extends BaseConstructor {
   private protectedResponseIdsV44 = new Set<string>();
@@ -40,12 +45,20 @@ export class CallSession extends BaseConstructor {
         if (id) this.protectedResponseIdsV44.delete(id);
       }
 
+      if (event.type === "CALLER_SPEECH_STARTED") {
+        const observeSpeechStart = (this as any).observeCallerSpeechStartedV40;
+        if (typeof observeSpeechStart === "function") {
+          observeSpeechStart.call(this, event.itemId ?? null, "v44_raw_vad_route");
+        }
+      }
+
       if (decideRawVadRoute(event.type, this.normalPlaybackActiveV44) === "V40_ONLY") {
         const reconcile = (this as any).reconcileOwnerEventV40;
         if (typeof reconcile === "function") {
           reconcile.call(this, { type: "caller_speech_started" });
           (this as any).diagnostics?.checkpoint?.("RAW_VAD_ROUTED_TO_V40_ONLY_V44", {
             response_id: id,
+            item_id: event.type === "CALLER_SPEECH_STARTED" ? event.itemId ?? null : null,
             normal_playback_active: true,
             inherited_raw_vad_suppressed: true,
             semantic_authority: "v40_classifier",

@@ -10,6 +10,13 @@ test("OpenAI speech and transcript events become provider-neutral events", () =>
   assert.deepEqual(adaptOpenAIRealtimeEvent(wire({ type: "conversation.item.input_audio_transcription.completed", transcript: "hola" })), [{ type: "CALLER_TRANSCRIPT_COMPLETED", transcript: "hola" }]);
 });
 
+test("OpenAI caller speech-start identity is preserved for split-utterance ordering", () => {
+  assert.deepEqual(adaptOpenAIRealtimeEvent(wire({
+    type: "input_audio_buffer.speech_started",
+    item_id: "item-newer",
+  })), [{ type: "CALLER_SPEECH_STARTED", itemId: "item-newer" }]);
+});
+
 test("OpenAI caller transcript identity is preserved only when provider supplies it", () => {
   assert.deepEqual(adaptOpenAIRealtimeEvent(wire({
     type: "conversation.item.input_audio_transcription.completed",

@@ -85,8 +85,11 @@ export function adaptOpenAIRealtimeEvent(data: unknown): RealtimeProviderEvent[]
         settings: turnDetection === null ? null : inputDetectionSettings(turnDetection),
       }];
     }
-    case "input_audio_buffer.speech_started":
-      return [{ type: "CALLER_SPEECH_STARTED" }];
+    case "input_audio_buffer.speech_started": {
+      const adapted: RealtimeProviderEvent = { type: "CALLER_SPEECH_STARTED" };
+      if (event.item_id) adapted.itemId = event.item_id;
+      return [adapted];
+    }
     case "input_audio_buffer.speech_stopped":
       return [{ type: "CALLER_SPEECH_STOPPED" }];
     case "conversation.item.input_audio_transcription.completed": {

@@ -9,6 +9,10 @@ import {
 import { decideResponseOwnerEmission, type ResponseOwnerEmissionMode } from "./response-owner-emission-policy";
 import { applyBargeInSemanticDecision } from "./response-owner-barge-in-decision";
 import {
+  decideConfirmedBargeInPromotion,
+  decideDeferredBargeInTranscriptRoute,
+} from "./barge-in-semantic-authority";
+import {
   BARGE_IN_METADATA_PURPOSE,
   buildBargeInClassifierRequest,
   parseBargeInDecision,
@@ -24,6 +28,12 @@ type PendingBargeIn = {
   itemId: string;
   transcript: string;
   originalData: unknown;
+};
+
+type DeferredConfirmedBargeIn = {
+  source: PendingBargeIn;
+  targetItemId: string;
+  postSemanticEffects: ResponseOwnerEffect[];
 };
 
 type TurnConcurrencyCompatibilityEvent = { item_id?: string };
@@ -53,9 +63,12 @@ function providerResponseId(event: RealtimeProviderEvent): string | null {
  *   assumption and the next playback must reassert non-interrupting listening;
  * - completed caller speech is classified out-of-conversation as INTERRUPT/IGNORE;
  * - an unclassifiable candidate resolves immediately as IGNORE;
- * - confirmed barge-in has one lifecycle owner: v40. v36 explicitly yields that
- *   item instead of acquiring a second concurrency lock;
- * - IGNORE may defer continuation until the authoritative active response is done;
+ * - confirmed barge-in has one lifecycle owner: v40. v36 explicitly yields the
+ *   classified source item when that exact item enters the semantic pipeline;
+ * - a classified older fragment can interrupt playback, but cannot create a
+ *   response after a newer caller speech item has already started;
+ * - split-utterance ordering is item/event based and never uses a timing window;
+ * - IGNORE is non-destructive and never synthesizes a replacement continuation;
  * - INTERRUPT never waits for response completion.
  */
 export class CallSession extends BaseConstructor {
@@ -66,9 +79,39 @@ export class CallSession extends BaseConstructor {
   private listeningResponseIdV40: string | null = null;
   private playbackBargeInWindowV40 = false;
   private v40OwnedSemanticItemId: string | null = null;
+  private latestCallerSpeechItemIdV40: string | null = null;
+  private latestCompletedCallerItemIdV40: string | null = null;
+  private deferredConfirmedBargeInV40: DeferredConfirmedBargeIn | null = null;
 
   protected shouldBypassTurnConcurrencyV36(event: TurnConcurrencyCompatibilityEvent): boolean {
     return Boolean(this.v40OwnedSemanticItemId && event.item_id === this.v40OwnedSemanticItemId);
+  }
+
+  protected observeCallerSpeechStartedV40(itemId: string | null | undefined, source = "v40_runtime"): void {
+    if (!itemId) return;
+    const previousItemId = this.latestCallerSpeechItemIdV40;
+    this.latestCallerSpeechItemIdV40 = itemId;
+
+    const deferred = this.deferredConfirmedBargeInV40;
+    if (deferred && deferred.targetItemId !== itemId) {
+      const previousTargetItemId = deferred.targetItemId;
+      deferred.targetItemId = itemId;
+      (this as any).diagnostics?.checkpoint?.("BARGE_IN_DEFERRED_TARGET_ADVANCED_V40_REBUILD", {
+        classifier_source_item_id: deferred.source.itemId,
+        previous_target_item_id: previousTargetItemId,
+        target_item_id: itemId,
+        observation_source: source,
+        timer_used: false,
+      });
+    } else if (previousItemId !== itemId && this.pendingBargeInV40 && this.pendingBargeInV40.itemId !== itemId) {
+      (this as any).diagnostics?.checkpoint?.("BARGE_IN_NEWER_SPEECH_OBSERVED_V40_REBUILD", {
+        classifier_source_item_id: this.pendingBargeInV40.itemId,
+        previous_item_id: previousItemId,
+        latest_item_id: itemId,
+        observation_source: source,
+        timer_used: false,
+      });
+    }
   }
 
   private reportOwnerEffectsV40(effects: ResponseOwnerEffect[]): void {
@@ -170,6 +213,21 @@ export class CallSession extends BaseConstructor {
     if (!itemId || !transcript) return false;
 
     if (this.pendingBargeInV40) {
+      const isNewestStartedItem =
+        itemId !== this.pendingBargeInV40.itemId &&
+        itemId === this.latestCallerSpeechItemIdV40;
+      if (isNewestStartedItem) {
+        (this as any).diagnostics?.checkpoint?.("BARGE_IN_NEWER_FRAGMENT_TRANSCRIPT_FORWARDED_V40_REBUILD", {
+          classifier_source_item_id: this.pendingBargeInV40.itemId,
+          newer_item_id: itemId,
+          semantic_pipeline_allowed: true,
+          classifier_still_pending: true,
+          input_item_deleted: false,
+          timer_used: false,
+        });
+        return false;
+      }
+
       try { realtimeCommandPortFor(this as any).discardInputItem(itemId); } catch { /* best effort */ }
       (this as any).diagnostics?.checkpoint?.("BARGE_IN_EXTRA_CANDIDATE_DROPPED_V40_REBUILD", {
         item_id: itemId,
@@ -216,6 +274,124 @@ export class CallSession extends BaseConstructor {
         });
       }
     }
+  }
+
+  private cancelledResponseIdV40(effects: ResponseOwnerEffect[]): string | null {
+    const cancelled = effects.find(
+      (effect): effect is Extract<ResponseOwnerEffect, { type: "cancel_response" }> => effect.type === "cancel_response",
+    );
+    return cancelled?.responseId ?? null;
+  }
+
+  private reportConfirmedBargeInV40(options: {
+    classifierSourceItemId: string;
+    semanticItemId: string;
+    effects: ResponseOwnerEffect[];
+    v36TurnLockBypassed: boolean;
+    deferredToNewerSpeech: boolean;
+    fallbackFromUnusableNewer?: boolean;
+  }): void {
+    (this as any).diagnostics?.checkpoint?.("BARGE_IN_CONFIRMED_V40_REBUILD", {
+      item_id: options.classifierSourceItemId,
+      semantic_item_id: options.semanticItemId,
+      classifier_source_item_id: options.classifierSourceItemId,
+      cancelled_response_id: this.cancelledResponseIdV40(options.effects),
+      playback_was_already_cleared: this.responseOwnerV40.playbackCleared,
+      promoted_to_v39_semantic_pipeline: true,
+      v36_turn_lock_bypassed: options.v36TurnLockBypassed,
+      response_done_gate: false,
+      provider_neutral_classifier: true,
+      deferred_to_newer_speech: options.deferredToNewerSpeech,
+      fallback_from_unusable_newer: options.fallbackFromUnusableNewer ?? false,
+    });
+  }
+
+  private async promoteConfirmedSourceV40(
+    pending: PendingBargeIn,
+    effects: ResponseOwnerEffect[],
+    options: { classifierSourceItemId?: string; fallbackFromUnusableNewer?: boolean } = {},
+  ): Promise<void> {
+    this.v40OwnedSemanticItemId = pending.itemId;
+    try {
+      await BasePrototype.handleRealtimeMessage.call(this, pending.originalData);
+    } finally {
+      this.v40OwnedSemanticItemId = null;
+    }
+    this.executePostSemanticEffectsV40(effects);
+    const classifierSourceItemId = options.classifierSourceItemId ?? pending.itemId;
+    this.reportConfirmedBargeInV40({
+      classifierSourceItemId,
+      semanticItemId: pending.itemId,
+      effects,
+      v36TurnLockBypassed: true,
+      deferredToNewerSpeech: classifierSourceItemId !== pending.itemId,
+      fallbackFromUnusableNewer: options.fallbackFromUnusableNewer,
+    });
+  }
+
+  private async handleDeferredConfirmedTranscriptV40(
+    event: Extract<RealtimeProviderEvent, { type: "CALLER_TRANSCRIPT_COMPLETED" }>,
+    data: unknown,
+  ): Promise<boolean> {
+    const deferred = this.deferredConfirmedBargeInV40;
+    if (!deferred) return false;
+
+    const itemId = typeof event.itemId === "string" ? event.itemId : null;
+    const transcript = usableTranscript(event.transcript);
+    const route = decideDeferredBargeInTranscriptRoute(
+      deferred.targetItemId,
+      itemId,
+      Boolean(transcript),
+    );
+
+    if (route === "WAIT_FOR_LATEST") {
+      (this as any).diagnostics?.checkpoint?.("BARGE_IN_DEFERRED_INTERMEDIATE_TRANSCRIPT_SUPPRESSED_V40_REBUILD", {
+        classifier_source_item_id: deferred.source.itemId,
+        target_item_id: deferred.targetItemId,
+        completed_item_id: itemId,
+        semantic_pipeline_entered: false,
+        input_item_deleted: false,
+        timer_used: false,
+      });
+      return true;
+    }
+
+    this.deferredConfirmedBargeInV40 = null;
+
+    if (route === "FALLBACK_SOURCE") {
+      (this as any).diagnostics?.checkpoint?.("BARGE_IN_DEFERRED_LATEST_UNUSABLE_FALLBACK_V40_REBUILD", {
+        classifier_source_item_id: deferred.source.itemId,
+        target_item_id: deferred.targetItemId,
+        completed_item_id: itemId,
+        fallback_item_id: deferred.source.itemId,
+        timer_used: false,
+      });
+      await this.promoteConfirmedSourceV40(deferred.source, deferred.postSemanticEffects, {
+        classifierSourceItemId: deferred.source.itemId,
+        fallbackFromUnusableNewer: true,
+      });
+      return true;
+    }
+
+    await BasePrototype.handleRealtimeMessage.call(this, data);
+    this.executePostSemanticEffectsV40(deferred.postSemanticEffects);
+    this.reportConfirmedBargeInV40({
+      classifierSourceItemId: deferred.source.itemId,
+      semanticItemId: itemId as string,
+      effects: deferred.postSemanticEffects,
+      v36TurnLockBypassed: false,
+      deferredToNewerSpeech: true,
+    });
+    (this as any).diagnostics?.checkpoint?.("BARGE_IN_DEFERRED_LATEST_FRAGMENT_PROMOTED_V40_REBUILD", {
+      classifier_source_item_id: deferred.source.itemId,
+      item_id: itemId,
+      target_item_id: deferred.targetItemId,
+      semantic_pipeline_entered: true,
+      v36_turn_lock_bypassed: false,
+      response_creation_released_after_latest_transcript: true,
+      timer_used: false,
+    });
+    return true;
   }
 
   private resolveUnclassifiableCandidateV40(
@@ -282,25 +458,48 @@ export class CallSession extends BaseConstructor {
     }
 
     this.executePreSemanticEffectsV40(emission.executable);
-    this.v40OwnedSemanticItemId = pending.itemId;
-    try {
-      await BasePrototype.handleRealtimeMessage.call(this, pending.originalData);
-    } finally {
-      this.v40OwnedSemanticItemId = null;
+    const promotionRoute = decideConfirmedBargeInPromotion(pending.itemId, this.latestCallerSpeechItemIdV40);
+
+    if (promotionRoute === "DEFER_TO_NEWER_SPEECH" && this.latestCallerSpeechItemIdV40) {
+      const targetItemId = this.latestCallerSpeechItemIdV40;
+      (this as any).diagnostics?.checkpoint?.("BARGE_IN_CONFIRMED_DEFERRED_TO_NEWER_SPEECH_V40_REBUILD", {
+        classifier_source_item_id: pending.itemId,
+        target_item_id: targetItemId,
+        target_transcript_already_completed: this.latestCompletedCallerItemIdV40 === targetItemId,
+        cancelled_response_id: this.cancelledResponseIdV40(result.effects),
+        response_creation_deferred: this.latestCompletedCallerItemIdV40 !== targetItemId,
+        timer_used: false,
+      });
+
+      if (this.latestCompletedCallerItemIdV40 === targetItemId) {
+        this.executePostSemanticEffectsV40(emission.executable);
+        this.reportConfirmedBargeInV40({
+          classifierSourceItemId: pending.itemId,
+          semanticItemId: targetItemId,
+          effects: emission.executable,
+          v36TurnLockBypassed: false,
+          deferredToNewerSpeech: true,
+        });
+        (this as any).diagnostics?.checkpoint?.("BARGE_IN_NEWER_COMPLETED_FRAGMENT_RESPONSE_RELEASED_V40_REBUILD", {
+          classifier_source_item_id: pending.itemId,
+          item_id: targetItemId,
+          semantic_pipeline_already_entered: true,
+          response_creation_released: true,
+          v36_turn_lock_bypassed: false,
+          timer_used: false,
+        });
+        return;
+      }
+
+      this.deferredConfirmedBargeInV40 = {
+        source: pending,
+        targetItemId,
+        postSemanticEffects: emission.executable,
+      };
+      return;
     }
-    this.executePostSemanticEffectsV40(emission.executable);
-    const cancelled = result.effects.find(
-      (effect): effect is Extract<ResponseOwnerEffect, { type: "cancel_response" }> => effect.type === "cancel_response",
-    );
-    (this as any).diagnostics?.checkpoint?.("BARGE_IN_CONFIRMED_V40_REBUILD", {
-      item_id: pending.itemId,
-      cancelled_response_id: cancelled?.responseId ?? null,
-      playback_was_already_cleared: result.snapshot.playbackCleared,
-      promoted_to_v39_semantic_pipeline: true,
-      v36_turn_lock_bypassed: true,
-      response_done_gate: false,
-      provider_neutral_classifier: true,
-    });
+
+    await this.promoteConfirmedSourceV40(pending, emission.executable);
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
@@ -336,6 +535,9 @@ export class CallSession extends BaseConstructor {
       }
 
       if (event.type === "CALLER_TRANSCRIPT_COMPLETED") {
+        const completedItemId = typeof event.itemId === "string" ? event.itemId : null;
+        if (completedItemId) this.latestCompletedCallerItemIdV40 = completedItemId;
+        if (await this.handleDeferredConfirmedTranscriptV40(event, data)) return;
         if (this.resolveUnclassifiableCandidateV40(event)) return;
         if (this.requestClassifierV40(event, data)) return;
       }
@@ -353,6 +555,7 @@ export class CallSession extends BaseConstructor {
         this.playbackBargeInWindowV40 = false;
         this.invalidateNormalListeningV40("assistant_playback_cleared", id);
       } else if (event.type === "CALLER_SPEECH_STARTED") {
+        this.observeCallerSpeechStartedV40(event.itemId ?? null);
         if (this.playbackBargeInWindowV40) {
           this.reconcileOwnerEventV40({ type: "caller_speech_started" });
         }
@@ -366,6 +569,8 @@ export class CallSession extends BaseConstructor {
 
       if (normalPlaybackStarting) {
         this.playbackBargeInWindowV40 = true;
+        this.latestCallerSpeechItemIdV40 = null;
+        this.latestCompletedCallerItemIdV40 = null;
         (this as any).diagnostics?.checkpoint?.("BARGE_IN_PLAYBACK_WINDOW_OPENED_V40_REBUILD", {
           response_id: id,
           authority_from: "assistant_playback_started",
@@ -384,6 +589,9 @@ export class CallSession extends BaseConstructor {
         this.listeningResponseIdV40 = null;
         this.playbackBargeInWindowV40 = false;
         this.v40OwnedSemanticItemId = null;
+        this.latestCallerSpeechItemIdV40 = null;
+        this.latestCompletedCallerItemIdV40 = null;
+        this.deferredConfirmedBargeInV40 = null;
       }
 
       await BasePrototype.handleRealtimeMessage.call(this, data);

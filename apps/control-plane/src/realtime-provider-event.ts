@@ -3,7 +3,7 @@ import type { RealtimeInputDetectionSettings } from "./realtime-provider-command
 export type AssistantSpeechKind = "NORMAL" | "GREETING" | "RECOVERY" | "TERMINAL" | "PRESENCE" | "HANDOFF";
 
 export type RealtimeProviderEvent =
-  | { type: "CALLER_SPEECH_STARTED" }
+  | { type: "CALLER_SPEECH_STARTED"; itemId?: string }
   | { type: "CALLER_SPEECH_STOPPED" }
   | { type: "CALLER_TRANSCRIPT_COMPLETED"; transcript: string; itemId?: string }
   | { type: "ASSISTANT_TRANSCRIPT_COMPLETED"; transcript: string; responseId?: string }
