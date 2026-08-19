@@ -4,6 +4,7 @@ import {
   decideBargeInPublicToolRoute,
   decideConfirmedBargeInPromotion,
   decideDeferredBargeInTranscriptRoute,
+  decideIgnoredBargeInPlaybackRecovery,
 } from "../.test-dist/barge-in-semantic-authority.js";
 
 test("public restaurant tool is deferred while v40 classifies the interruption", () => {
@@ -35,4 +36,25 @@ test("deferred promotion waits through intermediate fragments and promotes only 
 
 test("unusable latest transcript falls back to already-confirmed source without a timer", () => {
   assert.equal(decideDeferredBargeInTranscriptRoute("item-b", "item-b", false), "FALLBACK_SOURCE");
+});
+
+test("ignored acoustic candidate stays silent when provider preserved playback", () => {
+  assert.equal(decideIgnoredBargeInPlaybackRecovery({
+    providerClearedPlaybackBeforeDecision: false,
+    terminal: false,
+  }), "KEEP_SILENT");
+});
+
+test("provider-destructive false barge-in requires bounded liveness recovery instead of dead air", () => {
+  assert.equal(decideIgnoredBargeInPlaybackRecovery({
+    providerClearedPlaybackBeforeDecision: true,
+    terminal: false,
+  }), "RECOVER_LIVENESS");
+});
+
+test("terminal state never creates playback recovery", () => {
+  assert.equal(decideIgnoredBargeInPlaybackRecovery({
+    providerClearedPlaybackBeforeDecision: true,
+    terminal: true,
+  }), "KEEP_SILENT");
 });
