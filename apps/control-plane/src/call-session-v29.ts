@@ -2,16 +2,14 @@ import { CallSession as CallSessionV28 } from "./call-session-v28";
 import { CallSession as CallSessionV26 } from "./call-session-v26";
 import { isPublicRestaurantTool } from "./public-tool-authorization";
 import { realtimeAssistantResponseActiveFor, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
-import { shouldBlockIgnoredInputForDirectedTurn } from "./directed-turn-authority";
 import {
-  beginSemanticCallerTurn,
-  initialSemanticTurnDecisionState,
-  selectSemanticTool,
-  shouldArmSemanticGateAfterTranscript,
-  shouldBeginSemanticTurnForTranscript,
-  shouldReopenSemanticTurnAfterProvisionalIgnore,
-  type SemanticTurnDecisionState,
-} from "./semantic-turn-decision-policy";
+  armCallerDirectedSemanticAuthority,
+  armSemanticGate,
+  authorizePublicRestaurantTool,
+  beginSemanticTurnFromAcousticEvidence,
+} from "./semantic-turn-coordinator.js";
+import { semanticTurnRuntimeFor } from "./semantic-turn-runtime.js";
+import { turnOwnershipRuntimeFor } from "./turn-ownership-runtime.js";
 
 const BaseConstructor = CallSessionV28 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV28.prototype as any;
@@ -44,8 +42,7 @@ function parseEvent(data: unknown): RealtimeEvent | null {
 function usableTranscript(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.replace(/\s+/g, " ").trim();
-  if (!normalized) return null;
-  return normalized.slice(0, 1500);
+  return normalized ? normalized.slice(0, 1500) : null;
 }
 
 function v29Instructions(session: any): string {
@@ -55,30 +52,8 @@ function v29Instructions(session: any): string {
 }
 
 export class CallSession extends BaseConstructor {
-  private semanticGateArmedV29 = false;
   private observabilityInstalledV29 = false;
   private originalSendV29: ((message: unknown) => void) | null = null;
-  private callerDirectedItemIdV29: string | null = null;
-  private activeSemanticItemIdV29: string | null = null;
-  private semanticTurnDecisionV29: SemanticTurnDecisionState = initialSemanticTurnDecisionState();
-
-  protected armCallerDirectedSemanticAuthorityV29(itemId: string, source: string): void {
-    if (!itemId || (this as any).state === "closing" || (this as any).hangupStarted) return;
-    this.callerDirectedItemIdV29 = itemId;
-    (this as any).diagnostics?.checkpoint?.("CALLER_DIRECTED_SEMANTIC_AUTHORITY_ARMED_V29", { item_id: itemId, source, one_shot: true });
-  }
-
-  protected beginSemanticTurnFromAcousticEvidenceV29(itemId: string | null, source: string): void {
-    if ((this as any).state === "closing" || (this as any).hangupStarted) return;
-    this.beginSemanticTurnV29();
-    (this as any).diagnostics?.checkpoint?.("SEMANTIC_TURN_BOOKKEEPING_RESET_FROM_ACOUSTIC_EVIDENCE_V29", {
-      item_id: itemId,
-      source,
-      semantic_authority_acquired: false,
-      tool_gate_armed: false,
-      transcript_still_required: true,
-    });
-  }
 
   async fetch(request: Request): Promise<Response> {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
@@ -91,17 +66,18 @@ export class CallSession extends BaseConstructor {
         transcript_required_to_arm: true,
         vad_can_create_normal_response: false,
         transcript_owns_normal_response_creation: true,
-        lucia_speech_can_validate_user_turn: false,
         ignored_input_tool: INPUT_IGNORED,
-        debug_turn_trace: true,
         presence_authority: "ConversationTurnLifecycle",
+        semantic_state_owner: "semantic_turn_runtime",
         single_public_tool_per_caller_turn: true,
       });
     }
     return response;
   }
 
-  private debugEnabledV29(): boolean { return Boolean((this as any).diagnostics?.snapshot?.().enabled); }
+  private debugEnabledV29(): boolean {
+    return Boolean((this as any).diagnostics?.snapshot?.().enabled);
+  }
 
   private installObservabilityV29(): void {
     if (this.observabilityInstalledV29) return;
@@ -111,90 +87,16 @@ export class CallSession extends BaseConstructor {
     this.originalSendV29 = currentSend.bind(this);
     (this as any).send = (message: any) => {
       if (this.debugEnabledV29() && message?.type === "conversation.item.create" && message?.item?.type === "function_call_output") {
-        const output = typeof message.item.output === "string" ? message.item.output.slice(0, 2000) : JSON.stringify(message.item.output ?? {}).slice(0, 2000);
-        (this as any).diagnostics?.checkpoint?.("DEBUG_TOOL_OUTPUT_V29", { call_id: message.item.call_id ?? null, output });
+        const output = typeof message.item.output === "string"
+          ? message.item.output.slice(0, 2000)
+          : JSON.stringify(message.item.output ?? {}).slice(0, 2000);
+        (this as any).diagnostics?.checkpoint?.("DEBUG_TOOL_OUTPUT_V29", {
+          call_id: message.item.call_id ?? null,
+          output,
+        });
       }
       this.originalSendV29?.(message);
     };
-  }
-
-  private beginSemanticTurnV29(): void {
-    this.semanticTurnDecisionV29 = beginSemanticCallerTurn();
-    this.semanticGateArmedV29 = false;
-    this.activeSemanticItemIdV29 = null;
-    this.callerDirectedItemIdV29 = null;
-  }
-
-  private armSemanticGateV29(transcript: string, itemId: string | null): void {
-    if (this.semanticGateArmedV29 || (this as any).state === "closing" || (this as any).hangupStarted) return;
-    this.semanticGateArmedV29 = true;
-    this.activeSemanticItemIdV29 = itemId;
-    (this as any).send?.({ type: "session.update", session: { type: "realtime", tool_choice: "required" } });
-    (this as any).diagnostics?.checkpoint?.("RESTAURANT_SEMANTIC_TOOL_GATE_ARMED_V29", {
-      source: "completed_transcription",
-      transcript_length: transcript.length,
-      item_id: itemId,
-      caller_directed_authority: Boolean(itemId && itemId === this.callerDirectedItemIdV29),
-    });
-  }
-
-  private releaseSemanticGateV29(tool: string): void {
-    if (!this.semanticGateArmedV29) return;
-    this.semanticGateArmedV29 = false;
-    this.activeSemanticItemIdV29 = null;
-    this.callerDirectedItemIdV29 = null;
-    (this as any).send?.({ type: "session.update", session: { type: "realtime", tool_choice: "auto" } });
-    (this as any).diagnostics?.checkpoint?.("RESTAURANT_SEMANTIC_TOOL_GATE_RELEASED_V29", { tool });
-  }
-
-  private callerDirectedAuthorityAppliesV29(): boolean {
-    return shouldBlockIgnoredInputForDirectedTurn({
-      semanticGateArmed: this.semanticGateArmedV29,
-      activeItemId: this.activeSemanticItemIdV29,
-      directedItemId: this.callerDirectedItemIdV29,
-    });
-  }
-
-  private rejectIgnoredInputForDirectedTurnV29(event: RealtimeEvent): void {
-    (this as any).diagnostics?.checkpoint?.("BACKGROUND_INPUT_RECLASSIFICATION_BLOCKED_V29", {
-      item_id: this.activeSemanticItemIdV29,
-      model_tool: INPUT_IGNORED,
-      authority: "caller_directed_barge_in_classifier",
-      semantic_gate_preserved: true,
-      presence_unchanged: true,
-    });
-    (this as any).send?.({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: event.call_id,
-        output: JSON.stringify({
-          ok: false,
-          status: "REJECTED",
-          reason: "CALLER_DIRECTED_TURN_CONFIRMED",
-          instruction: "The caller-directed turn is already authoritative. Select the appropriate public restaurant tool for the same user turn; do not use restaurant_input_ignored.",
-        }),
-      },
-    });
-    realtimeCommandPortFor(this as any).createDefaultResponse();
-  }
-
-  private rejectDuplicateSemanticDecisionV29(event: RealtimeEvent, duplicateOf: string | null): void {
-    (this as any).diagnostics?.checkpoint?.("DUPLICATE_SEMANTIC_TOOL_BLOCKED_V29", {
-      attempted_tool: event.name ?? null,
-      authoritative_tool: duplicateOf,
-      same_caller_turn: true,
-      business_action_executed: false,
-      presence_unchanged: true,
-    });
-    (this as any).send?.({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: event.call_id,
-        output: JSON.stringify({ ok: false, status: "REJECTED", reason: "DUPLICATE_SEMANTIC_DECISION", authoritative_tool: duplicateOf }),
-      },
-    });
   }
 
   private handleIgnoredInputV29(event: RealtimeEvent): void {
@@ -203,41 +105,42 @@ export class CallSession extends BaseConstructor {
       const args = event.arguments?.trim() ? JSON.parse(event.arguments) as Record<string, unknown> : {};
       if (typeof args.reason === "string" && args.reason.trim()) reason = args.reason.trim();
     } catch { /* fail safe */ }
-    (this as any).diagnostics?.checkpoint?.("BACKGROUND_INPUT_IGNORED_V29", { reason, no_business_action: true, no_spoken_response: true, lifecycle_authority: true });
+    (this as any).diagnostics?.checkpoint?.("BACKGROUND_INPUT_IGNORED_V29", {
+      reason,
+      no_business_action: true,
+      no_spoken_response: true,
+      lifecycle_authority: true,
+    });
     (this as any).send?.({
       type: "conversation.item.create",
-      item: { type: "function_call_output", call_id: event.call_id, output: JSON.stringify({ ok: true, status: "IGNORED", reason, speak: false, mutation: false }) },
+      item: {
+        type: "function_call_output",
+        call_id: event.call_id,
+        output: JSON.stringify({ ok: true, status: "IGNORED", reason, speak: false, mutation: false }),
+      },
     });
-    this.activeSemanticItemIdV29 = null;
-    this.callerDirectedItemIdV29 = null;
+    semanticTurnRuntimeFor(this).clearItemAuthority();
     (this as any).observeSemanticIgnoredV18?.(reason);
   }
 
-  protected authorizePublicRestaurantToolV29(event: RealtimeEvent): boolean {
-    if (!event.name || !isPublicRestaurantTool(event.name)) return true;
-    if (this.debugEnabledV29()) {
+  private authorizeToolV29(event: RealtimeEvent): boolean {
+    if (this.debugEnabledV29() && event.name) {
       (this as any).diagnostics?.checkpoint?.("DEBUG_MODEL_TOOL_DECISION_V29", {
         tool: event.name,
         arguments: (event.arguments ?? "{}").slice(0, 2000),
         call_id: event.call_id ?? null,
       });
     }
-    if (event.name === INPUT_IGNORED && this.callerDirectedAuthorityAppliesV29()) {
-      this.rejectIgnoredInputForDirectedTurnV29(event);
+    const result = authorizePublicRestaurantTool(this, event);
+    if (result.directedIgnoreRejected) {
+      realtimeCommandPortFor(this as any).createDefaultResponse();
       return false;
     }
-    const decision = selectSemanticTool(this.semanticTurnDecisionV29, event.name);
-    this.semanticTurnDecisionV29 = decision.next;
-    if (!decision.allowed) {
-      this.rejectDuplicateSemanticDecisionV29(event, decision.duplicateOf);
-      return false;
-    }
-    this.releaseSemanticGateV29(event.name);
-    if (event.name === INPUT_IGNORED) {
+    if (result.ignored) {
       this.handleIgnoredInputV29(event);
       return false;
     }
-    return true;
+    return result.allowed;
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
@@ -248,21 +151,27 @@ export class CallSession extends BaseConstructor {
 
     if (event?.type === "input_audio_buffer.speech_started") {
       const itemId = typeof event.item_id === "string" ? event.item_id : null;
-      this.beginSemanticTurnFromAcousticEvidenceV29(itemId, "v29_inherited_raw_vad");
+      beginSemanticTurnFromAcousticEvidence(this, { itemId, source: "v29_inherited_raw_vad" });
       await V26Prototype.handleRealtimeMessage.call(this, data);
       return;
     }
 
     if (event?.type === "conversation.item.input_audio_transcription.completed") {
       const transcript = usableTranscript(event.transcript);
-      if (this.debugEnabledV29()) (this as any).diagnostics?.checkpoint?.("DEBUG_USER_TRANSCRIPT_V29", { transcript: transcript ?? "", usable: transcript !== null });
+      if (this.debugEnabledV29()) {
+        (this as any).diagnostics?.checkpoint?.("DEBUG_USER_TRANSCRIPT_V29", {
+          transcript: transcript ?? "",
+          usable: transcript !== null,
+        });
+      }
       if (transcript) {
         const itemId = typeof event.item_id === "string" ? event.item_id : null;
-        const higherLayerOwns = Boolean((this as any).shouldBypassTurnConcurrencyV36?.(event));
-        const provisionalIgnoreSuperseded = shouldReopenSemanticTurnAfterProvisionalIgnore(this.semanticTurnDecisionV29, INPUT_IGNORED);
-        const beginFreshSemanticTurn = provisionalIgnoreSuperseded || shouldBeginSemanticTurnForTranscript(this.semanticTurnDecisionV29, higherLayerOwns);
+        const higherLayerOwns = turnOwnershipRuntimeFor(this).ownsSemanticItem(itemId);
+        const runtime = semanticTurnRuntimeFor(this);
+        const provisionalIgnoreSuperseded = runtime.shouldReopenAfterProvisionalIgnore(INPUT_IGNORED);
+        const beginFreshSemanticTurn = provisionalIgnoreSuperseded || runtime.shouldBeginForTranscript(higherLayerOwns);
         if (beginFreshSemanticTurn) {
-          this.semanticTurnDecisionV29 = beginSemanticCallerTurn();
+          runtime.beginFreshTurn();
           if (provisionalIgnoreSuperseded) {
             (this as any).diagnostics?.checkpoint?.("PROVISIONAL_BACKGROUND_IGNORE_SUPERSEDED_V29", {
               item_id: itemId,
@@ -273,14 +182,16 @@ export class CallSession extends BaseConstructor {
           } else if (higherLayerOwns) {
             (this as any).diagnostics?.checkpoint?.("CONFIRMED_BARGE_IN_SEMANTIC_TURN_STARTED_V29", {
               item_id: itemId,
-              authority: "higher_layer_confirmed_turn_ownership",
+              authority: "turn_ownership_runtime",
               previous_turn_decision_discarded: true,
             });
           }
         }
-        if (itemId && higherLayerOwns) this.armCallerDirectedSemanticAuthorityV29(itemId, "higher_layer_confirmed_turn_ownership");
-        if (shouldArmSemanticGateAfterTranscript(this.semanticTurnDecisionV29)) {
-          this.armSemanticGateV29(transcript, itemId);
+        if (itemId && higherLayerOwns) {
+          armCallerDirectedSemanticAuthority(this, itemId, "turn_ownership_runtime");
+        }
+        if (runtime.shouldArmGateAfterTranscript()) {
+          armSemanticGate(this, transcript, itemId);
           if (!higherLayerOwns) {
             requestTranscriptAuthorizedResponse = true;
             transcriptResponseItemId = itemId;
@@ -289,7 +200,7 @@ export class CallSession extends BaseConstructor {
         } else {
           (this as any).diagnostics?.checkpoint?.("SEMANTIC_GATE_LATE_TRANSCRIPT_BYPASSED_V29", {
             item_id: itemId,
-            authoritative_tool: this.semanticTurnDecisionV29.selectedTool,
+            authoritative_tool: runtime.snapshot().selectedTool,
             reason: "tool_already_selected_for_caller_turn",
           });
         }
@@ -297,7 +208,7 @@ export class CallSession extends BaseConstructor {
     }
 
     if (event?.type === "response.function_call_arguments.done" && event.name && isPublicRestaurantTool(event.name)) {
-      if (!this.authorizePublicRestaurantToolV29(event)) return;
+      if (!this.authorizeToolV29(event)) return;
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
