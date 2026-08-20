@@ -34,6 +34,9 @@ function text(value: unknown): string | null {
  * that the exact materialized time is supported by the latest completed caller
  * transcript, or by a time already authorized earlier in the same reservation
  * flow. A new/different starts_at therefore requires fresh caller evidence.
+ *
+ * V53 is intentionally silent: it emits a structured MISSING_INFORMATION tool
+ * result and lets the V26 post-tool boundary own the single spoken recovery.
  */
 export class CallSession extends BaseConstructor {
   private latestCallerTranscriptV53: string | null = null;
@@ -69,8 +72,7 @@ export class CallSession extends BaseConstructor {
 
   private rejectUnprovenTimeV53(event: SemanticToolEvent, reason: string): void {
     const tool = event.name as GuardedReservationTool;
-    const port = realtimeCommandPortFor(this as any);
-    port.submitToolResult({
+    realtimeCommandPortFor(this as any).submitToolResult({
       callId: event.callId,
       toolName: tool,
       output: {
@@ -82,23 +84,13 @@ export class CallSession extends BaseConstructor {
         instruction: "No asumas ninguna hora. Pregunta al cliente a qué hora quiere la reserva y espera un nuevo turno hablado antes de volver a intentar esta operación.",
       },
     });
-    const exactText = tool === MODIFY_RESERVATION
-      ? "¿A qué hora quieres cambiar la reserva?"
-      : "¿A qué hora quieres hacer la reserva?";
-    port.speak({
-      exactText,
-      instructions: "Di exactamente la frase indicada. No llames herramientas en esta respuesta. Espera un nuevo turno del cliente.",
-      purpose: "reservation_time_authority_recovery_v53",
-      metadata: { reservation_time_authority_v53: reason },
-      isolated: true,
-      tools: "DISABLED",
-    });
     (this as any).diagnostics?.checkpoint?.("RESERVATION_TIME_ASSUMPTION_BLOCKED_V53", {
       tool,
       reason,
       availability_checked: false,
       reservation_write_attempted: false,
-      tools_disabled: true,
+      speech_owner: "direct_agent_runtime_v26",
+      duplicate_speech_suppressed: true,
     });
   }
 
