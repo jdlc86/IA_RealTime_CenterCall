@@ -26,6 +26,13 @@ export type RealtimeTextDecisionRequest = {
   maxOutputTokens?: number;
 };
 
+export type RealtimeSemanticResponseRequest = {
+  callerTurnText: string;
+  requestId?: string;
+  purpose?: string;
+  metadata?: Record<string, unknown>;
+};
+
 export type RealtimeToolResultRequest = {
   callId?: string;
   toolName?: string;
@@ -41,6 +48,7 @@ export type RealtimeSessionPolicyUpdate = {
 export interface RealtimeProviderCommandPort {
   speak(request: RealtimeSpeechRequest): void;
   requestTextDecision(request: RealtimeTextDecisionRequest): void;
+  createSemanticResponse(request: RealtimeSemanticResponseRequest): void;
   submitToolResult(request: RealtimeToolResultRequest): void;
   updateSessionPolicy(update: RealtimeSessionPolicyUpdate): void;
   createDefaultResponse(): void;
