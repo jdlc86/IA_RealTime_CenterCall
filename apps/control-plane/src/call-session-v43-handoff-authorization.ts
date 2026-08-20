@@ -56,6 +56,37 @@ export class CallSession extends BaseConstructor {
   private explicitPendingOfferRejectionV43 = false;
   private handoffClarificationIssuedV43 = false;
 
+  protected prepareHumanHandoffOfferFromBackendV26(context: {
+    tool: string;
+    backendReason: string;
+  }): "OFFER_REQUIRED" | "CALLER_ALREADY_AUTHORIZED" {
+    const existingAuthority = authorizeHumanHandoff(
+      initialHumanHandoffAuthorizationState(),
+      this.latestCallerTranscriptV43,
+    );
+    if (existingAuthority.allowed && existingAuthority.source === "EXPLICIT_REQUEST") {
+      (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_BACKEND_REQUIREMENT_ALREADY_AUTHORIZED_V43", {
+        source_tool: context.tool,
+        backend_reason: context.backendReason,
+        authorization_source: existingAuthority.source,
+      });
+      return "CALLER_ALREADY_AUTHORIZED";
+    }
+
+    this.handoffAuthorizationV43 = { offerPending: true };
+    this.latestCallerTranscriptV43 = null;
+    this.explicitPendingOfferRejectionV43 = false;
+    this.handoffClarificationIssuedV43 = false;
+    (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_OFFER_ARMED_FROM_BACKEND_V43", {
+      source_tool: context.tool,
+      backend_reason: context.backendReason,
+      offer_pending: true,
+      stale_caller_transcript_cleared: true,
+      transfer_started: false,
+    });
+    return "OFFER_REQUIRED";
+  }
+
   private emitHandoffToolOutputV43(event: RealtimeEvent, status: string, instruction: string): void {
     const session = this as any;
     session.releaseSemanticGateV29?.(HUMAN_ASSISTANCE);
