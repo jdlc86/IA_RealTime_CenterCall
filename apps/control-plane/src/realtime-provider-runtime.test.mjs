@@ -5,6 +5,8 @@ import {
   adaptRealtimeProviderEvents,
   bindRealtimeProvider,
   installRealtimeToolResultPolicy,
+  observeRealtimeAssistantResponseCompleted,
+  observeRealtimeAssistantResponseStarted,
   realtimeCommandPortFor,
   realtimeProviderFor,
 } from "../.test-dist/realtime-provider-runtime.js";
@@ -15,6 +17,7 @@ function host() {
 }
 
 function wire(event) { return JSON.stringify(event); }
+function responseCreates(events) { return events.filter((event) => event?.type === "response.create"); }
 
 test("provider runtime keeps OpenAI as the only active provider during Gate A", () => {
   assert.equal(ACTIVE_REALTIME_PROVIDER, "OPENAI");
@@ -86,6 +89,70 @@ test("neutral tool-result policy can replace only the following default response
       },
     },
   ]);
+});
+
+test("governed post-tool speech is deferred while its selecting response is active", () => {
+  const h = host();
+  installRealtimeToolResultPolicy(h, () => ({
+    action: "REPLACE_DEFAULT_RESPONSE",
+    speech: {
+      instructions: "pregunta la hora",
+      tools: "DISABLED",
+      purpose: "reservation_missing_information_v26",
+    },
+  }));
+  const port = realtimeCommandPortFor(h);
+
+  observeRealtimeAssistantResponseStarted(h, "response-tool-a");
+  port.submitToolResult({
+    callId: "call-missing-time",
+    toolName: "restaurant_reservation_create",
+    output: { ok: true, status: "MISSING_INFORMATION", missing: ["starts_at_time"] },
+  });
+  port.createDefaultResponse();
+
+  assert.equal(responseCreates(h.events).length, 0);
+
+  observeRealtimeAssistantResponseCompleted(h, "response-tool-a");
+
+  const created = responseCreates(h.events);
+  assert.equal(created.length, 1);
+  assert.equal(created[0]?.response?.instructions, "pregunta la hora");
+  assert.equal(created[0]?.response?.metadata?.purpose, "reservation_missing_information_v26");
+});
+
+test("stale response completion cannot release governed speech while a newer response is active", () => {
+  const h = host();
+  installRealtimeToolResultPolicy(h, () => ({
+    action: "REPLACE_DEFAULT_RESPONSE",
+    speech: {
+      instructions: "pregunta la hora",
+      tools: "DISABLED",
+      purpose: "reservation_missing_information_v26",
+    },
+  }));
+  const port = realtimeCommandPortFor(h);
+
+  observeRealtimeAssistantResponseStarted(h, "response-a");
+  port.submitToolResult({
+    callId: "call-missing-time",
+    toolName: "restaurant_reservation_create",
+    output: { ok: true, status: "MISSING_INFORMATION", missing: ["starts_at_time"] },
+  });
+  port.createDefaultResponse();
+  assert.equal(responseCreates(h.events).length, 0);
+
+  observeRealtimeAssistantResponseStarted(h, "response-b");
+  observeRealtimeAssistantResponseCompleted(h, "response-a");
+  assert.equal(responseCreates(h.events).length, 0);
+
+  observeRealtimeAssistantResponseCompleted(h, "response-b");
+  const created = responseCreates(h.events);
+  assert.equal(created.length, 1);
+  assert.equal(created[0]?.response?.metadata?.purpose, "reservation_missing_information_v26");
+
+  observeRealtimeAssistantResponseCompleted(h, "response-b");
+  assert.equal(responseCreates(h.events).length, 1);
 });
 
 test("neutral tool-result policy preserves normal default response wire behavior", () => {
