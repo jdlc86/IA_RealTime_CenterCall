@@ -2,11 +2,17 @@ import { CallSession as CallSessionV52 } from "./call-session-v52-trusted-reserv
 import { decideReservationTimeAuthority } from "./reservation-time-authority.js";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
+import { reservationSessionRuntimeFor } from "./reservation-session-runtime.js";
+import {
+  reservationTimeSessionRuntimeFor,
+  type ReservationTimeTool,
+} from "./reservation-time-session-runtime.js";
+import { callerTurnContextRuntimeFor } from "./caller-turn-context-runtime.js";
 
 const BaseConstructor = CallSessionV52 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV52.prototype as any;
-const CREATE_RESERVATION = "restaurant_reservation_create";
-const MODIFY_RESERVATION = "restaurant_reservation_modify";
+const CREATE_RESERVATION: ReservationTimeTool = "restaurant_reservation_create";
+const MODIFY_RESERVATION: ReservationTimeTool = "restaurant_reservation_modify";
 
 type GuardedReservationTool = typeof CREATE_RESERVATION | typeof MODIFY_RESERVATION;
 type SemanticToolEvent = Extract<RealtimeProviderEvent, { type: "SEMANTIC_TOOL_SELECTED" }>;
@@ -26,23 +32,29 @@ function text(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+/**
+ * Compatibility adapter for reservation-time authority.
+ *
+ * State ownership is no longer inside this CallSession generation. Time evidence
+ * lives in ReservationTimeSessionRuntime, reservation commit lifecycle lives in
+ * ReservationSessionRuntime, and consolidated caller text lives in
+ * CallerTurnContextRuntime. This adapter may be deleted once V52 is composed by the
+ * top-level runtime directly.
+ */
 export class CallSession extends BaseConstructor {
-  private latestCallerTranscriptV53: string | null = null;
-  private authorizedStartsAtV53: Partial<Record<GuardedReservationTool, string>> = {};
-  private awaitingReservationTimeAnswerV53 = false;
-
   private observeCallerTurnV53(event: RealtimeProviderEvent): void {
     if (event.type !== "CALLER_TRANSCRIPT_COMPLETED" || !event.transcript.trim()) return;
-    const consolidated = typeof (this as any).consolidatedCallerTurnV54 === "string"
-      ? (this as any).consolidatedCallerTurnV54.trim()
-      : "";
-    this.latestCallerTranscriptV53 = consolidated || event.transcript.trim();
+    const turnContext = callerTurnContextRuntimeFor(this);
+    const effectiveTurn = turnContext.current() || event.transcript.trim();
+    const timeRuntime = reservationTimeSessionRuntimeFor(this);
+    timeRuntime.observeCallerTurn(effectiveTurn);
     (this as any).diagnostics?.checkpoint?.("RESERVATION_TIME_CALLER_EVIDENCE_OBSERVED_V53", {
       item_id: event.itemId ?? null,
       transcript_present: true,
-      consolidated_turn_used: Boolean(consolidated),
-      pending_slot: this.awaitingReservationTimeAnswerV53 ? "starts_at_time" : null,
+      consolidated_turn_used: Boolean(turnContext.current()),
+      pending_slot: timeRuntime.pendingSlot(),
       semantic_interpretation: false,
+      authority_runtime: "reservation_time_session_runtime",
     });
   }
 
@@ -66,7 +78,7 @@ export class CallSession extends BaseConstructor {
 
   private rejectUnprovenTimeV53(event: SemanticToolEvent, reason: string): void {
     const tool = event.name as GuardedReservationTool;
-    this.awaitingReservationTimeAnswerV53 = true;
+    reservationTimeSessionRuntimeFor(this).markAwaitingTimeAnswer();
     const realtime = realtimeCommandPortFor(this as any);
     realtime.submitToolResult({
       callId: event.callId,
@@ -93,24 +105,13 @@ export class CallSession extends BaseConstructor {
     });
   }
 
-  private createReservationCommittedV53(): boolean {
-    const draft = (this as any).reservationDraftV19;
-    return Boolean(
-      draft &&
-      typeof draft === "object" &&
-      !Array.isArray(draft) &&
-      Object.keys(draft as Record<string, unknown>).length === 0
-    );
-  }
-
   private consumeAuthorizedTimeV53(tool: GuardedReservationTool, reason: string): void {
-    delete this.authorizedStartsAtV53[tool];
-    this.latestCallerTranscriptV53 = null;
-    this.awaitingReservationTimeAnswerV53 = false;
+    reservationTimeSessionRuntimeFor(this).consume(tool);
     (this as any).diagnostics?.checkpoint?.("RESERVATION_TIME_AUTHORITY_CONSUMED_V53", {
       tool,
       reason,
       backend_commit_required: tool === CREATE_RESERVATION,
+      state_owner: "reservation_time_session_runtime",
     });
   }
 
@@ -142,11 +143,12 @@ export class CallSession extends BaseConstructor {
       return;
     }
 
+    const timeRuntime = reservationTimeSessionRuntimeFor(this);
     const decision = decideReservationTimeAuthority({
       requestedStartsAt: startsAt,
-      latestCallerTranscript: this.latestCallerTranscriptV53,
-      authorizedStartsAt: this.authorizedStartsAtV53[toolEvent.name] ?? null,
-      pendingSlot: this.awaitingReservationTimeAnswerV53 ? "starts_at_time" : null,
+      latestCallerTranscript: timeRuntime.latestTurn(),
+      authorizedStartsAt: timeRuntime.authorizedFor(toolEvent.name),
+      pendingSlot: timeRuntime.pendingSlot(),
     });
 
     if (decision.action === "BLOCK") {
@@ -156,28 +158,30 @@ export class CallSession extends BaseConstructor {
     }
 
     if (decision.action === "ALLOW_NEW") {
-      this.authorizedStartsAtV53[toolEvent.name] = startsAt;
-      const resolvedPendingSlot = this.awaitingReservationTimeAnswerV53;
-      this.awaitingReservationTimeAnswerV53 = false;
+      const { resolvedPendingSlot } = timeRuntime.establish(toolEvent.name, startsAt);
       (this as any).diagnostics?.checkpoint?.("RESERVATION_TIME_AUTHORITY_ESTABLISHED_V53", {
         tool: toolEvent.name,
         starts_at: startsAt,
         source: resolvedPendingSlot ? "PENDING_TIME_SLOT_CALLER_ANSWER" : "LATEST_CALLER_TRANSCRIPT",
         pending_slot_resolved: resolvedPendingSlot,
+        state_owner: "reservation_time_session_runtime",
       });
     } else {
-      this.awaitingReservationTimeAnswerV53 = false;
+      timeRuntime.markReused();
       (this as any).diagnostics?.checkpoint?.("RESERVATION_TIME_AUTHORITY_REUSED_V53", {
         tool: toolEvent.name,
         starts_at: startsAt,
+        state_owner: "reservation_time_session_runtime",
       });
     }
 
+    const reservationRuntime = reservationSessionRuntimeFor(this);
+    const commitEpochBefore = reservationRuntime.snapshot().commitEpoch;
     await BasePrototype.handleRealtimeMessage.call(this, data);
 
     if (args.confirm === true) {
       if (toolEvent.name === CREATE_RESERVATION) {
-        if (this.createReservationCommittedV53()) {
+        if (reservationRuntime.committedAfter(commitEpochBefore)) {
           this.consumeAuthorizedTimeV53(toolEvent.name, "backend_booked_commit");
         } else {
           (this as any).diagnostics?.checkpoint?.("RESERVATION_TIME_AUTHORITY_RETAINED_V53", {
@@ -185,12 +189,12 @@ export class CallSession extends BaseConstructor {
             starts_at: startsAt,
             reason: "create_not_committed",
             backend_commit_required: true,
+            reservation_stage: reservationRuntime.snapshot().stage,
           });
         }
       } else {
-        // V23 modification still owns its own confirmation/commit lifecycle. Preserve
-        // the existing consume behavior here until that backend exposes an explicit
-        // modification-commit signal at this boundary.
+        // Modify still has a legacy backend boundary below V53. Keep the behavior
+        // fail-safe until that path exposes an explicit commit transition contract.
         this.consumeAuthorizedTimeV53(toolEvent.name, "confirmed_modify_attempt_legacy");
       }
     }
