@@ -11,11 +11,13 @@ test("runtime routes through V54 close-confirmation authority", async () => {
   assert.match(index, /call-session-v54-close-confirmation-authority/);
 });
 
-test("pending close is consumed only by an explicit caller yes or no", async () => {
+test("pending close is consumed only by an explicit effective caller turn yes or no", async () => {
   const v54 = await source("call-session-v54-close-confirmation-authority.ts");
   assert.match(v54, /closingConfirmationPendingV41 === true/);
-  assert.match(v54, /isExplicitClosingConfirmation\(transcript\)/);
-  assert.match(v54, /isExplicitClosingRejection\(transcript\)/);
+  assert.match(v54, /effectiveCallerTurn/);
+  assert.match(v54, /isExplicitClosingConfirmation\(effectiveCallerTurn\)/);
+  assert.match(v54, /isExplicitClosingRejection\(effectiveCallerTurn\)/);
+  assert.match(v54, /CALLER_TURN_CONSOLIDATED_V54/);
   assert.match(v54, /commitCloseThroughLifecycleV41/);
   assert.match(v54, /CLOSE_CONFIRMATION_AUTHORITY_CONSUMED_V54/);
 });
