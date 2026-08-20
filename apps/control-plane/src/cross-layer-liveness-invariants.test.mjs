@@ -230,6 +230,7 @@ test("runtime wiring: active entrypoint and critical layers consume the policies
   const v40 = readFileSync(new URL("./call-session-v40-rebuild.ts", import.meta.url), "utf8");
   const v26 = readFileSync(new URL("./call-session-v26.ts", import.meta.url), "utf8");
   const v50 = readFileSync(new URL("./call-session-v50-reservation-date-scope.ts", import.meta.url), "utf8");
+  const reservationDateScopeRuntime = readFileSync(new URL("./reservation-date-scope-runtime.ts", import.meta.url), "utf8");
 
   assert.match(index, /call-session-v54-close-confirmation-authority/);
   assert.match(v54, /call-session-v53-reservation-time-authority/);
@@ -256,7 +257,9 @@ test("runtime wiring: active entrypoint and critical layers consume the policies
   assert.match(turnConcurrencyCoordinator, /TURN_CONCURRENCY_OLDER_SPLIT_FRAGMENT_DEFERRED_V36/);
   assert.match(v40, /decideIgnoredBargeInPlaybackRecovery/);
   assert.match(v26, /decideDirectPostToolResponse/);
-  assert.match(v50, /decideReservationDateScope/);
+  assert.match(v50, /reservationDateScopeRuntimeFor/);
+  assert.match(reservationDateScopeRuntime, /decideReservationDateScope/);
+  assert.doesNotMatch(v50, /decideReservationDateScope/);
   assert.doesNotMatch(v51, /setTimeout|sleep\s*\(|delay\s*\(/);
   assert.doesNotMatch(v52, /setTimeout|sleep\s*\(|delay\s*\(/);
   assert.doesNotMatch(v53, /setTimeout|sleep\s*\(|delay\s*\(/);
