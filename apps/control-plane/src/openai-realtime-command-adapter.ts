@@ -50,8 +50,8 @@ function openAIServerVad(settings: RealtimeInputDetectionSettings = {}): Record<
     prefix_padding_ms: settings.prefixPaddingMs ?? DEFAULT_PREFIX_PADDING_MS,
     silence_duration_ms: settings.silenceDurationMs ?? DEFAULT_SILENCE_DURATION_MS,
     idle_timeout_ms: settings.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
-    create_response: true,
-    interrupt_response: true,
+    create_response: settings.createResponse ?? false,
+    interrupt_response: settings.interruptResponse ?? true,
   };
 }
 
