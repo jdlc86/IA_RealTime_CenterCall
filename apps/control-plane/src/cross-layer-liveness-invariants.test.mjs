@@ -221,6 +221,7 @@ test("runtime wiring: invalid and rejected tool paths both preserve an explicit 
 
 test("runtime wiring: active entrypoint and critical layers consume the policies exercised above", () => {
   const index = readFileSync(new URL("./index-v6.ts", import.meta.url), "utf8");
+  const v53 = readFileSync(new URL("./call-session-v53-reservation-time-authority.ts", import.meta.url), "utf8");
   const v52 = readFileSync(new URL("./call-session-v52-trusted-reservation-contact.ts", import.meta.url), "utf8");
   const v51 = readFileSync(new URL("./call-session-v51-malformed-tool-authority.ts", import.meta.url), "utf8");
   const v36 = readFileSync(new URL("./call-session-v36.ts", import.meta.url), "utf8");
@@ -228,7 +229,10 @@ test("runtime wiring: active entrypoint and critical layers consume the policies
   const v26 = readFileSync(new URL("./call-session-v26.ts", import.meta.url), "utf8");
   const v50 = readFileSync(new URL("./call-session-v50-reservation-date-scope.ts", import.meta.url), "utf8");
 
-  assert.match(index, /call-session-v52-trusted-reservation-contact/);
+  assert.match(index, /call-session-v53-reservation-time-authority/);
+  assert.match(v53, /call-session-v52-trusted-reservation-contact/);
+  assert.match(v53, /decideReservationTimeAuthority/);
+  assert.match(v53, /RESERVATION_TIME_ASSUMPTION_BLOCKED_V53/);
   assert.match(v52, /call-session-v51-malformed-tool-authority/);
   assert.match(v52, /rewriteReservationCreateContactEvent/);
   assert.match(v51, /decideMalformedToolCorrection/);
@@ -245,4 +249,5 @@ test("runtime wiring: active entrypoint and critical layers consume the policies
   assert.match(v50, /decideReservationDateScope/);
   assert.doesNotMatch(v51, /setTimeout|sleep\s*\(|delay\s*\(/);
   assert.doesNotMatch(v52, /setTimeout|sleep\s*\(|delay\s*\(/);
+  assert.doesNotMatch(v53, /setTimeout|sleep\s*\(|delay\s*\(/);
 });
