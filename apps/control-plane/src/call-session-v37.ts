@@ -9,6 +9,9 @@ import {
   type HumanHandoffConfig,
 } from "./human-handoff";
 import { HumanHandoffStore } from "./human-handoff-store";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { releaseSemanticGate } from "./semantic-turn-coordinator.js";
+import { turnConcurrencyCoordinatorFor } from "./turn-concurrency-coordinator.js";
 
 const BaseConstructor = CallSessionV36 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV36.prototype as any;
@@ -107,10 +110,10 @@ export class CallSession extends BaseConstructor {
     const p=this.handoffPrerequisitesV37(); if(!p||this.activeHandoffV37)return false; let args:Record<string,unknown>; try{args=parseToolArgs(event.arguments);}catch{return false;} const reason=nonEmpty(args.reason)??"HUMAN_ASSISTANCE_REQUIRED",summary=nonEmpty(args.context_summary)?.slice(0,500),handoffId=crypto.randomUUID();
     try{await this.storeV37().create({id:handoffId,tenantId:p.tenantId,callId:p.callId,callerPhone:p.callerPhone,reasonCode:reason,reasonSummary:summary,destinationType:"PHONE",destinationLabel:p.config.destination.label,destinationPhone:p.config.destination.phone});}catch(error){(this as any).diagnostics?.fail?.("HUMAN_HANDOFF_TRACE_CREATE_FAILED_V37","HANDOFF_TRACEABILITY_UNAVAILABLE",{reason,error:error instanceof Error?error.message:String(error),transfer_started:false});return false;}
     this.activeHandoffV37={id:handoffId,reason,summary,phase:"WAITING_VAD_OFF",speechKind:null,speechResponseId:null,targetCallControlId:null};
-    (this as any).releaseSemanticGateV29?.(HUMAN_ASSISTANCE); (this as any).observeHumanHandoffStartedV18?.(); (this as any).detachTurnConcurrencyForTerminalV36?.("human_handoff_v37");
+    releaseSemanticGate(this,HUMAN_ASSISTANCE); conversationLifecyclePortFor(this).humanHandoffStarted(); turnConcurrencyCoordinatorFor(this).detachForTerminal(this as any,"human_handoff_v37");
     (this as any).send?.({type:"conversation.item.create",item:{type:"function_call_output",call_id:event.call_id,output:JSON.stringify({ok:true,status:"HUMAN_HANDOFF_ACCEPTED",handoff_id:handoffId,transfer_available:true,callback_on_failure:true,terminal_lifecycle:true})}});
     await this.patchHandoffBestEffortV37({status:"ANNOUNCING"}); try{(this as any).send?.({type:"input_audio_buffer.clear"});(this as any).send?.(suspendTurnDetectionEvent());}catch(error){await this.failHandoffV37("FAILED",`VAD_SUSPEND_FAILED:${error instanceof Error?error.message:String(error)}`);return true;}
-    (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_ACCEPTED_V37",{handoff_id:handoffId,reason,destination_label:p.config.destination.label,destination_phone_exposed_to_model:false,point_of_no_return:true,traceability_created:true}); return true;
+    (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_ACCEPTED_V37",{handoff_id:handoffId,reason,destination_label:p.config.destination.label,destination_phone_exposed_to_model:false,point_of_no_return:true,traceability_created:true,semantic_gate_owner:"semantic_turn_coordinator",lifecycle_owner:"conversation_lifecycle_port",turn_concurrency_owner:"turn_concurrency_coordinator"}); return true;
   }
   private emitHandoffSpeechV37(kind:HandoffSpeechKind,text:string):void { const h=this.activeHandoffV37;if(!h)return;h.speechKind=kind;h.speechResponseId=null;h.phase=kind==="ANNOUNCEMENT"?"ANNOUNCING":"FAILURE_SPEAKING";(this as any).send?.({type:"response.create",response:{conversation:"none",tool_choice:"none",instructions:`Pronuncia exactamente esta frase y nada más: ${JSON.stringify(text)}`,metadata:{[HANDOFF_METADATA_KEY]:kind,handoff_id:h.id},input:[{type:"message",role:"user",content:[{type:"input_text",text:`Pronuncia exactamente: ${text}` }]}]}});this.armHandoffSpeechWatchdogV37(kind);(this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_PROTECTED_SPEECH_REQUESTED_V37",{handoff_id:h.id,kind,vad_disabled:true,exact_speech:true}); }
   private armHandoffSpeechWatchdogV37(kind:HandoffSpeechKind):void { this.clearHandoffSpeechWatchdogV37();this.handoffSpeechWatchdogV37=setTimeout(()=>{if(!this.activeHandoffV37||this.activeHandoffV37.speechKind!==kind)return;if(kind==="ANNOUNCEMENT")void this.failHandoffV37("FAILED","ANNOUNCEMENT_PLAYBACK_TIMEOUT");else void this.terminateAfterHandoffFailureV37("failure_message_playback_timeout");},HANDOFF_SPEECH_WATCHDOG_MS); }
