@@ -4,6 +4,7 @@ import {
   installRealtimeSessionPolicyTransform,
   realtimeCommandPortFor,
 } from "./realtime-provider-runtime.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 import {
   authoritativeMadridNowContext,
   stripAuthoritativeNowContext,
@@ -22,12 +23,11 @@ function hasUsableTranscript(value: unknown): boolean {
  *
  * It does not become the backend authority for reservation validity: v20 and
  * the reservation backend still reject invalid/past/out-of-hours datetimes.
- * Instead, v48 keeps the model's interpretation context synchronized with the
- * Worker clock in Europe/Madrid.
+ * Session instructions and caller-turn refreshes pass exclusively through the
+ * provider-neutral runtime.
  */
 export class CallSession extends BaseConstructor {
-  private temporalSendBoundaryInstalledV48 = false;
-  private originalSendV48: ((message: unknown) => void) | null = null;
+  private temporalPolicyTransformInstalledV48 = false;
   private latestBaseInstructionsV48: string | null = null;
   private lastRefreshedItemIdV48: string | null = null;
 
@@ -44,49 +44,27 @@ export class CallSession extends BaseConstructor {
       clock_time: temporal.clock_time,
       weekday: temporal.weekday,
       backend_validation_still_authoritative: true,
+      provider_session_policy_transform: true,
     });
     return withAuthoritativeNowContext(baseInstructions, now);
   }
 
-  private installTemporalSendBoundaryV48(): void {
-    if (this.temporalSendBoundaryInstalledV48) return;
-    const session = this as any;
-    const currentSend = session.send;
-    if (typeof currentSend !== "function") return;
-
-    this.temporalSendBoundaryInstalledV48 = true;
-
-    // Provider-neutral authority for migrated session policy updates.
-    installRealtimeSessionPolicyTransform(session, (update) => {
+  private installTemporalPolicyTransformV48(): void {
+    if (this.temporalPolicyTransformInstalledV48) return;
+    this.temporalPolicyTransformInstalledV48 = true;
+    installRealtimeSessionPolicyTransform(this as any, (update) => {
       if (typeof update.instructions !== "string") return update;
       return {
         ...update,
         instructions: this.enrichTemporalInstructionsV48(update.instructions, "session_instructions_update"),
       };
     });
-
-    // Compatibility fallback for historical layers that still emit raw OpenAI
-    // session.update messages. Temporal markers make this transformation idempotent.
-    this.originalSendV48 = currentSend.bind(this);
-    session.send = (message: any) => {
-      if (message?.type === "session.update" && typeof message?.session?.instructions === "string") {
-        this.originalSendV48?.({
-          ...message,
-          session: {
-            ...message.session,
-            instructions: this.enrichTemporalInstructionsV48(message.session.instructions, "session_instructions_update"),
-          },
-        });
-        return;
-      }
-      this.originalSendV48?.(message);
-    };
   }
 
   private refreshTemporalContextForCallerTurnV48(itemId: string): void {
     if (!itemId || itemId === this.lastRefreshedItemIdV48 || !this.latestBaseInstructionsV48) return;
     const session = this as any;
-    if (session.state === "closing" || session.hangupStarted || !session.socket) return;
+    if (!session.socket || conversationLifecyclePortFor(this).isTerminal()) return;
 
     this.lastRefreshedItemIdV48 = itemId;
     const now = new Date();
@@ -103,13 +81,15 @@ export class CallSession extends BaseConstructor {
       weekday: temporal.weekday,
       refresh_boundary: "completed_usable_caller_transcription",
       backend_validation_still_authoritative: true,
+      lifecycle_authority: "conversation_lifecycle_port",
+      provider_command_port: true,
     });
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/start") {
-      this.installTemporalSendBoundaryV48();
+      this.installTemporalPolicyTransformV48();
     }
     return super.fetch(request);
   }
