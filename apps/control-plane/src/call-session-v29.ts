@@ -9,6 +9,7 @@ import {
   selectSemanticTool,
   shouldArmSemanticGateAfterTranscript,
   shouldBeginSemanticTurnForTranscript,
+  shouldReopenSemanticTurnAfterProvisionalIgnore,
   type SemanticTurnDecisionState,
 } from "./semantic-turn-decision-policy";
 
@@ -221,15 +222,6 @@ export class CallSession extends BaseConstructor {
     (this as any).observeSemanticIgnoredV18?.(reason);
   }
 
-  /**
-   * Single runtime authority for selecting a public restaurant tool in the
-   * current caller turn. Higher executors that must intercept a tool before the
-   * event reaches v29 (notably reservation search in v31) must delegate here
-   * instead of creating a parallel turn-authority state.
-   *
-   * true  -> the caller turn authorizes this tool and the executor may proceed.
-   * false -> v29 already rejected/handled the decision; the executor must stop.
-   */
   protected authorizePublicRestaurantToolV29(event: RealtimeEvent): boolean {
     if (!event.name || !isPublicRestaurantTool(event.name)) return true;
 
@@ -279,9 +271,21 @@ export class CallSession extends BaseConstructor {
       if (transcript) {
         const itemId = typeof event.item_id === "string" ? event.item_id : null;
         const higherLayerOwns = Boolean((this as any).shouldBypassTurnConcurrencyV36?.(event));
-        if (shouldBeginSemanticTurnForTranscript(this.semanticTurnDecisionV29, higherLayerOwns)) {
+        const provisionalIgnoreSuperseded = shouldReopenSemanticTurnAfterProvisionalIgnore(
+          this.semanticTurnDecisionV29,
+          INPUT_IGNORED,
+        );
+        const beginFreshSemanticTurn = provisionalIgnoreSuperseded || shouldBeginSemanticTurnForTranscript(this.semanticTurnDecisionV29, higherLayerOwns);
+        if (beginFreshSemanticTurn) {
           this.semanticTurnDecisionV29 = beginSemanticCallerTurn();
-          if (higherLayerOwns) {
+          if (provisionalIgnoreSuperseded) {
+            (this as any).diagnostics?.checkpoint?.("PROVISIONAL_BACKGROUND_IGNORE_SUPERSEDED_V29", {
+              item_id: itemId,
+              previous_tool: INPUT_IGNORED,
+              authority: "usable_completed_transcript",
+              semantic_turn_reopened: true,
+            });
+          } else if (higherLayerOwns) {
             (this as any).diagnostics?.checkpoint?.("CONFIRMED_BARGE_IN_SEMANTIC_TURN_STARTED_V29", {
               item_id: itemId,
               authority: "higher_layer_confirmed_turn_ownership",
@@ -292,6 +296,15 @@ export class CallSession extends BaseConstructor {
         if (itemId && higherLayerOwns) this.armCallerDirectedSemanticAuthorityV29(itemId, "higher_layer_confirmed_turn_ownership");
         if (shouldArmSemanticGateAfterTranscript(this.semanticTurnDecisionV29)) {
           this.armSemanticGateV29(transcript, itemId);
+          if (provisionalIgnoreSuperseded) {
+            realtimeCommandPortFor(this as any).createDefaultResponse();
+            (this as any).diagnostics?.checkpoint?.("PROVISIONAL_BACKGROUND_IGNORE_RETRY_REQUESTED_V29", {
+              item_id: itemId,
+              response_requested: true,
+              timer_used: false,
+              semantic_gate_required: true,
+            });
+          }
         } else {
           (this as any).diagnostics?.checkpoint?.("SEMANTIC_GATE_LATE_TRANSCRIPT_BYPASSED_V29", {
             item_id: itemId,
