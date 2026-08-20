@@ -1,5 +1,5 @@
 import { CallSession as CallSessionV35Runtime } from "./call-session-v35-runtime";
-import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
+import { realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import { TurnConcurrencyLifecycle } from "./turn-concurrency-lifecycle";
 import {
   decideTurnConcurrencyAcquire,
@@ -43,7 +43,7 @@ function responseId(event: RealtimeEvent): string | null {
 }
 
 function hasUsableTranscript(value: unknown): boolean {
-  return typeof value === "string" && value.replace(/\s+/g, " ").trim().length > 0;
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim().length > 0 : false;
 }
 
 /**
