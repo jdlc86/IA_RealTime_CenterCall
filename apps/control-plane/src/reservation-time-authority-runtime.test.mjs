@@ -10,18 +10,28 @@ test("V53 blocks unproven reservation time before availability or write and rema
   assert.match(source, /submitToolResult/);
   assert.match(source, /speech_owner: "direct_agent_runtime_v26"/);
   const start = source.indexOf("private rejectUnprovenTimeV53");
-  const end = source.indexOf("private async handleRealtimeMessage", start);
+  const end = source.indexOf("private createReservationCommittedV53", start);
   assert.ok(start >= 0 && end > start);
   assert.doesNotMatch(source.slice(start, end), /\.speak\s*\(/);
   assert.match(source, /authorizePublicRestaurantToolV29/);
   assert.doesNotMatch(source, /setTimeout|sleep\s*\(/);
 });
 
-test("V53 reuses only the same authorized starts_at and consumes it on confirmed mutation", async () => {
+test("V53 retains CREATE time across contact collection and consumes only after BOOKED reset", async () => {
   const source = await readFile(new URL("./call-session-v53-reservation-time-authority.ts", import.meta.url), "utf8");
   assert.match(source, /authorizedStartsAtV53/);
   assert.match(source, /requestedStartsAt: startsAt/);
-  assert.match(source, /args\.confirm === true/);
-  assert.match(source, /delete this\.authorizedStartsAtV53\[toolEvent\.name\]/);
-  assert.match(source, /RESERVATION_TIME_AUTHORITY_CONSUMED_V53/);
+  assert.match(source, /createReservationCommittedV53/);
+  assert.match(source, /reservationDraftV19/);
+  assert.match(source, /RESERVATION_TIME_AUTHORITY_RETAINED_V53/);
+  assert.match(source, /reason: "create_not_committed"/);
+  assert.match(source, /reason: "backend_booked_commit"/);
+  assert.match(source, /delete this\.authorizedStartsAtV53\[tool\]/);
+
+  const confirmStart = source.indexOf("if (args.confirm === true)");
+  const createBranchEnd = source.indexOf("} else {", source.indexOf("if (toolEvent.name === CREATE_RESERVATION)", confirmStart));
+  assert.ok(confirmStart >= 0 && createBranchEnd > confirmStart);
+  const createBranch = source.slice(confirmStart, createBranchEnd);
+  assert.match(createBranch, /createReservationCommittedV53\(\)/);
+  assert.doesNotMatch(createBranch, /delete this\.authorizedStartsAtV53/);
 });
