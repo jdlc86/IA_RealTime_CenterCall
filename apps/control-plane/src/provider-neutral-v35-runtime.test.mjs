@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("./call-session-v35-runtime.ts", import.meta.url), "utf8");
 const v36 = await readFile(new URL("./call-session-v36.ts", import.meta.url), "utf8");
+const coordinator = await readFile(new URL("./turn-concurrency-coordinator.ts", import.meta.url), "utf8");
 
 test("v35 protected speech runtime depends only on neutral provider runtime", () => {
   assert.match(source, /adaptRealtimeProviderEvents/);
@@ -21,8 +22,13 @@ test("v35 keeps the validated atomic greeting lifecycle unchanged", () => {
   assert.match(source, /ASSISTANT_AUDIO_CLEARED/);
 });
 
-test("v36 turn concurrency commands also cross the neutral provider runtime boundary", () => {
-  assert.match(v36, /realtime-provider-runtime/);
-  assert.match(v36, /realtimeCommandPortFor/);
+test("v36 delegates turn concurrency commands to the neutral coordinator and provider runtime", () => {
+  assert.match(v36, /turnConcurrencyCoordinatorFor/);
+  assert.match(v36, /\.observe\(this as any, parseEvent\(data\)\)/);
+  assert.doesNotMatch(v36, /realtimeCommandPortFor/);
   assert.doesNotMatch(v36, /openai-realtime-command-adapter/);
+
+  assert.match(coordinator, /realtime-provider-runtime/);
+  assert.match(coordinator, /realtimeCommandPortFor/);
+  assert.doesNotMatch(coordinator, /openai-realtime-command-adapter/);
 });
