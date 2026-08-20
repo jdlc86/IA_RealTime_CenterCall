@@ -11,15 +11,18 @@ test("runtime routes through V54 close-confirmation authority", async () => {
   assert.match(index, /call-session-v54-close-confirmation-authority/);
 });
 
-test("pending close is consumed only by an explicit effective caller turn yes or no", async () => {
+test("pending close is consumed only by an explicit effective caller turn yes or no through neutral owners", async () => {
   const v54 = await source("call-session-v54-close-confirmation-authority.ts");
-  assert.match(v54, /closingConfirmationPendingV41 === true/);
+  assert.match(v54, /closingSessionRuntimeFor\(this\)/);
+  assert.match(v54, /closing\.isConfirmationPending\(\)/);
   assert.match(v54, /effectiveCallerTurn/);
   assert.match(v54, /isExplicitClosingConfirmation\(effectiveCallerTurn\)/);
   assert.match(v54, /isExplicitClosingRejection\(effectiveCallerTurn\)/);
   assert.match(v54, /CALLER_TURN_CONSOLIDATED_V54/);
-  assert.match(v54, /commitCloseThroughLifecycleV41/);
+  assert.match(v54, /conversationLifecyclePortFor\(this\)\.confirmEndCall\(/);
   assert.match(v54, /CLOSE_CONFIRMATION_AUTHORITY_CONSUMED_V54/);
+  assert.doesNotMatch(v54, /closingConfirmationPendingV41/);
+  assert.doesNotMatch(v54, /commitCloseThroughLifecycleV41/);
 });
 
 test("ambiguous caller reply preserves pending close and cannot fall into generic semantic tools", async () => {
