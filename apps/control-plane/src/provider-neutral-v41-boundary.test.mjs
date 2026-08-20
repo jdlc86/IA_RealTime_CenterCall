@@ -23,20 +23,23 @@ test("v41 emits synthetic tool results through the provider-neutral command boun
   assert.doesNotMatch(source, /function_call_output/);
 });
 
-test("v41 governs migrated session instructions neutrally while retaining a raw compatibility fallback", () => {
+test("v41 governs migrated session instructions neutrally while retaining the raw compatibility boundary", () => {
   assert.match(source, /installRealtimeSessionPolicyTransform/);
   assert.match(source, /instructions: withClosingGuidance\(update\.instructions\)/);
-  assert.match(source, /Compatibility fallback for historical layers/);
   assert.match(source, /message\?\.type === "session\.update"/);
   assert.match(source, /withClosingGuidance\(message\.session\.instructions\)/);
 });
 
-test("v41 provider-neutral refactor preserves closing authorities", () => {
+test("v41 provider-neutral refactor preserves closing authorities behind neutral owners", () => {
+  assert.match(source, /closingSessionRuntimeFor/);
+  assert.match(source, /conversationLifecyclePortFor/);
   assert.match(source, /resolveReplyToMoreHelpQuestion/);
   assert.match(source, /decideCloseConsensus/);
   assert.match(source, /V41_CLOSE_COMMITTED_TO_LIFECYCLE/);
   assert.match(source, /CONTEXTUAL_CLOSE_RESOLVED_V41/);
   assert.match(source, /PREMATURE_END_CALL_SUPERSEDED_BY_MORE_HELP_CONTEXT_V41/);
+  assert.doesNotMatch(source, /closingConfirmationPendingV41/);
+  assert.doesNotMatch(source, /controllerCloseAssessmentV41/);
   assert.doesNotMatch(source, /setTimeout\s*\(/);
   assert.doesNotMatch(source, /sleep\s*\(/);
 });
