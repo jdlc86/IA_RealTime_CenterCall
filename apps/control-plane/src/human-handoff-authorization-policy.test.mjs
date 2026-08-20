@@ -30,6 +30,24 @@ test("caller can accept a previously offered transfer", () => {
   assert.equal(confirmed.source, "CONFIRMED_OFFER");
 });
 
+test("natural confirmation wording must not consume a pending offer before tool authority resolves it", () => {
+  const blocked = authorizeHumanHandoff(initialHumanHandoffAuthorizationState(), "Eso no me lo puedes resolver");
+  assert.equal(blocked.state.offerPending, true);
+
+  const observed = observeHumanHandoffCallerTurn(blocked.state, "Sí, por favor, pásame con ellos.");
+  assert.equal(observed.offerPending, true);
+
+  const confirmed = authorizeHumanHandoff(observed, "Sí, por favor, pásame con ellos.");
+  assert.equal(confirmed.allowed, true);
+  assert.ok(["CONFIRMED_OFFER", "EXPLICIT_REQUEST"].includes(confirmed.source));
+});
+
+test("fragmented or ambiguous caller wording must not silently consume a pending offer", () => {
+  const blocked = authorizeHumanHandoff(initialHumanHandoffAuthorizationState(), "Eso no me lo puedes resolver");
+  const fragment = observeHumanHandoffCallerTurn(blocked.state, "Sí, un momento...");
+  assert.equal(fragment.offerPending, true);
+});
+
 test("caller rejection clears pending authorization", () => {
   const blocked = authorizeHumanHandoff(initialHumanHandoffAuthorizationState(), "Eso no me lo puedes resolver");
   const observed = observeHumanHandoffCallerTurn(blocked.state, "No, gracias");
@@ -48,11 +66,8 @@ test("emphatic repeated no is an explicit transfer rejection", () => {
   assert.equal(rejected.state.offerPending, false);
 });
 
-test("unrelated caller turn expires an old transfer offer", () => {
+test("pending offer is not expired merely by transcript observation", () => {
   const blocked = authorizeHumanHandoff(initialHumanHandoffAuthorizationState(), "Eso no me lo puedes resolver");
-  const afterUnrelatedTurn = observeHumanHandoffCallerTurn(blocked.state, "Otra cosa, ¿tenéis terraza?");
-  assert.equal(afterUnrelatedTurn.offerPending, false);
-  const laterYes = authorizeHumanHandoff(afterUnrelatedTurn, "Sí");
-  assert.equal(laterYes.allowed, false);
-  assert.equal(laterYes.source, "OFFER_REQUIRED");
+  const observed = observeHumanHandoffCallerTurn(blocked.state, "Otra cosa, ¿tenéis terraza?");
+  assert.equal(observed.offerPending, true);
 });
