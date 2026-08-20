@@ -1,7 +1,9 @@
 import { CallSession as CallSessionV53 } from "./call-session-v53-reservation-time-authority";
 import {
   adaptRealtimeProviderEvents,
+  clearConsolidatedCallerTurnForNextResponse,
   realtimeCommandPortFor,
+  stageConsolidatedCallerTurnForNextResponse,
 } from "./realtime-provider-runtime.js";
 import {
   initialCallerTurnFragmentState,
@@ -44,6 +46,7 @@ export class CallSession extends BaseConstructor {
 
     for (const event of events) {
       if (event.type === "CALLER_SPEECH_STARTED") {
+        clearConsolidatedCallerTurnForNextResponse(session);
         this.callerTurnFragmentsV54 = observeCallerSpeechStarted(this.callerTurnFragmentsV54, event.itemId);
       }
     }
@@ -69,10 +72,14 @@ export class CallSession extends BaseConstructor {
         consolidatedCallerTurn = usableTranscript(fragmentDecision.transcript);
         if (consolidatedCallerTurn) {
           session.consolidatedCallerTurnV54 = consolidatedCallerTurn;
+          if (fragmentDecision.fragmentCount > 1) {
+            stageConsolidatedCallerTurnForNextResponse(session, consolidatedCallerTurn);
+          }
           session.diagnostics?.checkpoint?.("CALLER_TURN_CONSOLIDATED_V54", {
             item_id: callerTurn.itemId ?? null,
             fragment_count: fragmentDecision.fragmentCount,
             split_turn_consolidated: fragmentDecision.fragmentCount > 1,
+            semantic_response_context_staged: fragmentDecision.fragmentCount > 1,
             timer_used: false,
           });
         }
@@ -83,6 +90,7 @@ export class CallSession extends BaseConstructor {
       (callerTurn?.type === "CALLER_TRANSCRIPT_COMPLETED" ? usableTranscript(callerTurn.transcript) : "");
 
     if (effectiveCallerTurn && session.closingConfirmationPendingV41 === true) {
+      clearConsolidatedCallerTurnForNextResponse(session);
       if (isExplicitClosingConfirmation(effectiveCallerTurn)) {
         session.closingConfirmationPendingV41 = false;
         session.controllerCloseAssessmentV41 = { courtesy: false, closeIntent: "CLOSE" };
