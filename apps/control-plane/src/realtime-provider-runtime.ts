@@ -1,6 +1,7 @@
 import type {
   RealtimeInputDetectionSettings,
   RealtimeProviderCommandPort,
+  RealtimeSemanticResponseRequest,
   RealtimeSessionPolicyUpdate,
   RealtimeSpeechRequest,
   RealtimeTextDecisionRequest,
@@ -47,6 +48,7 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
   addSessionPolicyTransform(transform: RealtimeSessionPolicyTransform): void { this.sessionPolicyTransforms.push(transform); }
   speak(request: RealtimeSpeechRequest): void { this.delegate.speak(request); }
   requestTextDecision(request: RealtimeTextDecisionRequest): void { this.delegate.requestTextDecision(request); }
+  createSemanticResponse(request: RealtimeSemanticResponseRequest): void { this.delegate.createSemanticResponse(request); }
   hasActiveAssistantResponse(): boolean { return this.activeAssistantResponseId !== undefined; }
 
   submitToolResult(request: RealtimeToolResultRequest): void {
