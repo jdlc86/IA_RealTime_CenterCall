@@ -15,10 +15,10 @@ import {
   observeGovernedSpeechAfterLowerLayers,
   observeGovernedSpeechBeforeLowerLayers,
 } from "./governed-speech-liveness-coordinator.js";
-import {
-  isExplicitClosingConfirmation,
-  isExplicitClosingRejection,
-} from "./core-closing-policy.js";
+import { isExplicitClosingConfirmation, isExplicitClosingRejection } from "./core-closing-policy.js";
+import { callerTurnContextRuntimeFor } from "./caller-turn-context-runtime.js";
+import { closingSessionRuntimeFor } from "./closing-session-runtime.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 
 const BaseConstructor = CallSessionV53 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV53.prototype as any;
@@ -28,13 +28,8 @@ function usableTranscript(value: unknown): string {
 }
 
 /**
- * V54 closes the authority gap observed after V41 asks an explicit close
- * confirmation and hosts composed top-level coordinators without adding more
- * CallSession inheritance layers.
- *
- * Caller transcript fragments are consolidated only when provider event order
- * proves a split turn: a newer speech item started before an older transcript
- * completed. This is structural and timer-free.
+ * Top compatibility adapter. It hosts composed coordinators but owns no shared
+ * closing/caller-turn state and must not grow another inheritance generation.
  */
 export class CallSession extends BaseConstructor {
   private callerTurnFragmentsV54: CallerTurnFragmentState = initialCallerTurnFragmentState();
@@ -42,25 +37,26 @@ export class CallSession extends BaseConstructor {
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const events = adaptRealtimeProviderEvents(data);
     const session = this as any;
+    const turnContext = callerTurnContextRuntimeFor(this);
+    const closing = closingSessionRuntimeFor(this);
     observeGovernedSpeechBeforeLowerLayers(session, events);
 
     for (const event of events) {
       if (event.type === "CALLER_SPEECH_STARTED") {
         clearConsolidatedCallerTurnForNextResponse(session);
+        turnContext.clear();
         this.callerTurnFragmentsV54 = observeCallerSpeechStarted(this.callerTurnFragmentsV54, event.itemId);
       }
     }
 
     const callerTurn = events.find((event) => event.type === "CALLER_TRANSCRIPT_COMPLETED");
     let consolidatedCallerTurn: string | null = null;
-
     if (callerTurn?.type === "CALLER_TRANSCRIPT_COMPLETED") {
       const fragmentDecision = observeCallerTranscriptCompleted(this.callerTurnFragmentsV54, {
         itemId: callerTurn.itemId,
         transcript: callerTurn.transcript,
       });
       this.callerTurnFragmentsV54 = fragmentDecision.next;
-
       if (fragmentDecision.action === "DEFER") {
         session.diagnostics?.checkpoint?.("CALLER_TURN_FRAGMENT_DEFERRED_V54", {
           item_id: callerTurn.itemId ?? null,
@@ -71,36 +67,36 @@ export class CallSession extends BaseConstructor {
       } else {
         consolidatedCallerTurn = usableTranscript(fragmentDecision.transcript);
         if (consolidatedCallerTurn) {
-          session.consolidatedCallerTurnV54 = consolidatedCallerTurn;
-          if (fragmentDecision.fragmentCount > 1) {
-            stageConsolidatedCallerTurnForNextResponse(session, consolidatedCallerTurn);
-          }
+          turnContext.setEffectiveTurn(consolidatedCallerTurn, fragmentDecision.fragmentCount);
+          if (fragmentDecision.fragmentCount > 1) stageConsolidatedCallerTurnForNextResponse(session, consolidatedCallerTurn);
           session.diagnostics?.checkpoint?.("CALLER_TURN_CONSOLIDATED_V54", {
             item_id: callerTurn.itemId ?? null,
             fragment_count: fragmentDecision.fragmentCount,
             split_turn_consolidated: fragmentDecision.fragmentCount > 1,
             semantic_response_context_staged: fragmentDecision.fragmentCount > 1,
             timer_used: false,
+            context_owner: "caller_turn_context_runtime",
           });
         }
       }
     }
 
-    const effectiveCallerTurn = consolidatedCallerTurn ||
-      (callerTurn?.type === "CALLER_TRANSCRIPT_COMPLETED" ? usableTranscript(callerTurn.transcript) : "");
+    const effectiveCallerTurn = consolidatedCallerTurn
+      || (callerTurn?.type === "CALLER_TRANSCRIPT_COMPLETED" ? usableTranscript(callerTurn.transcript) : "");
 
-    if (effectiveCallerTurn && session.closingConfirmationPendingV41 === true) {
+    if (effectiveCallerTurn && closing.isConfirmationPending()) {
       clearConsolidatedCallerTurnForNextResponse(session);
       if (isExplicitClosingConfirmation(effectiveCallerTurn)) {
-        session.closingConfirmationPendingV41 = false;
-        session.controllerCloseAssessmentV41 = { courtesy: false, closeIntent: "CLOSE" };
+        closing.setConfirmationPending(false);
+        closing.setControllerAssessment({ courtesy: false, closeIntent: "CLOSE" });
         session.diagnostics?.checkpoint?.("CLOSE_CONFIRMATION_AUTHORITY_CONSUMED_V54", {
           caller_resolution: "CLOSE",
           pending_preserved_until_caller_turn: true,
           generic_semantic_pipeline_bypassed: true,
+          state_owner: "closing_session_runtime",
         });
-        session.consolidatedCallerTurnV54 = null;
-        session.commitCloseThroughLifecycleV41?.(
+        turnContext.clear();
+        conversationLifecyclePortFor(this).confirmEndCall(
           "agent_end_confirmed_v54",
           "caller_resolved_pending_close_v54",
         );
@@ -108,18 +104,16 @@ export class CallSession extends BaseConstructor {
       }
 
       if (isExplicitClosingRejection(effectiveCallerTurn)) {
-        session.closingConfirmationPendingV41 = false;
-        session.controllerCloseAssessmentV41 = { courtesy: false, closeIntent: "CONTINUE" };
+        closing.setConfirmationPending(false);
+        closing.setControllerAssessment({ courtesy: false, closeIntent: "CONTINUE" });
         session.diagnostics?.checkpoint?.("CLOSE_CONFIRMATION_AUTHORITY_CONSUMED_V54", {
           caller_resolution: "CONTINUE",
           pending_cleared_by_caller_only: true,
           generic_semantic_pipeline_preserved: true,
+          state_owner: "closing_session_runtime",
         });
-        try {
-          await BasePrototype.handleRealtimeMessage.call(this, data);
-        } finally {
-          session.consolidatedCallerTurnV54 = null;
-        }
+        try { await BasePrototype.handleRealtimeMessage.call(this, data); }
+        finally { turnContext.clear(); }
         return;
       }
 
@@ -127,19 +121,16 @@ export class CallSession extends BaseConstructor {
         pending_close: true,
         generic_semantic_pipeline_bypassed: true,
         clarification_tools_disabled: true,
+        state_owner: "closing_session_runtime",
       });
-      session.consolidatedCallerTurnV54 = null;
+      turnContext.clear();
       realtimeCommandPortFor(session).speak({
         instructions: "La confirmación de cierre sigue pendiente. Pide únicamente una aclaración breve de sí o no. No llames herramientas en esta respuesta.",
         exactText: "No he entendido si quieres terminar la llamada. ¿Sí o no?",
         tools: "DISABLED",
         isolated: true,
         purpose: "close_confirmation_clarification_v54",
-        metadata: {
-          authority: "pending_close_confirmation_v54",
-          pending_close: true,
-          tools_disabled: true,
-        },
+        metadata: { authority: "closing_session_runtime", pending_close: true, tools_disabled: true },
       });
       return;
     }
@@ -148,7 +139,7 @@ export class CallSession extends BaseConstructor {
       await BasePrototype.handleRealtimeMessage.call(this, data);
       observeGovernedSpeechAfterLowerLayers(session, events);
     } finally {
-      session.consolidatedCallerTurnV54 = null;
+      turnContext.clear();
     }
   }
 }
