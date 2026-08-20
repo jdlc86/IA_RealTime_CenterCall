@@ -1,8 +1,8 @@
 import { CallSession as CallSessionV35 } from "./call-session-v35";
 import { KvTenantRepository } from "./tenant-kv";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
-import type { RealtimeInputDetectionSettings } from "./realtime-provider-command-port";
 import type { RealtimeProviderEvent } from "./realtime-provider-event";
+import { inputDetectionConfigRuntimeFor } from "./input-detection-config-runtime.js";
 
 const BaseConstructor = CallSessionV35 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV35.prototype as any;
@@ -10,16 +10,8 @@ const CALLSESSION_RUNTIME_FINGERPRINT = "v35-protected-speech-runtime-2026-08-15
 const ATOMIC_GREETING_WATCHDOG_MS = 30_000;
 const PROTECTED_METADATA_KEY = "protected_speech_v35";
 
-/**
- * Validation layer for atomic greeting playback.
- *
- * Provider wire events are translated before this layer sees them. v35 owns only
- * the protected-greeting lifecycle and observes provider-neutral input-detection,
- * response and playback events. Provider-specific event names and field shapes stay
- * behind the active RealtimeProvider adapter.
- */
+/** Compatibility adapter for protected greeting; shared VAD config is version-neutral. */
 export class CallSession extends BaseConstructor {
-  private tenantVadV35: RealtimeInputDetectionSettings = {};
   private atomicGreetingActiveV35 = false;
   private atomicGreetingAwaitingVadOffV35 = false;
   private atomicGreetingResponseIdV35: string | null = null;
@@ -29,7 +21,6 @@ export class CallSession extends BaseConstructor {
 
   async fetch(request: Request): Promise<Response> {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
-
     if (isStart) {
       try {
         const body = await request.clone().json() as { tenant_id?: unknown };
@@ -37,24 +28,25 @@ export class CallSession extends BaseConstructor {
         const kv = (this as any).env?.TENANT_CONFIG;
         if (tenantId && kv && typeof kv.get === "function") {
           const config = await new KvTenantRepository(kv).getTenantConfiguration(tenantId);
-          this.tenantVadV35 = config?.realtime.vad ?? {};
+          inputDetectionConfigRuntimeFor(this).set(config?.realtime.vad ?? {});
+        } else {
+          inputDetectionConfigRuntimeFor(this).set({});
         }
       } catch {
-        this.tenantVadV35 = {};
+        inputDetectionConfigRuntimeFor(this).set({});
       }
     }
 
     const response = await super.fetch(request);
-
     if (isStart && response.ok) {
       (this as any).diagnostics?.checkpoint?.("CALLSESSION_RUNTIME_FINGERPRINT_V35", {
         fingerprint: CALLSESSION_RUNTIME_FINGERPRINT,
         atomic_greeting_vad_suspension: true,
         provider_command_port: true,
         provider_event_adapter: true,
+        input_detection_config_owner: "input_detection_config_runtime",
       });
     }
-
     return response;
   }
 
@@ -64,30 +56,18 @@ export class CallSession extends BaseConstructor {
     const session = this as any;
     if (session.greetingSent || !session.socket || !session.initialGreeting || !session.callId) return;
     if (this.atomicGreetingActiveV35) return;
-
     this.atomicGreetingActiveV35 = true;
     this.atomicGreetingAwaitingVadOffV35 = true;
-    this.atomicGreetingInstructionsV35 =
-      `Pronuncia exactamente este saludo inicial y nada más: ${JSON.stringify(session.initialGreeting)}`;
+    this.atomicGreetingInstructionsV35 = `Pronuncia exactamente este saludo inicial y nada más: ${JSON.stringify(session.initialGreeting)}`;
     session.greetingSent = true;
-
     this.commandsV35().suspendInputDetection();
     this.armAtomicGreetingWatchdogV35();
-
-    session.diagnostics?.checkpoint?.("ATOMIC_GREETING_VAD_SUSPEND_REQUESTED_V35", {
-      turn_detection: null,
-      provider_command_port: true,
-    });
-    session.diagnostics?.checkpoint?.("GREETING_SENT", {
-      protected_speech: true,
-      playback_pending_until_vad_disabled: true,
-    });
+    session.diagnostics?.checkpoint?.("ATOMIC_GREETING_VAD_SUSPEND_REQUESTED_V35", { turn_detection: null, provider_command_port: true });
+    session.diagnostics?.checkpoint?.("GREETING_SENT", { protected_speech: true, playback_pending_until_vad_disabled: true });
   }
 
   private emitAtomicGreetingAfterVadDisabledV35(): void {
-    if (!this.atomicGreetingActiveV35 || !this.atomicGreetingAwaitingVadOffV35) return;
-    if (!this.atomicGreetingInstructionsV35) return;
-
+    if (!this.atomicGreetingActiveV35 || !this.atomicGreetingAwaitingVadOffV35 || !this.atomicGreetingInstructionsV35) return;
     this.atomicGreetingAwaitingVadOffV35 = false;
     const clientEventId = `atomic_greeting_v35_${crypto.randomUUID()}`;
     this.commandsV35().speak({
@@ -96,22 +76,18 @@ export class CallSession extends BaseConstructor {
       instructions: this.atomicGreetingInstructionsV35,
       metadata: { [PROTECTED_METADATA_KEY]: "GREETING" },
     });
-    (this as any).diagnostics?.checkpoint?.("ATOMIC_GREETING_RESPONSE_REQUESTED_V35", {
-      vad_confirmed_disabled: true,
-      provider_command_port: true,
-    });
+    (this as any).diagnostics?.checkpoint?.("ATOMIC_GREETING_RESPONSE_REQUESTED_V35", { vad_confirmed_disabled: true, provider_command_port: true });
   }
 
   private finishAtomicGreetingV35(reason: string, abnormal = false): void {
     if (!this.atomicGreetingActiveV35) return;
     this.clearAtomicGreetingWatchdogV35();
-
     const session = this as any;
     try {
       if (session.socket) {
         const commands = this.commandsV35();
         commands.clearInput();
-        commands.restoreInputDetection(this.tenantVadV35);
+        commands.restoreInputDetection(inputDetectionConfigRuntimeFor(this).get());
         this.awaitingVadRestoreConfirmationV35 = true;
       }
     } catch (error) {
@@ -119,22 +95,16 @@ export class CallSession extends BaseConstructor {
         error: error instanceof Error ? error.message : String(error),
       });
     }
-
     if (abnormal) {
       session.diagnostics?.fail?.("ATOMIC_GREETING_TERMINATED_ABNORMALLY_V35", "PROTECTED_GREETING_AUDIO_NOT_DRAINED", {
-        reason,
-        response_id: this.atomicGreetingResponseIdV35,
+        reason, response_id: this.atomicGreetingResponseIdV35,
       });
     }
-
     session.diagnostics?.checkpoint?.("ATOMIC_GREETING_COMPLETED_V35", {
-      reason,
-      response_id: this.atomicGreetingResponseIdV35,
+      reason, response_id: this.atomicGreetingResponseIdV35,
       input_buffer_cleared_before_vad_restore: true,
-      vad_restore_requested: Boolean(session.socket),
-      provider_command_port: true,
+      vad_restore_requested: Boolean(session.socket), provider_command_port: true,
     });
-
     this.atomicGreetingActiveV35 = false;
     this.atomicGreetingAwaitingVadOffV35 = false;
     this.atomicGreetingResponseIdV35 = null;
@@ -163,8 +133,7 @@ export class CallSession extends BaseConstructor {
   private traceInputDetectionV35(event: Extract<RealtimeProviderEvent, { type: "INPUT_DETECTION_UPDATED" }>): void {
     const settings = event.settings;
     (this as any).diagnostics?.checkpoint?.("REALTIME_TURN_DETECTION_EFFECTIVE_V35", {
-      provider_event: event.type,
-      turn_detection_present: event.present,
+      provider_event: event.type, turn_detection_present: event.present,
       turn_detection_disabled: event.present && settings === null,
       turn_detection_type: settings === null ? null : "provider_managed",
       interrupt_response: settings?.interruptResponse ?? null,
@@ -180,12 +149,10 @@ export class CallSession extends BaseConstructor {
   private handleNeutralEventV35(event: RealtimeProviderEvent): void {
     if (event.type === "INPUT_DETECTION_UPDATED") {
       this.traceInputDetectionV35(event);
-
       if (this.atomicGreetingActiveV35 && this.atomicGreetingAwaitingVadOffV35 && event.present && event.settings === null) {
         (this as any).diagnostics?.checkpoint?.("ATOMIC_GREETING_VAD_DISABLED_CONFIRMED_V35", {});
         this.emitAtomicGreetingAfterVadDisabledV35();
       }
-
       if (this.awaitingVadRestoreConfirmationV35 && event.present && event.settings !== null) {
         this.awaitingVadRestoreConfirmationV35 = false;
         (this as any).diagnostics?.checkpoint?.("ATOMIC_GREETING_VAD_RESTORED_CONFIRMED_V35", {
@@ -196,44 +163,31 @@ export class CallSession extends BaseConstructor {
       }
       return;
     }
-
     if (event.type === "ASSISTANT_RESPONSE_STARTED" && this.atomicGreetingActiveV35 && event.kind === "GREETING") {
       this.atomicGreetingResponseIdV35 = event.responseId ?? null;
-      (this as any).diagnostics?.checkpoint?.("ATOMIC_GREETING_RESPONSE_BOUND_V35", {
-        response_id: this.atomicGreetingResponseIdV35,
-        metadata_confirmed: true,
-      });
+      (this as any).diagnostics?.checkpoint?.("ATOMIC_GREETING_RESPONSE_BOUND_V35", { response_id: this.atomicGreetingResponseIdV35, metadata_confirmed: true });
       return;
     }
-
     if (event.type === "ASSISTANT_AUDIO_STARTED" && this.atomicGreetingActiveV35) {
       if (event.responseId && event.responseId === this.atomicGreetingResponseIdV35) {
         (this as any).diagnostics?.checkpoint?.("ATOMIC_GREETING_PLAYBACK_STARTED_V35", { response_id: event.responseId });
       }
       return;
     }
-
     if (event.type === "ASSISTANT_AUDIO_STOPPED" && this.atomicGreetingActiveV35) {
-      if (event.responseId && event.responseId === this.atomicGreetingResponseIdV35) {
-        this.finishAtomicGreetingV35("assistant_audio_stopped");
-      }
+      if (event.responseId && event.responseId === this.atomicGreetingResponseIdV35) this.finishAtomicGreetingV35("assistant_audio_stopped");
       return;
     }
-
     if (event.type === "ASSISTANT_AUDIO_CLEARED" && this.atomicGreetingActiveV35) {
-      if (event.responseId && event.responseId === this.atomicGreetingResponseIdV35) {
-        this.finishAtomicGreetingV35("assistant_audio_cleared", true);
-      }
+      if (event.responseId && event.responseId === this.atomicGreetingResponseIdV35) this.finishAtomicGreetingV35("assistant_audio_cleared", true);
       return;
     }
-
     if (event.type === "ASSISTANT_RESPONSE_COMPLETED" && this.atomicGreetingActiveV35) {
       if (event.responseId && event.responseId === this.atomicGreetingResponseIdV35 && event.status === "failed") {
         this.finishAtomicGreetingV35("response_failed", true);
       }
       return;
     }
-
     if (event.type === "CALLER_SPEECH_STARTED") {
       (this as any).diagnostics?.checkpoint?.("CALLER_SPEECH_DURING_ATOMIC_GREETING_V35", {
         atomic_greeting_active: this.atomicGreetingActiveV35,
@@ -244,9 +198,7 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    for (const event of adaptRealtimeProviderEvents(data)) {
-      this.handleNeutralEventV35(event);
-    }
+    for (const event of adaptRealtimeProviderEvents(data)) this.handleNeutralEventV35(event);
     await BasePrototype.handleRealtimeMessage.call(this, data);
   }
 }
