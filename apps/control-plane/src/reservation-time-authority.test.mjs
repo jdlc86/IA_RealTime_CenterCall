@@ -59,7 +59,7 @@ test("ambiguous twelve-hour phrase cannot authorize an inferred evening hour", (
   ), false);
 });
 
-test("bare clock-like token is not enough authority after a multi-slot question", () => {
+test("bare clock-like token is not enough authority without time-slot context", () => {
   assert.equal(callerTranscriptSupportsReservationTime(
     "16:00",
     "2026-09-15T16:00:00+02:00",
@@ -83,4 +83,22 @@ test("party-size language cannot authorize a reservation hour", () => {
     "Somos cuatro personas.",
     "2026-09-15T16:00:00+02:00",
   ), false);
+});
+
+test("bare clock answer is authoritative while the explicit pending slot is reservation time", () => {
+  assert.deepEqual(decideReservationTimeAuthority({
+    requestedStartsAt: "2026-09-15T16:00:00+02:00",
+    latestCallerTranscript: "16:00",
+    authorizedStartsAt: null,
+    pendingSlot: "starts_at_time",
+  }), { action: "ALLOW_NEW" });
+});
+
+test("numeric party-size answer still cannot authorize time even with time pending", () => {
+  assert.deepEqual(decideReservationTimeAuthority({
+    requestedStartsAt: "2026-09-15T16:00:00+02:00",
+    latestCallerTranscript: "somos cuatro personas",
+    authorizedStartsAt: null,
+    pendingSlot: "starts_at_time",
+  }), { action: "BLOCK", reason: "TIME_NOT_EXPLICIT_IN_LATEST_CALLER_TURN" });
 });
