@@ -1,6 +1,7 @@
 import type {
   RealtimeInputDetectionSettings,
   RealtimeProviderCommandPort,
+  RealtimeSemanticResponseRequest,
   RealtimeSpeechRequest,
   RealtimeTextDecisionRequest,
   RealtimeToolResultRequest,
@@ -92,6 +93,21 @@ export class OpenAIRealtimeCommandAdapter implements RealtimeProviderCommandPort
       input: [{ type: "message", role: "user", content: [{ type: "input_text", text: request.inputText }] }],
     };
     if (request.maxOutputTokens !== undefined) response.max_output_tokens = request.maxOutputTokens;
+    const metadata = responseMetadata(request);
+    if (metadata) response.metadata = metadata;
+    const event: Record<string, unknown> = { type: "response.create", response };
+    if (request.requestId) event.event_id = request.requestId;
+    this.host.send(event);
+  }
+
+  createSemanticResponse(request: RealtimeSemanticResponseRequest): void {
+    const authoritativeText =
+      "[CONSOLIDATED_CALLER_TURN: authoritative transcript of one continuous caller utterance; " +
+      "use all supplied data as one turn and do not treat this wrapper as a second caller turn]\n" +
+      request.callerTurnText;
+    const response: Record<string, unknown> = {
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: authoritativeText }] }],
+    };
     const metadata = responseMetadata(request);
     if (metadata) response.metadata = metadata;
     const event: Record<string, unknown> = { type: "response.create", response };
