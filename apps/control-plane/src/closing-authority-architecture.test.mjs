@@ -34,26 +34,33 @@ test("closing authority: v23 retains beginClosing only as compatibility fallback
   assert.ok(fallbackIndex > observerIndex, "legacy beginClosing must remain only after lifecycle observer fallback");
 });
 
-test("closing authority: v41 caller-resolved close paths enter lifecycle instead of direct closing", async () => {
+test("closing authority: v41 caller-resolved close paths enter the neutral lifecycle port instead of historical session methods", async () => {
   const v41 = await source("call-session-v41-closure-guard.ts");
 
-  assert.match(v41, /private commitCloseThroughLifecycleV41\(reason: string, source: string\): void/);
-  assert.match(v41, /session\.observeEndCallConfirmedV18\(reason\)/);
-  assert.match(v41, /this\.commitCloseThroughLifecycleV41\(\"contextual_close_resolved_v41\", \"caller_declined_more_help_v41\"\)/);
-  assert.match(v41, /this\.commitCloseThroughLifecycleV41\(\"agent_end_confirmed_v41\", \"caller_resolved_close_ambiguity_v41\"\)/);
-  assert.equal((v41.match(/session\.beginClosing\?\.\(/g) ?? []).length, 1, "v41 may retain only one beginClosing compatibility fallback");
-  assert.match(v41, /V41_CLOSE_LIFECYCLE_COMPATIBILITY_FALLBACK/);
+  assert.match(v41, /private commitCloseV41\(reason: string, source: string\): void/);
+  assert.match(v41, /conversationLifecyclePortFor\(this\)\.confirmEndCall\(reason, source\)/);
+  assert.match(v41, /this\.commitCloseV41\(\"contextual_close_resolved_v41\", \"caller_declined_more_help_v41\"\)/);
+  assert.match(v41, /this\.commitCloseV41\(\"contextual_close_semantic_resolution_v41\", \"lucia_confirmed_contextual_end_call_v41\"\)/);
+  assert.match(v41, /closingSessionRuntimeFor\(this\)/);
+  assert.doesNotMatch(v41, /observeEndCallConfirmedV18/);
+  assert.doesNotMatch(v41, /beginClosing\?\.\(/);
+  assert.doesNotMatch(v41, /commitCloseThroughLifecycleV41/);
 });
 
-test("closing authority: v41 explicit continue resolution is atomic within one caller turn", async () => {
+test("closing authority: pending-close continue resolution is atomic through V54 and ClosingSessionRuntime", async () => {
   const v41 = await source("call-session-v41-closure-guard.ts");
+  const v54 = await source("call-session-v54-close-confirmation-authority.ts");
 
-  assert.match(v41, /type PendingCloseResolutionV41 = \"CLOSE\" \| \"CONTINUE\" \| \"RELEASE\"/);
-  assert.match(v41, /return \"CONTINUE\";/);
-  assert.match(v41, /closeTurnConsumed = resolution === \"CONTINUE\"/);
-  assert.match(v41, /if \(!closeTurnConsumed\) this\.recordUserTranscriptV41\(transcript\)/);
-  assert.match(v41, /CLOSE_RESOLUTION_TURN_CONSUMED_V41/);
-  assert.match(v41, /controller_reassessment_skipped: true/);
+  assert.match(v41, /closing\.setConfirmationPending\(true\)/);
+  assert.match(v54, /if \(effectiveCallerTurn && closing\.isConfirmationPending\(\)\)/);
+  assert.match(v54, /isExplicitClosingRejection\(effectiveCallerTurn\)/);
+  assert.match(v54, /closing\.setConfirmationPending\(false\)/);
+  assert.match(v54, /closing\.setControllerAssessment\(\{ courtesy: false, closeIntent: \"CONTINUE\" \}\)/);
+  assert.match(v54, /caller_resolution: \"CONTINUE\"/);
+  assert.match(v54, /generic_semantic_pipeline_preserved: true/);
+  assert.match(v54, /finally \{ turnContext\.clear\(\); \}/);
+  assert.doesNotMatch(v54, /closingConfirmationPendingV41/);
+  assert.doesNotMatch(v54, /controllerCloseAssessmentV41/);
 });
 
 test("closing authority: terminal audio keeps response kind across metadata-less buffer events", async () => {
