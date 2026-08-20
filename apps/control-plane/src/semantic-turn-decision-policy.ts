@@ -20,6 +20,19 @@ export function shouldBeginSemanticTurnForTranscript(
 }
 
 /**
+ * A pre-transcript ignored-input classification is provisional: once a usable
+ * completed transcript arrives for the same acoustic caller turn, semantic
+ * authority must be reopened so real caller intent can be classified. Business
+ * tools remain terminal for the turn and can never be superseded this way.
+ */
+export function shouldReopenSemanticTurnAfterProvisionalIgnore(
+  state: SemanticTurnDecisionState,
+  ignoredTool: string,
+): boolean {
+  return state.turnOpen && state.decisionTaken && state.selectedTool === ignoredTool;
+}
+
+/**
  * A syntactically malformed tool call is not an executable semantic decision.
  * Empty/omitted arguments remain valid because several public tools use an
  * empty object payload. Object JSON is required for non-empty arguments.
