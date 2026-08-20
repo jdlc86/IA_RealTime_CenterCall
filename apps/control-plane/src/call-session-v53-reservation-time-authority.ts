@@ -93,6 +93,27 @@ export class CallSession extends BaseConstructor {
     });
   }
 
+  private createReservationCommittedV53(): boolean {
+    const draft = (this as any).reservationDraftV19;
+    return Boolean(
+      draft &&
+      typeof draft === "object" &&
+      !Array.isArray(draft) &&
+      Object.keys(draft as Record<string, unknown>).length === 0
+    );
+  }
+
+  private consumeAuthorizedTimeV53(tool: GuardedReservationTool, reason: string): void {
+    delete this.authorizedStartsAtV53[tool];
+    this.latestCallerTranscriptV53 = null;
+    this.awaitingReservationTimeAnswerV53 = false;
+    (this as any).diagnostics?.checkpoint?.("RESERVATION_TIME_AUTHORITY_CONSUMED_V53", {
+      tool,
+      reason,
+      backend_commit_required: tool === CREATE_RESERVATION,
+    });
+  }
+
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const providerEvents = adaptRealtimeProviderEvents(data);
     for (const event of providerEvents) this.observeCallerTurnV53(event);
@@ -155,13 +176,23 @@ export class CallSession extends BaseConstructor {
     await BasePrototype.handleRealtimeMessage.call(this, data);
 
     if (args.confirm === true) {
-      delete this.authorizedStartsAtV53[toolEvent.name];
-      this.latestCallerTranscriptV53 = null;
-      this.awaitingReservationTimeAnswerV53 = false;
-      (this as any).diagnostics?.checkpoint?.("RESERVATION_TIME_AUTHORITY_CONSUMED_V53", {
-        tool: toolEvent.name,
-        confirmed_mutation_attempt: true,
-      });
+      if (toolEvent.name === CREATE_RESERVATION) {
+        if (this.createReservationCommittedV53()) {
+          this.consumeAuthorizedTimeV53(toolEvent.name, "backend_booked_commit");
+        } else {
+          (this as any).diagnostics?.checkpoint?.("RESERVATION_TIME_AUTHORITY_RETAINED_V53", {
+            tool: toolEvent.name,
+            starts_at: startsAt,
+            reason: "create_not_committed",
+            backend_commit_required: true,
+          });
+        }
+      } else {
+        // V23 modification still owns its own confirmation/commit lifecycle. Preserve
+        // the existing consume behavior here until that backend exposes an explicit
+        // modification-commit signal at this boundary.
+        this.consumeAuthorizedTimeV53(toolEvent.name, "confirmed_modify_attempt_legacy");
+      }
     }
   }
 }
