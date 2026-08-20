@@ -226,13 +226,16 @@ test("runtime wiring: active entrypoint and critical layers consume the policies
   const v52 = readFileSync(new URL("./call-session-v52-trusted-reservation-contact.ts", import.meta.url), "utf8");
   const v51 = readFileSync(new URL("./call-session-v51-malformed-tool-authority.ts", import.meta.url), "utf8");
   const v36 = readFileSync(new URL("./call-session-v36.ts", import.meta.url), "utf8");
+  const turnConcurrencyCoordinator = readFileSync(new URL("./turn-concurrency-coordinator.ts", import.meta.url), "utf8");
   const v40 = readFileSync(new URL("./call-session-v40-rebuild.ts", import.meta.url), "utf8");
   const v26 = readFileSync(new URL("./call-session-v26.ts", import.meta.url), "utf8");
   const v50 = readFileSync(new URL("./call-session-v50-reservation-date-scope.ts", import.meta.url), "utf8");
 
   assert.match(index, /call-session-v54-close-confirmation-authority/);
   assert.match(v54, /call-session-v53-reservation-time-authority/);
-  assert.match(v54, /closingConfirmationPendingV41/);
+  assert.match(v54, /closingSessionRuntimeFor/);
+  assert.match(v54, /closing\.isConfirmationPending\(\)/);
+  assert.doesNotMatch(v54, /closingConfirmationPendingV41/);
   assert.match(v54, /CLOSE_CONFIRMATION_AMBIGUOUS_PRESERVED_V54/);
   assert.match(v53, /call-session-v52-trusted-reservation-contact/);
   assert.match(v53, /decideReservationTimeAuthority/);
@@ -246,8 +249,11 @@ test("runtime wiring: active entrypoint and critical layers consume the policies
   assert.match(v51, /CALLER_TRANSCRIPT_COMPLETED/);
   assert.match(v51, /SEMANTIC_TOOL_CROSS_TOOL_CORRECTION_BLOCKED_V51/);
   assert.match(v51, /tools:\s*"DISABLED"/);
-  assert.match(v36, /decideTurnConcurrencyAcquire/);
-  assert.match(v36, /TURN_CONCURRENCY_OLDER_SPLIT_FRAGMENT_DEFERRED_V36/);
+  assert.match(v36, /turnConcurrencyCoordinatorFor/);
+  assert.match(v36, /\.observe\(this as any, parseEvent\(data\)\)/);
+  assert.doesNotMatch(v36, /this\.[A-Za-z_$][\w$]*V(?:3[6-9]|4\d|5[0-4])/);
+  assert.match(turnConcurrencyCoordinator, /decideTurnConcurrencyAcquire/);
+  assert.match(turnConcurrencyCoordinator, /TURN_CONCURRENCY_OLDER_SPLIT_FRAGMENT_DEFERRED_V36/);
   assert.match(v40, /decideIgnoredBargeInPlaybackRecovery/);
   assert.match(v26, /decideDirectPostToolResponse/);
   assert.match(v50, /decideReservationDateScope/);
