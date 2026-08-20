@@ -5,6 +5,10 @@ import {
   isReservationAvailabilityConflict,
   reservationAvailabilityChangedOutput,
 } from "./reservation-concurrency-policy.js";
+import {
+  reservationSessionRuntimeFor,
+  type ReservationDraft,
+} from "./reservation-session-runtime.js";
 
 const BaseConstructor = CallSessionV18 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV18.prototype as any;
@@ -12,19 +16,6 @@ const BasePrototype = CallSessionV18.prototype as any;
 const CREATE_RESERVATION = "restaurant_reservation_create";
 const CHECK_AVAILABILITY = "check_reservation_availability";
 const MANAGE_RESERVATION = "manage_reservation";
-
-type ReservationDraft = {
-  party_size?: number;
-  starts_at?: string;
-  customer_name?: string;
-  customer_phone?: string;
-  use_caller_phone?: boolean;
-  duration_minutes?: number;
-  notes?: string;
-  confirm?: boolean;
-  separate_tables_acceptable?: boolean;
-  tables_must_be_close?: boolean;
-};
 
 function parseObject(argumentsJson: string | undefined): Record<string, unknown> {
   if (!argumentsJson?.trim()) return {};
@@ -41,37 +32,11 @@ function publicToolOutput(result: ToolResult): Record<string, unknown> {
   return { ok: true, ...payload };
 }
 
+function trustedCallerPhone(session: any): string | null {
+  return typeof session.callerPhone === "string" && session.callerPhone.trim() ? session.callerPhone.trim() : null;
+}
+
 export class CallSession extends BaseConstructor {
-  private reservationDraftV19: ReservationDraft = {};
-  private reservationAvailabilityFingerprintV19: string | null = null;
-  private reservationAvailabilityResultV19: Record<string, unknown> | null = null;
-
-  private mergeReservationDraftV19(args: Record<string, unknown>): ReservationDraft {
-    const allowed = [
-      "party_size", "starts_at", "customer_name", "customer_phone", "use_caller_phone",
-      "duration_minutes", "notes", "confirm", "separate_tables_acceptable", "tables_must_be_close",
-    ] as const;
-    for (const key of allowed) {
-      if (args[key] !== undefined) (this.reservationDraftV19 as Record<string, unknown>)[key] = args[key];
-    }
-    if (this.reservationDraftV19.use_caller_phone === true && !this.reservationDraftV19.customer_phone) {
-      const caller = (this as any).callerPhone;
-      if (typeof caller === "string" && caller.trim()) this.reservationDraftV19.customer_phone = caller.trim();
-    }
-    return { ...this.reservationDraftV19 };
-  }
-
-  private reservationAvailabilityFingerprint(draft: ReservationDraft): string | null {
-    if (!Number.isInteger(draft.party_size) || !draft.starts_at) return null;
-    return JSON.stringify({
-      party_size: draft.party_size,
-      starts_at: draft.starts_at,
-      duration_minutes: draft.duration_minutes ?? 90,
-      separate_tables_acceptable: draft.separate_tables_acceptable ?? null,
-      tables_must_be_close: draft.tables_must_be_close ?? null,
-    });
-  }
-
   private sendFunctionOutputV19(callId: string | undefined, output: Record<string, unknown>): void {
     const port = realtimeCommandPortFor(this as any);
     port.submitToolResult({ callId, toolName: CREATE_RESERVATION, output });
@@ -79,16 +44,18 @@ export class CallSession extends BaseConstructor {
   }
 
   private async executeDirectCreateV19(callId: string | undefined, args: Record<string, unknown>): Promise<void> {
-    const draft = this.mergeReservationDraftV19(args);
-    const tenantId = (this as any).tenantId as string | null | undefined;
+    const session = this as any;
+    const runtime = reservationSessionRuntimeFor(this);
+    const draft = runtime.mergeDraft(args, trustedCallerPhone(session));
+    const tenantId = session.tenantId as string | null | undefined;
     if (!tenantId) {
       this.sendFunctionOutputV19(callId, { ok: false, status: "ERROR", error: "TENANT_REQUIRED" });
       return;
     }
 
-    // Keep v16 multi-table preference state synchronized, but do not route execution
-    // through conversation_intent / CoreIntent / legacy reservation collection.
-    (this as any).captureStructuredTurnV16?.(JSON.stringify({
+    // Compatibility only: keep the legacy multi-table preference capture alive
+    // while reservation state itself is owned exclusively by ReservationSessionRuntime.
+    session.captureStructuredTurnV16?.(JSON.stringify({
       intent: "CREATE_RESERVATION",
       reservation: draft,
     }));
@@ -106,16 +73,17 @@ export class CallSession extends BaseConstructor {
       return;
     }
 
-    const gateway = (this as any).createToolGateway?.() as ToolGateway | undefined;
+    const gateway = session.createToolGateway?.() as ToolGateway | undefined;
     if (!gateway) {
       this.sendFunctionOutputV19(callId, { ok: false, status: "ERROR", error: "TOOL_GATEWAY_UNAVAILABLE" });
       return;
     }
 
-    const fingerprint = this.reservationAvailabilityFingerprint(draft)!;
-    if (this.reservationAvailabilityFingerprintV19 !== fingerprint || !this.reservationAvailabilityResultV19) {
+    const fingerprint = runtime.fingerprintFor(draft)!;
+    let availabilityResult = runtime.cachedAvailability(fingerprint);
+    if (!availabilityResult) {
       const started = Date.now();
-      (this as any).diagnostics?.checkpoint?.("DIRECT_RESERVATION_AVAILABILITY_STARTED", {
+      session.diagnostics?.checkpoint?.("DIRECT_RESERVATION_AVAILABILITY_STARTED", {
         party_size: draft.party_size,
         starts_at: draft.starts_at,
       });
@@ -126,9 +94,9 @@ export class CallSession extends BaseConstructor {
           starts_at: draft.starts_at,
           duration_minutes: draft.duration_minutes ?? 90,
         },
-        context: { tenantId, callId: (this as any).callId ?? undefined },
+        context: { tenantId, callId: session.callId ?? undefined },
       });
-      (this as any).diagnostics?.checkpoint?.("DIRECT_RESERVATION_AVAILABILITY_COMPLETED", {
+      session.diagnostics?.checkpoint?.("DIRECT_RESERVATION_AVAILABILITY_COMPLETED", {
         elapsed_ms: Date.now() - started,
         ok: availability.ok,
       });
@@ -136,11 +104,10 @@ export class CallSession extends BaseConstructor {
         this.sendFunctionOutputV19(callId, publicToolOutput(availability));
         return;
       }
-      this.reservationAvailabilityFingerprintV19 = fingerprint;
-      this.reservationAvailabilityResultV19 = availability.result as Record<string, unknown>;
+      availabilityResult = availability.result as Record<string, unknown>;
+      runtime.recordAvailability(fingerprint, availabilityResult);
     }
 
-    const availabilityResult = this.reservationAvailabilityResultV19 ?? {};
     if (availabilityResult.requested_available !== true) {
       this.sendFunctionOutputV19(callId, {
         ok: true,
@@ -154,6 +121,7 @@ export class CallSession extends BaseConstructor {
     if (!draft.customer_name) missingContact.push("customer_name");
     if (!draft.customer_phone) missingContact.push("customer_phone");
     if (missingContact.length) {
+      runtime.markNeedsContact();
       this.sendFunctionOutputV19(callId, {
         ok: true,
         status: "AVAILABLE_NEEDS_CONTACT",
@@ -165,6 +133,7 @@ export class CallSession extends BaseConstructor {
     }
 
     if (draft.confirm !== true) {
+      runtime.markReadyToConfirm();
       this.sendFunctionOutputV19(callId, {
         ok: true,
         status: "READY_TO_CONFIRM",
@@ -181,7 +150,7 @@ export class CallSession extends BaseConstructor {
     }
 
     const started = Date.now();
-    (this as any).diagnostics?.checkpoint?.("DIRECT_RESERVATION_BOOKING_STARTED", {
+    session.diagnostics?.checkpoint?.("DIRECT_RESERVATION_BOOKING_STARTED", {
       party_size: draft.party_size,
       starts_at: draft.starts_at,
     });
@@ -196,9 +165,9 @@ export class CallSession extends BaseConstructor {
         notes: draft.notes,
         confirm: true,
       },
-      context: { tenantId, callId: (this as any).callId ?? undefined },
+      context: { tenantId, callId: session.callId ?? undefined },
     });
-    (this as any).diagnostics?.checkpoint?.("DIRECT_RESERVATION_BOOKING_COMPLETED", {
+    session.diagnostics?.checkpoint?.("DIRECT_RESERVATION_BOOKING_COMPLETED", {
       elapsed_ms: Date.now() - started,
       ok: booking.ok,
       stage: booking.ok && booking.result && typeof booking.result === "object"
@@ -207,13 +176,8 @@ export class CallSession extends BaseConstructor {
     });
 
     if (isReservationAvailabilityConflict(booking)) {
-      // Availability shown earlier is advisory only. The commit-time backend authority won
-      // the race for another caller, so invalidate that evidence and require a fresh explicit
-      // confirmation for any alternative while preserving already-collected contact details.
-      this.reservationAvailabilityFingerprintV19 = null;
-      this.reservationAvailabilityResultV19 = null;
-      this.reservationDraftV19.confirm = false;
-      (this as any).diagnostics?.checkpoint?.("DIRECT_RESERVATION_AVAILABILITY_CHANGED_AT_COMMIT", {
+      runtime.invalidateAvailabilityForConflict();
+      session.diagnostics?.checkpoint?.("DIRECT_RESERVATION_AVAILABILITY_CHANGED_AT_COMMIT", {
         party_size: draft.party_size,
         starts_at: draft.starts_at,
         reservation_created: false,
@@ -229,9 +193,7 @@ export class CallSession extends BaseConstructor {
     }
 
     if (booking.ok && booking.result && typeof booking.result === "object" && (booking.result as Record<string, unknown>).stage === "BOOKED") {
-      this.reservationDraftV19 = {};
-      this.reservationAvailabilityFingerprintV19 = null;
-      this.reservationAvailabilityResultV19 = null;
+      runtime.markBooked();
     }
     this.sendFunctionOutputV19(callId, publicToolOutput(booking));
   }
@@ -258,6 +220,7 @@ export class CallSession extends BaseConstructor {
       (this as any).diagnostics?.checkpoint?.("LUCIA_AGENT_TOOL_SELECTED", {
         tool: CREATE_RESERVATION,
         compatibility_executor: "direct_reservation_controller_v19",
+        reservation_state_owner: "reservation_session_runtime",
       });
       try {
         await this.executeDirectCreateV19(event.callId, args);
