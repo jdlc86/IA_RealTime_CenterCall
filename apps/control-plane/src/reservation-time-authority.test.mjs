@@ -58,3 +58,29 @@ test("ambiguous twelve-hour phrase cannot authorize an inferred evening hour", (
     "2026-09-15T21:00:00+02:00",
   ), false);
 });
+
+test("bare clock-like token is not enough authority after a multi-slot question", () => {
+  assert.equal(callerTranscriptSupportsReservationTime(
+    "16:00",
+    "2026-09-15T16:00:00+02:00",
+  ), false);
+  assert.deepEqual(decideReservationTimeAuthority({
+    requestedStartsAt: "2026-09-15T16:00:00+02:00",
+    latestCallerTranscript: "16:00",
+    authorizedStartsAt: null,
+  }), { action: "BLOCK", reason: "TIME_NOT_EXPLICIT_IN_LATEST_CALLER_TURN" });
+});
+
+test("explicit clock token with temporal cue remains authoritative", () => {
+  assert.equal(callerTranscriptSupportsReservationTime(
+    "A las 16:00.",
+    "2026-09-15T16:00:00+02:00",
+  ), true);
+});
+
+test("party-size language cannot authorize a reservation hour", () => {
+  assert.equal(callerTranscriptSupportsReservationTime(
+    "Somos cuatro personas.",
+    "2026-09-15T16:00:00+02:00",
+  ), false);
+});
