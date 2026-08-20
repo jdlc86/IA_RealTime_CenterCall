@@ -20,6 +20,13 @@ function crossVersionStateReferences(source) {
   return refs;
 }
 
+function hasCrossGenerationInstanceAccess(source, symbol) {
+  const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const directReceiver = "(?:this|session|self|\\(this as any\\))";
+  const prototypeReceiver = "(?:[A-Za-z_$][\\w$]*Prototype)";
+  return new RegExp(`(?:${directReceiver}|${prototypeReceiver})(?:\\?|)\\.${escaped}\\b`).test(source);
+}
+
 test("active consolidation layers do not read private state owned by another CallSession generation", () => {
   const files = readdirSync(here).filter((name) => /^call-session-v(?:3[6-9]|4\d|5[0-4])(?:-|\.)/.test(name) && name.endsWith(".ts"));
   const violations = [];
@@ -30,13 +37,23 @@ test("active consolidation layers do not read private state owned by another Cal
     const source = readFileSync(join(here, file), "utf8");
     for (const ref of crossVersionStateReferences(source)) {
       if (ref.version === ownVersion) continue;
-      // Import/type names are allowed. Cross-generation instance state access is not.
-      const stateAccess = new RegExp(`(?:this|session|self|\\(this as any\\))\\.${ref.symbol}\\b`);
-      if (stateAccess.test(source)) violations.push(`${file}: ${ref.symbol}`);
+      // Imports/types are allowed. Instance and inherited-prototype access are not.
+      if (hasCrossGenerationInstanceAccess(source, ref.symbol)) violations.push(`${file}: ${ref.symbol}`);
     }
   }
 
   assert.deepEqual(violations, [], `cross-generation private state access is forbidden:\n${violations.join("\n")}`);
+});
+
+test("cross-layer guard catches inherited prototype bypasses", () => {
+  assert.equal(
+    hasCrossGenerationInstanceAccess("BasePrototype.authorizePublicRestaurantToolV29.call(this, event)", "authorizePublicRestaurantToolV29"),
+    true,
+  );
+  assert.equal(
+    hasCrossGenerationInstanceAccess("session.releaseSemanticGateV29?.('tool')", "releaseSemanticGateV29"),
+    true,
+  );
 });
 
 test("no CallSession generation may be added beyond v54", () => {
