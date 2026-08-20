@@ -72,7 +72,8 @@ export class CallSession extends BaseConstructor {
 
   private rejectUnprovenTimeV53(event: SemanticToolEvent, reason: string): void {
     const tool = event.name as GuardedReservationTool;
-    realtimeCommandPortFor(this as any).submitToolResult({
+    const realtime = realtimeCommandPortFor(this as any);
+    realtime.submitToolResult({
       callId: event.callId,
       toolName: tool,
       output: {
@@ -84,6 +85,10 @@ export class CallSession extends BaseConstructor {
         instruction: "No asumas ninguna hora. Pregunta al cliente a qué hora quiere la reserva y espera un nuevo turno hablado antes de volver a intentar esta operación.",
       },
     });
+    // V53 remains silent. Advancing the normal post-tool response boundary lets
+    // V26's replacement be consumed by the provider runtime and, while the
+    // selecting response is still active, deferred until V55 releases it.
+    realtime.createDefaultResponse();
     (this as any).diagnostics?.checkpoint?.("RESERVATION_TIME_ASSUMPTION_BLOCKED_V53", {
       tool,
       reason,
@@ -91,6 +96,7 @@ export class CallSession extends BaseConstructor {
       reservation_write_attempted: false,
       speech_owner: "direct_agent_runtime_v26",
       duplicate_speech_suppressed: true,
+      post_tool_response_boundary_advanced: true,
     });
   }
 
