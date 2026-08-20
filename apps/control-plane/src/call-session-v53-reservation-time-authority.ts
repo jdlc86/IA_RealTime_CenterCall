@@ -26,21 +26,10 @@ function text(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-/**
- * V53 makes caller-provided reservation time authoritative.
- *
- * The LLM keeps semantic responsibility for understanding natural language and
- * materializing starts_at. This layer does not choose a time. It only verifies
- * that the exact materialized time is supported by the latest completed caller
- * transcript, or by a time already authorized earlier in the same reservation
- * flow. A new/different starts_at therefore requires fresh caller evidence.
- *
- * V53 is intentionally silent: it emits a structured MISSING_INFORMATION tool
- * result and lets the V26 post-tool boundary own the single spoken recovery.
- */
 export class CallSession extends BaseConstructor {
   private latestCallerTranscriptV53: string | null = null;
   private authorizedStartsAtV53: Partial<Record<GuardedReservationTool, string>> = {};
+  private awaitingReservationTimeAnswerV53 = false;
 
   private observeCallerTurnV53(event: RealtimeProviderEvent): void {
     if (event.type !== "CALLER_TRANSCRIPT_COMPLETED" || !event.transcript.trim()) return;
@@ -48,6 +37,7 @@ export class CallSession extends BaseConstructor {
     (this as any).diagnostics?.checkpoint?.("RESERVATION_TIME_CALLER_EVIDENCE_OBSERVED_V53", {
       item_id: event.itemId ?? null,
       transcript_present: true,
+      pending_slot: this.awaitingReservationTimeAnswerV53 ? "starts_at_time" : null,
       semantic_interpretation: false,
     });
   }
@@ -72,6 +62,7 @@ export class CallSession extends BaseConstructor {
 
   private rejectUnprovenTimeV53(event: SemanticToolEvent, reason: string): void {
     const tool = event.name as GuardedReservationTool;
+    this.awaitingReservationTimeAnswerV53 = true;
     const realtime = realtimeCommandPortFor(this as any);
     realtime.submitToolResult({
       callId: event.callId,
@@ -85,13 +76,11 @@ export class CallSession extends BaseConstructor {
         instruction: "No asumas ninguna hora. Pregunta al cliente a qué hora quiere la reserva y espera un nuevo turno hablado antes de volver a intentar esta operación.",
       },
     });
-    // V53 remains silent. Advancing the normal post-tool response boundary lets
-    // V26's replacement be consumed by the provider runtime and, while the
-    // selecting response is still active, deferred until V55 releases it.
     realtime.createDefaultResponse();
     (this as any).diagnostics?.checkpoint?.("RESERVATION_TIME_ASSUMPTION_BLOCKED_V53", {
       tool,
       reason,
+      pending_slot: "starts_at_time",
       availability_checked: false,
       reservation_write_attempted: false,
       speech_owner: "direct_agent_runtime_v26",
@@ -132,6 +121,7 @@ export class CallSession extends BaseConstructor {
       requestedStartsAt: startsAt,
       latestCallerTranscript: this.latestCallerTranscriptV53,
       authorizedStartsAt: this.authorizedStartsAtV53[toolEvent.name] ?? null,
+      pendingSlot: this.awaitingReservationTimeAnswerV53 ? "starts_at_time" : null,
     });
 
     if (decision.action === "BLOCK") {
@@ -142,12 +132,16 @@ export class CallSession extends BaseConstructor {
 
     if (decision.action === "ALLOW_NEW") {
       this.authorizedStartsAtV53[toolEvent.name] = startsAt;
+      const resolvedPendingSlot = this.awaitingReservationTimeAnswerV53;
+      this.awaitingReservationTimeAnswerV53 = false;
       (this as any).diagnostics?.checkpoint?.("RESERVATION_TIME_AUTHORITY_ESTABLISHED_V53", {
         tool: toolEvent.name,
         starts_at: startsAt,
-        source: "LATEST_CALLER_TRANSCRIPT",
+        source: resolvedPendingSlot ? "PENDING_TIME_SLOT_CALLER_ANSWER" : "LATEST_CALLER_TRANSCRIPT",
+        pending_slot_resolved: resolvedPendingSlot,
       });
     } else {
+      this.awaitingReservationTimeAnswerV53 = false;
       (this as any).diagnostics?.checkpoint?.("RESERVATION_TIME_AUTHORITY_REUSED_V53", {
         tool: toolEvent.name,
         starts_at: startsAt,
@@ -156,12 +150,10 @@ export class CallSession extends BaseConstructor {
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
 
-    // A confirmed mutation consumes the authority token. A later reservation or
-    // modification, even at the same clock time, must obtain fresh caller
-    // evidence instead of inheriting authorization from a completed write.
     if (args.confirm === true) {
       delete this.authorizedStartsAtV53[toolEvent.name];
       this.latestCallerTranscriptV53 = null;
+      this.awaitingReservationTimeAnswerV53 = false;
       (this as any).diagnostics?.checkpoint?.("RESERVATION_TIME_AUTHORITY_CONSUMED_V53", {
         tool: toolEvent.name,
         confirmed_mutation_attempt: true,
