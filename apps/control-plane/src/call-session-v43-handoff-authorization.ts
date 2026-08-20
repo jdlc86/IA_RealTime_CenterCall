@@ -7,7 +7,8 @@ import {
   observeHumanHandoffCallerTurn,
   type HumanHandoffAuthorizationState,
 } from "./human-handoff-authorization-policy.js";
-import { realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import { releaseSemanticGate } from "./semantic-turn-coordinator.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 
@@ -16,27 +17,7 @@ const BasePrototype = CallSessionV42.prototype as any;
 const HUMAN_ASSISTANCE = "restaurant_human_assistance";
 const INPUT_IGNORED = "restaurant_input_ignored";
 
-type RealtimeEvent = {
-  type?: string;
-  name?: string;
-  call_id?: string;
-  transcript?: unknown;
-};
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) {
-    return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  }
-  return null;
-}
-
-function parseEvent(data: unknown): RealtimeEvent | null {
-  const text = readRealtimeText(data);
-  if (!text) return null;
-  try { return JSON.parse(text) as RealtimeEvent; } catch { return null; }
-}
+type SemanticToolEvent = Extract<RealtimeProviderEvent, { type: "SEMANTIC_TOOL_SELECTED" }>;
 
 function usableTranscript(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -46,11 +27,9 @@ function usableTranscript(value: unknown): string | null {
 
 /**
  * v43 separates semantic recommendation from irreversible handoff authority.
- *
- * Lucia may decide that human assistance would be useful, but the runtime only
- * permits the terminal transport when the current caller turn explicitly
- * requests a human or explicitly accepts a transfer that was previously
- * offered. Model-only reasons such as SYSTEM_LIMITATION are not authority.
+ * Provider wire parsing and tool-result encoding are delegated to the realtime
+ * runtime; this layer owns only caller authorization and the deterministic
+ * confirmation/rejection dialogue policy.
  */
 export class CallSession extends BaseConstructor {
   private handoffAuthorizationV43: HumanHandoffAuthorizationState = initialHumanHandoffAuthorizationState();
@@ -101,21 +80,17 @@ export class CallSession extends BaseConstructor {
     return "OFFER_REQUIRED";
   }
 
-  private emitHandoffToolOutputV43(event: RealtimeEvent, status: string, instruction: string): void {
-    const session = this as any;
+  private emitHandoffToolOutputV43(event: SemanticToolEvent, status: string, instruction: string): void {
     releaseSemanticGate(this, HUMAN_ASSISTANCE);
-    session.send?.({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: event.call_id,
-        output: JSON.stringify({ ok: true, status, transfer_started: false, instruction }),
-      },
+    realtimeCommandPortFor(this as any).submitToolResult({
+      callId: event.callId,
+      toolName: HUMAN_ASSISTANCE,
+      output: { ok: true, status, transfer_started: false, instruction },
     });
   }
 
   private rejectUnauthorizedHandoffV43(
-    event: RealtimeEvent,
+    event: SemanticToolEvent,
     source: "OFFER_REQUIRED" | "CALLER_REJECTED",
     offerWasAlreadyPending: boolean,
   ): void {
@@ -213,29 +188,27 @@ export class CallSession extends BaseConstructor {
       offer_was_already_pending: offerWasAlreadyPending,
       clarification_issued: this.handoffClarificationIssuedV43,
       confirmation_response_tools_disabled: true,
+      provider_command_port: true,
     });
   }
 
-  private consumeRejectedOfferMisclassifiedAsIgnoredV43(event: RealtimeEvent): boolean {
-    if (event.type !== "response.function_call_arguments.done" || event.name !== INPUT_IGNORED || !this.explicitPendingOfferRejectionV43) return false;
+  private consumeRejectedOfferMisclassifiedAsIgnoredV43(event: SemanticToolEvent): boolean {
+    if (event.name !== INPUT_IGNORED || !this.explicitPendingOfferRejectionV43) return false;
     const session = this as any;
     this.explicitPendingOfferRejectionV43 = false;
     this.handoffAuthorizationV43 = { offerPending: false };
     this.handoffClarificationIssuedV43 = false;
     releaseSemanticGate(this, INPUT_IGNORED);
     conversationLifecyclePortFor(this).validateUserTurn("human_handoff_rejected");
-    session.send?.({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: event.call_id,
-        output: JSON.stringify({
-          ok: true,
-          status: "HUMAN_HANDOFF_DECLINED",
-          transfer_started: false,
-          speak: true,
-          instruction: "La negativa del usuario responde a la oferta de transferencia; no es ruido. Confirma brevemente que no se transferirá y continúa disponible para ayudar con el restaurante.",
-        }),
+    realtimeCommandPortFor(session).submitToolResult({
+      callId: event.callId,
+      toolName: INPUT_IGNORED,
+      output: {
+        ok: true,
+        status: "HUMAN_HANDOFF_DECLINED",
+        transfer_started: false,
+        speak: true,
+        instruction: "La negativa del usuario responde a la oferta de transferencia; no es ruido. Confirma brevemente que no se transferirá y continúa disponible para ayudar con el restaurante.",
       },
     });
     realtimeCommandPortFor(session).speak({
@@ -257,55 +230,59 @@ export class CallSession extends BaseConstructor {
       model_tool: INPUT_IGNORED,
       lifecycle_owner: "conversation_lifecycle_port",
       semantic_gate_owner: "semantic_turn_coordinator",
+      provider_command_port: true,
     });
     return true;
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const event = parseEvent(data);
+    const events = adaptRealtimeProviderEvents(data);
 
-    if (event?.type === "conversation.item.input_audio_transcription.completed") {
-      const transcript = usableTranscript(event.transcript);
-      if (transcript) {
-        this.explicitPendingOfferRejectionV43 = this.handoffAuthorizationV43.offerPending && isExplicitHumanHandoffRejection(transcript);
-        this.handoffAuthorizationV43 = observeHumanHandoffCallerTurn(this.handoffAuthorizationV43, transcript);
-        this.latestCallerTranscriptV43 = transcript;
-      }
-    }
-
-    if (event && this.consumeRejectedOfferMisclassifiedAsIgnoredV43(event)) return;
-
-    if (
-      event?.type === "response.function_call_arguments.done" &&
-      event.name &&
-      event.name !== HUMAN_ASSISTANCE &&
-      event.name !== INPUT_IGNORED &&
-      this.handoffAuthorizationV43.offerPending
-    ) {
-      this.handoffAuthorizationV43 = clearHumanHandoffOfferForCompetingAction(this.handoffAuthorizationV43);
-      this.handoffClarificationIssuedV43 = false;
-      (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_PENDING_OFFER_CLEARED_BY_COMPETING_ACTION_V43", {
-        selected_tool: event.name,
-        pending_offer_cleared: true,
-      });
-    }
-
-    if (event?.type === "response.function_call_arguments.done" && event.name === HUMAN_ASSISTANCE) {
-      const offerWasAlreadyPending = this.handoffAuthorizationV43.offerPending;
-      const decision = authorizeHumanHandoff(this.handoffAuthorizationV43, this.latestCallerTranscriptV43);
-      this.handoffAuthorizationV43 = decision.state;
-      this.explicitPendingOfferRejectionV43 = false;
-
-      if (!decision.allowed) {
-        this.rejectUnauthorizedHandoffV43(event, decision.source, offerWasAlreadyPending);
-        return;
+    for (const event of events) {
+      if (event.type === "CALLER_TRANSCRIPT_COMPLETED") {
+        const transcript = usableTranscript(event.transcript);
+        if (transcript) {
+          this.explicitPendingOfferRejectionV43 = this.handoffAuthorizationV43.offerPending && isExplicitHumanHandoffRejection(transcript);
+          this.handoffAuthorizationV43 = observeHumanHandoffCallerTurn(this.handoffAuthorizationV43, transcript);
+          this.latestCallerTranscriptV43 = transcript;
+        }
       }
 
-      this.handoffClarificationIssuedV43 = false;
-      (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_AUTHORIZED_BY_CALLER_V43", {
-        authorization_source: decision.source,
-        caller_transcript_present: Boolean(this.latestCallerTranscriptV43),
-      });
+      if (event.type !== "SEMANTIC_TOOL_SELECTED") continue;
+
+      if (this.consumeRejectedOfferMisclassifiedAsIgnoredV43(event)) return;
+
+      if (
+        event.name !== HUMAN_ASSISTANCE &&
+        event.name !== INPUT_IGNORED &&
+        this.handoffAuthorizationV43.offerPending
+      ) {
+        this.handoffAuthorizationV43 = clearHumanHandoffOfferForCompetingAction(this.handoffAuthorizationV43);
+        this.handoffClarificationIssuedV43 = false;
+        (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_PENDING_OFFER_CLEARED_BY_COMPETING_ACTION_V43", {
+          selected_tool: event.name,
+          pending_offer_cleared: true,
+        });
+      }
+
+      if (event.name === HUMAN_ASSISTANCE) {
+        const offerWasAlreadyPending = this.handoffAuthorizationV43.offerPending;
+        const decision = authorizeHumanHandoff(this.handoffAuthorizationV43, this.latestCallerTranscriptV43);
+        this.handoffAuthorizationV43 = decision.state;
+        this.explicitPendingOfferRejectionV43 = false;
+
+        if (!decision.allowed) {
+          this.rejectUnauthorizedHandoffV43(event, decision.source, offerWasAlreadyPending);
+          return;
+        }
+
+        this.handoffClarificationIssuedV43 = false;
+        (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_AUTHORIZED_BY_CALLER_V43", {
+          authorization_source: decision.source,
+          caller_transcript_present: Boolean(this.latestCallerTranscriptV43),
+          provider_event_adapter: true,
+        });
+      }
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
