@@ -25,7 +25,7 @@ test("V53 retains CREATE time across contact collection and consumes only after 
   assert.match(source, /reservationDraftV19/);
   assert.match(source, /RESERVATION_TIME_AUTHORITY_RETAINED_V53/);
   assert.match(source, /reason: "create_not_committed"/);
-  assert.match(source, /reason: "backend_booked_commit"/);
+  assert.match(source, /consumeAuthorizedTimeV53\(toolEvent\.name, "backend_booked_commit"\)/);
   assert.match(source, /delete this\.authorizedStartsAtV53\[tool\]/);
 
   const confirmStart = source.indexOf("if (args.confirm === true)");
