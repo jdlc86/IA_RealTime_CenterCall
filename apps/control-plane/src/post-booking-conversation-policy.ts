@@ -85,6 +85,12 @@ function governed(reason: Extract<DirectPostToolResponseDecision, { action: "GOV
 
 function reservationMissingInformationSpeech(missing: readonly string[]): string {
   const unique = new Set(missing);
+  if (unique.size === 1 && unique.has("starts_at_time")) {
+    return "¿A qué hora quieres hacer la reserva?";
+  }
+  if (unique.size === 1 && unique.has("starts_at_date")) {
+    return "¿Para qué día quieres hacer la reserva?";
+  }
   if (unique.size === 1 && unique.has("starts_at")) {
     return "¿Para qué día y a qué hora quieres reservar?";
   }
@@ -102,6 +108,9 @@ function reservationMissingInformationSpeech(missing: readonly string[]): string
   }
   if (unique.has("starts_at") && unique.has("party_size") && unique.size === 2) {
     return "¿Para qué día y hora quieres reservar y para cuántas personas?";
+  }
+  if (unique.has("starts_at_date") && unique.has("starts_at_time") && unique.size === 2) {
+    return "¿Para qué día y a qué hora quieres hacer la reserva?";
   }
   return "Necesito un dato más para continuar con la reserva. ¿Puedes indicarme la información que falta?";
 }
