@@ -29,7 +29,19 @@ jobs:
         run: npm install --no-audit --no-fund
 
       - name: Run tests
-        run: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee node-test-output.log
+
+      - name: Upload Node test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-test-output
+          path: apps/control-plane/node-test-output.log
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Wrangler dry-run
         run: npm run check
