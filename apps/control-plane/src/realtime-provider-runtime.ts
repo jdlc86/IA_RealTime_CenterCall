@@ -34,6 +34,7 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
   private sessionPolicyTransforms: RealtimeSessionPolicyTransform[] = [];
   private pendingDefaultResponseReplacement: RealtimeSpeechRequest | null = null;
   private deferredDefaultResponseReplacement: RealtimeSpeechRequest | null = null;
+  private stagedCallerTurnText: string | null = null;
   private activeAssistantResponseId: string | null | undefined = undefined;
   readonly capabilities: ProviderCapabilities;
 
@@ -46,6 +47,8 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
 
   setToolResultPolicy(policy: RealtimeToolResultPolicy): void { this.toolResultPolicy = policy; }
   addSessionPolicyTransform(transform: RealtimeSessionPolicyTransform): void { this.sessionPolicyTransforms.push(transform); }
+  stageCallerTurn(text: string | null): void { this.stagedCallerTurnText = text?.trim() || null; }
+  clearStagedCallerTurn(): void { this.stagedCallerTurnText = null; }
   speak(request: RealtimeSpeechRequest): void { this.delegate.speak(request); }
   requestTextDecision(request: RealtimeTextDecisionRequest): void { this.delegate.requestTextDecision(request); }
   createSemanticResponse(request: RealtimeSemanticResponseRequest): void { this.delegate.createSemanticResponse(request); }
@@ -73,6 +76,18 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
       this.delegate.speak(replacement);
       return;
     }
+
+    const callerTurnText = this.stagedCallerTurnText;
+    this.stagedCallerTurnText = null;
+    if (callerTurnText) {
+      this.delegate.createSemanticResponse({
+        callerTurnText,
+        purpose: "consolidated_caller_turn",
+        metadata: { consolidated_caller_turn: true },
+      });
+      return;
+    }
+
     this.delegate.createDefaultResponse();
   }
 
@@ -140,6 +155,8 @@ function commandRuntimeFor(host: RealtimeProviderHost): RealtimeProviderCommandR
 
 export function realtimeCommandPortFor(host: RealtimeProviderHost): RealtimeProviderCommandPort { return commandRuntimeFor(host); }
 export function realtimeAssistantResponseActiveFor(host: RealtimeProviderHost): boolean { return commandRuntimeFor(host).hasActiveAssistantResponse(); }
+export function stageConsolidatedCallerTurnForNextResponse(host: RealtimeProviderHost, text: string): void { commandRuntimeFor(host).stageCallerTurn(text); }
+export function clearConsolidatedCallerTurnForNextResponse(host: RealtimeProviderHost): void { commandRuntimeFor(host).clearStagedCallerTurn(); }
 export function installRealtimeToolResultPolicy(host: RealtimeProviderHost, policy: RealtimeToolResultPolicy): void { commandRuntimeFor(host).setToolResultPolicy(policy); }
 export function installRealtimeSessionPolicyTransform(host: RealtimeProviderHost, transform: RealtimeSessionPolicyTransform): void { commandRuntimeFor(host).addSessionPolicyTransform(transform); }
 export function observeRealtimeAssistantResponseStarted(host: RealtimeProviderHost, responseId?: string): void { commandRuntimeFor(host).observeAssistantResponseStarted(responseId); }
