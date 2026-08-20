@@ -17,6 +17,27 @@ const POST_TOOL_POLICY_TOOLS = new Set([
   "restaurant_business_info",
   "restaurant_marketing_preferences",
 ]);
+const BACKEND_HUMAN_ASSISTANCE_TOOLS = new Set([
+  "restaurant_reservation_create",
+  "restaurant_reservation_modify",
+]);
+const BACKEND_HUMAN_ASSISTANCE_SPEECH =
+  "Esta gestión necesita que la revise una persona. ¿Quieres que te transfiera?";
+
+function backendHumanAssistanceRequirement(
+  tool: string,
+  output: unknown,
+): { backendReason: string } | null {
+  if (!BACKEND_HUMAN_ASSISTANCE_TOOLS.has(tool)) return null;
+  if (!output || typeof output !== "object" || Array.isArray(output)) return null;
+  const payload = output as Record<string, unknown>;
+  if (payload.ok !== true || payload.status !== "HUMAN_ASSISTANCE_REQUIRED") return null;
+  return {
+    backendReason: typeof payload.reason === "string" && payload.reason.trim()
+      ? payload.reason.trim()
+      : "UNSPECIFIED",
+  };
+}
 
 function directAgentInstructions(session: any): string {
   const assistantName = typeof session.assistantName === "string" && session.assistantName.trim()
@@ -48,6 +69,13 @@ export class CallSession extends BaseConstructor {
   private postToolResponseBoundaryInstalledV26 = false;
   private directToolByCallIdV26 = new Map<string, string>();
 
+  protected prepareHumanHandoffOfferFromBackendV26(_context: {
+    tool: string;
+    backendReason: string;
+  }): "OFFER_REQUIRED" | "CALLER_ALREADY_AUTHORIZED" {
+    return "OFFER_REQUIRED";
+  }
+
   private installPostToolResponseBoundaryV26(): void {
     if (this.postToolResponseBoundaryInstalledV26) return;
     this.postToolResponseBoundaryInstalledV26 = true;
@@ -58,6 +86,52 @@ export class CallSession extends BaseConstructor {
       if (request.callId && mappedTool) this.directToolByCallIdV26.delete(request.callId);
       const tool = request.toolName ?? mappedTool;
       if (!tool || !POST_TOOL_POLICY_TOOLS.has(tool)) return { action: "PASS" };
+
+      const humanAssistance = backendHumanAssistanceRequirement(tool, request.output);
+      if (humanAssistance) {
+        const disposition = this.prepareHumanHandoffOfferFromBackendV26({
+          tool,
+          backendReason: humanAssistance.backendReason,
+        });
+        if (disposition === "CALLER_ALREADY_AUTHORIZED") {
+          session.diagnostics?.checkpoint?.("DIRECT_POST_TOOL_HUMAN_ASSISTANCE_ALREADY_AUTHORIZED_V26", {
+            tool,
+            backend_reason: humanAssistance.backendReason,
+            response_boundary: "direct_agent_runtime_v26",
+            caller_authority_preserved: true,
+          });
+          return { action: "PASS" };
+        }
+
+        session.diagnostics?.checkpoint?.("DIRECT_POST_TOOL_HUMAN_ASSISTANCE_OFFER_GOVERNED_V26", {
+          tool,
+          backend_reason: humanAssistance.backendReason,
+          response_boundary: "direct_agent_runtime_v26",
+          tools_disabled: true,
+          transfer_started: false,
+          caller_confirmation_required: true,
+          timing_heuristic: false,
+        });
+        return {
+          action: "REPLACE_DEFAULT_RESPONSE",
+          speech: {
+            instructions:
+              `Pronuncia exactamente: ${JSON.stringify(BACKEND_HUMAN_ASSISTANCE_SPEECH)} ` +
+              "No llames herramientas en esta respuesta y no inicies ninguna transferencia todavía. " +
+              "Espera una respuesta explícita del cliente; la transferencia solo podrá ejecutarse en un turno posterior tras su aceptación.",
+            exactText: BACKEND_HUMAN_ASSISTANCE_SPEECH,
+            tools: "DISABLED",
+            purpose: "backend_human_assistance_offer_v26",
+            metadata: {
+              authority: "direct_agent_runtime_v26",
+              tool,
+              backend_reason: humanAssistance.backendReason,
+              transfer_started: false,
+              caller_confirmation_required: true,
+            },
+          },
+        };
+      }
 
       const decision = decideDirectPostToolResponse(tool, request.output);
       if (decision.action === "GOVERN") {
@@ -179,7 +253,7 @@ export class CallSession extends BaseConstructor {
         legacy_core_intent_classifier_installed: false,
         legacy_conversation_intent_allowed: false,
         tool_choice: "auto",
-        post_tool_response_policy: "structured_terminal_continuation+reservation_conflict_recovery+reservation_unavailable_recovery+missing_information_collection",
+        post_tool_response_policy: "structured_terminal_continuation+reservation_conflict_recovery+reservation_unavailable_recovery+missing_information_collection+human_assistance_offer",
         direct_post_tool_response_boundary: this.postToolResponseBoundaryInstalledV26,
         explicit_farewell_requires_second_confirmation: false,
       });
