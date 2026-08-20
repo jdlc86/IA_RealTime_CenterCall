@@ -44,11 +44,10 @@ function applyDaypart(hour: number, transcript: string): number {
   return hour;
 }
 
-function wordMinute(transcript: string): number | null {
+function wordMinute(transcript: string): number {
   if (/\bmenos cuarto\b/.test(transcript)) return 45;
   if (/\by cuarto\b/.test(transcript)) return 15;
   if (/\by media\b/.test(transcript)) return 30;
-  if (/\ben punto\b/.test(transcript)) return 0;
   return 0;
 }
 
@@ -61,7 +60,11 @@ export function callerTranscriptSupportsReservationTime(transcriptRaw: string | 
   if (target.hour === 12 && target.minute === 0 && /\bmediodia\b/.test(transcript)) return true;
   if (target.hour === 0 && target.minute === 0 && /\bmedianoche\b/.test(transcript)) return true;
 
-  const numeric24 = new RegExp(`(?:^|\\s)(?:a\\s+las\\s+|para\\s+las\\s+|sobre\\s+las\\s+|hacia\\s+las\\s+|a\\s+eso\\s+de\\s+las\\s+)?${target.hour}(?:[:.]${String(target.minute).padStart(2, "0")})(?:\\s|$)`);
+  // Fail closed: a bare clock-shaped token (for example "16:00") is not enough
+  // authority on its own. In a multi-slot conversation ASR can confuse quantities,
+  // dates and times. Require an explicit temporal cue so business state is never
+  // materialized from a naked number-like token.
+  const numeric24 = new RegExp(`(?:^|\\s)(?:a\\s+las\\s+|para\\s+las\\s+|sobre\\s+las\\s+|hacia\\s+las\\s+|a\\s+eso\\s+de\\s+las\\s+)${target.hour}(?:[:.]${String(target.minute).padStart(2, "0")})(?:\\s|$)`);
   if (numeric24.test(transcript)) return true;
 
   const numericHour = transcript.match(/\b(?:a las|para las|sobre las|hacia las|a eso de las)\s+(\d{1,2})(?:[:.](\d{2}))?\b/);
@@ -75,7 +78,7 @@ export function callerTranscriptSupportsReservationTime(transcriptRaw: string | 
   const wordHour = transcript.match(/\b(?:a las|para las|sobre las|hacia las|a eso de las)\s+(una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)\b/);
   if (wordHour) {
     let hour = HOUR_WORDS[wordHour[1]];
-    let minute = wordMinute(transcript);
+    const minute = wordMinute(transcript);
     if (minute === 45 && /\bmenos cuarto\b/.test(transcript)) {
       hour = hour === 1 ? 12 : hour - 1;
     }
