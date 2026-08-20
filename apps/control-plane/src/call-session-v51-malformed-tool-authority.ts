@@ -8,6 +8,7 @@ import {
   type MalformedToolCorrectionState,
 } from "./malformed-tool-correction-policy";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { authorizePublicRestaurantTool } from "./semantic-turn-coordinator.js";
 
 const BaseConstructor = CallSessionV50 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV50.prototype as any;
@@ -21,11 +22,11 @@ type RealtimeToolEvent = {
 };
 
 /**
- * V51 closes the liveness/authority hole between V29 semantic uniqueness and
- * lower argument validation.
+ * V51 closes the liveness/authority hole between semantic uniqueness and lower
+ * argument validation.
  *
  * Malformed arguments cannot execute a business action and therefore do not
- * consume V29's authoritative slot. They establish same-intervention tool
+ * consume the authoritative slot. They establish same-intervention tool
  * affinity: only the same tool may repair its serialization. A different tool
  * is rejected with one isolated, tool-disabled recovery. The affinity is reset
  * only after that exact recovery has finished playback and a fresh caller
@@ -36,31 +37,29 @@ export class CallSession extends BaseConstructor {
   private malformedRecoveryResponseIdV51: string | null = null;
 
   protected authorizePublicRestaurantToolV29(event: RealtimeToolEvent): boolean {
-    if (!event.name) return BasePrototype.authorizePublicRestaurantToolV29.call(this, event);
-
     const recoveryAlreadyRequired = this.malformedToolCorrectionV51.recoveryRequired;
     const decision = decideMalformedToolCorrection(
       this.malformedToolCorrectionV51,
-      event.name,
+      event.name ?? "",
       event.arguments,
     );
     this.malformedToolCorrectionV51 = decision.next;
 
     if (decision.action === "PASS_INVALID_WITHOUT_CONSUMING") {
       (this as any).diagnostics?.checkpoint?.("SEMANTIC_TOOL_INVALID_ARGUMENTS_NOT_CONSUMED_V51", {
-        tool: event.name,
+        tool: event.name ?? null,
         call_id: event.call_id ?? null,
         semantic_decision_consumed: false,
         business_action_executed: false,
         lower_argument_validation_preserved: true,
-        correction_affinity: event.name,
+        correction_affinity: event.name ?? null,
       });
       return true;
     }
 
     if (decision.action === "REJECT_CROSS_TOOL_CORRECTION") {
       (this as any).diagnostics?.checkpoint?.("SEMANTIC_TOOL_CROSS_TOOL_CORRECTION_BLOCKED_V51", {
-        attempted_tool: event.name,
+        attempted_tool: event.name ?? null,
         pending_malformed_tool: this.malformedToolCorrectionV51.pendingMalformedTool,
         same_caller_intervention: true,
         semantic_decision_consumed: false,
@@ -99,13 +98,15 @@ export class CallSession extends BaseConstructor {
     if (decision.action === "PASS_VALID_CORRECTION_TO_V29") {
       this.malformedRecoveryResponseIdV51 = null;
       (this as any).diagnostics?.checkpoint?.("SEMANTIC_TOOL_VALID_CORRECTION_RELEASED_TO_V29_V51", {
-        tool: event.name,
+        tool: event.name ?? null,
         call_id: event.call_id ?? null,
         same_tool_correction: true,
+        authority_owner: "semantic_turn_coordinator",
       });
     }
 
-    return BasePrototype.authorizePublicRestaurantToolV29.call(this, event);
+    const semantic = authorizePublicRestaurantTool(this, event);
+    return semantic.allowed && !semantic.ignored && !semantic.directedIgnoreRejected;
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
