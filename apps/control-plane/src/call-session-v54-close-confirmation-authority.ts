@@ -4,6 +4,10 @@ import {
   realtimeCommandPortFor,
 } from "./realtime-provider-runtime.js";
 import {
+  observeGovernedSpeechAfterLowerLayers,
+  observeGovernedSpeechBeforeLowerLayers,
+} from "./governed-speech-liveness-coordinator.js";
+import {
   isExplicitClosingConfirmation,
   isExplicitClosingRejection,
 } from "./core-closing-policy.js";
@@ -26,12 +30,19 @@ function usableTranscript(value: unknown): string {
  * other -> keep pending state and ask one isolated clarification.
  *
  * Assistant/audio/response lifecycle events never consume this authority.
+ *
+ * The former V55 inheritance layer has been removed. Its response-liveness
+ * boundary is now composed here without adding another CallSession subclass:
+ * response START is observed before lower layers and response COMPLETED only
+ * after lower layers have reconciled it.
  */
 export class CallSession extends BaseConstructor {
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const events = adaptRealtimeProviderEvents(data);
-    const callerTurn = events.find((event) => event.type === "CALLER_TRANSCRIPT_COMPLETED");
     const session = this as any;
+    observeGovernedSpeechBeforeLowerLayers(session, events);
+
+    const callerTurn = events.find((event) => event.type === "CALLER_TRANSCRIPT_COMPLETED");
 
     if (callerTurn?.type === "CALLER_TRANSCRIPT_COMPLETED" && session.closingConfirmationPendingV41 === true) {
       const transcript = usableTranscript(callerTurn.transcript);
@@ -85,5 +96,6 @@ export class CallSession extends BaseConstructor {
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
+    observeGovernedSpeechAfterLowerLayers(session, events);
   }
 }
