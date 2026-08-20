@@ -59,6 +59,7 @@ export class CallSession extends BaseConstructor {
   protected prepareHumanHandoffOfferFromBackendV26(context: {
     tool: string;
     backendReason: string;
+    armOffer?: boolean;
   }): "OFFER_REQUIRED" | "CALLER_ALREADY_AUTHORIZED" {
     const existingAuthority = authorizeHumanHandoff(
       initialHumanHandoffAuthorizationState(),
@@ -71,6 +72,17 @@ export class CallSession extends BaseConstructor {
         authorization_source: existingAuthority.source,
       });
       return "CALLER_ALREADY_AUTHORIZED";
+    }
+
+    if (context.armOffer === false) {
+      (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_BACKEND_AUTHORITY_INSPECTED_V43", {
+        source_tool: context.tool,
+        backend_reason: context.backendReason,
+        caller_already_authorized: false,
+        offer_armed: false,
+        transfer_started: false,
+      });
+      return "OFFER_REQUIRED";
     }
 
     this.handoffAuthorizationV43 = { offerPending: true };
