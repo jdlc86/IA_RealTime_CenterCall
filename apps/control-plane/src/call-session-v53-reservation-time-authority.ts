@@ -33,10 +33,14 @@ export class CallSession extends BaseConstructor {
 
   private observeCallerTurnV53(event: RealtimeProviderEvent): void {
     if (event.type !== "CALLER_TRANSCRIPT_COMPLETED" || !event.transcript.trim()) return;
-    this.latestCallerTranscriptV53 = event.transcript.trim();
+    const consolidated = typeof (this as any).consolidatedCallerTurnV54 === "string"
+      ? (this as any).consolidatedCallerTurnV54.trim()
+      : "";
+    this.latestCallerTranscriptV53 = consolidated || event.transcript.trim();
     (this as any).diagnostics?.checkpoint?.("RESERVATION_TIME_CALLER_EVIDENCE_OBSERVED_V53", {
       item_id: event.itemId ?? null,
       transcript_present: true,
+      consolidated_turn_used: Boolean(consolidated),
       pending_slot: this.awaitingReservationTimeAnswerV53 ? "starts_at_time" : null,
       semantic_interpretation: false,
     });
