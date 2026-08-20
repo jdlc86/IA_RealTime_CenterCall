@@ -1,28 +1,19 @@
+import { humanHandoffTransportRuntimeFor } from "./human-handoff-transport-runtime.js";
+
 export type HumanHandoffTransportPort = Readonly<{
   cancelTransferWatchdog(): void;
   markTransferred(targetCallControlId: string | null): Promise<void>;
 }>;
 
-type LegacyHumanHandoffTransportSession = {
-  clearTransferWatchdogV37?: () => void;
-  markHandoffTransferredV37?: (targetCallControlId: string | null) => Promise<void> | void;
-};
-
-/**
- * Compatibility port around the current human-handoff transport owner.
- * CallSession consolidation layers must depend on this version-neutral contract,
- * never on a historical CallSession generation directly. The legacy adaptation
- * is intentionally isolated here and can disappear when handoff transport moves
- * to a composed runtime.
- */
+/** Version-neutral facade over the composed human-handoff transport runtime. */
 export function humanHandoffTransportPortFor(session: object): HumanHandoffTransportPort {
-  const transport = session as LegacyHumanHandoffTransportSession;
+  const runtime = humanHandoffTransportRuntimeFor(session);
   return Object.freeze({
     cancelTransferWatchdog() {
-      transport.clearTransferWatchdogV37?.();
+      runtime.cancelTransferWatchdog();
     },
     async markTransferred(targetCallControlId: string | null) {
-      await transport.markHandoffTransferredV37?.(targetCallControlId);
+      await runtime.markTransferred(session, targetCallControlId);
     },
   });
 }
