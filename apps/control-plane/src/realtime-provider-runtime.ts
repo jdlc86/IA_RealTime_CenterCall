@@ -34,7 +34,12 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
   private sessionPolicyTransforms: RealtimeSessionPolicyTransform[] = [];
   private pendingDefaultResponseReplacement: RealtimeSpeechRequest | null = null;
   private deferredDefaultResponseReplacement: RealtimeSpeechRequest | null = null;
-  private assistantResponseActive = false;
+  /**
+   * undefined => no active assistant response observed
+   * null      => active response observed but provider supplied no response id
+   * string    => active response id; only the matching completion may release deferred speech
+   */
+  private activeAssistantResponseId: string | null | undefined = undefined;
   readonly capabilities: ProviderCapabilities;
 
   constructor(
@@ -67,7 +72,7 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
     const replacement = this.pendingDefaultResponseReplacement;
     this.pendingDefaultResponseReplacement = null;
     if (replacement) {
-      if (this.assistantResponseActive) {
+      if (this.activeAssistantResponseId !== undefined) {
         this.deferredDefaultResponseReplacement = replacement;
         return;
       }
@@ -77,12 +82,25 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
     this.delegate.createDefaultResponse();
   }
 
-  observeAssistantResponseStarted(): void {
-    this.assistantResponseActive = true;
+  observeAssistantResponseStarted(responseId?: string): void {
+    this.activeAssistantResponseId = responseId ?? null;
   }
 
-  observeAssistantResponseCompleted(): void {
-    this.assistantResponseActive = false;
+  observeAssistantResponseCompleted(responseId?: string): void {
+    const activeResponseId = this.activeAssistantResponseId;
+    if (activeResponseId === undefined) return;
+
+    if (activeResponseId !== null) {
+      // Once the provider supplied an id for the active response, completion
+      // authority is response-scoped. Missing or stale ids fail closed.
+      if (!responseId || responseId !== activeResponseId) return;
+    } else if (responseId) {
+      // We observed an active response without an id and cannot prove that a
+      // later id-bearing completion belongs to it. Do not release speculatively.
+      return;
+    }
+
+    this.activeAssistantResponseId = undefined;
     const deferred = this.deferredDefaultResponseReplacement;
     this.deferredDefaultResponseReplacement = null;
     if (deferred) this.delegate.speak(deferred);
@@ -138,8 +156,8 @@ function commandRuntimeFor(host: RealtimeProviderHost): RealtimeProviderCommandR
 export function realtimeCommandPortFor(host: RealtimeProviderHost): RealtimeProviderCommandPort { return commandRuntimeFor(host); }
 export function installRealtimeToolResultPolicy(host: RealtimeProviderHost, policy: RealtimeToolResultPolicy): void { commandRuntimeFor(host).setToolResultPolicy(policy); }
 export function installRealtimeSessionPolicyTransform(host: RealtimeProviderHost, transform: RealtimeSessionPolicyTransform): void { commandRuntimeFor(host).addSessionPolicyTransform(transform); }
-export function observeRealtimeAssistantResponseStarted(host: RealtimeProviderHost): void { commandRuntimeFor(host).observeAssistantResponseStarted(); }
-export function observeRealtimeAssistantResponseCompleted(host: RealtimeProviderHost): void { commandRuntimeFor(host).observeAssistantResponseCompleted(); }
+export function observeRealtimeAssistantResponseStarted(host: RealtimeProviderHost, responseId?: string): void { commandRuntimeFor(host).observeAssistantResponseStarted(responseId); }
+export function observeRealtimeAssistantResponseCompleted(host: RealtimeProviderHost, responseId?: string): void { commandRuntimeFor(host).observeAssistantResponseCompleted(responseId); }
 
 /**
  * Gate A/B keep wire-event adaptation on OpenAI because it remains the only
