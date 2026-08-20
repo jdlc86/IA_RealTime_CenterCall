@@ -7,17 +7,23 @@ import { dirname, join } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const source = (name) => readFile(join(here, name), "utf8");
 
-test("sideband terminal boundary detaches v36 turn concurrency without adding timers", async () => {
+test("sideband terminal boundary detaches turn concurrency through neutral ports without adding timers", async () => {
   const v46 = await source("call-session-v46-sideband-lifecycle.ts");
-  const v36 = await source("call-session-v36.ts");
+  const coordinator = await source("turn-concurrency-coordinator.ts");
 
-  assert.match(v46, /observeRealtimeTransportClosedV18\?\.\(lifecycleEvent\.reason\)/);
-  assert.match(v46, /detachTurnConcurrencyForTerminalV36\?\.\(`transport_closed:\$\{lifecycleEvent\.reason\}`\)/);
+  assert.match(v46, /conversationLifecyclePortFor\(this\)\.transportClosed\(lifecycleEvent\.reason\)/);
+  assert.match(v46, /turnConcurrencyCoordinatorFor\(this\)\.detachForTerminal\(session, `transport_closed:\$\{lifecycleEvent\.reason\}`\)/);
+  assert.match(v46, /lifecycle_authority: "conversation_lifecycle_port"/);
   assert.match(v46, /turn_concurrency_detached: true/);
+  assert.match(v46, /direct_version_state_mutation: false/);
+  assert.doesNotMatch(v46, /observeRealtimeTransportClosedV18/);
+  assert.doesNotMatch(v46, /detachTurnConcurrencyForTerminalV36/);
   assert.doesNotMatch(v46, /setTimeout\s*\(/);
 
-  const detachBody = v36.match(/protected detachTurnConcurrencyForTerminalV36\(reason: string\): void \{([\s\S]*?)\n  \}/)?.[1] ?? "";
-  assert.match(detachBody, /turnConcurrencyV36\.release\(\)/);
-  assert.match(detachBody, /clearTurnConcurrencyWatchdogV36\(\)/);
+  const detachBody = coordinator.match(/detachForTerminal\(session: any, reason: string\): void \{([\s\S]*?)\n  \}/)?.[1] ?? "";
+  assert.match(detachBody, /this\.lifecycle\.release\(\)/);
+  assert.match(detachBody, /this\.clearWatchdog\(\)/);
+  assert.match(detachBody, /this\.normalPlaybackActive = false/);
+  assert.match(detachBody, /owner: "turn_concurrency_coordinator"/);
   assert.doesNotMatch(detachBody, /restoreInputDetection/);
 });
