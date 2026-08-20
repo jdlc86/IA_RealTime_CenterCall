@@ -24,6 +24,6 @@ test("v29 preserves one authoritative business tool per caller turn through the 
   assert.match(coordinator, /const selection = runtime\.selectTool\(event\.name\)/);
   assert.match(runtime, /const result = selectSemanticTool\(this\.decision, tool\)/);
   assert.match(coordinator, /DUPLICATE_SEMANTIC_TOOL_BLOCKED_V29/);
-  assert.match(source, /event\.name === INPUT_IGNORED/);
+  assert.match(coordinator, /event\.name === INPUT_IGNORED/);
   assert.doesNotMatch(source, /this\.semanticTurnDecisionV29/);
 });
