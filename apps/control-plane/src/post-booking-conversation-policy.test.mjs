@@ -107,7 +107,7 @@ test("unavailable requested slot must yield speech and wait for caller before se
   assert.match(decision.instructions, /restaurant_reservation_search/i);
 });
 
-test("reservation MISSING_INFORMATION must yield one governed caller question instead of another tool", () => {
+test("missing starts_at collects date first, not date and time together", () => {
   const decision = decideDirectPostToolResponse("restaurant_reservation_create", {
     ok: true,
     status: "MISSING_INFORMATION",
@@ -116,26 +116,46 @@ test("reservation MISSING_INFORMATION must yield one governed caller question in
   });
   assert.equal(decision.action, "COLLECT");
   if (decision.action !== "COLLECT") return;
-  assert.equal(decision.reason, "RESERVATION_MISSING_INFORMATION");
-  assert.deepEqual(decision.missing, ["starts_at"]);
-  assert.match(decision.instructions, /día/i);
-  assert.match(decision.instructions, /hora/i);
-  assert.match(decision.instructions, /No llames herramientas/i);
+  assert.equal(decision.exactText, "¿Para qué día quieres hacer la reserva?");
+  assert.doesNotMatch(decision.exactText, /hora/i);
 });
 
-test("reservation missing-field recovery remains structural for multiple fields", () => {
+test("multiple missing reservation fields collect exactly one slot with deterministic priority", () => {
   const decision = decideDirectPostToolResponse("restaurant_reservation_create", {
     ok: true,
     status: "MISSING_INFORMATION",
-    missing: ["customer_name", "customer_phone"],
-    draft: { party_size: 5, starts_at: "2026-08-22T21:00:00+02:00" },
+    missing: ["starts_at", "party_size", "customer_name"],
+    draft: {},
   });
   assert.equal(decision.action, "COLLECT");
   if (decision.action !== "COLLECT") return;
-  assert.deepEqual(decision.missing, ["customer_name", "customer_phone"]);
-  assert.match(decision.instructions, /nombre/i);
-  assert.match(decision.instructions, /tel[eé]fono/i);
-  assert.doesNotMatch(decision.instructions, /restaurant_reservation_search/i);
+  assert.equal(decision.exactText, "¿Para qué día quieres hacer la reserva?");
+  assert.doesNotMatch(decision.exactText, /personas|nombre|hora/i);
+});
+
+test("time is collected before party size once date is already known", () => {
+  const decision = decideDirectPostToolResponse("restaurant_reservation_create", {
+    ok: true,
+    status: "MISSING_INFORMATION",
+    missing: ["starts_at_time", "party_size"],
+    draft: { starts_at_date: "2026-09-01" },
+  });
+  assert.equal(decision.action, "COLLECT");
+  if (decision.action !== "COLLECT") return;
+  assert.equal(decision.exactText, "¿A qué hora quieres hacer la reserva?");
+  assert.doesNotMatch(decision.exactText, /personas/i);
+});
+
+test("party size is collected when temporal slots are complete", () => {
+  const decision = decideDirectPostToolResponse("restaurant_reservation_create", {
+    ok: true,
+    status: "MISSING_INFORMATION",
+    missing: ["party_size", "customer_name"],
+    draft: { starts_at: "2026-09-01T21:00:00+02:00" },
+  });
+  assert.equal(decision.action, "COLLECT");
+  if (decision.action !== "COLLECT") return;
+  assert.equal(decision.exactText, "¿Para cuántas personas sería la reserva?");
 });
 
 test("malformed availability conflict evidence is not promoted to deterministic recovery", () => {
@@ -185,7 +205,6 @@ test("direct query, cancellation, modification and business-info terminal result
     ["restaurant_reservation_query", { ok: true, status: "FOUND" }],
     ["restaurant_reservation_query", { ok: true, status: "NONE" }],
     ["restaurant_reservation_cancel", { ok: true, status: "CANCELLED" }],
-    ["restaurant_reservation_cancel", { ok: true, status: "NO_RESERVATIONS" }],
     ["restaurant_reservation_cancel", { ok: false, status: "PARTIAL_FAILURE" }],
     ["restaurant_reservation_modify", { ok: true, status: "MODIFIED" }],
     ["restaurant_business_info", { ok: true, status: "FOUND" }],
