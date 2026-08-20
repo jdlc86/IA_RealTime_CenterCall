@@ -1,9 +1,6 @@
 import { CallSession as CallSessionV49 } from "./call-session-v49-provider-selection";
 import { businessWindowsForDate, normalizeReservationLocalDateTime } from "./reservation-business-hours.js";
-import {
-  decideReservationDateScope,
-  type ReservationDateScopePendingChange,
-} from "./reservation-date-scope-policy.js";
+import { reservationDateScopeRuntimeFor } from "./reservation-date-scope-runtime.js";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import { authorizePublicRestaurantTool } from "./semantic-turn-coordinator.js";
@@ -16,7 +13,6 @@ const SEARCH_RESERVATION = "restaurant_reservation_search";
 const RESTAURANT_TIMEZONE = "Europe/Madrid";
 
 type GuardedReservationTool = typeof CREATE_RESERVATION | typeof SEARCH_RESERVATION;
-type PendingDateChangeV50 = ReservationDateScopePendingChange;
 type SemanticToolEvent = Extract<RealtimeProviderEvent, { type: "SEMANTIC_TOOL_SELECTED" }>;
 
 function parseObject(raw: string | undefined): Record<string, unknown> {
@@ -44,25 +40,22 @@ function reservationLocalDate(raw: string): string {
   return businessWindowsForDate(normalized, [], RESTAURANT_TIMEZONE).localDate;
 }
 
+/**
+ * v50 enforces concrete reservation-date continuity but owns no cross-turn state.
+ * Active date, pending change and caller-turn epoch live in the neutral
+ * ReservationDateScopeRuntime; this layer adapts provider events and tool calls.
+ */
 export class CallSession extends BaseConstructor {
-  private activeReservationLocalDateV50: string | null = null;
-  private pendingReservationDateChangeV50: PendingDateChangeV50 | null = null;
-  private callerTurnEpochV50 = 0;
-  private lastCallerTranscriptItemIdV50: string | null = null;
-
   private observeCallerTurnV50(event: RealtimeProviderEvent): void {
-    if (event.type !== "CALLER_TRANSCRIPT_COMPLETED" || !event.transcript.trim()) return;
-    if (event.itemId) {
-      if (event.itemId === this.lastCallerTranscriptItemIdV50) return;
-      this.lastCallerTranscriptItemIdV50 = event.itemId;
-    } else {
-      this.lastCallerTranscriptItemIdV50 = null;
-    }
-    this.callerTurnEpochV50 += 1;
+    if (event.type !== "CALLER_TRANSCRIPT_COMPLETED") return;
+    const runtime = reservationDateScopeRuntimeFor(this);
+    const observation = runtime.observeCallerTranscript(event.transcript, event.itemId);
+    if (!observation.observed) return;
     (this as any).diagnostics?.checkpoint?.("RESERVATION_DATE_CALLER_TURN_V50", {
-      caller_turn_epoch: this.callerTurnEpochV50,
+      caller_turn_epoch: observation.callerTurnEpoch,
       item_id: event.itemId ?? null,
       semantic_interpretation: false,
+      state_owner: "reservation_date_scope_runtime",
     });
   }
 
@@ -128,41 +121,38 @@ export class CallSession extends BaseConstructor {
       return;
     }
 
-    const decision = decideReservationDateScope({
-      activeLocalDate: this.activeReservationLocalDateV50,
-      requestedLocalDate,
-      pendingChange: this.pendingReservationDateChangeV50,
-      currentCallerTurnEpoch: this.callerTurnEpochV50,
-    });
+    const runtime = reservationDateScopeRuntimeFor(this);
+    const decision = runtime.decide(requestedLocalDate);
+    const snapshot = runtime.snapshot();
 
     if (decision.action === "REQUIRE_CONFIRMATION") {
       if (!this.authorizeBlockedDateToolV50(toolEvent)) return;
-      this.pendingReservationDateChangeV50 = {
-        fromLocalDate: decision.fromLocalDate,
-        toLocalDate: decision.toLocalDate,
-        requestedAtCallerTurnEpoch: this.callerTurnEpochV50,
-      };
+      runtime.stagePendingChange(decision.fromLocalDate, decision.toLocalDate);
       (this as any).diagnostics?.checkpoint?.("RESERVATION_DATE_CHANGE_BLOCKED_V50", {
         tool: toolEvent.name,
         from_local_date: decision.fromLocalDate,
         to_local_date: decision.toLocalDate,
-        caller_turn_epoch: this.callerTurnEpochV50,
+        caller_turn_epoch: snapshot.callerTurnEpoch,
         semantic_decision_consumed: true,
         business_action_executed: false,
+        state_owner: "reservation_date_scope_runtime",
       });
       this.sendDateChangeRequiredV50(toolEvent, decision.fromLocalDate, decision.toLocalDate);
       return;
     }
 
+    runtime.accept(decision);
+    const accepted = runtime.snapshot();
     if (decision.action === "ALLOW_AND_SET" || decision.action === "ALLOW_CONFIRMED_CHANGE") {
-      this.activeReservationLocalDateV50 = decision.localDate;
-      this.pendingReservationDateChangeV50 = null;
       (this as any).diagnostics?.checkpoint?.(
         decision.action === "ALLOW_AND_SET" ? "RESERVATION_DATE_SCOPE_ESTABLISHED_V50" : "RESERVATION_DATE_CHANGE_CONFIRMED_V50",
-        { tool: toolEvent.name, local_date: decision.localDate, caller_turn_epoch: this.callerTurnEpochV50 },
+        {
+          tool: toolEvent.name,
+          local_date: decision.localDate,
+          caller_turn_epoch: accepted.callerTurnEpoch,
+          state_owner: "reservation_date_scope_runtime",
+        },
       );
-    } else {
-      this.pendingReservationDateChangeV50 = null;
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
