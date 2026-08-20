@@ -6,6 +6,7 @@ import {
   observeHumanHandoffCallerTurn,
   type HumanHandoffAuthorizationState,
 } from "./human-handoff-authorization-policy.js";
+import { realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 
 const BaseConstructor = CallSessionV42 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV42.prototype as any;
@@ -71,12 +72,31 @@ export class CallSession extends BaseConstructor {
         }),
       },
     });
-    session.send?.({ type: "response.create" });
+    realtimeCommandPortFor(session).speak({
+      instructions: source === "CALLER_REJECTED"
+        ? "Confirma brevemente que no se realizará la transferencia y devuelve el turno al usuario. No llames herramientas en esta respuesta."
+        : "Explica brevemente que esta gestión puede requerir una persona y pregunta una sola vez si desea que le transfieras. Espera una respuesta explícita del usuario. No llames herramientas en esta respuesta.",
+      exactText: source === "CALLER_REJECTED"
+        ? "De acuerdo, no te transfiero."
+        : "Esta gestión puede requerir una persona. ¿Quieres que te transfiera?",
+      tools: "DISABLED",
+      isolated: true,
+      purpose: source === "CALLER_REJECTED"
+        ? "human_handoff_declined_v43"
+        : "human_handoff_confirmation_v43",
+      metadata: {
+        authority: "human_handoff_authorization_v43",
+        authorization_source: source,
+        single_confirmation_prompt: source === "OFFER_REQUIRED",
+        tools_disabled: true,
+      },
+    });
     session.diagnostics?.checkpoint?.("HUMAN_HANDOFF_BLOCKED_WITHOUT_CALLER_AUTHORITY_V43", {
       authorization_source: source,
       transfer_started: false,
       caller_transcript_present: Boolean(this.latestCallerTranscriptV43),
       offer_pending: this.handoffAuthorizationV43.offerPending,
+      confirmation_response_tools_disabled: true,
     });
   }
 
