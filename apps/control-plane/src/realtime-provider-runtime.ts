@@ -33,6 +33,8 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
   private toolResultPolicy: RealtimeToolResultPolicy | null = null;
   private sessionPolicyTransforms: RealtimeSessionPolicyTransform[] = [];
   private pendingDefaultResponseReplacement: RealtimeSpeechRequest | null = null;
+  private deferredDefaultResponseReplacement: RealtimeSpeechRequest | null = null;
+  private assistantResponseActive = false;
   readonly capabilities: ProviderCapabilities;
 
   constructor(
@@ -64,8 +66,26 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
   createDefaultResponse(): void {
     const replacement = this.pendingDefaultResponseReplacement;
     this.pendingDefaultResponseReplacement = null;
-    if (replacement) { this.delegate.speak(replacement); return; }
+    if (replacement) {
+      if (this.assistantResponseActive) {
+        this.deferredDefaultResponseReplacement = replacement;
+        return;
+      }
+      this.delegate.speak(replacement);
+      return;
+    }
     this.delegate.createDefaultResponse();
+  }
+
+  observeAssistantResponseStarted(): void {
+    this.assistantResponseActive = true;
+  }
+
+  observeAssistantResponseCompleted(): void {
+    this.assistantResponseActive = false;
+    const deferred = this.deferredDefaultResponseReplacement;
+    this.deferredDefaultResponseReplacement = null;
+    if (deferred) this.delegate.speak(deferred);
   }
 
   cancelResponse(responseId: string): void { this.delegate.cancelResponse(responseId); }
@@ -89,8 +109,6 @@ function createProviderCommandPort(provider: RealtimeProviderName, host: Realtim
 
 export function bindRealtimeProvider(host: RealtimeProviderHost, provider: RealtimeProviderName): void {
   if (!isRegisteredRealtimeProvider(provider)) throw new Error(`Realtime provider is not registered: ${String(provider)}`);
-  // Capability registration is a separate invariant from selector registration.
-  // A provider must satisfy both before a live runtime can be bound.
   realtimeProviderCapabilities(provider);
   const runtime = RUNTIME_BY_HOST.get(host);
   if (runtime && runtime.provider !== provider) {
@@ -120,6 +138,8 @@ function commandRuntimeFor(host: RealtimeProviderHost): RealtimeProviderCommandR
 export function realtimeCommandPortFor(host: RealtimeProviderHost): RealtimeProviderCommandPort { return commandRuntimeFor(host); }
 export function installRealtimeToolResultPolicy(host: RealtimeProviderHost, policy: RealtimeToolResultPolicy): void { commandRuntimeFor(host).setToolResultPolicy(policy); }
 export function installRealtimeSessionPolicyTransform(host: RealtimeProviderHost, transform: RealtimeSessionPolicyTransform): void { commandRuntimeFor(host).addSessionPolicyTransform(transform); }
+export function observeRealtimeAssistantResponseStarted(host: RealtimeProviderHost): void { commandRuntimeFor(host).observeAssistantResponseStarted(); }
+export function observeRealtimeAssistantResponseCompleted(host: RealtimeProviderHost): void { commandRuntimeFor(host).observeAssistantResponseCompleted(); }
 
 /**
  * Gate A/B keep wire-event adaptation on OpenAI because it remains the only
