@@ -1,7 +1,7 @@
 import { CallSession as CallSessionV28 } from "./call-session-v28";
 import { CallSession as CallSessionV26 } from "./call-session-v26";
 import { isPublicRestaurantTool } from "./public-tool-authorization";
-import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
+import { realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import { shouldBlockIgnoredInputForDirectedTurn } from "./directed-turn-authority";
 import {
   beginSemanticCallerTurn,
@@ -93,6 +93,8 @@ export class CallSession extends BaseConstructor {
       (this as any).diagnostics?.checkpoint?.("SEMANTIC_TURN_GATE_V29_ENABLED", {
         vad_can_arm_tool_gate: false,
         transcript_required_to_arm: true,
+        vad_can_create_normal_response: false,
+        transcript_owns_normal_response_creation: true,
         lucia_speech_can_validate_user_turn: false,
         ignored_input_tool: INPUT_IGNORED,
         debug_turn_trace: true,
@@ -256,6 +258,10 @@ export class CallSession extends BaseConstructor {
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const event = parseEvent(data);
+    let requestTranscriptAuthorizedResponse = false;
+    let transcriptResponseItemId: string | null = null;
+    let provisionalIgnoreSupersededForResponse = false;
+
     if (event?.type === "input_audio_buffer.speech_started") {
       const itemId = typeof event.item_id === "string" ? event.item_id : null;
       this.beginSemanticTurnFromAcousticEvidenceV29(itemId, "v29_inherited_raw_vad");
@@ -296,14 +302,10 @@ export class CallSession extends BaseConstructor {
         if (itemId && higherLayerOwns) this.armCallerDirectedSemanticAuthorityV29(itemId, "higher_layer_confirmed_turn_ownership");
         if (shouldArmSemanticGateAfterTranscript(this.semanticTurnDecisionV29)) {
           this.armSemanticGateV29(transcript, itemId);
-          if (provisionalIgnoreSuperseded) {
-            realtimeCommandPortFor(this as any).createDefaultResponse();
-            (this as any).diagnostics?.checkpoint?.("PROVISIONAL_BACKGROUND_IGNORE_RETRY_REQUESTED_V29", {
-              item_id: itemId,
-              response_requested: true,
-              timer_used: false,
-              semantic_gate_required: true,
-            });
+          if (!higherLayerOwns) {
+            requestTranscriptAuthorizedResponse = true;
+            transcriptResponseItemId = itemId;
+            provisionalIgnoreSupersededForResponse = provisionalIgnoreSuperseded;
           }
         } else {
           (this as any).diagnostics?.checkpoint?.("SEMANTIC_GATE_LATE_TRANSCRIPT_BYPASSED_V29", {
@@ -320,5 +322,25 @@ export class CallSession extends BaseConstructor {
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
+
+    if (requestTranscriptAuthorizedResponse) {
+      realtimeCommandPortFor(this as any).createDefaultResponse();
+      (this as any).diagnostics?.checkpoint?.("TRANSCRIPT_AUTHORIZED_RESPONSE_REQUESTED_V29", {
+        item_id: transcriptResponseItemId,
+        authority: "usable_completed_transcript",
+        response_requested: true,
+        semantic_gate_required: true,
+        higher_layer_response_owner: false,
+        timer_used: false,
+      });
+      if (provisionalIgnoreSupersededForResponse) {
+        (this as any).diagnostics?.checkpoint?.("PROVISIONAL_BACKGROUND_IGNORE_RETRY_REQUESTED_V29", {
+          item_id: transcriptResponseItemId,
+          response_requested: true,
+          timer_used: false,
+          semantic_gate_required: true,
+        });
+      }
+    }
   }
 }
