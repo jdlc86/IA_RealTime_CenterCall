@@ -22,6 +22,7 @@ type OpenAIRealtimeEvent = {
   response_id?: string;
   response?: { id?: string; status?: string; metadata?: Record<string, unknown> | null };
   session?: { audio?: { input?: { turn_detection?: OpenAITurnDetection } } };
+  error?: { event_id?: string; code?: string; message?: string };
 };
 
 function readRealtimeText(data: unknown): string | null {
@@ -147,6 +148,13 @@ export function adaptOpenAIRealtimeEvent(data: unknown): RealtimeProviderEvent[]
       if (!event.name) return [];
       const adapted: RealtimeProviderEvent = { type: "SEMANTIC_TOOL_SELECTED", name: event.name, arguments: event.arguments };
       if (event.call_id) adapted.callId = event.call_id;
+      return [adapted];
+    }
+    case "error": {
+      const adapted: Extract<RealtimeProviderEvent, { type: "PROVIDER_COMMAND_FAILED" }> = { type: "PROVIDER_COMMAND_FAILED" };
+      if (event.error?.event_id) adapted.requestId = event.error.event_id;
+      if (event.error?.code) adapted.code = event.error.code;
+      if (event.error?.message) adapted.message = event.error.message;
       return [adapted];
     }
     default:

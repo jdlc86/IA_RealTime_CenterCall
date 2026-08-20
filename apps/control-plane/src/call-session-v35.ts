@@ -4,6 +4,9 @@ import {
   type ProtectedSpeechKind,
   type ProtectedSpeechRelease,
 } from "./protected-speech-lifecycle";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
+import { inputDetectionConfigRuntimeFor } from "./input-detection-config-runtime.js";
 
 const BaseConstructor = CallSessionV34 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV34.prototype as any;
@@ -15,69 +18,22 @@ const PROTECTED_SPEECH_WATCHDOG_MS = 30_000;
 const PROTECTED_METADATA_KEY = "protected_speech_v35";
 const RECOVERY_MESSAGE = "Estoy teniendo dificultad para distinguir si me estás hablando a mí debido al ruido o a otras voces de fondo. Continuamos, ¿en qué puedo ayudarte?";
 
-type RealtimeEvent = {
-  type?: string;
-  event_id?: string;
-  name?: string;
-  arguments?: string;
-  response_id?: string;
-  response?: {
-    id?: string;
-    status?: string;
-    metadata?: Record<string, unknown> | null;
-  };
-  error?: {
-    event_id?: string;
-    type?: string;
-    code?: string;
-    message?: string;
-  };
-};
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
-
-function parseEvent(data: unknown): RealtimeEvent | null {
-  const text = readRealtimeText(data);
-  if (!text) return null;
-  try { return JSON.parse(text) as RealtimeEvent; } catch { return null; }
-}
-
-function ignoredReason(event: RealtimeEvent): string {
+function ignoredReason(rawArguments: string | undefined): string {
   try {
-    const args = event.arguments?.trim() ? JSON.parse(event.arguments) as Record<string, unknown> : {};
+    const args = rawArguments?.trim() ? JSON.parse(rawArguments) as Record<string, unknown> : {};
     return typeof args.reason === "string" ? args.reason : "UNCERTAIN";
   } catch {
     return "UNCERTAIN";
   }
 }
 
-function realtimeResponseId(event: RealtimeEvent): string | null {
-  return event.response_id ?? event.response?.id ?? null;
-}
-
-function protectedKindFromMetadata(event: RealtimeEvent): ProtectedSpeechKind | null {
-  const value = event.response?.metadata?.[PROTECTED_METADATA_KEY];
-  return value === "GREETING" || value === "RECOVERY" ? value : null;
-}
-
 /**
  * v35 makes only explicitly critical speech atomic.
  *
- * Protected speech lifecycle:
- *   interrupt_response=false
- *   -> response.create tagged with protected metadata
- *   -> correlate response.created/response_id
- *   -> keep protection while SIP output is buffered
- *   -> output_audio_buffer.stopped/cleared (or objective failure path)
- *   -> interrupt_response=true
- *
- * Normal Lucia responses remain interruptible. VAD still observes caller audio;
- * this layer does not interpret semantic intent and does not replace v29 tools.
+ * Protected speech is expressed only through provider-neutral command and event
+ * boundaries. Normal Lucia responses remain interruptible; recovery and greeting
+ * speech temporarily use non-interrupting listening until playback drains or an
+ * objective failure path releases the protected lifecycle.
  */
 export class CallSession extends BaseConstructor {
   private protectedSpeechLifecycleV35 = new ProtectedSpeechLifecycle();
@@ -91,20 +47,23 @@ export class CallSession extends BaseConstructor {
       (this as any).diagnostics?.checkpoint?.("PROTECTED_SPEECH_POLICY_V35_ENABLED", {
         greeting_uninterruptible: true,
         recovery_uninterruptible: true,
-        completion_event: "output_audio_buffer.stopped",
+        completion_event: "assistant_audio_stopped",
         response_scoped: true,
         failure_release: true,
         recovery_threshold: RECOVERY_THRESHOLD,
         recovery_window_ms: RECOVERY_WINDOW_MS,
+        provider_boundary: "realtime_provider_runtime",
       });
     }
     return response;
   }
 
+  private commandsV35() { return realtimeCommandPortFor(this as any); }
+
   /**
    * v2 calls this through `this`, so the v35 instance can make the greeting
-   * explicitly protected instead of guessing that the first response.create is
-   * necessarily the greeting.
+   * explicitly protected instead of guessing that the first assistant response
+   * is necessarily the greeting.
    */
   private sendInitialGreetingIfNeeded(): void {
     const session = this as any;
@@ -122,23 +81,14 @@ export class CallSession extends BaseConstructor {
   }
 
   private setInterruptResponseV35(enabled: boolean, reason: string): void {
-    (this as any).send?.({
-      type: "session.update",
-      session: {
-        type: "realtime",
-        audio: {
-          input: {
-            turn_detection: {
-              type: "server_vad",
-              interrupt_response: enabled,
-            },
-          },
-        },
-      },
-    });
+    const commands = this.commandsV35();
+    const settings = inputDetectionConfigRuntimeFor(this).get();
+    if (enabled) commands.restoreInputDetection(settings);
+    else commands.beginNonInterruptingListening(settings);
     (this as any).diagnostics?.checkpoint?.("INTERRUPT_RESPONSE_CHANGED_V35", {
       interrupt_response: enabled,
       reason,
+      provider_command_port: true,
     });
   }
 
@@ -151,20 +101,18 @@ export class CallSession extends BaseConstructor {
 
     try {
       this.setInterruptResponseV35(false, `${kind.toLowerCase()}_start`);
-      (this as any).send?.({
-        event_id: clientEventId,
-        type: "response.create",
-        response: {
-          tool_choice: "none",
-          instructions,
-          metadata: { [PROTECTED_METADATA_KEY]: kind },
-        },
+      this.commandsV35().speak({
+        requestId: clientEventId,
+        tools: "DISABLED",
+        instructions,
+        metadata: { [PROTECTED_METADATA_KEY]: kind },
       });
       this.armProtectedSpeechWatchdogV35();
       (this as any).diagnostics?.checkpoint?.("PROTECTED_SPEECH_STARTED_V35", {
         kind,
         interrupt_response: false,
         response_scoped: true,
+        provider_command_port: true,
       });
       return true;
     } catch (error) {
@@ -205,6 +153,7 @@ export class CallSession extends BaseConstructor {
       kind: release.kind ?? null,
       reason: release.reason ?? null,
       interrupt_response: true,
+      provider_command_port: true,
     });
   }
 
@@ -235,75 +184,68 @@ export class CallSession extends BaseConstructor {
     }
   }
 
-  private correlateProtectedResponseV35(event: RealtimeEvent): void {
+  private correlateProtectedResponseV35(event: Extract<RealtimeProviderEvent, { type: "ASSISTANT_RESPONSE_STARTED" }>): void {
     const snapshot = this.protectedSpeechLifecycleV35.snapshot();
-    if (!snapshot || snapshot.responseId) return;
-    const responseId = realtimeResponseId(event);
-    if (!responseId) return;
+    if (!snapshot || snapshot.responseId || event.kind !== snapshot.kind || !event.responseId) return;
 
-    const metadataKind = protectedKindFromMetadata(event);
-    if (metadataKind && metadataKind !== snapshot.kind) return;
-
-    if (this.protectedSpeechLifecycleV35.bindResponse(responseId)) {
+    if (this.protectedSpeechLifecycleV35.bindResponse(event.responseId)) {
       (this as any).diagnostics?.checkpoint?.("PROTECTED_SPEECH_RESPONSE_BOUND_V35", {
         kind: snapshot.kind,
-        response_id: responseId,
-        metadata_confirmed: metadataKind === snapshot.kind,
+        response_id: event.responseId,
+        metadata_confirmed: true,
+        provider_event_adapter: true,
       });
     }
   }
 
-  private handleProtectedLifecycleEventV35(event: RealtimeEvent): void {
+  private handleProtectedLifecycleEventV35(event: RealtimeProviderEvent): void {
     if (!this.protectedSpeechLifecycleV35.isActive()) return;
-    const responseId = realtimeResponseId(event);
 
-    if (event.type === "response.created") {
+    if (event.type === "ASSISTANT_RESPONSE_STARTED") {
       this.correlateProtectedResponseV35(event);
       return;
     }
 
-    if (event.type === "output_audio_buffer.started") {
-      if (this.protectedSpeechLifecycleV35.markPlaybackStarted(responseId)) {
-        (this as any).diagnostics?.checkpoint?.("PROTECTED_SPEECH_PLAYBACK_STARTED_V35", { response_id: responseId });
+    if (event.type === "ASSISTANT_AUDIO_STARTED") {
+      if (this.protectedSpeechLifecycleV35.markPlaybackStarted(event.responseId)) {
+        (this as any).diagnostics?.checkpoint?.("PROTECTED_SPEECH_PLAYBACK_STARTED_V35", { response_id: event.responseId ?? null });
       }
       return;
     }
 
-    if (event.type === "output_audio_buffer.stopped") {
-      this.completeProtectedSpeechReleaseV35(this.protectedSpeechLifecycleV35.onPlaybackStopped(responseId));
+    if (event.type === "ASSISTANT_AUDIO_STOPPED") {
+      this.completeProtectedSpeechReleaseV35(this.protectedSpeechLifecycleV35.onPlaybackStopped(event.responseId));
       return;
     }
 
-    if (event.type === "output_audio_buffer.cleared") {
-      this.completeProtectedSpeechReleaseV35(this.protectedSpeechLifecycleV35.onPlaybackCleared(responseId));
+    if (event.type === "ASSISTANT_AUDIO_CLEARED") {
+      this.completeProtectedSpeechReleaseV35(this.protectedSpeechLifecycleV35.onPlaybackCleared(event.responseId));
       return;
     }
 
-    if (event.type === "response.done") {
+    if (event.type === "ASSISTANT_RESPONSE_COMPLETED") {
       this.completeProtectedSpeechReleaseV35(
-        this.protectedSpeechLifecycleV35.onResponseDone(responseId, event.response?.status),
+        this.protectedSpeechLifecycleV35.onResponseDone(event.responseId, event.status),
       );
       return;
     }
 
-    if (event.type === "error") {
+    if (event.type === "PROVIDER_COMMAND_FAILED") {
       this.completeProtectedSpeechReleaseV35(
-        this.protectedSpeechLifecycleV35.onClientError(event.error?.event_id),
+        this.protectedSpeechLifecycleV35.onClientError(event.requestId),
       );
     }
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const event = parseEvent(data);
-
-    if (event?.type === "response.function_call_arguments.done" && event.name === INPUT_IGNORED) {
-      const reason = ignoredReason(event);
-      await BasePrototype.handleRealtimeMessage.call(this, data);
-      this.noteIgnoredInputV35(reason);
-      return;
-    }
-
+    const events = adaptRealtimeProviderEvents(data);
     await BasePrototype.handleRealtimeMessage.call(this, data);
-    if (event) this.handleProtectedLifecycleEventV35(event);
+
+    for (const event of events) {
+      this.handleProtectedLifecycleEventV35(event);
+      if (event.type === "SEMANTIC_TOOL_SELECTED" && event.name === INPUT_IGNORED) {
+        this.noteIgnoredInputV35(ignoredReason(event.arguments));
+      }
+    }
   }
 }

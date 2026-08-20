@@ -14,4 +14,5 @@ export type RealtimeProviderEvent =
   | { type: "ASSISTANT_RESPONSE_STARTED"; kind: AssistantSpeechKind; responseId?: string; purpose?: string; sourceItemId?: string }
   | { type: "ASSISTANT_RESPONSE_COMPLETED"; kind: AssistantSpeechKind; responseId?: string; status?: string }
   | { type: "TEXT_DECISION_COMPLETED"; responseId?: string; text: string }
-  | { type: "SEMANTIC_TOOL_SELECTED"; name: string; arguments?: string; callId?: string };
+  | { type: "SEMANTIC_TOOL_SELECTED"; name: string; arguments?: string; callId?: string }
+  | { type: "PROVIDER_COMMAND_FAILED"; requestId?: string; code?: string; message?: string };

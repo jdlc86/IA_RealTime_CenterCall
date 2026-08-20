@@ -110,3 +110,19 @@ test("OpenAI tool call identity is preserved for provider-neutral tool response 
     call_id: "call-1",
   })), [{ type: "SEMANTIC_TOOL_SELECTED", name: "restaurant_business_info", arguments: "{}", callId: "call-1" }]);
 });
+
+test("OpenAI command errors become provider-neutral correlated failures", () => {
+  assert.deepEqual(adaptOpenAIRealtimeEvent(wire({
+    type: "error",
+    error: {
+      event_id: "protected_speech_v35_123",
+      code: "invalid_request_error",
+      message: "response could not be created",
+    },
+  })), [{
+    type: "PROVIDER_COMMAND_FAILED",
+    requestId: "protected_speech_v35_123",
+    code: "invalid_request_error",
+    message: "response could not be created",
+  }]);
+});
