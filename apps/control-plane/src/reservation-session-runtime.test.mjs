@@ -18,6 +18,20 @@ test("reservation session runtime is the single draft and commit owner", () => {
   assert.deepEqual(runtime.snapshot().draft, {});
 });
 
+test("multi-table preferences are owned with the reservation draft", () => {
+  const runtime = new ReservationSessionRuntime();
+  runtime.mergeDraft({
+    party_size: 5,
+    starts_at: "2026-08-21T14:00:00+02:00",
+    separate_tables_acceptable: false,
+    tables_must_be_close: true,
+  }, null);
+  const snapshot = runtime.snapshot();
+  assert.equal(snapshot.draft.party_size, 5);
+  assert.equal(snapshot.draft.separate_tables_acceptable, false);
+  assert.equal(snapshot.draft.tables_must_be_close, true);
+});
+
 test("availability conflict invalidates confirmation but preserves reservation facts", () => {
   const runtime = new ReservationSessionRuntime();
   runtime.mergeDraft({ party_size: 2, starts_at: "2026-09-25T20:00:00+02:00", confirm: true }, null);

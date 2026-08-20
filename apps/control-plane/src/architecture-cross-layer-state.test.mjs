@@ -28,7 +28,7 @@ function hasCrossGenerationInstanceAccess(source, symbol) {
 }
 
 test("active consolidation layers do not read private state owned by another CallSession generation", () => {
-  const files = readdirSync(here).filter((name) => /^call-session-v(?:3[6-9]|4\d|5[0-4])(?:-|\.)/.test(name) && name.endsWith(".ts"));
+  const files = readdirSync(here).filter((name) => /^call-session-v(?:3[1-9]|4\d|5[0-4])(?:-|\.)/.test(name) && name.endsWith(".ts"));
   const violations = [];
 
   for (const file of files) {

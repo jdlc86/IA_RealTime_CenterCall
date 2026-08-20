@@ -8,16 +8,19 @@ import {
   normalizeReservationLocalDateTime,
   sameBusinessLocalDate,
 } from "./reservation-business-hours";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { reservationSessionRuntimeFor } from "./reservation-session-runtime.js";
+import { publicRestaurantToolAuthorizationPortFor } from "./semantic-tool-authorization-port.js";
 
 const BaseConstructor = CallSessionV29 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV29.prototype as any;
 
 const CHECK_AVAILABILITY = "check_reservation_availability";
 const MANAGE_RESERVATION = "manage_reservation";
+const CREATE_RESERVATION = "restaurant_reservation_create";
 const SEARCH_RESERVATION = "restaurant_reservation_search";
 const RESTAURANT_TIMEZONE = "Europe/Madrid";
 
-type RealtimeEvent = { type?: string; name?: string; call_id?: string; arguments?: string };
 type TablePlanRow = {
   allocation_mode: string;
   plan_order: number;
@@ -43,12 +46,6 @@ type CapacityFit = {
   unused_seats: number;
 };
 
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -68,13 +65,13 @@ function requireString(value: unknown, name: string): string {
 /**
  * v31 centralises reservation capacity and slot-search policy.
  *
- * Business hours are also authoritative here: table availability must never be
- * consulted for a closed day/out-of-hours request, and an automatic alternative
- * search may not silently cross into another local calendar date.
+ * Business hours are authoritative here: table availability is never consulted
+ * for a closed day/out-of-hours request, and automatic alternative search never
+ * silently crosses into another local calendar date.
  *
- * Tool-selection authority is NOT owned here. Search is executed directly in
- * v31 for compatibility, but every search must first delegate to v29's single
- * semantic caller-turn authority.
+ * Shared reservation facts live in ReservationSessionRuntime. Public-tool
+ * authority and realtime output are consumed only through version-neutral ports.
+ * v31 owns only the transient table plan required to execute a multi-table commit.
  */
 export class CallSession extends BaseConstructor {
   private planV31: TablePlanRow[] | null = null;
@@ -107,8 +104,6 @@ export class CallSession extends BaseConstructor {
   private clearPlanV31(): void {
     this.planV31 = null;
     this.planKeyV31 = null;
-    (this as any).multitablePlanV16 = null;
-    (this as any).multitableKeyV16 = null;
   }
 
   private async tablePlanV31(partySize: number, startsAt: string, duration: number): Promise<TablePlanRow[]> {
@@ -121,10 +116,89 @@ export class CallSession extends BaseConstructor {
     });
   }
 
+  private async executeMultiTableReservationV31(request: ToolRequest, baseGateway: ToolGateway): Promise<ToolResult> {
+    const plan = this.planV31;
+    const draft = reservationSessionRuntimeFor(this).snapshot().draft;
+    if (!plan?.length || plan.length < 2 || draft.separate_tables_acceptable !== true || draft.tables_must_be_close === true) {
+      return baseGateway.execute(request) as Promise<ToolResult>;
+    }
+
+    const args = asObject(request.arguments);
+    const partySize = integer(args.party_size);
+    const rawStartsAt = text(args.starts_at);
+    const customerName = text(args.customer_name);
+    const customerPhone = text(args.customer_phone);
+    const duration = integer(args.duration_minutes) ?? 90;
+    const notes = text(args.notes);
+    if (!partySize || !rawStartsAt || !customerName || !customerPhone) {
+      return baseGateway.execute(request) as Promise<ToolResult>;
+    }
+
+    const startsAt = normalizeReservationLocalDateTime(rawStartsAt, RESTAURANT_TIMEZONE);
+    const key = JSON.stringify({ party_size: partySize, starts_at: startsAt, duration_minutes: duration });
+    if (key !== this.planKeyV31) return baseGateway.execute(request) as Promise<ToolResult>;
+
+    if (args.confirm !== true) {
+      return {
+        ok: true,
+        tool: MANAGE_RESERVATION,
+        tenantId: request.context.tenantId,
+        result: {
+          stage: "CONFIRM_RESERVATION",
+          party_size: partySize,
+          starts_at: startsAt,
+          customer_name: customerName,
+          allocation_mode: "MULTI_EXACT",
+          tables: plan.map((row) => ({ table_name: row.table_name, capacity: row.max_capacity })),
+        },
+      } as ToolResult;
+    }
+
+    try {
+      const rows = await this.rpcV31<Record<string, unknown>>("create_restaurant_reservation_multi", {
+        p_tenant_id: request.context.tenantId,
+        p_customer_name: customerName,
+        p_customer_phone: customerPhone,
+        p_party_size: partySize,
+        p_starts_at: startsAt,
+        p_duration_minutes: duration,
+        p_notes: notes ?? null,
+        p_source: "voice",
+      });
+      if (!rows.length) throw new Error("empty booking result");
+      const code = rows[0]?.reservation_code;
+      this.clearPlanV31();
+      return {
+        ok: true,
+        tool: MANAGE_RESERVATION,
+        tenantId: request.context.tenantId,
+        result: {
+          stage: "BOOKED",
+          reservation_code: code,
+          party_size: partySize,
+          starts_at: startsAt,
+          allocation_mode: "MULTI_EXACT",
+          tables: rows.map((row) => ({ table_name: row.table_name, table_code: row.table_code })),
+        },
+      } as ToolResult;
+    } catch (error) {
+      return {
+        ok: false,
+        tool: MANAGE_RESERVATION,
+        tenantId: request.context.tenantId,
+        error: "EXECUTION_FAILED",
+        message: error instanceof Error ? error.message : String(error),
+      } as ToolResult;
+    }
+  }
+
   private createToolGateway(): ToolGateway {
     const baseGateway = BasePrototype.createToolGateway.call(this) as ToolGateway;
     return {
       execute: async (request: ToolRequest): Promise<ToolResult> => {
+        if (request.name === MANAGE_RESERVATION) {
+          return this.executeMultiTableReservationV31(request, baseGateway);
+        }
         if (request.name !== CHECK_AVAILABILITY) return baseGateway.execute(request) as Promise<ToolResult>;
 
         const args = asObject(request.arguments);
@@ -167,8 +241,6 @@ export class CallSession extends BaseConstructor {
         const key = JSON.stringify({ party_size: partySize, starts_at: startsAt, duration_minutes: duration });
         this.planV31 = plan.length ? plan : null;
         this.planKeyV31 = plan.length ? key : null;
-        (this as any).multitablePlanV16 = plan.length > 1 ? plan : null;
-        (this as any).multitableKeyV16 = plan.length > 1 ? key : null;
 
         if (!plan.length) {
           const fit = await this.rpcV31<CapacityFit>("check_restaurant_capacity_fit", {
@@ -200,8 +272,9 @@ export class CallSession extends BaseConstructor {
         const totalCapacity = plan.reduce((sum, row) => sum + row.max_capacity, 0);
         const unusedSeats = totalCapacity - partySize;
         const multi = plan.length > 1;
-        const separateAccepted = (this as any).separateTablesAcceptableV16 === true;
-        const mustBeClose = (this as any).tablesMustBeCloseV16 === true;
+        const draft = reservationSessionRuntimeFor(this).snapshot().draft;
+        const separateAccepted = draft.separate_tables_acceptable === true;
+        const mustBeClose = draft.tables_must_be_close === true;
         const canAutoProceed = !multi || (separateAccepted && !mustBeClose);
 
         (this as any).diagnostics?.checkpoint?.("RESERVATION_CAPACITY_PLAN_V31", {
@@ -211,6 +284,7 @@ export class CallSession extends BaseConstructor {
           total_capacity: totalCapacity,
           unused_seats: unusedSeats,
           policy_max_unused_seats: 1,
+          reservation_state_owner: "reservation_session_runtime",
         });
 
         return {
@@ -236,12 +310,18 @@ export class CallSession extends BaseConstructor {
     } as ToolGateway;
   }
 
+  private emitCreateOutputV31(callId: string | undefined, output: Record<string, unknown>): void {
+    const port = realtimeCommandPortFor(this as any);
+    port.submitToolResult({ callId, toolName: CREATE_RESERVATION, output });
+    port.createDefaultResponse();
+  }
+
   private sendFunctionOutputV19(callId: string | undefined, output: Record<string, unknown>): void {
     if (output.status === "UNAVAILABLE") {
       const result = output as Record<string, unknown>;
       if (result.business_hours_blocked === true) {
         const closedDay = result.business_hours_reason === "CLOSED_DAY";
-        BasePrototype.sendFunctionOutputV19.call(this, callId, {
+        this.emitCreateOutputV31(callId, {
           ok: true,
           status: closedDay ? "RESTAURANT_CLOSED" : "OUTSIDE_BUSINESS_HOURS",
           business_hours_authoritative: true,
@@ -256,7 +336,7 @@ export class CallSession extends BaseConstructor {
       }
 
       if (result.human_assistance_required === true || result.structural_fit_available === false) {
-        BasePrototype.sendFunctionOutputV19.call(this, callId, {
+        this.emitCreateOutputV31(callId, {
           ok: true,
           status: "HUMAN_ASSISTANCE_REQUIRED",
           reason: "CAPACITY_POLICY_REQUIRES_HUMAN",
@@ -267,16 +347,16 @@ export class CallSession extends BaseConstructor {
       }
 
       const plan = this.planV31;
-      const draft = asObject((this as any).reservationDraftV19);
+      const draft = reservationSessionRuntimeFor(this).snapshot().draft;
       if (Array.isArray(plan) && plan.length > 1) {
         const capacities = plan.map((row) => row.max_capacity);
-        const partySize = Number(draft.party_size ?? 0);
+        const partySize = integer(draft.party_size) ?? 0;
         const totalCapacity = capacities.reduce((sum, value) => sum + value, 0);
         const unusedSeats = totalCapacity - partySize;
         const rejected = draft.separate_tables_acceptable === false;
         const mustBeClose = draft.tables_must_be_close === true;
         if (rejected || mustBeClose) {
-          BasePrototype.sendFunctionOutputV19.call(this, callId, {
+          this.emitCreateOutputV31(callId, {
             ok: true,
             status: "HUMAN_ASSISTANCE_REQUIRED",
             reason: mustBeClose ? "TABLES_MUST_BE_CLOSE" : "SEPARATE_TABLES_REJECTED",
@@ -288,7 +368,7 @@ export class CallSession extends BaseConstructor {
           return;
         }
         if (draft.separate_tables_acceptable !== true) {
-          BasePrototype.sendFunctionOutputV19.call(this, callId, {
+          this.emitCreateOutputV31(callId, {
             ok: true,
             status: "MULTITABLE_OPTION",
             allocation_mode: plan[0]?.allocation_mode,
@@ -304,7 +384,7 @@ export class CallSession extends BaseConstructor {
       }
 
       if (result.suggestion === "SEARCH_ALTERNATIVE_SLOTS") {
-        BasePrototype.sendFunctionOutputV19.call(this, callId, {
+        this.emitCreateOutputV31(callId, {
           ...output,
           status: "UNAVAILABLE_WITH_SEARCH_OPTION",
           instruction: "La hora concreta no está disponible, pero la configuración de mesas sí admite este grupo. Ofrece buscar turnos alternativos únicamente dentro de la misma fecha solicitada con restaurant_reservation_search. Para cambiar de día, espera a que el cliente elija explícitamente otra fecha.",
@@ -312,12 +392,13 @@ export class CallSession extends BaseConstructor {
         return;
       }
     }
-    BasePrototype.sendFunctionOutputV19.call(this, callId, output);
+    this.emitCreateOutputV31(callId, output);
   }
 
   private sendOutputV31(callId: string | undefined, output: Record<string, unknown>): void {
-    (this as any).send?.({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: JSON.stringify(output) } });
-    (this as any).send?.({ type: "response.create" });
+    const port = realtimeCommandPortFor(this as any);
+    port.submitToolResult({ callId, toolName: SEARCH_RESERVATION, output });
+    port.createDefaultResponse();
   }
 
   private async executeSearchV31(callId: string | undefined, args: Record<string, unknown>): Promise<void> {
@@ -435,27 +516,32 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const textData = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (textData) { try { event = JSON.parse(textData) as RealtimeEvent; } catch { event = null; } }
+    const event = adaptRealtimeProviderEvents(data).find(
+      (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && candidate.name === SEARCH_RESERVATION,
+    );
 
-    if (event?.type === "response.function_call_arguments.done" && event.name === SEARCH_RESERVATION) {
-      if (!this.authorizePublicRestaurantToolV29(event)) return;
+    if (event?.type === "SEMANTIC_TOOL_SELECTED" && event.name === SEARCH_RESERVATION) {
+      const authorized = publicRestaurantToolAuthorizationPortFor(this).authorize({
+        name: event.name,
+        call_id: event.callId,
+        arguments: event.arguments,
+      });
+      if (!authorized) return;
 
       let args: Record<string, unknown>;
       try { args = parseObject(event.arguments); }
       catch (error) {
-        this.sendOutputV31(event.call_id, { ok: false, status: "ERROR", error: "INVALID_ARGUMENTS", message: error instanceof Error ? error.message : String(error) });
+        this.sendOutputV31(event.callId, { ok: false, status: "ERROR", error: "INVALID_ARGUMENTS", message: error instanceof Error ? error.message : String(error) });
         return;
       }
       (this as any).diagnostics?.checkpoint?.("LUCIA_AGENT_TOOL_SELECTED", {
         tool: SEARCH_RESERVATION,
         compatibility_executor: "direct_reservation_search_v31",
-        semantic_authority: "v29",
+        semantic_authority: "semantic_tool_authorization_port",
       });
-      try { await this.executeSearchV31(event.call_id, args); }
+      try { await this.executeSearchV31(event.callId, args); }
       catch (error) {
-        this.sendOutputV31(event.call_id, { ok: false, status: "ERROR", error: "SEARCH_FAILED", message: error instanceof Error ? error.message : String(error) });
+        this.sendOutputV31(event.callId, { ok: false, status: "ERROR", error: "SEARCH_FAILED", message: error instanceof Error ? error.message : String(error) });
       }
       return;
     }
