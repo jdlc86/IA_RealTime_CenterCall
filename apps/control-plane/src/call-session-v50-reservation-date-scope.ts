@@ -6,6 +6,7 @@ import {
 } from "./reservation-date-scope-policy.js";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
+import { authorizePublicRestaurantTool } from "./semantic-turn-coordinator.js";
 
 const BaseConstructor = CallSessionV49 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV49.prototype as any;
@@ -43,14 +44,6 @@ function reservationLocalDate(raw: string): string {
   return businessWindowsForDate(normalized, [], RESTAURANT_TIMEZONE).localDate;
 }
 
-/**
- * V50 adds cross-call reservation-date continuity without interpreting natural
- * language. The agent still materializes a concrete date. Once materialized,
- * search/create cannot move to another Madrid-local calendar date in the same
- * caller turn. The exact transition must first be blocked, then repeated after
- * a later completed caller transcript. V29 remains the single semantic-tool
- * authority and is deliberately not modified here.
- */
 export class CallSession extends BaseConstructor {
   private activeReservationLocalDateV50: string | null = null;
   private pendingReservationDateChangeV50: PendingDateChangeV50 | null = null;
@@ -59,14 +52,12 @@ export class CallSession extends BaseConstructor {
 
   private observeCallerTurnV50(event: RealtimeProviderEvent): void {
     if (event.type !== "CALLER_TRANSCRIPT_COMPLETED" || !event.transcript.trim()) return;
-
     if (event.itemId) {
       if (event.itemId === this.lastCallerTranscriptItemIdV50) return;
       this.lastCallerTranscriptItemIdV50 = event.itemId;
     } else {
       this.lastCallerTranscriptItemIdV50 = null;
     }
-
     this.callerTurnEpochV50 += 1;
     (this as any).diagnostics?.checkpoint?.("RESERVATION_DATE_CALLER_TURN_V50", {
       caller_turn_epoch: this.callerTurnEpochV50,
@@ -76,22 +67,19 @@ export class CallSession extends BaseConstructor {
   }
 
   private authorizeBlockedDateToolV50(event: SemanticToolEvent): boolean {
-    const authorize = (this as any).authorizePublicRestaurantToolV29;
-    if (typeof authorize !== "function") {
-      (this as any).diagnostics?.fail?.(
-        "RESERVATION_DATE_SCOPE_AUTHORITY_MISSING_V50",
-        "V29_PUBLIC_TOOL_AUTHORITY_UNAVAILABLE",
-        { tool: event.name },
-      );
-      return false;
-    }
-
-    return authorize.call(this, {
-      type: "response.function_call_arguments.done",
+    const result = authorizePublicRestaurantTool(this, {
       name: event.name,
       call_id: event.callId,
       arguments: event.arguments,
     });
+    if (!result.allowed) {
+      (this as any).diagnostics?.fail?.(
+        "RESERVATION_DATE_SCOPE_AUTHORITY_MISSING_V50",
+        "SEMANTIC_TOOL_AUTHORITY_REJECTED",
+        { tool: event.name, duplicate_of: result.duplicateOf },
+      );
+    }
+    return result.allowed;
   }
 
   private sendDateChangeRequiredV50(event: SemanticToolEvent, fromLocalDate: string, toLocalDate: string): void {
@@ -115,25 +103,19 @@ export class CallSession extends BaseConstructor {
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const providerEvents = adaptRealtimeProviderEvents(data);
     for (const providerEvent of providerEvents) this.observeCallerTurnV50(providerEvent);
-
     const toolEvent = providerEvents.find(
-      (candidate): candidate is SemanticToolEvent =>
-        candidate.type === "SEMANTIC_TOOL_SELECTED" && guardedTool(candidate.name),
+      (candidate): candidate is SemanticToolEvent => candidate.type === "SEMANTIC_TOOL_SELECTED" && guardedTool(candidate.name),
     );
-
     if (!toolEvent || !guardedTool(toolEvent.name)) {
       await BasePrototype.handleRealtimeMessage.call(this, data);
       return;
     }
 
     let args: Record<string, unknown>;
-    try {
-      args = parseObject(toolEvent.arguments);
-    } catch {
+    try { args = parseObject(toolEvent.arguments); } catch {
       await BasePrototype.handleRealtimeMessage.call(this, data);
       return;
     }
-
     const rawDateTime = requestedDateTime(toolEvent.name, args);
     if (!rawDateTime) {
       await BasePrototype.handleRealtimeMessage.call(this, data);
@@ -141,12 +123,7 @@ export class CallSession extends BaseConstructor {
     }
 
     let requestedLocalDate: string;
-    try {
-      requestedLocalDate = reservationLocalDate(rawDateTime);
-    } catch {
-      // The existing reservation controller owns invalid-datetime reporting.
-      // Delegating is fail-closed because no reservation write can pass its
-      // downstream datetime/business-hours validation.
+    try { requestedLocalDate = reservationLocalDate(rawDateTime); } catch {
       await BasePrototype.handleRealtimeMessage.call(this, data);
       return;
     }
@@ -159,11 +136,7 @@ export class CallSession extends BaseConstructor {
     });
 
     if (decision.action === "REQUIRE_CONFIRMATION") {
-      // Consume the public-tool decision in V29 before returning the guard
-      // result. This is what prevents the model from retrying the new date in
-      // the same caller turn after seeing the function output.
       if (!this.authorizeBlockedDateToolV50(toolEvent)) return;
-
       this.pendingReservationDateChangeV50 = {
         fromLocalDate: decision.fromLocalDate,
         toLocalDate: decision.toLocalDate,
@@ -174,33 +147,21 @@ export class CallSession extends BaseConstructor {
         from_local_date: decision.fromLocalDate,
         to_local_date: decision.toLocalDate,
         caller_turn_epoch: this.callerTurnEpochV50,
-        v29_decision_consumed: true,
+        semantic_decision_consumed: true,
         business_action_executed: false,
       });
       this.sendDateChangeRequiredV50(toolEvent, decision.fromLocalDate, decision.toLocalDate);
       return;
     }
 
-    if (decision.action === "ALLOW_AND_SET") {
+    if (decision.action === "ALLOW_AND_SET" || decision.action === "ALLOW_CONFIRMED_CHANGE") {
       this.activeReservationLocalDateV50 = decision.localDate;
       this.pendingReservationDateChangeV50 = null;
-      (this as any).diagnostics?.checkpoint?.("RESERVATION_DATE_SCOPE_ESTABLISHED_V50", {
-        tool: toolEvent.name,
-        local_date: decision.localDate,
-        caller_turn_epoch: this.callerTurnEpochV50,
-      });
-    } else if (decision.action === "ALLOW_CONFIRMED_CHANGE") {
-      this.activeReservationLocalDateV50 = decision.localDate;
-      this.pendingReservationDateChangeV50 = null;
-      (this as any).diagnostics?.checkpoint?.("RESERVATION_DATE_CHANGE_CONFIRMED_V50", {
-        tool: toolEvent.name,
-        local_date: decision.localDate,
-        caller_turn_epoch: this.callerTurnEpochV50,
-        later_caller_transcript_required: true,
-      });
+      (this as any).diagnostics?.checkpoint?.(
+        decision.action === "ALLOW_AND_SET" ? "RESERVATION_DATE_SCOPE_ESTABLISHED_V50" : "RESERVATION_DATE_CHANGE_CONFIRMED_V50",
+        { tool: toolEvent.name, local_date: decision.localDate, caller_turn_epoch: this.callerTurnEpochV50 },
+      );
     } else {
-      // Continuing on the active date is an explicit abandonment of any older
-      // pending date transition, so stale requests cannot be revived later.
       this.pendingReservationDateChangeV50 = null;
     }
 
