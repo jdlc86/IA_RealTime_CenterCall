@@ -6,8 +6,10 @@ import {
   type ResponseOwnerSnapshot,
 } from "./realtime-response-owner.js";
 import { decideResponseOwnerEmission, type ResponseOwnerEmissionMode } from "./response-owner-emission-policy.js";
+import { applyBargeInSemanticDecision } from "./response-owner-barge-in-decision.js";
 
 export type ResponseReconciliation = Readonly<{
+  accepted: boolean;
   previous: ResponseOwnerSnapshot;
   snapshot: ResponseOwnerSnapshot;
   effects: readonly ResponseOwnerEffect[];
@@ -27,6 +29,22 @@ export class ResponseCoordinator {
     this.owner = result.snapshot;
     const emission = decideResponseOwnerEmission(result.effects, mode);
     return Object.freeze({
+      accepted: true,
+      previous,
+      snapshot: result.snapshot,
+      effects: result.effects,
+      executable: emission.executable,
+      observedOnly: emission.observedOnly,
+    });
+  }
+
+  applyBargeInDecision(decision: "INTERRUPT" | "IGNORE", mode: ResponseOwnerEmissionMode = "active"): ResponseReconciliation {
+    const previous = this.owner;
+    const result = applyBargeInSemanticDecision(previous, decision);
+    if (result.accepted) this.owner = result.snapshot;
+    const emission = decideResponseOwnerEmission(result.effects, mode);
+    return Object.freeze({
+      accepted: result.accepted,
       previous,
       snapshot: result.snapshot,
       effects: result.effects,
