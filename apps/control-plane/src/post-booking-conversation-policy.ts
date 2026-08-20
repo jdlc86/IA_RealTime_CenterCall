@@ -83,34 +83,30 @@ function governed(reason: Extract<DirectPostToolResponseDecision, { action: "GOV
   return { action: "GOVERN", reason, instructions: STRUCTURED_CONTINUATION_INSTRUCTIONS };
 }
 
+/**
+ * Missing reservation data is collected one slot per caller turn.
+ * This deliberately avoids compound questions such as "hora y cantidad", where
+ * a short numeric answer can become ambiguous to ASR/model interpretation.
+ * Priority preserves the natural dependency order: date -> time -> party size ->
+ * contact identity. The backend remains authoritative and may return the full
+ * missing array; this policy only chooses which single question to ask next.
+ */
 function reservationMissingInformationSpeech(missing: readonly string[]): string {
   const unique = new Set(missing);
-  if (unique.size === 1 && unique.has("starts_at_time")) {
-    return "¿A qué hora quieres hacer la reserva?";
-  }
-  if (unique.size === 1 && unique.has("starts_at_date")) {
+  if (unique.has("starts_at") || unique.has("starts_at_date")) {
     return "¿Para qué día quieres hacer la reserva?";
   }
-  if (unique.size === 1 && unique.has("starts_at")) {
-    return "¿Para qué día y a qué hora quieres reservar?";
+  if (unique.has("starts_at_time")) {
+    return "¿A qué hora quieres hacer la reserva?";
   }
-  if (unique.size === 1 && unique.has("party_size")) {
+  if (unique.has("party_size")) {
     return "¿Para cuántas personas sería la reserva?";
   }
-  if (unique.size === 1 && unique.has("customer_name")) {
+  if (unique.has("customer_name")) {
     return "¿A qué nombre hago la reserva?";
   }
-  if (unique.size === 1 && unique.has("customer_phone")) {
+  if (unique.has("customer_phone")) {
     return "¿Cuál es el teléfono de contacto para la reserva?";
-  }
-  if (unique.has("customer_name") && unique.has("customer_phone") && unique.size === 2) {
-    return "¿Me dices el nombre y el teléfono de contacto para la reserva?";
-  }
-  if (unique.has("starts_at") && unique.has("party_size") && unique.size === 2) {
-    return "¿Para qué día y hora quieres reservar y para cuántas personas?";
-  }
-  if (unique.has("starts_at_date") && unique.has("starts_at_time") && unique.size === 2) {
-    return "¿Para qué día y a qué hora quieres hacer la reserva?";
   }
   return "Necesito un dato más para continuar con la reserva. ¿Puedes indicarme la información que falta?";
 }
@@ -124,6 +120,7 @@ function collectMissingInformation(missing: string[]): DirectPostToolResponseDec
     exactText,
     instructions:
       `Pronuncia exactamente: ${JSON.stringify(exactText)} ` +
+      "Pregunta solo ese dato y ningún otro en esta respuesta. " +
       "No llames herramientas en esta misma respuesta. No intentes buscar disponibilidad ni crear otra reserva todavía. " +
       "Espera el siguiente turno del cliente; entonces conserva los datos válidos ya recogidos y continúa el flujo normal.",
   };
