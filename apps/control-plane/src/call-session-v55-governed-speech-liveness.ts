@@ -17,24 +17,31 @@ const BasePrototype = CallSessionV54.prototype as any;
  * completed. The provider runtime queues that speech; this layer supplies the
  * response lifecycle boundary needed to release it deterministically.
  *
+ * Response completion authority is response-scoped: a stale completion from an
+ * older response must never release speech while a newer response is active.
+ *
  * No timer/watchdog participates in normal release.
  */
 export class CallSession extends BaseConstructor {
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const events = adaptRealtimeProviderEvents(data);
-    const started = events.some((event) => event.type === "ASSISTANT_RESPONSE_STARTED");
-    const completed = events.some((event) => event.type === "ASSISTANT_RESPONSE_COMPLETED");
+    const started = events.find((event) => event.type === "ASSISTANT_RESPONSE_STARTED");
+    const completed = events.find((event) => event.type === "ASSISTANT_RESPONSE_COMPLETED");
 
-    if (started) observeRealtimeAssistantResponseStarted(this as any);
+    if (started?.type === "ASSISTANT_RESPONSE_STARTED") {
+      observeRealtimeAssistantResponseStarted(this as any, started.responseId);
+    }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
 
-    if (completed) {
-      observeRealtimeAssistantResponseCompleted(this as any);
+    if (completed?.type === "ASSISTANT_RESPONSE_COMPLETED") {
+      observeRealtimeAssistantResponseCompleted(this as any, completed.responseId);
       (this as any).diagnostics?.checkpoint?.("GOVERNED_POST_TOOL_SPEECH_RELEASE_BOUNDARY_V55", {
         source: "assistant_response_completed",
+        response_id: completed.responseId ?? null,
         timer_used: false,
         response_owner_reconciled_first: true,
+        response_scoped_release: true,
       });
     }
   }
