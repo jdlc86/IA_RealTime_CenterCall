@@ -35,13 +35,16 @@ test("split barge-in ordering defers response creation to the newest speech item
   assert.doesNotMatch(v40, /\bsleep\s*\(/);
 });
 
-test("V44 preserves V29 per-item bookkeeping when raw VAD is suppressed", async () => {
+test("V44 preserves per-item semantic bookkeeping through the neutral coordinator when raw VAD is suppressed", async () => {
   const v44 = await source("call-session-v44-raw-vad-routing.ts");
-  const v29 = await source("call-session-v29.ts");
-  assert.match(v44, /beginSemanticTurnFromAcousticEvidenceV29/);
-  assert.match(v29, /SEMANTIC_TURN_BOOKKEEPING_RESET_FROM_ACOUSTIC_EVIDENCE_V29/);
-  assert.match(v29, /semantic_authority_acquired: false/);
-  assert.match(v29, /transcript_still_required: true/);
+  const coordinator = await source("semantic-turn-coordinator.ts");
+  assert.match(v44, /beginSemanticTurnFromAcousticEvidence/);
+  assert.match(v44, /semantic-turn-coordinator/);
+  assert.doesNotMatch(v44, /beginSemanticTurnFromAcousticEvidenceV29/);
+  assert.match(coordinator, /SEMANTIC_TURN_BOOKKEEPING_RESET_FROM_ACOUSTIC_EVIDENCE_V29/);
+  assert.match(coordinator, /semantic_authority_acquired: false/);
+  assert.match(coordinator, /transcript_still_required: true/);
+  assert.match(coordinator, /owner: "semantic_turn_runtime"/);
 });
 
 test("provider-cleared false barge-in cannot strand the call in dead air", async () => {
