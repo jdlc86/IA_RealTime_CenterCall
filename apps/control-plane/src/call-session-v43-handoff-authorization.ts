@@ -8,6 +8,8 @@ import {
   type HumanHandoffAuthorizationState,
 } from "./human-handoff-authorization-policy.js";
 import { realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { releaseSemanticGate } from "./semantic-turn-coordinator.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 
 const BaseConstructor = CallSessionV42 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV42.prototype as any;
@@ -46,7 +48,7 @@ function usableTranscript(value: unknown): string | null {
  * v43 separates semantic recommendation from irreversible handoff authority.
  *
  * Lucia may decide that human assistance would be useful, but the runtime only
- * permits the terminal v37 transport when the current caller turn explicitly
+ * permits the terminal transport when the current caller turn explicitly
  * requests a human or explicitly accepts a transfer that was previously
  * offered. Model-only reasons such as SYSTEM_LIMITATION are not authority.
  */
@@ -101,7 +103,7 @@ export class CallSession extends BaseConstructor {
 
   private emitHandoffToolOutputV43(event: RealtimeEvent, status: string, instruction: string): void {
     const session = this as any;
-    session.releaseSemanticGateV29?.(HUMAN_ASSISTANCE);
+    releaseSemanticGate(this, HUMAN_ASSISTANCE);
     session.send?.({
       type: "conversation.item.create",
       item: {
@@ -220,8 +222,8 @@ export class CallSession extends BaseConstructor {
     this.explicitPendingOfferRejectionV43 = false;
     this.handoffAuthorizationV43 = { offerPending: false };
     this.handoffClarificationIssuedV43 = false;
-    session.releaseSemanticGateV29?.(INPUT_IGNORED);
-    session.validateUserTurnV18?.("human_handoff_rejected");
+    releaseSemanticGate(this, INPUT_IGNORED);
+    conversationLifecyclePortFor(this).validateUserTurn("human_handoff_rejected");
     session.send?.({
       type: "conversation.item.create",
       item: {
@@ -253,6 +255,8 @@ export class CallSession extends BaseConstructor {
       pending_offer_cleared: true,
       caller_presence_validated: true,
       model_tool: INPUT_IGNORED,
+      lifecycle_owner: "conversation_lifecycle_port",
+      semantic_gate_owner: "semantic_turn_coordinator",
     });
     return true;
   }
