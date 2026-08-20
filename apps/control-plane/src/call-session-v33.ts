@@ -1,5 +1,6 @@
 import { CallSession as CallSessionV32 } from "./call-session-v32";
 import { CallerSecurityService, inspectCallerTranscript } from "./caller-security";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 
 const BaseConstructor = CallSessionV32 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV32.prototype as any;
@@ -35,7 +36,7 @@ function usableTranscript(value: unknown): string | null {
  * set of high-confidence agent-manipulation/exfiltration patterns and records
  * weaker security indicators. High-confidence hostile transcripts are stopped
  * before older layers can pass them to Lucia, so malicious text cannot influence
- * model/tool selection before the call is closed.
+ * model/tool selection before lifecycle authority commits the close.
  */
 export class CallSession extends BaseConstructor {
   private securityServiceV33(): CallerSecurityService {
@@ -93,13 +94,16 @@ export class CallSession extends BaseConstructor {
   }
 
   private closeForCybersecurityV33(finding: ReturnType<typeof inspectCallerTranscript>): void {
-    if ((this as any).state === "closing" || (this as any).hangupStarted) return;
     (this as any).diagnostics?.checkpoint?.("CALLER_CYBERSECURITY_CALL_TERMINATED_V33", {
       reason: finding.eventType ?? "CYBERSECURITY_HIGH_CONFIDENCE",
       matched_rule: finding.matchedRule ?? null,
       transcript_forwarded_to_lucia: false,
+      lifecycle_authority: "conversation_lifecycle_port",
     });
-    (this as any).beginClosing?.("cybersecurity_high_confidence_v33", "deterministic_security_monitor_v33");
+    conversationLifecyclePortFor(this).confirmEndCall(
+      "cybersecurity_high_confidence_v33",
+      "deterministic_security_monitor_v33",
+    );
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {

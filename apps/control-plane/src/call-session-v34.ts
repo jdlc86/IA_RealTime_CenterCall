@@ -2,6 +2,7 @@ import { CallSession as CallSessionV33 } from "./call-session-v33";
 import { CallerSecurityService } from "./caller-security";
 import { tenantConfigurationKeyV2 } from "./tenant-kv";
 import { matchBlockedSecurityPhrase, parseTenantBlockedPhrases } from "./security-blocked-phrases";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 
 const BaseConstructor = CallSessionV33 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV33.prototype as any;
@@ -30,7 +31,8 @@ function usableTranscript(value: unknown): string | null {
 /**
  * v34 adds a tenant-editable deterministic denylist on top of v33.
  * Policy remains code-owned: any exact normalized blocked phrase is HIGH risk,
- * is never forwarded to Lucia, records a security strike, and closes the call.
+ * is never forwarded to Lucia, records a security strike, and closes the call
+ * through the neutral conversation lifecycle authority.
  * KV only controls additional phrases; a minimal built-in list always remains.
  */
 export class CallSession extends BaseConstructor {
@@ -115,9 +117,10 @@ export class CallSession extends BaseConstructor {
       }
     }
 
-    if ((this as any).state !== "closing" && !(this as any).hangupStarted) {
-      (this as any).beginClosing?.("blocked_security_phrase_v34", "deterministic_kv_security_monitor_v34");
-    }
+    conversationLifecyclePortFor(this).confirmEndCall(
+      "blocked_security_phrase_v34",
+      "deterministic_kv_security_monitor_v34",
+    );
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {

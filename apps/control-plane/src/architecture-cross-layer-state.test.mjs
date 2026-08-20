@@ -11,6 +11,10 @@ function versionFromFile(name) {
   return match ? Number(match[1]) : null;
 }
 
+function activeConsolidationFiles() {
+  return readdirSync(here).filter((name) => /^call-session-v(?:3[1-9]|4\d|5[0-4])(?:-|\.)/.test(name) && name.endsWith(".ts"));
+}
+
 function crossVersionStateReferences(source) {
   const refs = [];
   const pattern = /\b([A-Za-z_$][\w$]*V(\d+))\b/g;
@@ -27,11 +31,15 @@ function hasCrossGenerationInstanceAccess(source, symbol) {
   return new RegExp(`(?:${directReceiver}|${prototypeReceiver})(?:\\?|)\\.${escaped}\\b`).test(source);
 }
 
+function hasDirectBeginClosing(source) {
+  const receiver = "(?:this|session|self|\\(this as any\\)|[A-Za-z_$][\\w$]*Prototype)";
+  return new RegExp(`${receiver}(?:\\?|)\\.beginClosing\\b`).test(source);
+}
+
 test("active consolidation layers do not read private state owned by another CallSession generation", () => {
-  const files = readdirSync(here).filter((name) => /^call-session-v(?:3[1-9]|4\d|5[0-4])(?:-|\.)/.test(name) && name.endsWith(".ts"));
   const violations = [];
 
-  for (const file of files) {
+  for (const file of activeConsolidationFiles()) {
     const ownVersion = versionFromFile(file);
     if (ownVersion == null) continue;
     const source = readFileSync(join(here, file), "utf8");
@@ -54,6 +62,21 @@ test("cross-layer guard catches inherited prototype bypasses", () => {
     hasCrossGenerationInstanceAccess("session.releaseSemanticGateV29?.('tool')", "releaseSemanticGateV29"),
     true,
   );
+});
+
+test("active consolidation layers commit terminal closure through lifecycle authority", () => {
+  const violations = [];
+  for (const file of activeConsolidationFiles()) {
+    const source = readFileSync(join(here, file), "utf8");
+    if (hasDirectBeginClosing(source)) violations.push(file);
+  }
+  assert.deepEqual(violations, [], `direct beginClosing bypass is forbidden:\n${violations.join("\n")}`);
+});
+
+test("terminal closure guard catches direct compatibility bypasses", () => {
+  assert.equal(hasDirectBeginClosing("(this as any).beginClosing?.('reason', 'source')"), true);
+  assert.equal(hasDirectBeginClosing("session.beginClosing('reason', 'source')"), true);
+  assert.equal(hasDirectBeginClosing("BasePrototype.beginClosing.call(this, 'reason', 'source')"), true);
 });
 
 test("no CallSession generation may be added beyond v54", () => {
