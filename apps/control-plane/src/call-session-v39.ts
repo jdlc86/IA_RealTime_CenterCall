@@ -1,5 +1,6 @@
 import { CallSession as CallSessionV38 } from "./call-session-v38";
 import { HumanHandoffStore } from "./human-handoff-store";
+import { humanHandoffTransportPortFor } from "./human-handoff-transport-port.js";
 
 const BaseConstructor = CallSessionV38 as unknown as new (...args: any[]) => any;
 
@@ -17,17 +18,17 @@ function nonEmpty(value: unknown): string | null {
 }
 
 /**
- * v39 fixes transfer-success classification and keeps the v37/v38 lifecycle
+ * v39 fixes transfer-success classification and keeps the handoff lifecycle
  * coherent once a real target-leg result has arrived.
  *
  * Telnyx transfer emits call.bridged while the destination can still be ringing.
  * The authoritative remote-answer signal is call.answered. Therefore:
  * - call.bridged is only an intermediate transport signal;
  * - only call.answered on the target leg marks TRANSFERRED and closes Lucía;
- * - target call.hangup before answer falls through to v38 NO_ANSWER/BUSY/FAILED;
- * - when target call.hangup arrives, the v37 transfer-result watchdog is cancelled
+ * - target call.hangup before answer falls through to the inherited failure owner;
+ * - when target call.hangup arrives, the transfer-result watchdog is cancelled
  *   immediately so it cannot later overwrite the precise failure result;
- * - v39 never mutates v37 handoff phase, runtime closing flags, or sideband directly;
+ * - v39 never reaches into historical CallSession state or methods directly;
  * - hangups after confirmed TRANSFERRED are terminal telephony bookkeeping only.
  */
 export class CallSession extends BaseConstructor {
@@ -37,16 +38,13 @@ export class CallSession extends BaseConstructor {
   }
 
   private settleTargetFailureLifecycleV39(handoffId: string): void {
-    // v37 owns the transfer-result watchdog. v38 owns terminal TTS after a real
-    // target-leg hangup. Once that hangup exists, waiting for a transfer-result
-    // webhook is no longer meaningful. Do not mutate v37's active handoff phase:
-    // the precise failure result is owned by v38 and terminality by the lifecycle.
-    (this as any).clearTransferWatchdogV37?.();
+    humanHandoffTransportPortFor(this).cancelTransferWatchdog();
     (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_TARGET_RESULT_SETTLED_V39", {
       handoff_id: handoffId,
       transfer_result_watchdog_cancelled: true,
       precise_failure_result_preserved: true,
-      direct_v37_state_mutation: false,
+      direct_version_state_mutation: false,
+      transport_owner: "human_handoff_transport_port",
     });
   }
 
@@ -93,15 +91,12 @@ export class CallSession extends BaseConstructor {
         return Response.json({ ok: true, ignored: true, reason: "already_transferred" });
       }
       if (state && (state.status === "DIALING" || state.status === "ANSWERED")) {
-        // v37 already owns the atomic transfer-completion operation: watchdogs,
-        // durable status, handoff phase and AI-sideband closure. v39 supplies only
-        // the authoritative Telnyx answer classification.
-        await (this as any).markHandoffTransferredV37?.(eventCallControlId);
+        await humanHandoffTransportPortFor(this).markTransferred(eventCallControlId);
         (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_TRANSFERRED_V39", {
           handoff_id: handoffId,
           human_answer_confirmed: true,
           confirmation_event: "call.answered",
-          terminal_operation_owner: "v37",
+          terminal_operation_owner: "human_handoff_transport_port",
           direct_runtime_closing_mutation: false,
           callback_required: false,
           lucia_conversation_resumes: false,
