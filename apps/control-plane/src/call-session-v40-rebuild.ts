@@ -16,6 +16,7 @@ import { responseCoordinatorFor } from "./response-coordinator.js";
 import { turnOwnershipRuntimeFor } from "./turn-ownership-runtime.js";
 import { inputDetectionConfigRuntimeFor } from "./input-detection-config-runtime.js";
 import { bargeInOrderingRuntimeFor } from "./barge-in-ordering-runtime.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 
 const BaseConstructor = CallSessionV39 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV39.prototype as any;
@@ -121,7 +122,7 @@ export class CallSession extends BaseConstructor {
   private setNormalListeningV40(responseIdValue: string): void {
     if (this.listeningResponseIdV40 === responseIdValue) return;
     const session = this as any;
-    if (!session.socket || session.state === "closing" || session.hangupStarted) return;
+    if (!session.socket || conversationLifecyclePortFor(this).isTerminal()) return;
     realtimeCommandPortFor(session).beginNonInterruptingListening(inputDetectionConfigRuntimeFor(this).get());
     this.listeningResponseIdV40 = responseIdValue;
     session.diagnostics?.checkpoint?.("BARGE_IN_LISTENING_ACTIVE_V40_REBUILD", {
@@ -147,7 +148,7 @@ export class CallSession extends BaseConstructor {
     if (!this.listeningResponseIdV40) return;
     const session = this as any;
     this.listeningResponseIdV40 = null;
-    if (!session.socket || session.state === "closing" || session.hangupStarted) return;
+    if (!session.socket || conversationLifecyclePortFor(this).isTerminal()) return;
     realtimeCommandPortFor(session).restoreInputDetection(inputDetectionConfigRuntimeFor(this).get());
     session.diagnostics?.checkpoint?.("BARGE_IN_LISTENING_RELEASED_V40_REBUILD", { reason, provider_command_port: true });
   }
@@ -156,7 +157,7 @@ export class CallSession extends BaseConstructor {
     const session = this as any;
     const route = decideIgnoredBargeInPlaybackRecovery({
       providerClearedPlaybackBeforeDecision: this.providerClearedPlaybackBeforeDecisionV40,
-      terminal: session.state === "closing" || session.hangupStarted || responseCoordinatorFor(this).snapshot().state === "TERMINAL",
+      terminal: conversationLifecyclePortFor(this).isTerminal() || responseCoordinatorFor(this).snapshot().state === "TERMINAL",
     });
     this.providerClearedPlaybackBeforeDecisionV40 = false;
     if (route !== "RECOVER_LIVENESS" || !session.socket) return;
@@ -464,7 +465,7 @@ export class CallSession extends BaseConstructor {
         this.clientClearRequestedV40 = false;
       }
 
-      if ((this as any).state === "closing" || (this as any).hangupStarted) {
+      if (conversationLifecyclePortFor(this).isTerminal()) {
         this.reconcileOwnerEventV40({ type: "terminal" });
         this.pendingBargeInV40 = null;
         this.classifierByResponseV40.clear();

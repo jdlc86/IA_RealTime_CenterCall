@@ -4,6 +4,7 @@ export type ConversationLifecyclePort = Readonly<{
   transportClosed(reason: string): void;
   semanticIgnored(reason: string): void;
   validateUserTurn(source: string): void;
+  isTerminal(): boolean;
 }>;
 
 type LegacyLifecycleSession = {
@@ -13,14 +14,15 @@ type LegacyLifecycleSession = {
   observeRealtimeTransportClosedV18?: (reason: string) => void;
   observeSemanticIgnoredV18?: (reason: string) => void;
   validateUserTurnV18?: (source: string) => void;
+  snapshotTurnLifecycleV18?: () => { state?: string };
   beginClosing?: (reason: string, source: string) => void;
 };
 
 /**
  * Explicit compatibility port around the current lifecycle owner. No caller of
  * this port may know which historical CallSession generation implements it.
- * The legacy method adaptation is isolated here and can be deleted when V18 is
- * replaced by a composed lifecycle runtime.
+ * The legacy adaptation is isolated here and can be deleted when V18 is replaced
+ * by a composed lifecycle runtime.
  */
 export function conversationLifecyclePortFor(session: object): ConversationLifecyclePort {
   const s = session as LegacyLifecycleSession;
@@ -36,5 +38,9 @@ export function conversationLifecyclePortFor(session: object): ConversationLifec
     transportClosed(reason: string) { s.observeRealtimeTransportClosedV18?.(reason); },
     semanticIgnored(reason: string) { s.observeSemanticIgnoredV18?.(reason); },
     validateUserTurn(source: string) { s.validateUserTurnV18?.(source); },
+    isTerminal() {
+      const state = s.snapshotTurnLifecycleV18?.()?.state;
+      return state === "TERMINAL_SPEAKING" || state === "HANDOFF" || state === "CLOSING";
+    },
   });
 }
