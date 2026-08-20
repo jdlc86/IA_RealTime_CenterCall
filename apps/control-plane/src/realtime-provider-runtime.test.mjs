@@ -4,6 +4,7 @@ import {
   ACTIVE_REALTIME_PROVIDER,
   adaptRealtimeProviderEvents,
   bindRealtimeProvider,
+  installRealtimeToolResultObserver,
   installRealtimeToolResultPolicy,
   observeRealtimeAssistantResponseCompleted,
   observeRealtimeAssistantResponseStarted,
@@ -49,6 +50,30 @@ test("neutral command access preserves the existing OpenAI wire behavior", () =>
       instructions: "hola",
       tool_choice: "none",
       metadata: { purpose: "neutrality-gate" },
+    },
+  }]);
+});
+
+test("neutral tool-result observers receive structured results before provider translation", () => {
+  const h = host();
+  const observed = [];
+  installRealtimeToolResultObserver(h, (request) => observed.push(request));
+  const port = realtimeCommandPortFor(h);
+  const request = {
+    callId: "call-business-info",
+    toolName: "restaurant_business_info",
+    output: { ok: true, status: "FOUND" },
+  };
+
+  port.submitToolResult(request);
+
+  assert.deepEqual(observed, [request]);
+  assert.deepEqual(h.events, [{
+    type: "conversation.item.create",
+    item: {
+      type: "function_call_output",
+      call_id: "call-business-info",
+      output: '{"ok":true,"status":"FOUND"}',
     },
   }]);
 });

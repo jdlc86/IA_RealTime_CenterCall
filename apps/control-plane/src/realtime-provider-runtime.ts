@@ -25,6 +25,7 @@ export type RealtimeToolResultPolicyDecision =
   | { action: "REPLACE_DEFAULT_RESPONSE"; speech: RealtimeSpeechRequest };
 export type RealtimeToolResultPolicy = (request: RealtimeToolResultRequest) => RealtimeToolResultPolicyDecision;
 export type RealtimeToolResultTransform = (request: RealtimeToolResultRequest) => RealtimeToolResultRequest;
+export type RealtimeToolResultObserver = (request: RealtimeToolResultRequest) => void;
 export type RealtimeSessionPolicyTransform = (update: RealtimeSessionPolicyUpdate) => RealtimeSessionPolicyUpdate;
 
 export const ACTIVE_REALTIME_PROVIDER: RealtimeProviderName = DEFAULT_REALTIME_PROVIDER;
@@ -33,6 +34,7 @@ export type RealtimeProviderHost = object & { send(event: Record<string, unknown
 class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
   private toolResultPolicy: RealtimeToolResultPolicy | null = null;
   private toolResultTransforms: RealtimeToolResultTransform[] = [];
+  private toolResultObservers: RealtimeToolResultObserver[] = [];
   private sessionPolicyTransforms: RealtimeSessionPolicyTransform[] = [];
   private pendingDefaultResponseReplacement: RealtimeSpeechRequest | null = null;
   private deferredDefaultResponseReplacement: RealtimeSpeechRequest | null = null;
@@ -49,6 +51,7 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
 
   setToolResultPolicy(policy: RealtimeToolResultPolicy): void { this.toolResultPolicy = policy; }
   addToolResultTransform(transform: RealtimeToolResultTransform): void { this.toolResultTransforms.push(transform); }
+  addToolResultObserver(observer: RealtimeToolResultObserver): void { this.toolResultObservers.push(observer); }
   addSessionPolicyTransform(transform: RealtimeSessionPolicyTransform): void { this.sessionPolicyTransforms.push(transform); }
   stageCallerTurn(text: string | null): void { this.stagedCallerTurnText = text?.trim() || null; }
   clearStagedCallerTurn(): void { this.stagedCallerTurnText = null; }
@@ -59,6 +62,7 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
 
   submitToolResult(request: RealtimeToolResultRequest): void {
     const governed = this.toolResultTransforms.reduce((current, transform) => transform(current), request);
+    for (const observer of this.toolResultObservers) observer(governed);
     const decision = this.toolResultPolicy?.(governed) ?? { action: "PASS" as const };
     this.pendingDefaultResponseReplacement = decision.action === "REPLACE_DEFAULT_RESPONSE" ? decision.speech : null;
     this.delegate.submitToolResult(governed);
@@ -163,6 +167,7 @@ export function stageConsolidatedCallerTurnForNextResponse(host: RealtimeProvide
 export function clearConsolidatedCallerTurnForNextResponse(host: RealtimeProviderHost): void { commandRuntimeFor(host).clearStagedCallerTurn(); }
 export function installRealtimeToolResultPolicy(host: RealtimeProviderHost, policy: RealtimeToolResultPolicy): void { commandRuntimeFor(host).setToolResultPolicy(policy); }
 export function installRealtimeToolResultTransform(host: RealtimeProviderHost, transform: RealtimeToolResultTransform): void { commandRuntimeFor(host).addToolResultTransform(transform); }
+export function installRealtimeToolResultObserver(host: RealtimeProviderHost, observer: RealtimeToolResultObserver): void { commandRuntimeFor(host).addToolResultObserver(observer); }
 export function installRealtimeSessionPolicyTransform(host: RealtimeProviderHost, transform: RealtimeSessionPolicyTransform): void { commandRuntimeFor(host).addSessionPolicyTransform(transform); }
 export function observeRealtimeAssistantResponseStarted(host: RealtimeProviderHost, responseId?: string): void { commandRuntimeFor(host).observeAssistantResponseStarted(responseId); }
 export function observeRealtimeAssistantResponseCompleted(host: RealtimeProviderHost, responseId?: string): void { commandRuntimeFor(host).observeAssistantResponseCompleted(responseId); }
