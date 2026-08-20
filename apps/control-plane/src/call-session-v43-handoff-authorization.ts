@@ -1,6 +1,7 @@
 import { CallSession as CallSessionV42 } from "./call-session-v42-turn-boundaries";
 import {
   authorizeHumanHandoff,
+  clearHumanHandoffOfferForCompetingAction,
   initialHumanHandoffAuthorizationState,
   isExplicitHumanHandoffRejection,
   observeHumanHandoffCallerTurn,
@@ -53,8 +54,9 @@ export class CallSession extends BaseConstructor {
   private handoffAuthorizationV43: HumanHandoffAuthorizationState = initialHumanHandoffAuthorizationState();
   private latestCallerTranscriptV43: string | null = null;
   private explicitPendingOfferRejectionV43 = false;
+  private handoffClarificationIssuedV43 = false;
 
-  private rejectUnauthorizedHandoffV43(event: RealtimeEvent, source: "OFFER_REQUIRED" | "CALLER_REJECTED"): void {
+  private emitHandoffToolOutputV43(event: RealtimeEvent, status: string, instruction: string): void {
     const session = this as any;
     session.releaseSemanticGateV29?.(HUMAN_ASSISTANCE);
     session.send?.({
@@ -62,40 +64,109 @@ export class CallSession extends BaseConstructor {
       item: {
         type: "function_call_output",
         call_id: event.call_id,
-        output: JSON.stringify({
-          ok: true,
-          status: source === "CALLER_REJECTED" ? "HUMAN_HANDOFF_DECLINED" : "HUMAN_HANDOFF_CONFIRMATION_REQUIRED",
-          transfer_started: false,
-          instruction: source === "CALLER_REJECTED"
-            ? "No transfieras. El usuario no ha autorizado la transferencia. Continúa solo con las gestiones que puedas resolver."
-            : "No transfieras todavía. Explica brevemente que esta gestión puede requerir una persona y pregunta si desea que le transfieras. Espera una respuesta explícita del usuario.",
-        }),
+        output: JSON.stringify({ ok: true, status, transfer_started: false, instruction }),
       },
     });
-    realtimeCommandPortFor(session).speak({
-      instructions: source === "CALLER_REJECTED"
-        ? "Confirma brevemente que no se realizará la transferencia y devuelve el turno al usuario. No llames herramientas en esta respuesta."
-        : "Explica brevemente que esta gestión puede requerir una persona y pregunta una sola vez si desea que le transfieras. Espera una respuesta explícita del usuario. No llames herramientas en esta respuesta.",
-      exactText: source === "CALLER_REJECTED"
-        ? "De acuerdo, no te transfiero."
-        : "Esta gestión puede requerir una persona. ¿Quieres que te transfiera?",
-      tools: "DISABLED",
-      isolated: true,
-      purpose: source === "CALLER_REJECTED"
-        ? "human_handoff_declined_v43"
-        : "human_handoff_confirmation_v43",
-      metadata: {
-        authority: "human_handoff_authorization_v43",
-        authorization_source: source,
-        single_confirmation_prompt: source === "OFFER_REQUIRED",
-        tools_disabled: true,
-      },
-    });
+  }
+
+  private rejectUnauthorizedHandoffV43(
+    event: RealtimeEvent,
+    source: "OFFER_REQUIRED" | "CALLER_REJECTED",
+    offerWasAlreadyPending: boolean,
+  ): void {
+    const session = this as any;
+
+    if (source === "CALLER_REJECTED") {
+      this.handoffClarificationIssuedV43 = false;
+      this.emitHandoffToolOutputV43(
+        event,
+        "HUMAN_HANDOFF_DECLINED",
+        "No transfieras. El usuario no ha autorizado la transferencia. Continúa solo con las gestiones que puedas resolver.",
+      );
+      realtimeCommandPortFor(session).speak({
+        instructions: "Confirma brevemente que no se realizará la transferencia y devuelve el turno al usuario. No llames herramientas en esta respuesta.",
+        exactText: "De acuerdo, no te transfiero.",
+        tools: "DISABLED",
+        isolated: true,
+        purpose: "human_handoff_declined_v43",
+        metadata: {
+          authority: "human_handoff_authorization_v43",
+          authorization_source: source,
+          tools_disabled: true,
+        },
+      });
+    } else if (!offerWasAlreadyPending) {
+      this.handoffClarificationIssuedV43 = false;
+      this.emitHandoffToolOutputV43(
+        event,
+        "HUMAN_HANDOFF_CONFIRMATION_REQUIRED",
+        "No transfieras todavía. Explica brevemente que esta gestión puede requerir una persona y pregunta si desea que le transfieras. Espera una respuesta explícita del usuario.",
+      );
+      realtimeCommandPortFor(session).speak({
+        instructions: "Explica brevemente que esta gestión puede requerir una persona y pregunta una sola vez si desea que le transfieras. Espera una respuesta explícita del usuario. No llames herramientas en esta respuesta.",
+        exactText: "Esta gestión puede requerir una persona. ¿Quieres que te transfiera?",
+        tools: "DISABLED",
+        isolated: true,
+        purpose: "human_handoff_confirmation_v43",
+        metadata: {
+          authority: "human_handoff_authorization_v43",
+          authorization_source: source,
+          single_confirmation_prompt: true,
+          tools_disabled: true,
+        },
+      });
+    } else if (!this.handoffClarificationIssuedV43) {
+      this.handoffClarificationIssuedV43 = true;
+      this.emitHandoffToolOutputV43(
+        event,
+        "HUMAN_HANDOFF_CONFIRMATION_PENDING",
+        "Ya existe una oferta de transferencia pendiente. No repitas la explicación. Pide únicamente una aclaración breve de sí o no y no llames herramientas.",
+      );
+      realtimeCommandPortFor(session).speak({
+        instructions: "No repitas la explicación ni vuelvas a ofrecer la transferencia. Pide únicamente una aclaración breve de sí o no. No llames herramientas en esta respuesta.",
+        exactText: "No he entendido si quieres que te transfiera. ¿Sí o no?",
+        tools: "DISABLED",
+        isolated: true,
+        purpose: "human_handoff_confirmation_clarification_v43",
+        metadata: {
+          authority: "human_handoff_authorization_v43",
+          authorization_source: source,
+          duplicate_offer_suppressed: true,
+          clarification_only: true,
+          tools_disabled: true,
+        },
+      });
+    } else {
+      this.handoffAuthorizationV43 = { offerPending: false };
+      this.handoffClarificationIssuedV43 = false;
+      this.emitHandoffToolOutputV43(
+        event,
+        "HUMAN_HANDOFF_NOT_CONFIRMED",
+        "No hay autorización suficiente para transferir. No repitas la oferta. Continúa sin transferencia.",
+      );
+      realtimeCommandPortFor(session).speak({
+        instructions: "No repitas la oferta de transferencia. Indica brevemente que continuarás sin transferir y devuelve el turno al usuario. No llames herramientas.",
+        exactText: "De acuerdo, seguimos sin transferirte. ¿En qué más puedo ayudarte?",
+        tools: "DISABLED",
+        isolated: true,
+        purpose: "human_handoff_confirmation_abandoned_v43",
+        metadata: {
+          authority: "human_handoff_authorization_v43",
+          authorization_source: source,
+          duplicate_offer_suppressed: true,
+          pending_offer_cleared: true,
+          tools_disabled: true,
+        },
+      });
+    }
+
     session.diagnostics?.checkpoint?.("HUMAN_HANDOFF_BLOCKED_WITHOUT_CALLER_AUTHORITY_V43", {
       authorization_source: source,
       transfer_started: false,
       caller_transcript_present: Boolean(this.latestCallerTranscriptV43),
       offer_pending: this.handoffAuthorizationV43.offerPending,
+      offer_was_already_pending: offerWasAlreadyPending,
+      clarification_issued: this.handoffClarificationIssuedV43,
       confirmation_response_tools_disabled: true,
     });
   }
@@ -105,6 +176,7 @@ export class CallSession extends BaseConstructor {
     const session = this as any;
     this.explicitPendingOfferRejectionV43 = false;
     this.handoffAuthorizationV43 = { offerPending: false };
+    this.handoffClarificationIssuedV43 = false;
     session.releaseSemanticGateV29?.(INPUT_IGNORED);
     session.validateUserTurnV18?.("human_handoff_rejected");
     session.send?.({
@@ -121,7 +193,18 @@ export class CallSession extends BaseConstructor {
         }),
       },
     });
-    session.send?.({ type: "response.create" });
+    realtimeCommandPortFor(session).speak({
+      instructions: "Confirma brevemente que no se realizará la transferencia y continúa disponible para ayudar. No llames herramientas en esta respuesta.",
+      exactText: "De acuerdo, no te transfiero. ¿En qué más puedo ayudarte?",
+      tools: "DISABLED",
+      isolated: true,
+      purpose: "human_handoff_rejection_overruled_ignored_v43",
+      metadata: {
+        authority: "human_handoff_authorization_v43",
+        pending_offer_cleared: true,
+        tools_disabled: true,
+      },
+    });
     session.diagnostics?.checkpoint?.("HUMAN_HANDOFF_REJECTION_OVERRULED_IGNORED_INPUT_V43", {
       transfer_started: false,
       pending_offer_cleared: true,
@@ -145,16 +228,33 @@ export class CallSession extends BaseConstructor {
 
     if (event && this.consumeRejectedOfferMisclassifiedAsIgnoredV43(event)) return;
 
+    if (
+      event?.type === "response.function_call_arguments.done" &&
+      event.name &&
+      event.name !== HUMAN_ASSISTANCE &&
+      event.name !== INPUT_IGNORED &&
+      this.handoffAuthorizationV43.offerPending
+    ) {
+      this.handoffAuthorizationV43 = clearHumanHandoffOfferForCompetingAction(this.handoffAuthorizationV43);
+      this.handoffClarificationIssuedV43 = false;
+      (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_PENDING_OFFER_CLEARED_BY_COMPETING_ACTION_V43", {
+        selected_tool: event.name,
+        pending_offer_cleared: true,
+      });
+    }
+
     if (event?.type === "response.function_call_arguments.done" && event.name === HUMAN_ASSISTANCE) {
+      const offerWasAlreadyPending = this.handoffAuthorizationV43.offerPending;
       const decision = authorizeHumanHandoff(this.handoffAuthorizationV43, this.latestCallerTranscriptV43);
       this.handoffAuthorizationV43 = decision.state;
       this.explicitPendingOfferRejectionV43 = false;
 
       if (!decision.allowed) {
-        this.rejectUnauthorizedHandoffV43(event, decision.source);
+        this.rejectUnauthorizedHandoffV43(event, decision.source, offerWasAlreadyPending);
         return;
       }
 
+      this.handoffClarificationIssuedV43 = false;
       (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_AUTHORIZED_BY_CALLER_V43", {
         authorization_source: decision.source,
         caller_transcript_present: Boolean(this.latestCallerTranscriptV43),

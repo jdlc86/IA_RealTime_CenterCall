@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   authorizeHumanHandoff,
+  clearHumanHandoffOfferForCompetingAction,
   initialHumanHandoffAuthorizationState,
   isExplicitHumanHandoffRejection,
   observeHumanHandoffCallerTurn,
@@ -48,9 +49,16 @@ test("fragmented or ambiguous caller wording must not silently consume a pending
   assert.equal(fragment.offerPending, true);
 });
 
+test("polite natural yes confirms a pending offer", () => {
+  const confirmed = authorizeHumanHandoff({ offerPending: true }, "Sí, por favor");
+  assert.equal(confirmed.allowed, true);
+  assert.equal(confirmed.source, "CONFIRMED_OFFER");
+});
+
 test("caller rejection clears pending authorization", () => {
   const blocked = authorizeHumanHandoff(initialHumanHandoffAuthorizationState(), "Eso no me lo puedes resolver");
   const observed = observeHumanHandoffCallerTurn(blocked.state, "No, gracias");
+  assert.equal(observed.offerPending, false);
   const rejected = authorizeHumanHandoff(observed, "No, gracias");
   assert.equal(rejected.allowed, false);
   assert.equal(rejected.source, "CALLER_REJECTED");
@@ -70,4 +78,20 @@ test("pending offer is not expired merely by transcript observation", () => {
   const blocked = authorizeHumanHandoff(initialHumanHandoffAuthorizationState(), "Eso no me lo puedes resolver");
   const observed = observeHumanHandoffCallerTurn(blocked.state, "Otra cosa, ¿tenéis terraza?");
   assert.equal(observed.offerPending, true);
+});
+
+test("a competing business action structurally expires a pending offer", () => {
+  const pending = { offerPending: true };
+  const cleared = clearHumanHandoffOfferForCompetingAction(pending);
+  assert.equal(cleared.offerPending, false);
+
+  const laterYes = authorizeHumanHandoff(cleared, "Sí");
+  assert.equal(laterYes.allowed, false);
+  assert.equal(laterYes.source, "OFFER_REQUIRED");
+});
+
+test("rejection wins over affirmative-looking wording", () => {
+  const rejected = authorizeHumanHandoff({ offerPending: true }, "No, gracias");
+  assert.equal(rejected.allowed, false);
+  assert.equal(rejected.source, "CALLER_REJECTED");
 });

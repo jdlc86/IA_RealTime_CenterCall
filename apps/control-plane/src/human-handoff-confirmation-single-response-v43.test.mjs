@@ -10,9 +10,9 @@ test("v43 handoff confirmation is emitted once with tools disabled", async () =>
   const v43 = await source("call-session-v43-handoff-authorization.ts");
 
   assert.match(v43, /realtimeCommandPortFor/);
-  assert.match(v43, /purpose: source === "CALLER_REJECTED"[\s\S]*"human_handoff_confirmation_v43"/);
+  assert.match(v43, /human_handoff_confirmation_v43/);
   assert.match(v43, /tools: "DISABLED"/);
-  assert.match(v43, /single_confirmation_prompt: source === "OFFER_REQUIRED"/);
+  assert.match(v43, /single_confirmation_prompt: true/);
   assert.match(v43, /confirmation_response_tools_disabled: true/);
 
   const start = v43.indexOf("private rejectUnauthorizedHandoffV43");
@@ -23,4 +23,23 @@ test("v43 handoff confirmation is emitted once with tools disabled", async () =>
   assert.doesNotMatch(boundary, /send\?\.\(\{ type: "response\.create" \}\)/);
   assert.match(boundary, /realtimeCommandPortFor\(session\)\.speak/);
   assert.match(boundary, /tools: "DISABLED"/);
+});
+
+test("v43 suppresses duplicate handoff explanation while confirmation is pending", async () => {
+  const v43 = await source("call-session-v43-handoff-authorization.ts");
+
+  assert.match(v43, /offerWasAlreadyPending/);
+  assert.match(v43, /HUMAN_HANDOFF_CONFIRMATION_PENDING/);
+  assert.match(v43, /duplicate_offer_suppressed: true/);
+  assert.match(v43, /human_handoff_confirmation_clarification_v43/);
+  assert.match(v43, /No repitas la explicación ni vuelvas a ofrecer la transferencia/);
+});
+
+test("v43 clears a stale pending offer only when another semantic business tool wins", async () => {
+  const v43 = await source("call-session-v43-handoff-authorization.ts");
+
+  assert.match(v43, /clearHumanHandoffOfferForCompetingAction/);
+  assert.match(v43, /event\.name !== HUMAN_ASSISTANCE/);
+  assert.match(v43, /event\.name !== INPUT_IGNORED/);
+  assert.match(v43, /HUMAN_HANDOFF_PENDING_OFFER_CLEARED_BY_COMPETING_ACTION_V43/);
 });
