@@ -7,6 +7,7 @@ import {
   shouldArmSemanticGateAfterTranscript,
   shouldBeginSemanticTurnForTranscript,
   shouldConsumeSemanticToolDecision,
+  shouldReopenSemanticTurnAfterProvisionalIgnore,
 } from "../.test-dist/semantic-turn-decision-policy.js";
 
 test("first public tool before transcript becomes authoritative for the caller turn", () => {
@@ -55,6 +56,19 @@ test("ordinary transcript cannot reset an already-decided semantic turn", () => 
   assert.equal(shouldBeginSemanticTurnForTranscript(s, false), false);
   const duplicate = selectSemanticTool(s, "restaurant_business_info");
   assert.equal(duplicate.allowed, false);
+});
+
+test("usable transcript may supersede only a provisional restaurant_input_ignored decision", () => {
+  let ignored = beginSemanticCallerTurn();
+  ({ next: ignored } = selectSemanticTool(ignored, "restaurant_input_ignored"));
+  assert.equal(shouldReopenSemanticTurnAfterProvisionalIgnore(ignored, "restaurant_input_ignored"), true);
+
+  let business = beginSemanticCallerTurn();
+  ({ next: business } = selectSemanticTool(business, "restaurant_business_info"));
+  assert.equal(shouldReopenSemanticTurnAfterProvisionalIgnore(business, "restaurant_input_ignored"), false);
+
+  const fresh = beginSemanticCallerTurn();
+  assert.equal(shouldReopenSemanticTurnAfterProvisionalIgnore(fresh, "restaurant_input_ignored"), false);
 });
 
 test("no transcript gate is armed before a caller turn exists", () => {
