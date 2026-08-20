@@ -7,6 +7,7 @@ import {
   shouldBlockHumanHandoff,
   type HandoffTurnPolicyState,
 } from "./human-handoff-turn-policy.js";
+import { releaseSemanticGate } from "./semantic-turn-coordinator.js";
 
 const BaseConstructor = CallSessionV41 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV41.prototype as any;
@@ -99,7 +100,7 @@ export class CallSession extends BaseConstructor {
 
   private rejectRedundantHandoffV42(event: RealtimeEvent): void {
     const session = this as any;
-    session.releaseSemanticGateV29?.(HUMAN_ASSISTANCE);
+    releaseSemanticGate(this, HUMAN_ASSISTANCE);
     session.send?.({
       type: "conversation.item.create",
       item: {
@@ -118,6 +119,7 @@ export class CallSession extends BaseConstructor {
       resolved_tool: this.handoffTurnStateV42.resolvedTool,
       resolved_status: this.handoffTurnStateV42.resolvedStatus,
       irreversible_transfer_prevented: true,
+      semantic_gate_owner: "semantic_turn_coordinator",
     });
   }
 
