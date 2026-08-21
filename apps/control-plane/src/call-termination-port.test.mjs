@@ -8,7 +8,7 @@ function host(env = {}) {
 }
 
 function response(status, body = "") {
-  return new Response(body, { status });
+  return new Response(status === 204 ? null : body, { status });
 }
 
 test("call termination uses Telnyx source leg first", async () => {
