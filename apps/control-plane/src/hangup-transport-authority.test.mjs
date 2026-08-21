@@ -4,20 +4,29 @@ import { readFile } from "node:fs/promises";
 
 const source = async (name) => readFile(new URL(`./${name}`, import.meta.url), "utf8");
 
-test("hangup controller prefers the physical Telnyx source leg when available", async () => {
+test("hangup controller routes provider-neutral termination while preserving source-leg authority", async () => {
   const controller = await source("hangup-controller.ts");
   const v22 = await source("call-session-v22.ts");
 
   assert.match(controller, /getSourceCallControlId\?\(\): string \| null/);
-  assert.match(controller, /getTelnyxApiKey\?\(\): string/);
-  assert.match(controller, /TELNYX_SOURCE_LEG/);
-  assert.match(controller, /OPENAI_REALTIME_FALLBACK/);
-  assert.match(controller, /api\.telnyx\.com\/v2\/calls\/\$\{encodeURIComponent\(sourceCallControlId\)\}\/actions\/hangup/);
-  assert.match(controller, /if \(sourceCallControlId && this\.host\.getTelnyxApiKey\)/);
+  assert.match(controller, /terminateCall\(request: CallTerminationRequest\): Promise<CallTerminationResult>/);
+  assert.match(controller, /fallbackMode:\s*"SOURCE_ONLY"/);
+  assert.match(controller, /fallbackMode:\s*"REALTIME_FALLBACK"/);
+  assert.match(controller, /this\.host\.terminateCall\(request\)/);
+  assert.match(controller, /completion_claimed:\s*false/);
+  assert.match(controller, /confirmation_source:\s*"sideband_close"/);
 
+  assert.doesNotMatch(controller, /\b(?:TELNYX_API_KEY|OPENAI_API_KEY)\b/);
+  assert.doesNotMatch(controller, /api\.(?:telnyx|openai)\.com/);
+  assert.doesNotMatch(controller, /\bfetch\s*\(/);
+
+  assert.match(v22, /callTerminationPortFor\(session\)/);
+  assert.match(v22, /terminateCall:\s*\(request\)\s*=>\s*terminationPort\.terminate\(request\)/);
   assert.match(v22, /humanHandoffTransportRuntimeFor\(this\)\.transportContext\(\)\.sourceCallControlId/);
   assert.match(v22, /conversationLifecyclePortFor\(this\)\.isClosing\(\)/);
-  assert.match(v22, /getTelnyxApiKey: \(\) => session\.env\?\.TELNYX_API_KEY/);
+
+  assert.doesNotMatch(v22, /\b(?:getTelnyxApiKey|TELNYX_API_KEY|OPENAI_API_KEY)\b/);
+  assert.doesNotMatch(v22, /api\.(?:telnyx|openai)\.com/);
   assert.doesNotMatch(v22, /telnyxCallControlIdV37/);
   assert.doesNotMatch(v22, /snapshotTurnLifecycleV18/);
 });
