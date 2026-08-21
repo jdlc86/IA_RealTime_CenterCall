@@ -34,13 +34,16 @@ test("v35 keeps the validated atomic greeting lifecycle unchanged", () => {
   assert.match(source, /ASSISTANT_AUDIO_CLEARED/);
 });
 
-test("v36 delegates turn concurrency commands to the neutral coordinator and provider runtime", () => {
+test("v36 delegates turn concurrency through neutral provider events and runtime commands", () => {
   assert.match(v36, /turnConcurrencyCoordinatorFor/);
-  assert.match(v36, /\.observe\(this as any, parseEvent\(data\)\)/);
+  assert.match(v36, /adaptRealtimeProviderEvents/);
+  assert.match(v36, /coordinator\.observe\(session, event\)/);
+  assert.doesNotMatch(v36, /parseEvent|readRealtimeText|TextDecoder/);
   assert.doesNotMatch(v36, /realtimeCommandPortFor/);
   assert.doesNotMatch(v36, /openai-realtime-command-adapter/);
 
   assert.match(coordinator, /realtime-provider-runtime/);
   assert.match(coordinator, /realtimeCommandPortFor/);
+  assert.match(coordinator, /RealtimeProviderEvent/);
   assert.doesNotMatch(coordinator, /openai-realtime-command-adapter/);
 });
