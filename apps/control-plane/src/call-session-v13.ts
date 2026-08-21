@@ -12,6 +12,7 @@ import { decideClosingTransition } from "./core-closing-policy";
 import { adaptHierarchicalIntentToLegacy } from "./core-intent-legacy-adapter";
 import { coreIntentClassifierTool, parseCoreIntentRequest } from "./core-intent-router";
 import type { ToolResult } from "./tool-gateway";
+import { claimClassifierBootstrap, ownsClassifierBootstrap } from "./classifier-bootstrap-authority.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV12 as unknown as new (...args: any[]) => any;
@@ -67,17 +68,11 @@ export class CallSession extends BaseConstructor {
 
   async fetch(request: Request): Promise<Response> {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
-
-    if (isStart) {
-      (this as any).reservationSessionUpdateSent = true;
-      (this as any).reservationSessionUpdateV6Sent = true;
-      (this as any).marketingSessionUpdateV7Sent = true;
-      (this as any).querySessionUpdateV11Sent = true;
-    }
+    if (isStart) claimClassifierBootstrap(this, "CORE_INTENT_V13");
 
     const response = await super.fetch(request);
 
-    if (isStart && response.ok && !this.coreIntentSessionUpdateV13Sent) {
+    if (isStart && response.ok && ownsClassifierBootstrap(this, "CORE_INTENT_V13") && !this.coreIntentSessionUpdateV13Sent) {
       this.coreIntentSessionUpdateV13Sent = true;
       (this as any).send({
         type: "session.update",

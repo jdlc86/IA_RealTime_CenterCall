@@ -4,6 +4,7 @@ import { decideMarketingPrompt } from "./marketing-consent-prompt-policy";
 import { SupabaseMarketingConsentStore } from "./marketing-consent-store";
 import { parseSemanticDecision } from "./semantic-router";
 import type { ToolResult } from "./tool-gateway";
+import { claimClassifierBootstrap, ownsClassifierBootstrap } from "./classifier-bootstrap-authority.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const MANAGE_MARKETING_CONSENT = "manage_marketing_consent";
@@ -90,12 +91,11 @@ export class CallSession extends BaseConstructor {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const isStart = request.method === "POST" && url.pathname === "/start";
-
-    if (isStart) (this as any).reservationSessionUpdateV6Sent = true;
+    if (isStart) claimClassifierBootstrap(this, "MARKETING_V7");
 
     const response = await super.fetch(request);
 
-    if (isStart && response.ok && !this.marketingSessionUpdateV7Sent) {
+    if (isStart && response.ok && ownsClassifierBootstrap(this, "MARKETING_V7") && !this.marketingSessionUpdateV7Sent) {
       this.marketingSessionUpdateV7Sent = true;
       try {
         (this as any).send({

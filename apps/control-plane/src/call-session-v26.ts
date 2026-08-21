@@ -5,6 +5,7 @@ import {
   realtimeCommandPortFor,
 } from "./realtime-provider-runtime.js";
 import { decideDirectPostToolResponse } from "./post-booking-conversation-policy";
+import { claimClassifierBootstrap } from "./classifier-bootstrap-authority.js";
 
 const BaseConstructor = CallSessionV25 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV25.prototype as any;
@@ -280,7 +281,7 @@ export class CallSession extends BaseConstructor {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
 
     if (isStart) {
-      (this as any).coreIntentSessionUpdateV13Sent = true;
+      claimClassifierBootstrap(this, "DIRECT_AGENT_V26");
       this.installPostToolResponseBoundaryV26();
     }
 

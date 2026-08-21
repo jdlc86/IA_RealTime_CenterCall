@@ -12,6 +12,7 @@ import {
 import { parseSemanticDecision } from "./semantic-router";
 import { SupabaseAdapter, type RestaurantAvailability } from "./supabase-adapter";
 import { ToolGateway, requireObject, type ToolDefinition, type ToolRequest, type ToolResult } from "./tool-gateway";
+import { claimClassifierBootstrap, ownsClassifierBootstrap } from "./classifier-bootstrap-authority.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const CHECK_RESERVATION_AVAILABILITY = "check_reservation_availability";
@@ -135,8 +136,9 @@ export class CallSession extends BaseConstructor {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const isStart = request.method === "POST" && url.pathname === "/start";
+    if (isStart) claimClassifierBootstrap(this, "RESERVATION_V5");
     const response = await super.fetch(request);
-    if (isStart && response.ok && !this.reservationSessionUpdateSent) {
+    if (isStart && response.ok && ownsClassifierBootstrap(this, "RESERVATION_V5") && !this.reservationSessionUpdateSent) {
       this.reservationSessionUpdateSent = true;
       try {
         (this as any).send({

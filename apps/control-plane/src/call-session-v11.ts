@@ -2,6 +2,7 @@ import { CallSession as CallSessionV10 } from "./call-session-v10";
 import { publicReservationQueryResults } from "./reservation-query";
 import { parseSemanticDecision } from "./semantic-router";
 import { SupabaseAdapter } from "./supabase-adapter";
+import { claimClassifierBootstrap, ownsClassifierBootstrap } from "./classifier-bootstrap-authority.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV10 as unknown as new (...args: any[]) => any;
@@ -89,8 +90,9 @@ export class CallSession extends BaseConstructor {
 
   async fetch(request: Request): Promise<Response> {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
+    if (isStart) claimClassifierBootstrap(this, "QUERY_V11");
     const response = await super.fetch(request);
-    if (isStart && response.ok && !this.querySessionUpdateV11Sent) {
+    if (isStart && response.ok && ownsClassifierBootstrap(this, "QUERY_V11") && !this.querySessionUpdateV11Sent) {
       this.querySessionUpdateV11Sent = true;
       (this as any).send({ type: "session.update", session: { type: "realtime", tools: [queryAwareIntentTool()], tool_choice: "required" } });
       (this as any).diagnostics?.checkpoint?.("RESERVATION_QUERY_CLASSIFIER_SCHEMA_UPDATED", { reservation_operations: ["CREATE", "QUERY", "CANCEL"], identity_policy: "TRUSTED_CALLER_PHONE", multi_cancel_supported: true });
