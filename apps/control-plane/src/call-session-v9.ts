@@ -8,6 +8,7 @@ import {
 } from "./legacy-intent-execution.js";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { reservationRoutingRuntimeFor } from "./reservation-routing-runtime.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV8 as unknown as new (...args: any[]) => any;
@@ -39,19 +40,19 @@ function rawReservationOperation(argumentsJson: string | undefined): "CREATE" | 
  * while making routing precedence explicit in one place.
  */
 export class CallSession extends BaseConstructor {
-  private createReservationIntentActiveV9 = false;
-
   async [LEGACY_INTENT_EXECUTOR](selection: LegacyIntentSelection): Promise<void> {
+    const routing = reservationRoutingRuntimeFor(this);
     const semantic = parseSemanticDecision(selection.argumentsJson);
     const operation = semantic.dataRequirement === "RESERVATION" ? rawReservationOperation(selection.argumentsJson) : null;
     if (semantic.intent === "CONTINUE" && semantic.dataRequirement === "RESERVATION" && operation !== "QUERY" && operation !== "CANCEL") {
-      this.createReservationIntentActiveV9 = true;
+      routing.markCreateIntentActive();
     }
     if ((this as any).reservationBookedThisCall === true || operation === "QUERY" || operation === "CANCEL") {
-      this.createReservationIntentActiveV9 = false;
+      routing.clearCreateIntent();
     }
 
-    const reservationInProgress = (this.createReservationIntentActiveV9 || hasReservationDraft((this as any).reservationDraft))
+    const routingState = routing.snapshot();
+    const reservationInProgress = (routingState.createIntentActive || hasReservationDraft((this as any).reservationDraft))
       && (this as any).reservationBookedThisCall !== true;
     const terminal = conversationLifecyclePortFor(this).isTerminal();
     const authority = authorizeSpecializedFlow({
@@ -63,7 +64,7 @@ export class CallSession extends BaseConstructor {
     (this as any).diagnostics?.checkpoint?.("CONVERSATION_STATE_AUTHORITY", {
       lifecycle_state: terminal ? "closing" : "active",
       reservation_in_progress: reservationInProgress,
-      reservation_intent_active: this.createReservationIntentActiveV9,
+      reservation_intent_active: routingState.createIntentActive,
       classifier_requirement: semantic.dataRequirement,
       classifier_degraded: semantic.degraded,
       authorized_flow: authority.flow,

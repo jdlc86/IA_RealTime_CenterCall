@@ -3,7 +3,7 @@ import {
   restaurantReservationPortFor,
   type BookedReservationSummary,
 } from "./restaurant-reservation-port.js";
-import { cancellationFingerprint, chooseCancellationCandidates, emptyCancellationState, publicCancellationOptions, publicSelectedReservations, type CancellationState } from "./reservation-cancellation";
+import { cancellationFingerprint, chooseCancellationCandidates, publicCancellationOptions, publicSelectedReservations } from "./reservation-cancellation";
 import { parseReservationTurn } from "./reservation-orchestrator";
 import { parseSemanticDecision } from "./semantic-router";
 import {
@@ -13,6 +13,7 @@ import {
 } from "./legacy-intent-execution.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { reservationRoutingRuntimeFor } from "./reservation-routing-runtime.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV9 as unknown as new (...args: any[]) => any;
@@ -37,8 +38,6 @@ function rawReservationOperation(argumentsJson: string | undefined): "CREATE" | 
 }
 
 export class CallSession extends BaseConstructor {
-  private cancellationStateV10: CancellationState | null = null;
-
   private sendCancellationClassifierOutput(callId: string | undefined, stage: string, details: Record<string, unknown> = {}): void {
     if (!callId) return;
     realtimeCommandPortFor(this as any).submitToolResult({
@@ -56,7 +55,7 @@ export class CallSession extends BaseConstructor {
   }
 
   private resetCancellation(): void {
-    this.cancellationStateV10 = null;
+    reservationRoutingRuntimeFor(this).clearCancellation();
   }
 
   private async loadCandidates(): Promise<BookedReservationSummary[]> {
@@ -66,6 +65,7 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleCancellationTurn(argumentsJson: string | undefined, callId: string | undefined): Promise<void> {
+    const routing = reservationRoutingRuntimeFor(this);
     (this as any).state = "active";
     (this as any).ambiguousCount = 0;
     let turn;
@@ -88,9 +88,9 @@ export class CallSession extends BaseConstructor {
       return;
     }
 
-    if (!this.cancellationStateV10) {
+    if (!routing.snapshot().cancellationActive) {
       const candidates = await this.loadCandidates();
-      this.cancellationStateV10 = { ...emptyCancellationState(), candidates };
+      routing.startCancellation(candidates);
       (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCEL_LOOKUP_COMPLETED", { candidate_count: candidates.length, identity_source: "CALLER_ID" });
       if (candidates.length === 0) {
         this.sendCancellationClassifierOutput(callId, "NO_BOOKED_RESERVATIONS");
@@ -100,7 +100,8 @@ export class CallSession extends BaseConstructor {
       }
     }
 
-    const state = this.cancellationStateV10;
+    let state = routing.cancellation();
+    if (!state) throw new Error("Cancellation routing state was not initialized");
     if (state.selectedIds.length === 0) {
       const selected = chooseCancellationCandidates(state.candidates, turn);
       if (selected.length === 0) {
@@ -110,8 +111,10 @@ export class CallSession extends BaseConstructor {
         (this as any).createSpokenResponse(`Hay reservas futuras verificadas asociadas a esta llamada. Presenta de forma breve y numerada únicamente estas opciones: ${JSON.stringify(options)}. No leas identificadores internos ni teléfonos. El usuario puede elegir una, varias opciones o todas. Todavía no canceles nada.`);
         return;
       }
-      state.selectedIds = selected.map((reservation) => reservation.id);
-      state.confirmationFingerprints = Object.fromEntries(selected.map((reservation) => [reservation.id, cancellationFingerprint(reservation)]));
+      state = routing.selectCancellation(
+        selected.map((reservation) => reservation.id),
+        Object.fromEntries(selected.map((reservation) => [reservation.id, cancellationFingerprint(reservation)])),
+      );
       this.sendCancellationClassifierOutput(callId, "CONFIRM_CANCEL_RESERVATIONS", { selected_count: selected.length });
       (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCEL_CONFIRMATION_ARMED", { selected_count: selected.length, reservation_ids: state.selectedIds });
       (this as any).createSpokenResponse(`Resume brevemente estas reservas verificadas que se van a cancelar: ${JSON.stringify(publicSelectedReservations(selected))}. Pregunta de forma inequívoca si confirma cancelar exactamente ${selected.length === 1 ? "esta reserva" : "estas reservas"}. No canceles nada hasta recibir una confirmación explícita en un turno posterior.`);
@@ -175,8 +178,9 @@ export class CallSession extends BaseConstructor {
     const semantic = parseSemanticDecision(selection.argumentsJson);
     if (semantic.intent === "CONTINUE" && semantic.dataRequirement === "RESERVATION") {
       const explicitOperation = rawReservationOperation(selection.argumentsJson);
-      if ((explicitOperation === "CREATE" || explicitOperation === "QUERY") && this.cancellationStateV10) this.resetCancellation();
-      const cancellationOwned = explicitOperation === "CANCEL" || (this.cancellationStateV10 !== null && explicitOperation !== "CREATE" && explicitOperation !== "QUERY");
+      const routing = reservationRoutingRuntimeFor(this).snapshot();
+      if ((explicitOperation === "CREATE" || explicitOperation === "QUERY") && routing.cancellationActive) this.resetCancellation();
+      const cancellationOwned = explicitOperation === "CANCEL" || (routing.cancellationActive && explicitOperation !== "CREATE" && explicitOperation !== "QUERY");
       if (cancellationOwned) {
         (this as any).diagnostics?.checkpoint?.("RESERVATION_OPERATION_ROUTED", { operation: "CANCEL", source: explicitOperation === "CANCEL" ? "classifier" : "active_workflow" });
         await this.handleCancellationTurn(selection.argumentsJson, selection.callId);

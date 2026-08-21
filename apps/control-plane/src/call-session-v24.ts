@@ -1,6 +1,7 @@
 import { CallSession as CallSessionV23 } from "./call-session-v23";
 import { SupabaseMarketingConsentStore } from "./marketing-consent-store";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 
 const BaseConstructor = CallSessionV23 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV23.prototype as any;
@@ -48,8 +49,9 @@ export class CallSession extends BaseConstructor {
   }
 
   private markDirectMarketingV24(): void {
-    (this as any).validateUserTurnV18?.("agent_tool");
-    (this as any).suspendForToolV18?.(MARKETING);
+    const lifecycle = conversationLifecyclePortFor(this);
+    lifecycle.validateUserTurn("agent_tool");
+    lifecycle.suspendForTool(MARKETING);
     (this as any).diagnostics?.checkpoint?.("LUCIA_AGENT_TOOL_SELECTED", {
       tool: MARKETING,
       compatibility_executor: "direct_marketing_controller_v24",

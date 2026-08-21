@@ -6,6 +6,7 @@ import {
   type RestaurantTablePlanRow,
 } from "./restaurant-reservation-port";
 import { adaptRealtimeProviderEvents } from "./realtime-provider-runtime";
+import { reservationMultitableRuntimeFor } from "./reservation-multitable-runtime.js";
 import type { ToolGateway, ToolRequest, ToolResult } from "./tool-gateway";
 
 const BaseConstructor = CallSessionV15 as unknown as new (...args: any[]) => any;
@@ -40,11 +41,6 @@ function publicReservation(row: BookedReservationSummary, index: number): Record
 }
 
 export class CallSession extends BaseConstructor {
-  private separateTablesAcceptableV16: boolean | undefined;
-  private tablesMustBeCloseV16 = false;
-  private multitablePlanV16: RestaurantTablePlanRow[] | null = null;
-  private multitableKeyV16: string | null = null;
-
   private modifyRequestedV16 = false;
   private modifyCandidatesV16: BookedReservationSummary[] | null = null;
   private modifySelectedV16: BookedReservationSummary | null = null;
@@ -66,16 +62,20 @@ export class CallSession extends BaseConstructor {
       this.modifyRequestedV16 = false;
       const separate = optionalBoolean(reservation.separate_tables_acceptable);
       const close = optionalBoolean(reservation.tables_must_be_close);
-      if (separate !== undefined) this.separateTablesAcceptableV16 = separate;
-      if (close !== undefined) this.tablesMustBeCloseV16 = close;
+      reservationMultitableRuntimeFor(this).capturePreferences({
+        separateTablesAcceptable: separate,
+        tablesMustBeClose: close,
+      });
     } else if (intent === "MODIFY_RESERVATION") {
       this.modifyRequestedV16 = true;
       this.modifyConfirmV16 = reservation.confirm === true;
       this.modifySelectionIndexV16 = optionalNumber(reservation.selection_index);
       const separate = optionalBoolean(reservation.separate_tables_acceptable);
       const close = optionalBoolean(reservation.tables_must_be_close);
-      if (separate !== undefined) this.separateTablesAcceptableV16 = separate;
-      if (close !== undefined) this.tablesMustBeCloseV16 = close;
+      reservationMultitableRuntimeFor(this).capturePreferences({
+        separateTablesAcceptable: separate,
+        tablesMustBeClose: close,
+      });
       const patch: ModifyPatch = {
         partySize: optionalNumber(reservation.party_size),
         startsAt: optionalString(reservation.starts_at),
@@ -122,15 +122,16 @@ export class CallSession extends BaseConstructor {
   }
 
   private createSpokenResponse(instructions: string): void {
-    if (this.multitablePlanV16?.length && instructions.includes("No hay disponibilidad para la hora solicitada")) {
-      if (this.tablesMustBeCloseV16 || this.separateTablesAcceptableV16 === false) {
+    const multitable = reservationMultitableRuntimeFor(this).snapshot();
+    if (multitable.plan?.length && instructions.includes("No hay disponibilidad para la hora solicitada")) {
+      if (multitable.tablesMustBeClose || multitable.separateTablesAcceptable === false) {
         BasePrototype.createSpokenResponse.call(this,
-          `Hay una combinación exacta de mesas disponibles (${this.compositionV16(this.multitablePlanV16)}), pero el sistema no puede garantizar que estén juntas o cercanas. Explica que esta configuración necesita gestión de una persona del restaurante y que no se ha creado ninguna reserva. No prometas una transferencia automática si no existe una herramienta de transferencia activa.`);
+          `Hay una combinación exacta de mesas disponibles (${this.compositionV16(multitable.plan)}), pero el sistema no puede garantizar que estén juntas o cercanas. Explica que esta configuración necesita gestión de una persona del restaurante y que no se ha creado ninguna reserva. No prometas una transferencia automática si no existe una herramienta de transferencia activa.`);
         return;
       }
-      if (this.separateTablesAcceptableV16 !== true) {
+      if (multitable.separateTablesAcceptable !== true) {
         BasePrototype.createSpokenResponse.call(this,
-          `No hay una mesa única adecuada, pero sí hay disponibilidad exacta repartiendo el grupo entre mesas completas (${this.compositionV16(this.multitablePlanV16)}). Pregunta claramente si les da igual estar en mesas separadas. No confirmes ninguna reserva todavía y no prometas que las mesas estarán cerca.`);
+          `No hay una mesa única adecuada, pero sí hay disponibilidad exacta repartiendo el grupo entre mesas completas (${this.compositionV16(multitable.plan)}). Pregunta claramente si les da igual estar en mesas separadas. No confirmes ninguna reserva todavía y no prometas que las mesas estarán cerca.`);
         return;
       }
     }
@@ -142,12 +143,12 @@ export class CallSession extends BaseConstructor {
     return {
       execute: async (request: ToolRequest): Promise<ToolResult> => {
         if (request.name === CHECK_RESERVATION_AVAILABILITY) {
+          const multitable = reservationMultitableRuntimeFor(this);
           const base = await baseGateway.execute(request) as ToolResult;
           if (!base.ok) return base;
           const result = base.result as Record<string, unknown>;
           if (result.requested_available === true) {
-            this.multitablePlanV16 = null;
-            this.multitableKeyV16 = null;
+            multitable.clearPlan();
             return base;
           }
           const args = asObject(request.arguments);
@@ -157,14 +158,14 @@ export class CallSession extends BaseConstructor {
           if (!partySize || !startsAt) return base;
           const plan = await this.tablePlanV16(partySize, startsAt, duration);
           if (!plan.length || plan[0]?.allocation_mode !== "MULTI_EXACT") return base;
-          this.multitablePlanV16 = plan;
-          this.multitableKeyV16 = JSON.stringify({ party_size: partySize, starts_at: startsAt, duration_minutes: duration });
+          multitable.recordPlan(plan, JSON.stringify({ party_size: partySize, starts_at: startsAt, duration_minutes: duration }));
           (this as any).diagnostics?.checkpoint?.("RESERVATION_MULTITABLE_PLAN_FOUND", {
             table_count: plan.length,
             capacities: plan.map((row) => row.max_capacity),
             exact_capacity: plan.reduce((sum, row) => sum + row.max_capacity, 0),
           });
-          if (this.separateTablesAcceptableV16 === true && !this.tablesMustBeCloseV16) {
+          const multitableState = multitable.snapshot();
+          if (multitableState.separateTablesAcceptable === true && !multitableState.tablesMustBeClose) {
             return {
               ...base,
               result: {
@@ -178,7 +179,9 @@ export class CallSession extends BaseConstructor {
           return base;
         }
 
-        if (request.name === MANAGE_RESERVATION && this.multitablePlanV16?.length && this.separateTablesAcceptableV16 === true && !this.tablesMustBeCloseV16) {
+        const multitable = reservationMultitableRuntimeFor(this);
+        const multitableState = multitable.snapshot();
+        if (request.name === MANAGE_RESERVATION && multitableState.plan?.length && multitableState.separateTablesAcceptable === true && !multitableState.tablesMustBeClose) {
           const args = asObject(request.arguments);
           const partySize = optionalNumber(args.party_size);
           const startsAt = optionalString(args.starts_at);
@@ -187,13 +190,13 @@ export class CallSession extends BaseConstructor {
           const duration = optionalNumber(args.duration_minutes) ?? 90;
           const notes = optionalString(args.notes);
           const key = partySize && startsAt ? JSON.stringify({ party_size: partySize, starts_at: startsAt, duration_minutes: duration }) : null;
-          if (!partySize || !startsAt || !customerName || !customerPhone || key !== this.multitableKeyV16) return baseGateway.execute(request) as Promise<ToolResult>;
+          if (!partySize || !startsAt || !customerName || !customerPhone || key !== multitableState.planKey) return baseGateway.execute(request) as Promise<ToolResult>;
           if (args.confirm !== true) {
             return {
               ok: true,
               tool: MANAGE_RESERVATION,
               tenantId: request.context.tenantId,
-              result: { stage: "CONFIRM_RESERVATION", party_size: partySize, starts_at: startsAt, customer_name: customerName, allocation_mode: "MULTI_EXACT", tables: this.multitablePlanV16.map((row) => ({ table_name: row.table_name, capacity: row.max_capacity })) },
+              result: { stage: "CONFIRM_RESERVATION", party_size: partySize, starts_at: startsAt, customer_name: customerName, allocation_mode: "MULTI_EXACT", tables: multitableState.plan.map((row) => ({ table_name: row.table_name, capacity: row.max_capacity })) },
             } as ToolResult;
           }
           try {
@@ -209,8 +212,7 @@ export class CallSession extends BaseConstructor {
             });
             if (!rows.length) throw new Error("empty booking result");
             const code = rows[0]?.reservation_code;
-            this.multitablePlanV16 = null;
-            this.multitableKeyV16 = null;
+            multitable.clearPlan();
             return {
               ok: true,
               tool: MANAGE_RESERVATION,
@@ -292,12 +294,13 @@ export class CallSession extends BaseConstructor {
     }
 
     if (plan[0].allocation_mode === "MULTI_EXACT") {
-      if (this.tablesMustBeCloseV16 || this.separateTablesAcceptableV16 === false) {
+      const multitable = reservationMultitableRuntimeFor(this).snapshot();
+      if (multitable.tablesMustBeClose || multitable.separateTablesAcceptable === false) {
         this.modifyConfirmationFingerprintV16 = null;
         (this as any).createSpokenResponse(`Para aplicar el cambio hay disponibilidad solo repartiendo el grupo entre mesas completas (${this.compositionV16(plan)}), pero no se puede garantizar cercanía. Explica que necesita gestión de una persona del restaurante; la reserva original sigue intacta y no prometas una transferencia automática sin una tool activa.`);
         return;
       }
-      if (this.separateTablesAcceptableV16 !== true) {
+      if (multitable.separateTablesAcceptable !== true) {
         this.modifyConfirmationFingerprintV16 = null;
         (this as any).createSpokenResponse(`Para aplicar el cambio hay disponibilidad exacta repartiendo el grupo entre mesas completas (${this.compositionV16(plan)}). Pregunta si les da igual quedar en mesas separadas. No modifiques la reserva todavía ni prometas cercanía.`);
         return;

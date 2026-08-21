@@ -15,6 +15,7 @@ import {
 import { publicRestaurantToolAuthorizationPortFor } from "./semantic-tool-authorization-port.js";
 import { semanticTurnRuntimeFor } from "./semantic-turn-runtime.js";
 import { turnOwnershipRuntimeFor } from "./turn-ownership-runtime.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 
 const BaseConstructor = CallSessionV28 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV28.prototype as any;
@@ -106,7 +107,7 @@ export class CallSession extends BaseConstructor {
       output: { ok: true, status: "IGNORED", reason, speak: false, mutation: false },
     });
     semanticTurnRuntimeFor(this).clearItemAuthority();
-    (this as any).observeSemanticIgnoredV18?.(reason);
+    conversationLifecyclePortFor(this).semanticIgnored(reason);
   }
 
   private authorizeToolV29(event: SemanticToolEventV29): boolean {

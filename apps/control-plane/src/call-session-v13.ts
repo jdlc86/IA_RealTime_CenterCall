@@ -16,6 +16,7 @@ import { conversationNextActionRuntimeFor } from "./conversation-next-action-run
 import { executeLegacyIntent } from "./legacy-intent-execution.js";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { reservationRoutingRuntimeFor } from "./reservation-routing-runtime.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV12 as unknown as new (...args: any[]) => any;
@@ -94,16 +95,17 @@ export class CallSession extends BaseConstructor {
   }
 
   private clearTransientStateForWorkflow(workflow: CoreWorkflow): void {
+    const routing = reservationRoutingRuntimeFor(this);
     if (workflow === "CREATE_RESERVATION") {
       (this as any).reservationDraft = {};
       (this as any).reservationAvailabilityKey = null;
       (this as any).reservationAvailabilityPromise = null;
       (this as any).reservationConfirmationFingerprint = null;
-      (this as any).createReservationIntentActiveV9 = false;
+      routing.clearCreateIntent();
       return;
     }
     if (workflow === "CANCEL_RESERVATION") {
-      (this as any).cancellationStateV10 = null;
+      routing.clearCancellation();
     }
   }
 

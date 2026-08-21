@@ -1,6 +1,7 @@
 import { CallSession as CallSessionV22 } from "./call-session-v22";
 import { SupabaseAdapter, type BookedReservationSummary } from "./supabase-adapter";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 
 const BaseConstructor = CallSessionV22 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV22.prototype as any;
@@ -124,8 +125,9 @@ export class CallSession extends BaseConstructor {
   }
 
   private markDirectToolV23(tool: string): void {
-    (this as any).validateUserTurnV18?.("agent_tool");
-    (this as any).suspendForToolV18?.(tool);
+    const lifecycle = conversationLifecyclePortFor(this);
+    lifecycle.validateUserTurn("agent_tool");
+    lifecycle.suspendForTool(tool);
     (this as any).diagnostics?.checkpoint?.("LUCIA_AGENT_TOOL_SELECTED", { tool, compatibility_executor: "direct_restaurant_controller_v23" });
   }
 
@@ -352,12 +354,7 @@ export class CallSession extends BaseConstructor {
     }
     this.sendOutputV23(callId, { ok: true, status: "CLOSING" }, false);
     (this as any).diagnostics?.checkpoint?.("DIRECT_END_CALL_CONFIRMED_V23", { source: "lucia_agent_tool" });
-    const observeEndCall = (this as any).observeEndCallConfirmedV18;
-    if (typeof observeEndCall === "function") {
-      observeEndCall.call(this, "agent_end_confirmed_v23");
-      return;
-    }
-    (this as any).beginClosing?.("agent_end_confirmed_v23", "lucia_agent_tool_v23");
+    conversationLifecyclePortFor(this).confirmEndCall("agent_end_confirmed_v23", "lucia_agent_tool_v23");
   }
 
   private executeOutOfScopeV23(callId: string | undefined): void {

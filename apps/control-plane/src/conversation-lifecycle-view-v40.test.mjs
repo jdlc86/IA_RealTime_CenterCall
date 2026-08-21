@@ -28,6 +28,23 @@ test("lifecycle port preserves legacy terminal behavior only when no lifecycle o
   }).isTerminal(), false);
 });
 
+test("lifecycle port hides historical tool-turn method names from callers", () => {
+  const calls = [];
+  const lifecycle = conversationLifecyclePortFor({
+    validateUserTurnV18(source) { calls.push(["validate", source]); },
+    suspendForToolV18(tool) { calls.push(["suspend", tool]); },
+    observeSemanticIgnoredV18(reason) { calls.push(["ignored", reason]); },
+  });
+  lifecycle.validateUserTurn("agent_tool");
+  lifecycle.suspendForTool("restaurant_reservation_query");
+  lifecycle.semanticIgnored("BACKGROUND_AUDIO");
+  assert.deepEqual(calls, [
+    ["validate", "agent_tool"],
+    ["suspend", "restaurant_reservation_query"],
+    ["ignored", "BACKGROUND_AUDIO"],
+  ]);
+});
+
 test("v40 derives liveness terminality from lifecycle authority instead of raw session flags", async () => {
   const source = await readFile(new URL("./call-session-v40-rebuild.ts", import.meta.url), "utf8");
   assert.match(source, /conversationLifecyclePortFor/);

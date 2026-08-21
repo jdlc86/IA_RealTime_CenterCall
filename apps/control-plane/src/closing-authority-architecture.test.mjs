@@ -21,17 +21,13 @@ test("closing authority: confirmed restaurant end-call enters ConversationTurnLi
   assert.match(v18, /protected observeEndCallConfirmedV18\(reason: string\): void/);
   assert.match(v18, /this\.dispatchLifecycleV18\(\{ type: \"end_call\" \}\)/);
   assert.match(v18, /LIFECYCLE_END_CALL_REQUESTED_V18/);
-  assert.match(v23, /observeEndCallConfirmedV18/);
-  assert.match(v23, /observeEndCall\.call\(this, \"agent_end_confirmed_v23\"\)/);
+  assert.match(v23, /conversationLifecyclePortFor\(this\)\.confirmEndCall\(\"agent_end_confirmed_v23\", \"lucia_agent_tool_v23\"\)/);
 });
 
-test("closing authority: v23 retains beginClosing only as compatibility fallback", async () => {
+test("closing authority: v23 cannot bypass the neutral lifecycle port", async () => {
   const v23 = await source("call-session-v23.ts");
-  const observerIndex = v23.indexOf("observeEndCallConfirmedV18");
-  const fallbackIndex = v23.indexOf("beginClosing?.(\"agent_end_confirmed_v23\"");
-
-  assert.ok(observerIndex >= 0, "missing lifecycle observer");
-  assert.ok(fallbackIndex > observerIndex, "legacy beginClosing must remain only after lifecycle observer fallback");
+  assert.doesNotMatch(v23, /observeEndCallConfirmedV18/);
+  assert.doesNotMatch(v23, /beginClosing/);
 });
 
 test("closing authority: v41 caller-resolved close paths enter the neutral lifecycle port instead of historical session methods", async () => {

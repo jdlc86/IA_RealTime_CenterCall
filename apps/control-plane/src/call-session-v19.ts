@@ -11,6 +11,7 @@ import {
   reservationSessionRuntimeFor,
   type ReservationDraft,
 } from "./reservation-session-runtime.js";
+import { reservationMultitableRuntimeFor } from "./reservation-multitable-runtime.js";
 
 const BaseConstructor = CallSessionV18 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV18.prototype as any;
@@ -39,7 +40,7 @@ function trustedCallerPhone(session: any): string | null {
 }
 
 export class CallSession extends BaseConstructor {
-  private sendFunctionOutputV19(callId: string | undefined, output: Record<string, unknown>): void {
+  protected sendReservationOutput(callId: string | undefined, output: Record<string, unknown>): void {
     const port = realtimeCommandPortFor(this as any);
     port.submitToolResult({ callId, toolName: CREATE_RESERVATION, output });
     port.createDefaultResponse();
@@ -63,22 +64,20 @@ export class CallSession extends BaseConstructor {
     const draft = runtime.mergeDraft(datetime.arguments, callerPhone);
     const tenantId = session.tenantId as string | null | undefined;
     if (!tenantId) {
-      this.sendFunctionOutputV19(callId, { ok: false, status: "ERROR", error: "TENANT_REQUIRED" });
+      this.sendReservationOutput(callId, { ok: false, status: "ERROR", error: "TENANT_REQUIRED" });
       return;
     }
 
-    // Compatibility only: keep the legacy multi-table preference capture alive
-    // while reservation state itself is owned exclusively by ReservationSessionRuntime.
-    session.captureStructuredTurnV16?.(JSON.stringify({
-      intent: "CREATE_RESERVATION",
-      reservation: draft,
-    }));
+    reservationMultitableRuntimeFor(this).capturePreferences({
+      separateTablesAcceptable: draft.separate_tables_acceptable,
+      tablesMustBeClose: draft.tables_must_be_close,
+    });
 
     const missingAvailability: string[] = [];
     if (!Number.isInteger(draft.party_size)) missingAvailability.push("party_size");
     if (!draft.starts_at) missingAvailability.push("starts_at");
     if (missingAvailability.length) {
-      this.sendFunctionOutputV19(callId, {
+      this.sendReservationOutput(callId, {
         ok: true,
         status: "MISSING_INFORMATION",
         missing: missingAvailability,
@@ -89,7 +88,7 @@ export class CallSession extends BaseConstructor {
 
     const gateway = session.createToolGateway?.() as ToolGateway | undefined;
     if (!gateway) {
-      this.sendFunctionOutputV19(callId, { ok: false, status: "ERROR", error: "TOOL_GATEWAY_UNAVAILABLE" });
+      this.sendReservationOutput(callId, { ok: false, status: "ERROR", error: "TOOL_GATEWAY_UNAVAILABLE" });
       return;
     }
 
@@ -115,7 +114,7 @@ export class CallSession extends BaseConstructor {
         ok: availability.ok,
       });
       if (!availability.ok) {
-        this.sendFunctionOutputV19(callId, publicToolOutput(availability));
+        this.sendReservationOutput(callId, publicToolOutput(availability));
         return;
       }
       availabilityResult = availability.result as Record<string, unknown>;
@@ -123,7 +122,7 @@ export class CallSession extends BaseConstructor {
     }
 
     if (availabilityResult.requested_available !== true) {
-      this.sendFunctionOutputV19(callId, {
+      this.sendReservationOutput(callId, {
         ok: true,
         status: "UNAVAILABLE",
         ...availabilityResult,
@@ -136,7 +135,7 @@ export class CallSession extends BaseConstructor {
     if (!draft.customer_phone) missingContact.push("customer_phone");
     if (missingContact.length) {
       runtime.markNeedsContact();
-      this.sendFunctionOutputV19(callId, {
+      this.sendReservationOutput(callId, {
         ok: true,
         status: "AVAILABLE_NEEDS_CONTACT",
         missing: missingContact,
@@ -148,7 +147,7 @@ export class CallSession extends BaseConstructor {
 
     if (draft.confirm !== true) {
       runtime.markReadyToConfirm();
-      this.sendFunctionOutputV19(callId, {
+      this.sendReservationOutput(callId, {
         ok: true,
         status: "READY_TO_CONFIRM",
         availability: availabilityResult,
@@ -197,7 +196,7 @@ export class CallSession extends BaseConstructor {
         reservation_created: false,
         confirmation_rearmed: true,
       });
-      this.sendFunctionOutputV19(callId, reservationAvailabilityChangedOutput({
+      this.sendReservationOutput(callId, reservationAvailabilityChangedOutput({
         party_size: draft.party_size,
         starts_at: draft.starts_at,
         customer_name: draft.customer_name,
@@ -209,7 +208,7 @@ export class CallSession extends BaseConstructor {
     if (booking.ok && booking.result && typeof booking.result === "object" && (booking.result as Record<string, unknown>).stage === "BOOKED") {
       runtime.markBooked();
     }
-    this.sendFunctionOutputV19(callId, publicToolOutput(booking));
+    this.sendReservationOutput(callId, publicToolOutput(booking));
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
@@ -222,7 +221,7 @@ export class CallSession extends BaseConstructor {
       try {
         args = parseObject(event.arguments);
       } catch (error) {
-        this.sendFunctionOutputV19(event.callId, {
+        this.sendReservationOutput(event.callId, {
           ok: false,
           status: "ERROR",
           error: "INVALID_ARGUMENTS",
@@ -244,7 +243,7 @@ export class CallSession extends BaseConstructor {
         (this as any).diagnostics?.fail?.("DIRECT_RESERVATION_FAILED", "DIRECT_RESERVATION_EXECUTION_FAILED", {
           error: error instanceof Error ? error.message : String(error),
         });
-        this.sendFunctionOutputV19(event.callId, {
+        this.sendReservationOutput(event.callId, {
           ok: false,
           status: "ERROR",
           error: "EXECUTION_FAILED",

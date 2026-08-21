@@ -21,6 +21,7 @@ test("v23 business and lifecycle authorities remain unchanged by provider refact
   assert.match(source, /DIRECT_RESERVATION_MODIFIED_V23/);
   assert.match(source, /DIRECT_BUSINESS_INFO_COMPLETED_V23/);
   assert.match(source, /DIRECT_END_CALL_CONFIRMED_V23/);
-  assert.match(source, /observeEndCallConfirmedV18/);
-  assert.match(source, /beginClosing/);
+  assert.match(source, /conversationLifecyclePortFor\(this\)\.confirmEndCall/);
+  assert.doesNotMatch(source, /observeEndCallConfirmedV18/);
+  assert.doesNotMatch(source, /beginClosing/);
 });

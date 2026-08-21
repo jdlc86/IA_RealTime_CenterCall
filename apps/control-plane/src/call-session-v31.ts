@@ -316,7 +316,7 @@ export class CallSession extends BaseConstructor {
     port.createDefaultResponse();
   }
 
-  private sendFunctionOutputV19(callId: string | undefined, output: Record<string, unknown>): void {
+  protected sendReservationOutput(callId: string | undefined, output: Record<string, unknown>): void {
     if (output.status === "UNAVAILABLE") {
       const result = output as Record<string, unknown>;
       if (result.business_hours_blocked === true) {

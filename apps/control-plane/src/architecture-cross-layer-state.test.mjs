@@ -11,8 +11,10 @@ function versionFromFile(name) {
   return match ? Number(match[1]) : null;
 }
 
-function activeConsolidationFiles() {
-  return readdirSync(here).filter((name) => /^call-session-v(?:3[1-9]|4\d|5[0-4])(?:-|\.)/.test(name) && name.endsWith(".ts"));
+function activeCallSessionFiles() {
+  return readdirSync(here).filter(
+    (name) => /^call-session-v(?:[2-9]|[12]\d|3\d|4\d|5[0-4])(?:-|\.)/.test(name) && name.endsWith(".ts"),
+  );
 }
 
 function crossVersionStateReferences(source) {
@@ -36,21 +38,21 @@ function hasDirectBeginClosing(source) {
   return new RegExp(`${receiver}(?:\\?|)\\.beginClosing\\b`).test(source);
 }
 
-test("active consolidation layers do not read private state owned by another CallSession generation", () => {
-  const violations = [];
+test("active V2-V54 layers do not read private state owned by another CallSession generation", () => {
+  const violations = new Set();
 
-  for (const file of activeConsolidationFiles()) {
+  for (const file of activeCallSessionFiles()) {
     const ownVersion = versionFromFile(file);
     if (ownVersion == null) continue;
     const source = readFileSync(join(here, file), "utf8");
     for (const ref of crossVersionStateReferences(source)) {
       if (ref.version === ownVersion) continue;
       // Imports/types are allowed. Instance and inherited-prototype access are not.
-      if (hasCrossGenerationInstanceAccess(source, ref.symbol)) violations.push(`${file}: ${ref.symbol}`);
+      if (hasCrossGenerationInstanceAccess(source, ref.symbol)) violations.add(`${file}: ${ref.symbol}`);
     }
   }
 
-  assert.deepEqual(violations, [], `cross-generation private state access is forbidden:\n${violations.join("\n")}`);
+  assert.deepEqual([...violations], [], `cross-generation private state access is forbidden:\n${[...violations].join("\n")}`);
 });
 
 test("cross-layer guard catches inherited prototype bypasses", () => {
@@ -64,11 +66,12 @@ test("cross-layer guard catches inherited prototype bypasses", () => {
   );
 });
 
-test("active consolidation layers commit terminal closure through lifecycle authority", () => {
+test("active layers commit terminal closure through lifecycle authority after the legacy owner boundary", () => {
+  const compatibilityOwners = new Set(["call-session-v2.ts", "call-session-v18.ts"]);
   const violations = [];
-  for (const file of activeConsolidationFiles()) {
+  for (const file of activeCallSessionFiles()) {
     const source = readFileSync(join(here, file), "utf8");
-    if (hasDirectBeginClosing(source)) violations.push(file);
+    if (!compatibilityOwners.has(file) && hasDirectBeginClosing(source)) violations.push(file);
   }
   assert.deepEqual(violations, [], `direct beginClosing bypass is forbidden:\n${violations.join("\n")}`);
 });
