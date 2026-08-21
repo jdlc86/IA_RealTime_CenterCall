@@ -5,7 +5,7 @@ import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import { reservationSessionRuntimeFor } from "./reservation-session-runtime.js";
 import { reservationTimeSessionRuntimeFor, type ReservationTimeTool } from "./reservation-time-session-runtime.js";
 import { callerTurnContextRuntimeFor } from "./caller-turn-context-runtime.js";
-import { authorizePublicRestaurantTool } from "./semantic-turn-coordinator.js";
+import { publicRestaurantToolAuthorizationPortFor } from "./semantic-tool-authorization-port.js";
 
 const BaseConstructor = CallSessionV52 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV52.prototype as any;
@@ -42,15 +42,23 @@ export class CallSession extends BaseConstructor {
   }
 
   private consumeBlockedToolAuthorityV53(event: SemanticToolEvent): boolean {
-    const result = authorizePublicRestaurantTool(this, { name: event.name, call_id: event.callId, arguments: event.arguments });
-    if (!result.allowed) {
+    const result = publicRestaurantToolAuthorizationPortFor(this).decide({
+      name: event.name,
+      call_id: event.callId,
+      arguments: event.arguments,
+    });
+    const authorized = result.allowed && !result.ignored && !result.directedIgnoreRejected;
+    if (!authorized) {
       (this as any).diagnostics?.fail?.("RESERVATION_TIME_AUTHORITY_MISSING_V53", "SEMANTIC_TOOL_AUTHORITY_REJECTED", {
         tool: event.name,
         duplicate_of: result.duplicateOf,
+        ignored: result.ignored,
+        directed_ignore_rejected: result.directedIgnoreRejected,
         fail_closed: true,
+        semantic_authority_owner: "semantic_tool_authorization_port",
       });
     }
-    return result.allowed;
+    return authorized;
   }
 
   private rejectUnprovenTimeV53(event: SemanticToolEvent, reason: string): void {
