@@ -1,0 +1,62 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import {
+  executeLegacyIntent,
+  LEGACY_INTENT_EXECUTOR,
+} from "../.test-dist/legacy-intent-execution.js";
+
+test("legacy intent capability preserves semantic arguments and correlation id", async () => {
+  const received = [];
+  const executorPrototype = {
+    async [LEGACY_INTENT_EXECUTOR](selection) { received.push(selection); },
+  };
+  const selection = { argumentsJson: '{"intent":"CONTINUE"}', callId: "call-17" };
+
+  await executeLegacyIntent(executorPrototype, {}, selection);
+  assert.deepEqual(received, [selection]);
+});
+
+test("legacy intent capability fails closed when no executor owns the chain", async () => {
+  await assert.rejects(
+    executeLegacyIntent({}, {}, { callId: "missing" }),
+    /Legacy intent executor is not installed/,
+  );
+});
+
+test("legacy intent executors form an explicit semantic chain of responsibility", async () => {
+  const order = [];
+  const base = {
+    async [LEGACY_INTENT_EXECUTOR](selection) { order.push(`base:${selection.callId}`); },
+  };
+  const specialized = Object.create(base);
+  specialized[LEGACY_INTENT_EXECUTOR] = async function (selection) {
+    order.push(`specialized:${selection.callId}`);
+    await executeLegacyIntent(base, this, selection);
+  };
+
+  await executeLegacyIntent(specialized, {}, { callId: "chain" });
+  assert.deepEqual(order, ["specialized:chain", "base:chain"]);
+});
+
+test("V13 delegates legacy execution without synthesizing provider wire events", async () => {
+  const sourceRoot = new URL("./", import.meta.url);
+  const v13 = await readFile(new URL("call-session-v13.ts", sourceRoot), "utf8");
+  const executors = await Promise.all(
+    [2, 5, 7, 9, 10, 11].map((version) =>
+      readFile(new URL(`call-session-v${version}.ts`, sourceRoot), "utf8"),
+    ),
+  );
+
+  assert.match(v13, /adaptRealtimeProviderEvents\(data\)/);
+  assert.match(v13, /executeLegacyIntent\(BasePrototype, this/);
+  assert.match(v13, /realtimeCommandPortFor\(this as any\)/);
+  assert.match(v13, /conversationLifecyclePortFor\(this\)\.isTerminal\(\)/);
+  assert.doesNotMatch(v13, /response\.function_call_arguments\.done|conversation\.item\.create|function_call_output|session\.update|TextDecoder|hangupStarted/);
+  assert.doesNotMatch(v13, /BasePrototype\.handleRealtimeMessage\.call\(this,\s*JSON\.stringify/);
+  for (const source of executors) assert.match(source, /\[LEGACY_INTENT_EXECUTOR\]/);
+  for (const source of executors.slice(3)) {
+    assert.match(source, /conversationLifecyclePortFor\(this\)\.isTerminal\(\)/);
+    assert.doesNotMatch(source, /\(this as any\)\.(?:hangupStarted|state\s*={2,3}\s*["']closing["'])/);
+  }
+});

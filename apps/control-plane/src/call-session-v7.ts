@@ -5,6 +5,11 @@ import { SupabaseMarketingConsentStore } from "./marketing-consent-store";
 import { parseSemanticDecision } from "./semantic-router";
 import type { ToolResult } from "./tool-gateway";
 import { claimClassifierBootstrap, ownsClassifierBootstrap } from "./classifier-bootstrap-authority.js";
+import {
+  executeLegacyIntent,
+  LEGACY_INTENT_EXECUTOR,
+  type LegacyIntentSelection,
+} from "./legacy-intent-execution.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const MANAGE_MARKETING_CONSENT = "manage_marketing_consent";
@@ -258,6 +263,21 @@ export class CallSession extends BaseConstructor {
     );
   }
 
+  async [LEGACY_INTENT_EXECUTOR](selection: LegacyIntentSelection): Promise<void> {
+    const classification = parseSemanticDecision(selection.argumentsJson);
+    if (classification.intent === "CONTINUE" && classification.dataRequirement === "MARKETING_CONSENT") {
+      (this as any).diagnostics?.checkpoint?.("INTENT_CLASSIFIED", {
+        intent: classification.intent,
+        data_requirement: "MARKETING_CONSENT",
+        orchestrator: "backend_v1",
+      });
+      await this.handleMarketingConsentTurn(selection.argumentsJson, selection.callId);
+      return;
+    }
+
+    await executeLegacyIntent(BasePrototype, this, selection);
+  }
+
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const text = readRealtimeText(data);
     let event: RealtimeEvent | null = null;
@@ -266,16 +286,8 @@ export class CallSession extends BaseConstructor {
     }
 
     if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
-      const classification = parseSemanticDecision(event.arguments);
-      if (classification.intent === "CONTINUE" && classification.dataRequirement === "MARKETING_CONSENT") {
-        (this as any).diagnostics?.checkpoint?.("INTENT_CLASSIFIED", {
-          intent: classification.intent,
-          data_requirement: "MARKETING_CONSENT",
-          orchestrator: "backend_v1",
-        });
-        await this.handleMarketingConsentTurn(event.arguments, event.call_id);
-        return;
-      }
+      await this[LEGACY_INTENT_EXECUTOR]({ argumentsJson: event.arguments, callId: event.call_id });
+      return;
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);

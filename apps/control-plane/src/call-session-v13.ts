@@ -13,12 +13,13 @@ import { coreIntentClassifierTool, parseCoreIntentRequest } from "./core-intent-
 import type { ToolResult } from "./tool-gateway";
 import { claimClassifierBootstrap, ownsClassifierBootstrap } from "./classifier-bootstrap-authority.js";
 import { conversationNextActionRuntimeFor } from "./conversation-next-action-runtime.js";
+import { executeLegacyIntent } from "./legacy-intent-execution.js";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV12 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV12.prototype as any;
-
-type RealtimeEvent = { type?: string; name?: string; call_id?: string; arguments?: string; };
 
 type TopicResult = {
   topic: BusinessInfoTopic;
@@ -34,13 +35,6 @@ const TOOL_BY_TOPIC: Record<BusinessInfoTopic, string> = {
   SERVICES: "get_services",
   GENERAL_INFO: "get_business_information",
 };
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
 
 function currentMadridReference(): string {
   return new Intl.DateTimeFormat("es-ES", {
@@ -73,13 +67,9 @@ export class CallSession extends BaseConstructor {
 
     if (isStart && response.ok && ownsClassifierBootstrap(this, "CORE_INTENT_V13") && !this.coreIntentSessionUpdateV13Sent) {
       this.coreIntentSessionUpdateV13Sent = true;
-      (this as any).send({
-        type: "session.update",
-        session: {
-          type: "realtime",
-          tools: [coreIntentClassifierTool(currentMadridReference())],
-          tool_choice: "required",
-        },
+      realtimeCommandPortFor(this as any).updateSessionPolicy({
+        tools: [coreIntentClassifierTool(currentMadridReference())],
+        toolChoice: "REQUIRED",
       });
       (this as any).diagnostics?.checkpoint?.("CORE_INTENT_CLASSIFIER_SCHEMA_UPDATED", {
         strategy: "structured_conversation_state_v2",
@@ -96,13 +86,10 @@ export class CallSession extends BaseConstructor {
 
   private sendCoreClassifierOutput(callId: string | undefined, payload: Record<string, unknown>): void {
     if (!callId) return;
-    (this as any).send({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify({ ok: true, ...payload }),
-      },
+    realtimeCommandPortFor(this as any).submitToolResult({
+      callId,
+      toolName: CONVERSATION_INTENT,
+      output: { ok: true, ...payload },
     });
   }
 
@@ -210,15 +197,13 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) {
-      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
-    }
+    const event = adaptRealtimeProviderEvents(data).find(
+      (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && candidate.name === CONVERSATION_INTENT,
+    );
 
-    if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
+    if (event?.type === "SEMANTIC_TOOL_SELECTED") {
       const nextAction = conversationNextActionRuntimeFor(this);
-      if ((this as any).state === "closing" || (this as any).hangupStarted === true) {
+      if (conversationLifecyclePortFor(this).isTerminal()) {
         await BasePrototype.handleRealtimeMessage.call(this, data);
         return;
       }
@@ -227,7 +212,7 @@ export class CallSession extends BaseConstructor {
       try {
         request = parseCoreIntentRequest(event.arguments);
       } catch (error) {
-        this.sendCoreClassifierOutput(event.call_id, { action: "classifier_invalid", retry: true });
+        this.sendCoreClassifierOutput(event.callId, { action: "classifier_invalid", retry: true });
         (this as any).diagnostics?.fail?.("CORE_INTENT_TURN_INVALID", "HIERARCHICAL_CLASSIFIER_PAYLOAD_INVALID", {
           error: error instanceof Error ? error.message : String(error),
         });
@@ -259,7 +244,7 @@ export class CallSession extends BaseConstructor {
             && request.businessInfoTopics?.length === 1
             && request.businessInfoTopics[0] === "GENERAL_INFO");
 
-        this.sendCoreClassifierOutput(event.call_id, {
+        this.sendCoreClassifierOutput(event.callId, {
           action: "closing_rejected",
           resumed_workflow: currentWorkflow,
           has_new_intent: !pureRejection,
@@ -296,7 +281,7 @@ export class CallSession extends BaseConstructor {
 
       if (closingDecision.action === "ASK_CONFIRMATION") {
         nextAction.update("ASK_CLOSE_CONFIRMATION");
-        this.sendCoreClassifierOutput(event.call_id, { action: "closing_confirmation_required" });
+        this.sendCoreClassifierOutput(event.callId, { action: "closing_confirmation_required" });
         (this as any).diagnostics?.checkpoint?.("CORE_CLOSING_CONFIRMATION_REQUIRED", {
           active_workflow: this.coreIntentStateV13.workflow,
           irreversible_transition: true,
@@ -324,7 +309,7 @@ export class CallSession extends BaseConstructor {
       });
 
       if (effectiveRequest.intent === "BUSINESS_INFO") {
-        await this.handleBusinessInfoTurn(event.call_id, transition.next.businessInfoTopics, effectiveRequest.auxiliary === true);
+        await this.handleBusinessInfoTurn(event.callId, transition.next.businessInfoTopics, effectiveRequest.auxiliary === true);
         return;
       }
 
@@ -333,21 +318,19 @@ export class CallSession extends BaseConstructor {
         : JSON.stringify({ ...(event.arguments ? JSON.parse(event.arguments) : {}), intent: requestedIntent });
       const legacy = adaptHierarchicalIntentToLegacy(legacyArguments);
       if (!legacy) {
-        this.sendCoreClassifierOutput(event.call_id, { action: "no_legacy_route" });
+        this.sendCoreClassifierOutput(event.callId, { action: "no_legacy_route" });
         return;
       }
 
-      const synthetic: RealtimeEvent = {
-        ...event,
-        name: CONVERSATION_INTENT,
-        arguments: JSON.stringify(legacy),
-      };
       (this as any).diagnostics?.checkpoint?.("CORE_INTENT_EXECUTOR_DISPATCHED", {
         workflow: transition.next.workflow,
         adapter: "validated_legacy_executor",
         structured_next_action: nextAction.current(),
       });
-      await BasePrototype.handleRealtimeMessage.call(this, JSON.stringify(synthetic));
+      await executeLegacyIntent(BasePrototype, this, {
+        argumentsJson: JSON.stringify(legacy),
+        callId: event.callId,
+      });
       return;
     }
 

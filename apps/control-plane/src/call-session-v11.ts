@@ -3,6 +3,12 @@ import { publicReservationQueryResults } from "./reservation-query";
 import { parseSemanticDecision } from "./semantic-router";
 import { SupabaseAdapter } from "./supabase-adapter";
 import { claimClassifierBootstrap, ownsClassifierBootstrap } from "./classifier-bootstrap-authority.js";
+import {
+  executeLegacyIntent,
+  LEGACY_INTENT_EXECUTOR,
+  type LegacyIntentSelection,
+} from "./legacy-intent-execution.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV10 as unknown as new (...args: any[]) => any;
@@ -138,22 +144,30 @@ export class CallSession extends BaseConstructor {
     (this as any).createSpokenResponse(`Informa de las reservas futuras confirmadas asociadas a esta llamada usando únicamente estos resultados verificados: ${JSON.stringify(publicReservationQueryResults(rows))}. Si hay varias, enuméralas. No leas teléfonos ni identificadores internos. Esto es solo una consulta: no modifiques ni canceles ninguna reserva.`);
   }
 
+  async [LEGACY_INTENT_EXECUTOR](selection: LegacyIntentSelection): Promise<void> {
+    if (conversationLifecyclePortFor(this).isTerminal()) {
+      await executeLegacyIntent(BasePrototype, this, selection);
+      return;
+    }
+
+    const semantic = parseSemanticDecision(selection.argumentsJson);
+    if (semantic.intent === "CONTINUE" && semantic.dataRequirement === "RESERVATION" && rawReservationOperation(selection.argumentsJson) === "QUERY") {
+      (this as any).diagnostics?.checkpoint?.("RESERVATION_OPERATION_ROUTED", { operation: "QUERY", source: "classifier", identity_source: "CALLER_ID" });
+      await this.handleReservationQuery(selection.callId);
+      return;
+    }
+
+    await executeLegacyIntent(BasePrototype, this, selection);
+  }
+
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const text = readRealtimeText(data);
     let event: RealtimeEvent | null = null;
     if (text) { try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; } }
 
     if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
-      if ((this as any).state === "closing" || (this as any).hangupStarted === true) {
-        await BasePrototype.handleRealtimeMessage.call(this, data);
-        return;
-      }
-      const semantic = parseSemanticDecision(event.arguments);
-      if (semantic.intent === "CONTINUE" && semantic.dataRequirement === "RESERVATION" && rawReservationOperation(event.arguments) === "QUERY") {
-        (this as any).diagnostics?.checkpoint?.("RESERVATION_OPERATION_ROUTED", { operation: "QUERY", source: "classifier", identity_source: "CALLER_ID" });
-        await this.handleReservationQuery(event.call_id);
-        return;
-      }
+      await this[LEGACY_INTENT_EXECUTOR]({ argumentsJson: event.arguments, callId: event.call_id });
+      return;
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);

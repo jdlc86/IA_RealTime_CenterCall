@@ -11,6 +11,7 @@ import {
   type ReservationFlowArgs,
 } from "./reservation-flow";
 import { ToolGateway, requireObject, type ToolDefinition, type ToolResult } from "./tool-gateway";
+import { LEGACY_INTENT_EXECUTOR, type LegacyIntentSelection } from "./legacy-intent-execution.js";
 
 type CallSessionEnv = {
   OPENAI_API_KEY: string;
@@ -1005,6 +1006,48 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     if (!response.ok) throw new Error(`OpenAI hangup failed with HTTP ${response.status}`);
   }
 
+  async [LEGACY_INTENT_EXECUTOR](selection: LegacyIntentSelection): Promise<void> {
+    if (this.state === "closing" || this.hangupStarted) {
+      this.sendToolResult(selection.callId, { ok: true, action: "closing_already_in_progress" });
+      return;
+    }
+
+    const classification = parseSemanticDecision(selection.argumentsJson);
+    if (classification.degraded) {
+      this.diagnostics.fail("INTENT_CLASSIFIER_DEGRADED", "SEMANTIC_CLASSIFIER_FALLBACK_USED", { fallback_intent: classification.intent, fallback_data_requirement: classification.dataRequirement });
+      log("error", "call_intent_degraded_fallback", {
+        call_id: this.callId,
+        tenant_id: this.tenantId,
+        arguments_chars: selection.argumentsJson?.length ?? 0,
+        fallback_intent: classification.intent,
+        fallback_data_requirement: classification.dataRequirement,
+        reason: classification.reason,
+      });
+    } else {
+      this.diagnostics.checkpoint("INTENT_CLASSIFIED", { intent: classification.intent, data_requirement: classification.dataRequirement });
+    }
+
+    log("info", "call_intent_classified", {
+      call_id: this.callId,
+      tenant_id: this.tenantId,
+      intent: classification.intent,
+      data_requirement: classification.dataRequirement,
+      reason: classification.reason,
+      degraded: classification.degraded,
+      state_before: this.state,
+      ambiguous_count_before: this.ambiguousCount,
+    });
+    if (classification.intent === "CONTINUE") {
+      this.continueConversation(classification.reason, classification.dataRequirement, selection.callId);
+      return;
+    }
+    if (classification.intent === "END_CLEAR") {
+      this.handleClearEndIntent(classification.reason, selection.callId);
+      return;
+    }
+    this.handleAmbiguousIntent(classification.reason, selection.callId);
+  }
+
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const text = readWebSocketText(data);
     if (!text) return;
@@ -1028,45 +1071,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     }
 
     if (event.type === "response.function_call_arguments.done" && event.name === "conversation_intent") {
-      if (this.state === "closing" || this.hangupStarted) {
-        this.sendToolResult(event.call_id, { ok: true, action: "closing_already_in_progress" });
-        return;
-      }
-
-      const classification = parseSemanticDecision(event.arguments);
-      if (classification.degraded) {
-        this.diagnostics.fail("INTENT_CLASSIFIER_DEGRADED", "SEMANTIC_CLASSIFIER_FALLBACK_USED", { fallback_intent: classification.intent, fallback_data_requirement: classification.dataRequirement });
-        log("error", "call_intent_degraded_fallback", {
-          call_id: this.callId,
-          tenant_id: this.tenantId,
-          arguments_chars: event.arguments?.length ?? 0,
-          fallback_intent: classification.intent,
-          fallback_data_requirement: classification.dataRequirement,
-          reason: classification.reason,
-        });
-      } else {
-        this.diagnostics.checkpoint("INTENT_CLASSIFIED", { intent: classification.intent, data_requirement: classification.dataRequirement });
-      }
-
-      log("info", "call_intent_classified", {
-        call_id: this.callId,
-        tenant_id: this.tenantId,
-        intent: classification.intent,
-        data_requirement: classification.dataRequirement,
-        reason: classification.reason,
-        degraded: classification.degraded,
-        state_before: this.state,
-        ambiguous_count_before: this.ambiguousCount,
-      });
-      if (classification.intent === "CONTINUE") {
-        this.continueConversation(classification.reason, classification.dataRequirement, event.call_id);
-        return;
-      }
-      if (classification.intent === "END_CLEAR") {
-        this.handleClearEndIntent(classification.reason, event.call_id);
-        return;
-      }
-      this.handleAmbiguousIntent(classification.reason, event.call_id);
+      await this[LEGACY_INTENT_EXECUTOR]({ argumentsJson: event.arguments, callId: event.call_id });
       return;
     }
 

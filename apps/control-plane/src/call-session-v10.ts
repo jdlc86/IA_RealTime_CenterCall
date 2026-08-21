@@ -3,6 +3,12 @@ import { cancellationFingerprint, chooseCancellationCandidates, emptyCancellatio
 import { parseReservationTurn } from "./reservation-orchestrator";
 import { parseSemanticDecision } from "./semantic-router";
 import { SupabaseAdapter, type BookedReservationSummary } from "./supabase-adapter";
+import {
+  executeLegacyIntent,
+  LEGACY_INTENT_EXECUTOR,
+  type LegacyIntentSelection,
+} from "./legacy-intent-execution.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV9 as unknown as new (...args: any[]) => any;
@@ -168,6 +174,27 @@ export class CallSession extends BaseConstructor {
     (this as any).createSpokenResponse(`Usa únicamente este resultado autorizado de cancelación: ${JSON.stringify(results)}. Informa claramente cuáles quedaron canceladas y, si alguna no pudo cancelarse, cuál no cambió. Usa solo reservation_code como referencia pública; nunca pronuncies ni muestres identificadores internos. No afirmes atomicidad ni rollback. No preguntes por promociones como consecuencia de una cancelación.`);
   }
 
+  async [LEGACY_INTENT_EXECUTOR](selection: LegacyIntentSelection): Promise<void> {
+    if (conversationLifecyclePortFor(this).isTerminal()) {
+      await executeLegacyIntent(BasePrototype, this, selection);
+      return;
+    }
+
+    const semantic = parseSemanticDecision(selection.argumentsJson);
+    if (semantic.intent === "CONTINUE" && semantic.dataRequirement === "RESERVATION") {
+      const explicitOperation = rawReservationOperation(selection.argumentsJson);
+      if ((explicitOperation === "CREATE" || explicitOperation === "QUERY") && this.cancellationStateV10) this.resetCancellation();
+      const cancellationOwned = explicitOperation === "CANCEL" || (this.cancellationStateV10 !== null && explicitOperation !== "CREATE" && explicitOperation !== "QUERY");
+      if (cancellationOwned) {
+        (this as any).diagnostics?.checkpoint?.("RESERVATION_OPERATION_ROUTED", { operation: "CANCEL", source: explicitOperation === "CANCEL" ? "classifier" : "active_workflow" });
+        await this.handleCancellationTurn(selection.argumentsJson, selection.callId);
+        return;
+      }
+    }
+
+    await executeLegacyIntent(BasePrototype, this, selection);
+  }
+
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const text = readRealtimeText(data);
     let event: RealtimeEvent | null = null;
@@ -176,22 +203,8 @@ export class CallSession extends BaseConstructor {
     }
 
     if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
-      if ((this as any).state === "closing" || (this as any).hangupStarted === true) {
-        await BasePrototype.handleRealtimeMessage.call(this, data);
-        return;
-      }
-
-      const semantic = parseSemanticDecision(event.arguments);
-      if (semantic.intent === "CONTINUE" && semantic.dataRequirement === "RESERVATION") {
-        const explicitOperation = rawReservationOperation(event.arguments);
-        if ((explicitOperation === "CREATE" || explicitOperation === "QUERY") && this.cancellationStateV10) this.resetCancellation();
-        const cancellationOwned = explicitOperation === "CANCEL" || (this.cancellationStateV10 !== null && explicitOperation !== "CREATE" && explicitOperation !== "QUERY");
-        if (cancellationOwned) {
-          (this as any).diagnostics?.checkpoint?.("RESERVATION_OPERATION_ROUTED", { operation: "CANCEL", source: explicitOperation === "CANCEL" ? "classifier" : "active_workflow" });
-          await this.handleCancellationTurn(event.arguments, event.call_id);
-          return;
-        }
-      }
+      await this[LEGACY_INTENT_EXECUTOR]({ argumentsJson: event.arguments, callId: event.call_id });
+      return;
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);

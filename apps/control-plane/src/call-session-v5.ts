@@ -13,6 +13,11 @@ import { parseSemanticDecision } from "./semantic-router";
 import { SupabaseAdapter, type RestaurantAvailability } from "./supabase-adapter";
 import { ToolGateway, requireObject, type ToolDefinition, type ToolRequest, type ToolResult } from "./tool-gateway";
 import { claimClassifierBootstrap, ownsClassifierBootstrap } from "./classifier-bootstrap-authority.js";
+import {
+  executeLegacyIntent,
+  LEGACY_INTENT_EXECUTOR,
+  type LegacyIntentSelection,
+} from "./legacy-intent-execution.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const CHECK_RESERVATION_AVAILABILITY = "check_reservation_availability";
@@ -425,6 +430,17 @@ export class CallSession extends BaseConstructor {
     (this as any).createSpokenResponse(`Resume de forma natural y breve estos datos autorizados: ${JSON.stringify(result)}. Después pregunta de forma inequívoca si confirma la reserva. No digas que está reservada todavía.`);
   }
 
+  async [LEGACY_INTENT_EXECUTOR](selection: LegacyIntentSelection): Promise<void> {
+    const classification = parseSemanticDecision(selection.argumentsJson);
+    if (classification.intent === "CONTINUE" && classification.dataRequirement === "RESERVATION") {
+      (this as any).diagnostics?.checkpoint?.("INTENT_CLASSIFIED", { intent: classification.intent, data_requirement: "RESERVATION", orchestrator: "backend_v1" });
+      await this.handleReservationTurn(selection.argumentsJson, selection.callId);
+      return;
+    }
+
+    await executeLegacyIntent(BasePrototype, this, selection);
+  }
+
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const text = readRealtimeText(data);
     let event: RealtimeEvent | null = null;
@@ -433,12 +449,8 @@ export class CallSession extends BaseConstructor {
     }
 
     if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
-      const classification = parseSemanticDecision(event.arguments);
-      if (classification.intent === "CONTINUE" && classification.dataRequirement === "RESERVATION") {
-        (this as any).diagnostics?.checkpoint?.("INTENT_CLASSIFIED", { intent: classification.intent, data_requirement: "RESERVATION", orchestrator: "backend_v1" });
-        await this.handleReservationTurn(event.arguments, event.call_id);
-        return;
-      }
+      await this[LEGACY_INTENT_EXECUTOR]({ argumentsJson: event.arguments, callId: event.call_id });
+      return;
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);

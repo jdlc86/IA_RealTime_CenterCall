@@ -7,6 +7,7 @@ import type {
   IntentReasonCode,
   StructuredConversationState,
 } from "./core-intent-machine";
+import type { RealtimeFunctionToolDefinition } from "./realtime-provider-command-port.js";
 
 const CORE_INTENTS = new Set([
   "CREATE_RESERVATION",
@@ -127,7 +128,7 @@ export function parseCoreIntentRequest(argumentsJson: string | undefined): CoreI
   return { intent: "BUSINESS_INFO", ...evidence, businessInfoTopics: topics, auxiliary: root.auxiliary === true, ...(closingResponse ? { closingResponse } : {}), ...(conversation ? { conversation } : {}) };
 }
 
-export function coreIntentClassifierTool(currentMadridReference?: string): Record<string, unknown> {
+export function coreIntentClassifierTool(currentMadridReference?: string): RealtimeFunctionToolDefinition {
   const temporalReference = currentMadridReference?.trim()
     ? ` Referencia temporal autoritativa actual en Europe/Madrid: ${currentMadridReference.trim()}. Usa esta referencia para resolver hoy/mañana; si fecha u hora siguen ambiguas, omite starts_at.`
     : "";

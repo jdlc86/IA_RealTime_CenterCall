@@ -17,6 +17,8 @@ type LegacyLifecycleSession = {
   validateUserTurnV18?: (source: string) => void;
   snapshotTurnLifecycleV18?: () => { state?: string };
   beginClosing?: (reason: string, source: string) => void;
+  state?: string;
+  hangupStarted?: boolean;
 };
 
 /**
@@ -42,8 +44,12 @@ export function conversationLifecyclePortFor(session: object): ConversationLifec
     validateUserTurn(source: string) { s.validateUserTurnV18?.(source); },
     isTerminal() {
       const state = lifecycleState();
-      return state === "TERMINAL_SPEAKING" || state === "HANDOFF" || state === "CLOSING";
+      if (state !== undefined) return state === "TERMINAL_SPEAKING" || state === "HANDOFF" || state === "CLOSING";
+      return s.state === "closing" || s.hangupStarted === true;
     },
-    isClosing() { return lifecycleState() === "CLOSING"; },
+    isClosing() {
+      const state = lifecycleState();
+      return state !== undefined ? state === "CLOSING" : s.state === "closing" || s.hangupStarted === true;
+    },
   });
 }
