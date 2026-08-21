@@ -1,8 +1,11 @@
 import { CallSession as CallSessionV9 } from "./call-session-v9";
+import {
+  restaurantReservationPortFor,
+  type BookedReservationSummary,
+} from "./restaurant-reservation-port.js";
 import { cancellationFingerprint, chooseCancellationCandidates, emptyCancellationState, publicCancellationOptions, publicSelectedReservations, type CancellationState } from "./reservation-cancellation";
 import { parseReservationTurn } from "./reservation-orchestrator";
 import { parseSemanticDecision } from "./semantic-router";
-import { SupabaseAdapter, type BookedReservationSummary } from "./supabase-adapter";
 import {
   executeLegacyIntent,
   LEGACY_INTENT_EXECUTOR,
@@ -36,13 +39,6 @@ function rawReservationOperation(argumentsJson: string | undefined): "CREATE" | 
 export class CallSession extends BaseConstructor {
   private cancellationStateV10: CancellationState | null = null;
 
-  private getCancellationAdapter(): SupabaseAdapter {
-    return new SupabaseAdapter({
-      SUPABASE_URL: requireRuntimeString((this as any).env?.SUPABASE_URL, "SUPABASE_URL"),
-      SUPABASE_SECRET_KEY: requireRuntimeString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
-    });
-  }
-
   private sendCancellationClassifierOutput(callId: string | undefined, stage: string, details: Record<string, unknown> = {}): void {
     if (!callId) return;
     realtimeCommandPortFor(this as any).submitToolResult({
@@ -66,7 +62,7 @@ export class CallSession extends BaseConstructor {
   private async loadCandidates(): Promise<BookedReservationSummary[]> {
     const tenantId = requireRuntimeString((this as any).tenantId, "tenant_id");
     const callerPhone = requireRuntimeString((this as any).callerPhone, "caller_phone");
-    return this.getCancellationAdapter().listBookedReservationsByPhone(tenantId, callerPhone);
+    return restaurantReservationPortFor(this as any).listBookedReservationsByPhone(tenantId, callerPhone);
   }
 
   private async handleCancellationTurn(argumentsJson: string | undefined, callId: string | undefined): Promise<void> {
@@ -138,7 +134,7 @@ export class CallSession extends BaseConstructor {
 
     (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCEL_FINAL_RECHECK_STARTED", { selected_count: selected.length, reservation_ids: state.selectedIds });
     const latest = await this.loadCandidates();
-    const adapter = this.getCancellationAdapter();
+    const reservationPort = restaurantReservationPortFor(this as any);
     const results: Array<{ reservation_code: string; starts_at: string; party_size: number; status: "CANCELLED" | "NOT_CANCELLED"; reason?: string }> = [];
 
     for (const reservation of selected) {
@@ -150,7 +146,7 @@ export class CallSession extends BaseConstructor {
         continue;
       }
 
-      const cancelled = await adapter.cancelBookedReservation(tenantId, reservation.id, callerPhone);
+      const cancelled = await reservationPort.cancelBookedReservation(tenantId, reservation.id, callerPhone);
       if (!cancelled) {
         results.push({ reservation_code: reservation.reservation_code, starts_at: reservation.starts_at, party_size: reservation.party_size, status: "NOT_CANCELLED", reason: "write_precondition_failed" });
         (this as any).diagnostics?.fail?.("RESERVATION_CANCEL_WRITE_FAILED", "BOOKED_ROW_NOT_FOUND_AT_WRITE", { reservation_id: reservation.id });

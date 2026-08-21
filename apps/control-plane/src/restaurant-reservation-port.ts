@@ -48,7 +48,7 @@ type RestaurantReservationHost = object & {
   env?: Record<string, unknown>;
 };
 
-type ReservationDataAdapter = Pick<SupabaseAdapter, "listBookedReservationsByPhone"> & {
+type ReservationDataAdapter = Pick<SupabaseAdapter, "listBookedReservationsByPhone" | "cancelBookedReservation"> & {
   invokeRpc<T>(name: string, body: Record<string, unknown>): Promise<T[]>;
 };
 
@@ -74,6 +74,10 @@ export class RestaurantReservationRuntime {
 
   listBookedReservationsByPhone(tenantId: string, callerPhone: string): Promise<BookedReservationSummary[]> {
     return this.adapter.listBookedReservationsByPhone(tenantId, callerPhone);
+  }
+
+  cancelBookedReservation(tenantId: string, reservationId: string, callerPhone: string): Promise<BookedReservationSummary | null> {
+    return this.adapter.cancelBookedReservation(tenantId, reservationId, callerPhone);
   }
 
   checkTablePlan(request: RestaurantTablePlanRequest): Promise<RestaurantTablePlanRow[]> {

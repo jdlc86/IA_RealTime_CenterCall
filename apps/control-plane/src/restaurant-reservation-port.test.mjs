@@ -10,6 +10,10 @@ function runtimeWithRecorder() {
       calls.push({ operation: "list", tenantId, callerPhone });
       return [];
     },
+    async cancelBookedReservation(tenantId, reservationId, callerPhone) {
+      calls.push({ operation: "cancel", tenantId, reservationId, callerPhone });
+      return null;
+    },
     async invokeRpc(name, body) {
       calls.push({ operation: "rpc", name, body });
       return [];
@@ -49,6 +53,7 @@ test("restaurant reservation port owns backend RPC names and payload mapping", a
     notes: null,
   });
   await runtime.listBookedReservationsByPhone("restaurante-centro", "+34612345678");
+  await runtime.cancelBookedReservation("restaurante-centro", "reservation-1", "+34612345678");
 
   assert.deepEqual(calls, [
     {
@@ -95,6 +100,12 @@ test("restaurant reservation port owns backend RPC names and payload mapping", a
       tenantId: "restaurante-centro",
       callerPhone: "+34612345678",
     },
+    {
+      operation: "cancel",
+      tenantId: "restaurante-centro",
+      reservationId: "reservation-1",
+      callerPhone: "+34612345678",
+    },
   ]);
 });
 
@@ -124,4 +135,15 @@ test("V11 delegates reservation queries without knowing the persistence provider
   assert.doesNotMatch(v11, /\bSUPABASE_URL\b/);
   assert.doesNotMatch(v11, /\bSUPABASE_SECRET_KEY\b/);
   assert.doesNotMatch(v11, /\/rest\/v1\//);
+});
+
+test("V10 delegates reservation cancellation without knowing the persistence provider", () => {
+  const v10 = readFileSync(new URL("./call-session-v10.ts", import.meta.url), "utf8");
+
+  assert.match(v10, /restaurantReservationPortFor\(this as any\)\.listBookedReservationsByPhone\(tenantId, callerPhone\)/);
+  assert.match(v10, /reservationPort\.cancelBookedReservation\(tenantId, reservation\.id, callerPhone\)/);
+  assert.doesNotMatch(v10, /\bSupabaseAdapter\b/);
+  assert.doesNotMatch(v10, /\bSUPABASE_URL\b/);
+  assert.doesNotMatch(v10, /\bSUPABASE_SECRET_KEY\b/);
+  assert.doesNotMatch(v10, /\/rest\/v1\//);
 });
