@@ -9,17 +9,22 @@
     "deploy:dry": "wrangler deploy --dry-run",
     "types": "wrangler types --include-runtime=false",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:runtime": "tsc -p test/tsconfig.json --noEmit",
     "test:build": "node -e \"require('node:fs').rmSync('.test-dist',{recursive:true,force:true})\" && tsc -p tsconfig.test-build.json",
-    "pretest": "npm run types && npm run typecheck && npm run test:build",
+    "pretest": "npm run types && npm run typecheck && npm run typecheck:runtime && npm run test:build",
     "check": "wrangler deploy --dry-run",
-    "test": "node --experimental-specifier-resolution=node --test src/*.test.mjs"
+    "test:node": "node --experimental-specifier-resolution=node --test src/*.test.mjs",
+    "test:runtime": "vitest run --config vitest.config.ts",
+    "test": "npm run test:node && npm run test:runtime"
   },
   "dependencies": {
     "openai": "^7.1.0"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.0.0",
     "@cloudflare/workers-types": "^5.20260821.1",
     "typescript": "^5.9.0",
+    "vitest": "^4.1.11",
     "wrangler": "^4.0.0"
   }
 }
