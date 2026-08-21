@@ -1,8 +1,7 @@
 import { CallSession as CallSessionV17 } from "./call-session-v17";
 import { ConversationTurnLifecycle, type LifecycleEffect, type LifecycleEvent } from "./conversation-turn-lifecycle";
 import { adaptRealtimeTurnEvent } from "./realtime-turn-lifecycle-adapter";
-import { adaptOpenAIRealtimeEvent } from "./openai-realtime-event-adapter";
-import { realtimeCommandPortFor } from "./openai-realtime-command-adapter";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import type { AssistantSpeechKind, RealtimeProviderEvent } from "./realtime-provider-event";
 
 const BaseConstructor = CallSessionV17 as unknown as new (...args: any[]) => any;
@@ -11,10 +10,10 @@ const BasePrototype = CallSessionV17.prototype as any;
 const FIRST_PRESENCE_CHECK_MS = 8_000;
 const MAX_UNANSWERED_WAIT_MS = 26_000;
 const MAX_CALL_DURATION_MS = 15 * 60_000;
-// output_audio_buffer.stopped only guarantees that OpenAI's server-side output
-// buffer is drained. It is not an end-to-end PSTN playout acknowledgement.
-// Keep the transport drain isolated to terminal hangup so normal Lucia turns
-// receive no additional latency.
+// output_audio_buffer.stopped only guarantees that the current provider's
+// server-side output buffer is drained. It is not an end-to-end PSTN playout
+// acknowledgement. Keep the transport drain isolated to terminal hangup so
+// normal Lucia turns receive no additional latency.
 const TERMINAL_TRANSPORT_DRAIN_MS = 750;
 
 export class CallSession extends BaseConstructor {
@@ -91,11 +90,17 @@ export class CallSession extends BaseConstructor {
   private commandsV18() { return realtimeCommandPortFor(this as any); }
 
   private issuePresenceCheckV18(): void {
-    if (!(this as any).socket || (this as any).state === "closing" || (this as any).hangupStarted) return;
+    const lifecycleState = this.turnLifecycleV18.snapshot().state;
+    if (
+      !(this as any).socket
+      || lifecycleState === "TERMINAL_SPEAKING"
+      || lifecycleState === "HANDOFF"
+      || lifecycleState === "CLOSING"
+    ) return;
     this.presenceRequestPendingV18 = true;
     this.presenceResponseIdV18 = null;
     (this as any).diagnostics?.checkpoint?.("USER_PRESENCE_RECOVERY_REQUESTED", {
-      lifecycle_state: this.turnLifecycleV18.snapshot().state, conversation: "none",
+      lifecycle_state: lifecycleState, conversation: "none",
       isolated_from_agent_context: true, lifecycle_authority: true, provider_command_port: true,
     });
     this.commandsV18().speak({
@@ -254,7 +259,7 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const providerEvents = adaptOpenAIRealtimeEvent(data);
+    const providerEvents = adaptRealtimeProviderEvents(data);
     for (const providerEvent of providerEvents) {
       this.rememberAssistantSpeechKindV18(providerEvent);
 
