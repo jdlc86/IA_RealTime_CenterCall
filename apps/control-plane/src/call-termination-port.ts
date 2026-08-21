@@ -56,7 +56,8 @@ export class CallTerminationRuntime {
       try {
         const apiKey = nonEmpty(this.host.env?.TELNYX_API_KEY);
         if (!apiKey) throw new Error("TELNYX_API_KEY unavailable");
-        const response = await this.fetcher(
+        const response = await this.fetcher.call(
+          globalThis,
           `https://api.telnyx.com/v2/calls/${encodeURIComponent(sourceCallControlId)}/actions/hangup`,
           {
             method: "POST",
@@ -85,7 +86,8 @@ export class CallTerminationRuntime {
       try {
         const apiKey = nonEmpty(this.host.env?.OPENAI_API_KEY);
         if (!apiKey) throw new Error("OPENAI_API_KEY unavailable");
-        const response = await this.fetcher(
+        const response = await this.fetcher.call(
+          globalThis,
           `https://api.openai.com/v1/realtime/calls/${encodeURIComponent(realtimeCallId)}/hangup`,
           {
             method: "POST",

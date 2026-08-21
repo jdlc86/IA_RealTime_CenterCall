@@ -8,8 +8,10 @@ import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 const BaseConstructor = CallSessionV17 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV17.prototype as any;
 
-const FIRST_PRESENCE_CHECK_MS = 8_000;
-const MAX_UNANSWERED_WAIT_MS = 26_000;
+// A real caller may need several seconds to think after a business result. The
+// former 8s deadline interrupted normal pauses observed in production calls.
+const FIRST_PRESENCE_CHECK_MS = 20_000;
+const MAX_UNANSWERED_WAIT_MS = 45_000;
 const MAX_CALL_DURATION_MS = 15 * 60_000;
 // output_audio_buffer.stopped only guarantees that the current provider's
 // server-side output buffer is drained. It is not an end-to-end PSTN playout

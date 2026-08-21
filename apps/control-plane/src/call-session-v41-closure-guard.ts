@@ -13,6 +13,7 @@ import {
 } from "./core-closing-policy.js";
 import { closingSessionRuntimeFor } from "./closing-session-runtime.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { callerTurnContextRuntimeFor } from "./caller-turn-context-runtime.js";
 
 const BaseConstructor = CallSessionV40 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV40.prototype as any;
@@ -320,8 +321,15 @@ export class CallSession extends BaseConstructor {
       if (event.type === "CALLER_TRANSCRIPT_COMPLETED") {
         const transcript = usableTranscript(event.transcript);
         if (transcript) {
-          if (this.moreHelpAnswerPendingV41 && this.resolveMoreHelpAnswerV41(transcript, event.itemId)) return;
-          this.recordUserTranscriptV41(transcript);
+          const effectiveTranscript = callerTurnContextRuntimeFor(this).current() || transcript;
+          if (this.moreHelpAnswerPendingV41) {
+            if (this.resolveMoreHelpAnswerV41(effectiveTranscript, event.itemId)) return;
+            // The isolated text decision now owns an unresolved contextual
+            // reply. Letting the generic pipeline process the same turn would
+            // create a second active response and race its eventual tool result.
+            if (this.moreHelpSemanticResolutionPendingV41) return;
+          }
+          this.recordUserTranscriptV41(effectiveTranscript);
         }
       }
       if (event.type === "SEMANTIC_TOOL_SELECTED" && this.moreHelpSemanticResolutionPendingV41 && event.name !== END_CALL && event.name !== "restaurant_input_ignored") {

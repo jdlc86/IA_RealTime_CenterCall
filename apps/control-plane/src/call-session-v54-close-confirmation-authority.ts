@@ -64,6 +64,11 @@ export class CallSession extends BaseConstructor {
           timer_used: false,
           semantic_response_requested: false,
         });
+        // V54 is the top structural authority for split caller turns. A deferred
+        // fragment must not reach any lower semantic layer; the completed turn
+        // will be forwarded once the active fragment arrives and is consolidated.
+        turnContext.clear();
+        return;
       } else {
         consolidatedCallerTurn = usableTranscript(fragmentDecision.transcript);
         if (consolidatedCallerTurn) {

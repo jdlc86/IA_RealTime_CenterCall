@@ -39,3 +39,11 @@ test("v41 retains the pre-transcript ordering guard for premature end-call", () 
   assert.match(source, /if \(this\.moreHelpAnswerPendingV41\)/);
   assert.match(source, /acknowledgeContextualReplyPendingV41\(event\.callId\)/);
 });
+
+test("v41 contextual closing consumes the consolidated turn and owns unresolved replies", () => {
+  assert.match(source, /callerTurnContextRuntimeFor\(this\)\.current\(\) \|\| transcript/);
+  assert.match(
+    source,
+    /resolveMoreHelpAnswerV41\(effectiveTranscript, event\.itemId\)[\s\S]*?moreHelpSemanticResolutionPendingV41\) return;/,
+  );
+});

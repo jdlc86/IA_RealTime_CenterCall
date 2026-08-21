@@ -34,6 +34,23 @@ test("call termination uses Telnyx source leg first", async () => {
   assert.equal(JSON.parse(calls[0].init.body).command_id, "cmd-1");
 });
 
+test("call termination preserves the Workers fetch receiver", async () => {
+  let receiver;
+  const workerFetch = async function () {
+    receiver = this;
+    return response(200);
+  };
+  const runtime = new CallTerminationRuntime(
+    host({ TELNYX_API_KEY: "tel-key" }),
+    workerFetch,
+  );
+
+  const result = await runtime.terminate({ sourceCallControlId: "source-worker-brand" });
+
+  assert.equal(result.terminated, true);
+  assert.equal(receiver, globalThis);
+});
+
 test("failed Telnyx termination falls back to realtime transport by default", async () => {
   const urls = [];
   const runtime = new CallTerminationRuntime(

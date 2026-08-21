@@ -25,6 +25,14 @@ test("pending close is consumed only by an explicit effective caller turn yes or
   assert.doesNotMatch(v54, /commitCloseThroughLifecycleV41/);
 });
 
+test("structurally deferred caller fragments never reach lower semantic layers", async () => {
+  const v54 = await source("call-session-v54-close-confirmation-authority.ts");
+  assert.match(
+    v54,
+    /fragmentDecision\.action === "DEFER"[\s\S]*?CALLER_TURN_FRAGMENT_DEFERRED_V54[\s\S]*?semantic_response_requested: false[\s\S]*?turnContext\.clear\(\);[\s\S]*?return;/,
+  );
+});
+
 test("ambiguous caller reply preserves pending close and cannot fall into generic semantic tools", async () => {
   const v54 = await source("call-session-v54-close-confirmation-authority.ts");
   assert.match(v54, /CLOSE_CONFIRMATION_AMBIGUOUS_PRESERVED_V54/);
