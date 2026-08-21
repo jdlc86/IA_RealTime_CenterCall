@@ -18,6 +18,7 @@ import {
   type HumanHandoffSpeechKind,
 } from "./human-handoff-transport-runtime.js";
 import { humanHandoffTransportPortFor } from "./human-handoff-transport-port.js";
+import { callTerminationPortFor } from "./call-termination-port.js";
 
 const BaseConstructor = CallSessionV36 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV36.prototype as any;
@@ -63,7 +64,8 @@ function speechKindFromPurpose(purpose: string | undefined): HumanHandoffSpeechK
 /**
  * v37 adapts human-handoff provider/Telnyx I/O into the neutral handoff runtime.
  * Shared handoff state, transport context and watchdogs are not owned by this
- * CallSession generation.
+ * CallSession generation. Physical terminal hangup is delegated to the neutral
+ * call-termination port.
  */
 export class CallSession extends BaseConstructor {
   private handoffRuntimeV37() {
@@ -394,45 +396,25 @@ export class CallSession extends BaseConstructor {
     if (!handoff) return;
     const sourceCallControlId = runtime.transportContext().sourceCallControlId;
     const callId = nonEmpty((this as any).callId);
-    let terminated = false;
+    const termination = await callTerminationPortFor(this as any).terminate({
+      sourceCallControlId,
+      realtimeCallId: callId,
+      commandId: `${handoff.id}-terminal-hangup`,
+    });
 
-    if (sourceCallControlId) {
-      try {
-        const apiKey = nonEmpty((this as any).env?.TELNYX_API_KEY);
-        if (!apiKey) throw new Error("TELNYX_API_KEY unavailable");
-        const response = await fetch(`https://api.telnyx.com/v2/calls/${encodeURIComponent(sourceCallControlId)}/actions/hangup`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({ command_id: `${handoff.id}-terminal-hangup` }),
-        });
-        terminated = response.ok;
-        if (!response.ok) {
-          const body = await response.text();
-          throw new Error(`Telnyx hangup HTTP ${response.status}: ${body.slice(0, 250)}`);
-        }
-      } catch (error) {
+    for (const attempt of termination.attempts) {
+      if (attempt.ok) continue;
+      if (attempt.transport === "TELNYX_SOURCE_LEG") {
         (this as any).diagnostics?.fail?.("HUMAN_HANDOFF_TELNYX_HANGUP_FAILED_V37", "TELNYX_TERMINAL_HANGUP_FAILED", {
           handoff_id: handoff.id,
-          error: error instanceof Error ? error.message : String(error),
+          error: attempt.error ?? "unknown",
+          physical_termination_owner: "call_termination_port",
         });
-      }
-    }
-
-    // Compatibility fallback until call-level provider transport gets its own port.
-    if (!terminated && callId) {
-      try {
-        const openAiKey = nonEmpty((this as any).env?.OPENAI_API_KEY);
-        if (!openAiKey) throw new Error("OPENAI_API_KEY unavailable");
-        const response = await fetch(`https://api.openai.com/v1/realtime/calls/${encodeURIComponent(callId)}/hangup`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${openAiKey}` },
-        });
-        terminated = response.ok;
-        if (!response.ok) throw new Error(`OpenAI hangup HTTP ${response.status}`);
-      } catch (error) {
+      } else {
         (this as any).diagnostics?.fail?.("HUMAN_HANDOFF_OPENAI_HANGUP_FAILED_V37", "OPENAI_TERMINAL_HANGUP_FAILED", {
           handoff_id: handoff.id,
-          error: error instanceof Error ? error.message : String(error),
+          error: attempt.error ?? "unknown",
+          physical_termination_owner: "call_termination_port",
         });
       }
     }
@@ -443,9 +425,11 @@ export class CallSession extends BaseConstructor {
     (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_TERMINAL_CALL_ENDED_V37", {
       handoff_id: handoff.id,
       trigger,
-      telephony_terminated: terminated,
+      telephony_terminated: termination.terminated,
+      termination_attempts: termination.attempts.map((attempt) => ({ transport: attempt.transport, ok: attempt.ok })),
       lucia_conversation_resumes: false,
       lifecycle_owner: "conversation_lifecycle_port",
+      physical_termination_owner: "call_termination_port",
       direct_runtime_closing_mutation: false,
     });
   }

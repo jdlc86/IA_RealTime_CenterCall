@@ -1,0 +1,116 @@
+export type CallTerminationTransport = "TELNYX_SOURCE_LEG" | "OPENAI_REALTIME_FALLBACK";
+
+export type CallTerminationAttempt = Readonly<{
+  transport: CallTerminationTransport;
+  ok: boolean;
+  httpStatus?: number;
+  error?: string;
+}>;
+
+export type CallTerminationRequest = Readonly<{
+  sourceCallControlId?: string | null;
+  realtimeCallId?: string | null;
+  commandId?: string;
+}>;
+
+export type CallTerminationResult = Readonly<{
+  terminated: boolean;
+  attempts: readonly CallTerminationAttempt[];
+}>;
+
+type CallTerminationHost = object & {
+  env?: Record<string, unknown>;
+};
+
+type FetchLike = typeof fetch;
+
+function nonEmpty(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+async function responseFailure(response: Response, label: string): Promise<string> {
+  let detail = "";
+  try { detail = (await response.text()).slice(0, 250); } catch {}
+  return `${label} HTTP ${response.status}${detail ? `: ${detail}` : ""}`;
+}
+
+/**
+ * Provider boundary for physical call termination only.
+ * Lifecycle, retries, watchdogs and business state remain owned by callers.
+ */
+export class CallTerminationRuntime {
+  constructor(
+    private readonly host: CallTerminationHost,
+    private readonly fetcher: FetchLike = fetch,
+  ) {}
+
+  async terminate(request: CallTerminationRequest): Promise<CallTerminationResult> {
+    const attempts: CallTerminationAttempt[] = [];
+    const sourceCallControlId = nonEmpty(request.sourceCallControlId);
+    const realtimeCallId = nonEmpty(request.realtimeCallId);
+
+    if (sourceCallControlId) {
+      try {
+        const apiKey = nonEmpty(this.host.env?.TELNYX_API_KEY);
+        if (!apiKey) throw new Error("TELNYX_API_KEY unavailable");
+        const response = await this.fetcher(
+          `https://api.telnyx.com/v2/calls/${encodeURIComponent(sourceCallControlId)}/actions/hangup`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
+            body: JSON.stringify(request.commandId ? { command_id: request.commandId } : {}),
+          },
+        );
+        if (!response.ok) throw new Error(await responseFailure(response, "Telnyx hangup"));
+        attempts.push({ transport: "TELNYX_SOURCE_LEG", ok: true, httpStatus: response.status });
+        return { terminated: true, attempts };
+      } catch (error) {
+        attempts.push({
+          transport: "TELNYX_SOURCE_LEG",
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (realtimeCallId) {
+      try {
+        const apiKey = nonEmpty(this.host.env?.OPENAI_API_KEY);
+        if (!apiKey) throw new Error("OPENAI_API_KEY unavailable");
+        const response = await this.fetcher(
+          `https://api.openai.com/v1/realtime/calls/${encodeURIComponent(realtimeCallId)}/hangup`,
+          {
+            method: "POST",
+            headers: { Authorization: `Bearer ${apiKey}` },
+          },
+        );
+        if (!response.ok) throw new Error(await responseFailure(response, "Realtime hangup"));
+        attempts.push({ transport: "OPENAI_REALTIME_FALLBACK", ok: true, httpStatus: response.status });
+        return { terminated: true, attempts };
+      } catch (error) {
+        attempts.push({
+          transport: "OPENAI_REALTIME_FALLBACK",
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return { terminated: false, attempts };
+  }
+}
+
+const runtimes = new WeakMap<object, CallTerminationRuntime>();
+
+export function callTerminationPortFor(host: CallTerminationHost): CallTerminationRuntime {
+  let runtime = runtimes.get(host);
+  if (!runtime) {
+    runtime = new CallTerminationRuntime(host);
+    runtimes.set(host, runtime);
+  }
+  return runtime;
+}
