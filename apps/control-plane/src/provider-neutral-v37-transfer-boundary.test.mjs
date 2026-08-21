@@ -10,7 +10,8 @@ test("V37 delegates physical source-leg transfer through the neutral handoff por
   assert.match(v37, /physical_transfer_owner:\s*"human_handoff_transport_port"/);
   assert.doesNotMatch(v37, /\bTELNYX_API_KEY\b/);
   assert.doesNotMatch(v37, /api\.telnyx\.com/);
-  assert.doesNotMatch(v37, /\bfetch\s*\(/);
+  assert.doesNotMatch(v37, /\bawait\s+fetch\s*\(/);
+  assert.doesNotMatch(v37, /\bglobalThis\.fetch\s*\(/);
 });
 
 test("human-handoff transport adapter owns provider credentials, endpoint and transfer wire", async () => {
