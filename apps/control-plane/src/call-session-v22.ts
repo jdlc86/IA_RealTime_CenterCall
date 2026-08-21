@@ -1,12 +1,15 @@
 import { CallSession as CallSessionV21 } from "./call-session-v21";
 import { HangupController } from "./hangup-controller";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { humanHandoffTransportRuntimeFor } from "./human-handoff-transport-runtime.js";
 
 const BaseConstructor = CallSessionV21 as unknown as new (...args: any[]) => any;
 
 /**
  * v22 remains the compatibility adapter for confirmed hangup behavior.
  * The transport policy itself now lives in HangupController so later CallSession
- * consolidation does not need to inherit this implementation.
+ * consolidation does not need to inherit this implementation. Cross-generation
+ * lifecycle and Telnyx source-leg state are consumed through neutral runtimes.
  */
 export class CallSession extends BaseConstructor {
   private hangupControllerV22: HangupController | null = null;
@@ -18,12 +21,7 @@ export class CallSession extends BaseConstructor {
         getCallId: () => typeof session.callId === "string" && session.callId.trim() ? session.callId : null,
         getSocketConnected: () => session.socket !== null,
         getApiKey: () => session.env?.OPENAI_API_KEY,
-        // v37 attaches the Telnyx source call_control_id for every realtime call,
-        // not only when a human handoff is later requested. Access remains optional
-        // so historical/direct OpenAI sessions still use the compatibility path.
-        getSourceCallControlId: () => typeof session.telnyxCallControlIdV37 === "string" && session.telnyxCallControlIdV37.trim()
-          ? session.telnyxCallControlIdV37
-          : null,
+        getSourceCallControlId: () => humanHandoffTransportRuntimeFor(this).transportContext().sourceCallControlId,
         getTelnyxApiKey: () => session.env?.TELNYX_API_KEY,
         isHangupStarted: () => session.hangupStarted === true,
         setHangupStarted: (value) => { session.hangupStarted = value; },
@@ -37,18 +35,17 @@ export class CallSession extends BaseConstructor {
 
   private async performHangup(trigger: string): Promise<void> {
     const session = this as any;
-    const lifecycleState = session.snapshotTurnLifecycleV18?.()?.state as string | undefined;
 
     // v2 historically inferred terminal intent from output_audio_buffer.stopped.
-    // Once ConversationTurnLifecycle has already reached CLOSING, that inference
+    // Once the lifecycle authority has already reached CLOSING, that inference
     // is superseded: only the explicit lifecycle HANGUP effect may reach transport.
     // Keep the legacy path available when lifecycle has not claimed terminality so
     // the assistant-hangup-commitment safety guard remains intact.
-    if (trigger === "output_audio_buffer_stopped" && lifecycleState === "CLOSING") {
+    if (trigger === "output_audio_buffer_stopped" && conversationLifecyclePortFor(this).isClosing()) {
       session.diagnostics?.checkpoint?.("LEGACY_AUDIO_STOP_HANGUP_SUPERSEDED_V22", {
         trigger,
-        lifecycle_state: lifecycleState,
-        authority: "ConversationTurnLifecycle",
+        lifecycle_state: "CLOSING",
+        authority: "conversation_lifecycle_port",
         transport_dispatched: false,
       });
       return;

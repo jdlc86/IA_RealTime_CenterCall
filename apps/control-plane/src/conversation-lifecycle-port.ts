@@ -5,6 +5,7 @@ export type ConversationLifecyclePort = Readonly<{
   semanticIgnored(reason: string): void;
   validateUserTurn(source: string): void;
   isTerminal(): boolean;
+  isClosing(): boolean;
 }>;
 
 type LegacyLifecycleSession = {
@@ -26,6 +27,7 @@ type LegacyLifecycleSession = {
  */
 export function conversationLifecyclePortFor(session: object): ConversationLifecyclePort {
   const s = session as LegacyLifecycleSession;
+  const lifecycleState = () => s.snapshotTurnLifecycleV18?.()?.state;
   return Object.freeze({
     confirmEndCall(reason: string, source: string) {
       s.diagnostics?.checkpoint?.("CONVERSATION_LIFECYCLE_CLOSE_COMMITTED", {
@@ -39,8 +41,9 @@ export function conversationLifecyclePortFor(session: object): ConversationLifec
     semanticIgnored(reason: string) { s.observeSemanticIgnoredV18?.(reason); },
     validateUserTurn(source: string) { s.validateUserTurnV18?.(source); },
     isTerminal() {
-      const state = s.snapshotTurnLifecycleV18?.()?.state;
+      const state = lifecycleState();
       return state === "TERMINAL_SPEAKING" || state === "HANDOFF" || state === "CLOSING";
     },
+    isClosing() { return lifecycleState() === "CLOSING"; },
   });
 }

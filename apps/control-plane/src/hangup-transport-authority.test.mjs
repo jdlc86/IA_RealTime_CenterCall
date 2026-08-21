@@ -14,6 +14,10 @@ test("hangup controller prefers the physical Telnyx source leg when available", 
   assert.match(controller, /OPENAI_REALTIME_FALLBACK/);
   assert.match(controller, /api\.telnyx\.com\/v2\/calls\/\$\{encodeURIComponent\(sourceCallControlId\)\}\/actions\/hangup/);
   assert.match(controller, /if \(sourceCallControlId && this\.host\.getTelnyxApiKey\)/);
-  assert.match(v22, /session\.telnyxCallControlIdV37/);
+
+  assert.match(v22, /humanHandoffTransportRuntimeFor\(this\)\.transportContext\(\)\.sourceCallControlId/);
+  assert.match(v22, /conversationLifecyclePortFor\(this\)\.isClosing\(\)/);
   assert.match(v22, /getTelnyxApiKey: \(\) => session\.env\?\.TELNYX_API_KEY/);
+  assert.doesNotMatch(v22, /telnyxCallControlIdV37/);
+  assert.doesNotMatch(v22, /snapshotTurnLifecycleV18/);
 });
