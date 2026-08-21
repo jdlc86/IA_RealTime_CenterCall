@@ -10,9 +10,9 @@ import {
 import {
   armCallerDirectedSemanticAuthority,
   armSemanticGate,
-  authorizePublicRestaurantTool,
   beginSemanticTurnFromAcousticEvidence,
 } from "./semantic-turn-coordinator.js";
+import { publicRestaurantToolAuthorizationPortFor } from "./semantic-tool-authorization-port.js";
 import { semanticTurnRuntimeFor } from "./semantic-turn-runtime.js";
 import { turnOwnershipRuntimeFor } from "./turn-ownership-runtime.js";
 
@@ -61,6 +61,7 @@ export class CallSession extends BaseConstructor {
         semantic_state_owner: "semantic_turn_runtime",
         single_public_tool_per_caller_turn: true,
         provider_command_boundary: "realtime_command_port",
+        tool_authorization_boundary: "semantic_tool_authorization_port",
       });
     }
     return response;
@@ -116,7 +117,7 @@ export class CallSession extends BaseConstructor {
         call_id: event.call_id ?? null,
       });
     }
-    const result = authorizePublicRestaurantTool(this, event);
+    const result = publicRestaurantToolAuthorizationPortFor(this).decide(event);
     if (result.directedIgnoreRejected) {
       realtimeCommandPortFor(this as any).createDefaultResponse();
       return false;

@@ -7,9 +7,31 @@ export type PublicRestaurantToolAuthorizationRequest = Readonly<{
   arguments?: string;
 }>;
 
+export type PublicRestaurantToolAuthorizationDecision = Readonly<{
+  allowed: boolean;
+  ignored: boolean;
+  duplicateOf: string | null;
+  directedIgnoreRejected: boolean;
+}>;
+
 export type PublicRestaurantToolAuthorizationPort = Readonly<{
+  decide(request: PublicRestaurantToolAuthorizationRequest): PublicRestaurantToolAuthorizationDecision;
   authorize(request: PublicRestaurantToolAuthorizationRequest): boolean;
 }>;
+
+function decideAuthorization(
+  session: object,
+  request: PublicRestaurantToolAuthorizationRequest,
+): PublicRestaurantToolAuthorizationDecision {
+  const preauthorization = malformedToolCorrectionRuntimeFor(session).preauthorize(session, request);
+  if (preauthorization === "ALLOW_INVALID_WITHOUT_CONSUMING") {
+    return { allowed: true, ignored: false, duplicateOf: null, directedIgnoreRejected: false };
+  }
+  if (preauthorization === "REJECT_CROSS_TOOL_CORRECTION") {
+    return { allowed: false, ignored: false, duplicateOf: null, directedIgnoreRejected: false };
+  }
+  return authorizePublicRestaurantTool(session, request);
+}
 
 /**
  * Version-neutral authorization boundary for public restaurant tools.
@@ -19,13 +41,12 @@ export type PublicRestaurantToolAuthorizationPort = Readonly<{
  */
 export function publicRestaurantToolAuthorizationPortFor(session: object): PublicRestaurantToolAuthorizationPort {
   return Object.freeze({
+    decide(request: PublicRestaurantToolAuthorizationRequest): PublicRestaurantToolAuthorizationDecision {
+      return decideAuthorization(session, request);
+    },
     authorize(request: PublicRestaurantToolAuthorizationRequest): boolean {
-      const preauthorization = malformedToolCorrectionRuntimeFor(session).preauthorize(session, request);
-      if (preauthorization === "ALLOW_INVALID_WITHOUT_CONSUMING") return true;
-      if (preauthorization === "REJECT_CROSS_TOOL_CORRECTION") return false;
-
-      const semantic = authorizePublicRestaurantTool(session, request);
-      return semantic.allowed && !semantic.ignored && !semantic.directedIgnoreRejected;
+      const decision = decideAuthorization(session, request);
+      return decision.allowed && !decision.ignored && !decision.directedIgnoreRejected;
     },
   });
 }
