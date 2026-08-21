@@ -3,6 +3,7 @@
   "version": "0.2.2",
   "private": true,
   "type": "module",
+  "packageManager": "npm@10.9.2",
   "scripts": {
     "deploy": "wrangler deploy",
     "deploy:dry": "wrangler deploy --dry-run",

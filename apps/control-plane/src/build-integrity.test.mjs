@@ -30,7 +30,16 @@ test("typecheck consumes official Workers runtime types and generated bindings",
 });
 
 test("CI installs the committed lockfile reproducibly", async () => {
+  const packageJson = await readJson("package.json");
+  const nodeVersion = (await readFile(new URL(".node-version", projectRoot), "utf8")).trim();
   const workflow = await readFile(new URL("../../.github/workflows/control-plane-ci.yml", projectRoot), "utf8");
-  assert.match(workflow, /run: npm ci --no-audit --no-fund/);
-  assert.doesNotMatch(workflow, /run: npm install/);
+
+  assert.equal(nodeVersion, "24.18.0");
+  assert.equal(packageJson.packageManager, "npm@10.9.2");
+  assert.match(workflow, /node-version-file: apps\/control-plane\/\.node-version/);
+  assert.match(
+    workflow,
+    /run: npx --yes npm@10\.9\.2 clean-install --progress=false --no-audit --no-fund/,
+  );
+  assert.doesNotMatch(workflow, /run: npm install(?:\s|$)/);
 });
