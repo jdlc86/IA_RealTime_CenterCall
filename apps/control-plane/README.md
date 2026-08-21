@@ -27,8 +27,8 @@ En Cloudflare Dashboard:
 6. Root directory: `apps/control-plane`.
 7. El nombre productivo debe coincidir con `wrangler.jsonc`: `ia-realtime-centercall`.
 8. Build command: `npm run types && npm run check` (valida production, preview y dev sin desplegar).
-9. Deploy command para `main`: `npx wrangler deploy --env=""`.
-10. Version command para ramas no productivas: `npx wrangler versions upload --env=""`.
+9. Deploy command para `main`: `npm test && npm run check && npx wrangler deploy --env=""`.
+10. Version command para ramas no productivas: `npm test && npm run check && npx wrangler versions upload --env=""`.
 11. Guardar.
 
 Cloudflare instalará las dependencias desde `package.json` en cada build.
@@ -59,8 +59,10 @@ del primer despliegue de cada perfil.
 
 Workers Builds usa el Version command para subir una versión candidata de las
 ramas no productivas sin promoverla. Sólo el Deploy command de la rama `main`
-actualiza el tráfico. Los scripts `upload:*` y `deploy:*` ofrecen los mismos
-límites explícitos para operaciones manuales.
+actualiza el tráfico. Ambos ejecutan la batería completa y los dry-runs antes de
+Wrangler, de modo que la validación no depende del campo Build command del
+panel. Los scripts `upload:*` y `deploy:*` ofrecen los mismos límites explícitos
+para operaciones manuales.
 
 ## Comprobación inicial
 

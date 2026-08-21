@@ -36,12 +36,14 @@ El perfil por defecto es producción. Los perfiles nombrados son:
 Workers Builds usa estos comandos:
 
 - Build command: `npm run types && npm run check`;
-- Deploy command de `main`: `npx wrangler deploy --env=""`;
-- Version command de ramas no productivas: `npx wrangler versions upload --env=""`.
+- Deploy command de `main`: `npm test && npm run check && npx wrangler deploy --env=""`;
+- Version command de ramas no productivas: `npm test && npm run check && npx wrangler versions upload --env=""`.
 
 El Version command sube una versión inmutable sin cambiar el tráfico. El Deploy
-command sólo se ejecuta para `main`. Para una operación manual, usar siempre los
-scripts `upload:*` o `deploy:*`; no ejecutar Wrangler sin destino explícito.
+command sólo se ejecuta para `main`. La validación está embebida en ambos para
+que no dependa de si Cloudflare ejecuta el campo Build command. Para una
+operación manual, usar siempre los scripts `upload:*` o `deploy:*`; no ejecutar
+Wrangler sin destino explícito.
 
 ## Configuración no secreta
 

@@ -8,9 +8,9 @@ rama no productiva ─→ Build command ─→ Version command ─→ versión c
 main ───────────────→ Build command ─→ Deploy command ──→ Worker actualizado
 ```
 
-El Build command ejecuta `npm run types && npm run check`. Los comandos de
-versión y deploy incluyen siempre `--env=""` para seleccionar explícitamente el
-perfil productivo por defecto.
+Los comandos de versión y deploy ejecutan primero `npm test && npm run check` e
+incluyen siempre `--env=""` para seleccionar explícitamente el perfil productivo
+por defecto. La puerta no depende de que el panel ejecute el campo Build command.
 
 ## Directorio raíz
 
