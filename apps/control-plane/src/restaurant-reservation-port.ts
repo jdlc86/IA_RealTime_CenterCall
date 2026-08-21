@@ -1,6 +1,6 @@
-import { SupabaseAdapter, type BookedReservationSummary } from "./supabase-adapter";
+import { SupabaseAdapter, type BookedReservationSummary } from "./supabase-adapter.js";
 
-export type { BookedReservationSummary } from "./supabase-adapter";
+export type { BookedReservationSummary } from "./supabase-adapter.js";
 
 export type RestaurantTablePlanRow = {
   allocation_mode: "SINGLE" | "MULTI_EXACT";
