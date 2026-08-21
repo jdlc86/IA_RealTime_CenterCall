@@ -62,10 +62,10 @@ function speechKindFromPurpose(purpose: string | undefined): HumanHandoffSpeechK
 }
 
 /**
- * v37 adapts human-handoff provider/Telnyx I/O into the neutral handoff runtime.
- * Shared handoff state, transport context and watchdogs are not owned by this
- * CallSession generation. Physical terminal hangup is delegated to the neutral
- * call-termination port.
+ * v37 coordinates human handoff through provider-neutral realtime, transfer and
+ * termination ports. Shared handoff state, transport context and watchdogs are
+ * not owned by this CallSession generation; provider credentials/endpoints stay
+ * behind the transport ports.
  */
 export class CallSession extends BaseConstructor {
   private handoffRuntimeV37() {
@@ -319,27 +319,15 @@ export class CallSession extends BaseConstructor {
     });
 
     try {
-      const apiKey = nonEmpty((this as any).env?.TELNYX_API_KEY);
-      if (!apiKey) throw new Error("TELNYX_API_KEY unavailable");
-      const response = await fetch(
-        `https://api.telnyx.com/v2/calls/${encodeURIComponent(prerequisites.sourceCallControlId)}/actions/transfer`,
-        {
-          method: "POST",
-          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({
-            to: prerequisites.config.destination.phone,
-            from: prerequisites.calledNumber,
-            timeout_secs: prerequisites.config.transfer.answerTimeoutSeconds,
-            command_id: `${handoff.id}-human-transfer`,
-            client_state: state,
-            target_leg_client_state: state,
-          }),
-        },
-      );
-      if (!response.ok) {
-        const body = await response.text();
-        throw new Error(`Telnyx transfer HTTP ${response.status}: ${body.slice(0, 250)}`);
-      }
+      const transfer = await humanHandoffTransportPortFor(this as any).startTransfer({
+        sourceCallControlId: prerequisites.sourceCallControlId,
+        destinationPhone: prerequisites.config.destination.phone,
+        originatingNumber: prerequisites.calledNumber,
+        answerTimeoutSeconds: prerequisites.config.transfer.answerTimeoutSeconds,
+        commandId: `${handoff.id}-human-transfer`,
+        correlationState: state,
+      });
+      if (!transfer.started) throw new Error(transfer.error ?? "HUMAN_HANDOFF_TRANSFER_NOT_STARTED");
       this.armTransferWatchdogV37();
       (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_TRANSFER_STARTED_V37", {
         handoff_id: handoff.id,
@@ -347,6 +335,7 @@ export class CallSession extends BaseConstructor {
         answer_timeout_seconds: prerequisites.config.transfer.answerTimeoutSeconds,
         destination_phone_exposed_to_model: false,
         state_owner: "human_handoff_transport_runtime",
+        physical_transfer_owner: "human_handoff_transport_port",
       });
     } catch (error) {
       await this.failHandoffV37("FAILED", error instanceof Error ? error.message : String(error));
