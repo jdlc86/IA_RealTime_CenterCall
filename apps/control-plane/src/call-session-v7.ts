@@ -10,19 +10,14 @@ import {
   LEGACY_INTENT_EXECUTOR,
   type LegacyIntentSelection,
 } from "./legacy-intent-execution.js";
+import type { RealtimeFunctionToolDefinition } from "./realtime-provider-command-port.js";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const MANAGE_MARKETING_CONSENT = "manage_marketing_consent";
 const POST_BOOKING_MARKETING_PROMPT = "Después pregunta, de forma separada y opcional, si desea recibir ofertas y promociones en este mismo número.";
 const BaseConstructor = CallSessionV6 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV6.prototype as any;
-
-type RealtimeEvent = {
-  type?: string;
-  name?: string;
-  call_id?: string;
-  arguments?: string;
-};
 
 function currentMadridReference(): string {
   return new Intl.DateTimeFormat("es-ES", {
@@ -32,19 +27,12 @@ function currentMadridReference(): string {
   }).format(new Date());
 }
 
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
-
 function requireRuntimeString(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`Missing runtime configuration: ${name}`);
   return value.trim();
 }
 
-function reservationAndMarketingAwareIntentTool(): Record<string, unknown> {
+function reservationAndMarketingAwareIntentTool(): RealtimeFunctionToolDefinition {
   return {
     type: "function",
     name: CONVERSATION_INTENT,
@@ -103,13 +91,9 @@ export class CallSession extends BaseConstructor {
     if (isStart && response.ok && ownsClassifierBootstrap(this, "MARKETING_V7") && !this.marketingSessionUpdateV7Sent) {
       this.marketingSessionUpdateV7Sent = true;
       try {
-        (this as any).send({
-          type: "session.update",
-          session: {
-            type: "realtime",
-            tools: [reservationAndMarketingAwareIntentTool()],
-            tool_choice: "required",
-          },
+        realtimeCommandPortFor(this as any).updateSessionPolicy({
+          tools: [reservationAndMarketingAwareIntentTool()],
+          toolChoice: "REQUIRED",
         });
         (this as any).diagnostics?.checkpoint?.("MARKETING_CONSENT_CLASSIFIER_SCHEMA_UPDATED", {
           strategy: "backend_orchestrator_v1",
@@ -182,18 +166,15 @@ export class CallSession extends BaseConstructor {
 
   private sendMarketingClassifierOutput(callId: string | undefined, ok: boolean, stage: string): void {
     if (!callId) return;
-    (this as any).send({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify({
-          ok,
-          action: "continue",
-          data_requirement: "MARKETING_CONSENT",
-          marketing_consent_orchestrator: "backend_v1",
-          stage,
-        }),
+    realtimeCommandPortFor(this as any).submitToolResult({
+      callId,
+      toolName: CONVERSATION_INTENT,
+      output: {
+        ok,
+        action: "continue",
+        data_requirement: "MARKETING_CONSENT",
+        marketing_consent_orchestrator: "backend_v1",
+        stage,
       },
     });
   }
@@ -279,14 +260,12 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) {
-      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
-    }
+    const event = adaptRealtimeProviderEvents(data).find(
+      (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && candidate.name === CONVERSATION_INTENT,
+    );
 
-    if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
-      await this[LEGACY_INTENT_EXECUTOR]({ argumentsJson: event.arguments, callId: event.call_id });
+    if (event?.type === "SEMANTIC_TOOL_SELECTED") {
+      await this[LEGACY_INTENT_EXECUTOR]({ argumentsJson: event.arguments, callId: event.callId });
       return;
     }
 

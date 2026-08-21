@@ -95,3 +95,15 @@ test("V9 workflow authority consumes neutral realtime input", async () => {
   assert.doesNotMatch(v9, /response\.function_call_arguments\.done|conversation\.item\.create|function_call_output|TextDecoder/);
   assert.doesNotMatch(v9, /BasePrototype\.handleRealtimeMessage\.call\(this,\s*JSON\.stringify/);
 });
+
+test("V7 marketing routing uses neutral realtime input and command ports", async () => {
+  const sourceRoot = new URL("./", import.meta.url);
+  const v7 = await readFile(new URL("call-session-v7.ts", sourceRoot), "utf8");
+
+  assert.match(v7, /adaptRealtimeProviderEvents\(data\)/);
+  assert.match(v7, /realtimeCommandPortFor\(this as any\)\.updateSessionPolicy/);
+  assert.match(v7, /realtimeCommandPortFor\(this as any\)\.submitToolResult/);
+  assert.match(v7, /this\[LEGACY_INTENT_EXECUTOR\]\(\{ argumentsJson: event\.arguments, callId: event\.callId \}\)/);
+  assert.doesNotMatch(v7, /response\.function_call_arguments\.done|conversation\.item\.create|function_call_output|session\.update|TextDecoder/);
+  assert.doesNotMatch(v7, /\(this as any\)\.send\(/);
+});
