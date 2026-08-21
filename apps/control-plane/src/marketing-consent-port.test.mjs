@@ -54,3 +54,12 @@ test("V7 delegates marketing status persistence without knowing the provider edg
   assert.doesNotMatch(v7, /\bSUPABASE_SECRET_KEY\b/);
   assert.doesNotMatch(v7, /\/rest\/v1\//);
 });
+
+test("legacy marketing layers delegate persistence without provider credentials", () => {
+  for (const name of ["call-session-v3.ts", "call-session-v8.ts"]) {
+    const source = readFileSync(new URL(`./${name}`, import.meta.url), "utf8");
+    assert.match(source, /marketingConsentPortFor\(this\)/, name);
+    assert.doesNotMatch(source, /SupabaseMarketingConsentStore/, name);
+    assert.doesNotMatch(source, /SUPABASE_(?:URL|SECRET_KEY)/, name);
+  }
+});

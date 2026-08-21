@@ -8,9 +8,7 @@ import {
 
 export type { BusinessHours, BusinessProfessional, BusinessService, RestaurantMenuItem } from "./supabase-adapter.js";
 
-type RestaurantBusinessHost = object & {
-  env?: Record<string, unknown>;
-};
+type RestaurantBusinessHost = object;
 
 type RestaurantBusinessDataAdapter = Pick<
   SupabaseAdapter,
@@ -18,7 +16,7 @@ type RestaurantBusinessDataAdapter = Pick<
 >;
 
 function requiredConfig(host: RestaurantBusinessHost, name: "SUPABASE_URL" | "SUPABASE_SECRET_KEY"): string {
-  const value = host.env?.[name];
+  const value = (host as { env?: Record<string, unknown> }).env?.[name];
   if (typeof value !== "string" || !value.trim()) throw new Error(`Missing runtime configuration: ${name}`);
   return value.trim();
 }

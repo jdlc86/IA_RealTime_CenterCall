@@ -1,10 +1,12 @@
 import {
   SupabaseAdapter,
   type BookedReservationSummary,
+  type CreateRestaurantReservationInput,
   type RestaurantAvailability,
+  type RestaurantReservation,
 } from "./supabase-adapter.js";
 
-export type { BookedReservationSummary, RestaurantAvailability } from "./supabase-adapter.js";
+export type { BookedReservationSummary, CreateRestaurantReservationInput, RestaurantAvailability, RestaurantReservation } from "./supabase-adapter.js";
 
 export type RestaurantTablePlanRow = {
   allocation_mode: "SINGLE" | "MULTI_EXACT";
@@ -31,6 +33,11 @@ export type RestaurantAvailabilityRequest = Readonly<{
   startsAt: string;
   partySize: number;
   durationMinutes: number;
+}>;
+
+export type CreateRestaurantReservationRequest = Readonly<{
+  tenantId: string;
+  input: CreateRestaurantReservationInput;
 }>;
 
 export type MultiTableReservationRequest = Readonly<{
@@ -88,16 +95,14 @@ export type RestaurantSlotSearchRequest = Readonly<{
   limit: number;
 }>;
 
-type RestaurantReservationHost = object & {
-  env?: Record<string, unknown>;
-};
+type RestaurantReservationHost = object;
 
-type ReservationDataAdapter = Pick<SupabaseAdapter, "checkRestaurantAvailability" | "listBookedReservationsByPhone" | "cancelBookedReservation"> & {
+type ReservationDataAdapter = Pick<SupabaseAdapter, "checkRestaurantAvailability" | "createRestaurantReservation" | "listBookedReservationsByPhone" | "cancelBookedReservation"> & {
   invokeRpc<T>(name: string, body: Record<string, unknown>): Promise<T[]>;
 };
 
 function requiredConfig(host: RestaurantReservationHost, name: "SUPABASE_URL" | "SUPABASE_SECRET_KEY"): string {
-  const value = host.env?.[name];
+  const value = (host as { env?: Record<string, unknown> }).env?.[name];
   if (typeof value !== "string" || !value.trim()) throw new Error(`Missing runtime configuration: ${name}`);
   return value.trim();
 }
@@ -131,6 +136,10 @@ export class RestaurantReservationRuntime {
       request.partySize,
       request.durationMinutes,
     );
+  }
+
+  createReservation(request: CreateRestaurantReservationRequest): Promise<RestaurantReservation> {
+    return this.adapter.createRestaurantReservation(request.tenantId, request.input);
   }
 
   checkTablePlan(request: RestaurantTablePlanRequest): Promise<RestaurantTablePlanRow[]> {

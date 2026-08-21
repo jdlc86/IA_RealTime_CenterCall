@@ -10,6 +10,10 @@ function runtimeWithRecorder() {
       calls.push({ operation: "availability", tenantId, startsAt, partySize, durationMinutes });
       return [];
     },
+    async createRestaurantReservation(tenantId, input) {
+      calls.push({ operation: "create", tenantId, input });
+      return { reservation_code: "ABC123" };
+    },
     async listBookedReservationsByPhone(tenantId, callerPhone) {
       calls.push({ operation: "list", tenantId, callerPhone });
       return [];
@@ -34,6 +38,17 @@ test("restaurant reservation port owns backend RPC names and payload mapping", a
     startsAt: "2026-08-21T19:00:00+02:00",
     partySize: 4,
     durationMinutes: 90,
+  });
+  await runtime.createReservation({
+    tenantId: "restaurante-centro",
+    input: {
+      customerName: "Ana",
+      customerPhone: "+34612345678",
+      partySize: 4,
+      startsAt: "2026-08-21T19:00:00+02:00",
+      durationMinutes: 90,
+      source: "voice",
+    },
   });
   await runtime.checkTablePlan({
     tenantId: "restaurante-centro",
@@ -85,6 +100,18 @@ test("restaurant reservation port owns backend RPC names and payload mapping", a
       startsAt: "2026-08-21T19:00:00+02:00",
       partySize: 4,
       durationMinutes: 90,
+    },
+    {
+      operation: "create",
+      tenantId: "restaurante-centro",
+      input: {
+        customerName: "Ana",
+        customerPhone: "+34612345678",
+        partySize: 4,
+        startsAt: "2026-08-21T19:00:00+02:00",
+        durationMinutes: 90,
+        source: "voice",
+      },
     },
     {
       operation: "rpc",

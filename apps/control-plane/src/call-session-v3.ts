@@ -5,7 +5,7 @@ import {
   validateMarketingConsentFlowArgs,
   type MarketingConsentFlowArgs,
 } from "./marketing-consent-flow";
-import { SupabaseMarketingConsentStore } from "./marketing-consent-store";
+import { marketingConsentPortFor } from "./marketing-consent-port.js";
 import { withResolvedReservationContact, type ReservationFlowArgs } from "./reservation-flow";
 import type { DataRequirement } from "./semantic-router";
 import { ToolGateway, type ToolDefinition, type ToolRequest, type ToolResult } from "./tool-gateway";
@@ -219,10 +219,7 @@ export class CallSession extends BaseConstructor {
     }
 
     const callId = requireRuntimeString((this as any).callId, "call_id");
-    const store = new SupabaseMarketingConsentStore({
-      SUPABASE_URL: requireRuntimeString((this as any).env?.SUPABASE_URL, "SUPABASE_URL"),
-      SUPABASE_SECRET_KEY: requireRuntimeString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
-    });
+    const store = marketingConsentPortFor(this);
     const event = await store.record(tenantId, {
       action: decision.action,
       phone: decision.phone,

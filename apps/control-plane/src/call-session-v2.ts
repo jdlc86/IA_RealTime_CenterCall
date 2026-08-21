@@ -1,6 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
 import { CallDiagnostics, isDebugEnabled } from "./call-diagnostics";
-import { SupabaseAdapter } from "./supabase-adapter";
 import { KvTenantRepository, type TenantKvNamespace } from "./tenant-kv";
 import { parseSemanticDecision, type DataRequirement } from "./semantic-router";
 import {
@@ -12,11 +11,12 @@ import {
 } from "./reservation-flow";
 import { ToolGateway, requireObject, type ToolDefinition, type ToolResult } from "./tool-gateway";
 import { LEGACY_INTENT_EXECUTOR, type LegacyIntentSelection } from "./legacy-intent-execution.js";
+import { restaurantReservationPortFor } from "./restaurant-reservation-port.js";
+import { restaurantBusinessPortFor } from "./restaurant-business-port.js";
+import { callDiagnosticPersistencePortFor } from "./call-diagnostic-persistence-port.js";
 
 type CallSessionEnv = {
   OPENAI_API_KEY: string;
-  SUPABASE_URL: string;
-  SUPABASE_SECRET_KEY: string;
   DEBUG_KEY?: string;
   TENANT_CONFIG: TenantKvNamespace;
 };
@@ -294,7 +294,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
           : typeof details.required_tool === "string"
             ? details.required_tool
             : null;
-        await this.getSupabaseAdapter().writeDiagnosticEvent({
+        await callDiagnosticPersistencePortFor(this).write({
           call_id: snapshot.call_id ?? callId,
           tenant_id: snapshot.tenant_id,
           component: "CallSession",
@@ -530,13 +530,6 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     });
   }
 
-  private getSupabaseAdapter(): SupabaseAdapter {
-    return new SupabaseAdapter({
-      SUPABASE_URL: requireEnvString(this.env.SUPABASE_URL, "SUPABASE_URL"),
-      SUPABASE_SECRET_KEY: requireEnvString(this.env.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
-    });
-  }
-
   private async executeReservationFlow(args: ReservationFlowArgs, tenantId: string): Promise<Record<string, unknown>> {
     const availabilityMissing = missingAvailabilityFields(args);
     if (availabilityMissing.length) {
@@ -548,12 +541,12 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       };
     }
 
-    const availability = await this.getSupabaseAdapter().checkRestaurantAvailability(
+    const availability = await restaurantReservationPortFor(this).checkAvailability({
       tenantId,
-      args.startsAt!,
-      args.partySize!,
-      args.durationMinutes ?? 90,
-    );
+      startsAt: args.startsAt!,
+      partySize: args.partySize!,
+      durationMinutes: args.durationMinutes ?? 90,
+    });
 
     if (availability.length === 0) {
       this.resetReservationConfirmation();
@@ -600,14 +593,17 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       };
     }
 
-    const reservation = await this.getSupabaseAdapter().createRestaurantReservation(tenantId, {
-      customerName: args.customerName!,
-      customerPhone: args.customerPhone!,
-      partySize: args.partySize!,
-      startsAt: args.startsAt!,
-      durationMinutes: args.durationMinutes ?? 90,
-      notes: args.notes ?? null,
-      source: "voice",
+    const reservation = await restaurantReservationPortFor(this).createReservation({
+      tenantId,
+      input: {
+        customerName: args.customerName!,
+        customerPhone: args.customerPhone!,
+        partySize: args.partySize!,
+        startsAt: args.startsAt!,
+        durationMinutes: args.durationMinutes ?? 90,
+        notes: args.notes ?? null,
+        source: "voice",
+      },
     });
     this.resetReservationConfirmation();
     return {
@@ -633,28 +629,28 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         access: "READ",
         description: SERVICES_REALTIME_TOOL.description,
         validate: emptyObjectValidator,
-        execute: async (_args, context) => ({ services: await this.getSupabaseAdapter().listServices(context.tenantId), source: "supabase" }),
+        execute: async (_args, context) => ({ services: await restaurantBusinessPortFor(this).listServices(context.tenantId), source: "supabase" }),
       },
       {
         name: GET_MENU,
         access: "READ",
         description: MENU_REALTIME_TOOL.description,
         validate: emptyObjectValidator,
-        execute: async (_args, context) => ({ menu_items: await this.getSupabaseAdapter().listMenuItems(context.tenantId), source: "supabase" }),
+        execute: async (_args, context) => ({ menu_items: await restaurantBusinessPortFor(this).listMenuItems(context.tenantId), source: "supabase" }),
       },
       {
         name: GET_PROFESSIONALS,
         access: "READ",
         description: PROFESSIONALS_REALTIME_TOOL.description,
         validate: emptyObjectValidator,
-        execute: async (_args, context) => ({ professionals: await this.getSupabaseAdapter().listProfessionals(context.tenantId), source: "supabase" }),
+        execute: async (_args, context) => ({ professionals: await restaurantBusinessPortFor(this).listProfessionals(context.tenantId), source: "supabase" }),
       },
       {
         name: GET_BUSINESS_HOURS,
         access: "READ",
         description: BUSINESS_HOURS_REALTIME_TOOL.description,
         validate: emptyObjectValidator,
-        execute: async (_args, context) => ({ business_hours: await this.getSupabaseAdapter().listBusinessHours(context.tenantId), source: "supabase" }),
+        execute: async (_args, context) => ({ business_hours: await restaurantBusinessPortFor(this).listBusinessHours(context.tenantId), source: "supabase" }),
       },
       {
         name: MANAGE_RESERVATION,
