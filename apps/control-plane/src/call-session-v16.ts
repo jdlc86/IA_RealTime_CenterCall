@@ -1,5 +1,5 @@
 import { CallSession as CallSessionV15 } from "./call-session-v15";
-import { SupabaseMarketingConsentStore } from "./marketing-consent-store";
+import { marketingConsentPortFor } from "./marketing-consent-port.js";
 import {
   restaurantReservationPortFor,
   type BookedReservationSummary,
@@ -239,11 +239,7 @@ export class CallSession extends BaseConstructor {
       (this as any).createSpokenResponse("Explica que no puedes consultar con seguridad el estado de promociones porque no está disponible la identidad del número llamante. No modifiques ninguna preferencia. ¿Necesitas algo más en lo que pueda ayudarte?");
       return;
     }
-    const store = new SupabaseMarketingConsentStore({
-      SUPABASE_URL: requireRuntimeString((this as any).env?.SUPABASE_URL, "SUPABASE_URL"),
-      SUPABASE_SECRET_KEY: requireRuntimeString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
-    });
-    const status = await store.getLatestStatus(tenantId, callerPhone);
+    const status = await marketingConsentPortFor(this as any).getLatestStatus(tenantId, callerPhone);
     (this as any).sendMarketingClassifierOutput?.(callId, true, "MARKETING_STATUS_QUERY");
     (this as any).diagnostics?.checkpoint?.("MARKETING_STATUS_QUERY_COMPLETED", { status: status ?? "NO_RECORD", identity_source: "CALLER_ID", changed: false });
     const meaning = status === "VERIFIED"
