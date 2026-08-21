@@ -2,6 +2,7 @@ import { CallSession as CallSessionV28 } from "./call-session-v28";
 import { CallSession as CallSessionV26 } from "./call-session-v26";
 import { isPublicRestaurantTool } from "./public-tool-authorization";
 import {
+  adaptRealtimeProviderEvents,
   installRealtimeToolResultObserver,
   realtimeAssistantResponseActiveFor,
   realtimeCommandPortFor,
@@ -20,28 +21,11 @@ const BasePrototype = CallSessionV28.prototype as any;
 const V26Prototype = CallSessionV26.prototype as any;
 const INPUT_IGNORED = "restaurant_input_ignored";
 
-type RealtimeEvent = {
-  type?: string;
-  name?: string;
+type SemanticToolEventV29 = {
+  name: string;
   call_id?: string;
-  item_id?: string;
   arguments?: string;
-  transcript?: string;
-  response_id?: string;
 };
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
-
-function parseEvent(data: unknown): RealtimeEvent | null {
-  const text = readRealtimeText(data);
-  if (!text) return null;
-  try { return JSON.parse(text) as RealtimeEvent; } catch { return null; }
-}
 
 function usableTranscript(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -102,7 +86,7 @@ export class CallSession extends BaseConstructor {
     });
   }
 
-  private handleIgnoredInputV29(event: RealtimeEvent): void {
+  private handleIgnoredInputV29(event: SemanticToolEventV29): void {
     let reason = "UNCERTAIN";
     try {
       const args = event.arguments?.trim() ? JSON.parse(event.arguments) as Record<string, unknown> : {};
@@ -124,7 +108,7 @@ export class CallSession extends BaseConstructor {
     (this as any).observeSemanticIgnoredV18?.(reason);
   }
 
-  private authorizeToolV29(event: RealtimeEvent): boolean {
+  private authorizeToolV29(event: SemanticToolEventV29): boolean {
     if (this.debugEnabledV29() && event.name) {
       (this as any).diagnostics?.checkpoint?.("DEBUG_MODEL_TOOL_DECISION_V29", {
         tool: event.name,
@@ -145,20 +129,22 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const event = parseEvent(data);
+    const events = adaptRealtimeProviderEvents(data);
     let requestTranscriptAuthorizedResponse = false;
     let transcriptResponseItemId: string | null = null;
     let provisionalIgnoreSupersededForResponse = false;
 
-    if (event?.type === "input_audio_buffer.speech_started") {
-      const itemId = typeof event.item_id === "string" ? event.item_id : null;
-      beginSemanticTurnFromAcousticEvidence(this, { itemId, source: "v29_inherited_raw_vad" });
+    const speechStarted = events.find((event) => event.type === "CALLER_SPEECH_STARTED");
+    if (speechStarted?.type === "CALLER_SPEECH_STARTED") {
+      const itemId = typeof speechStarted.itemId === "string" ? speechStarted.itemId : null;
+      beginSemanticTurnFromAcousticEvidence(this, { itemId, source: "v29_provider_event_adapter" });
       await V26Prototype.handleRealtimeMessage.call(this, data);
       return;
     }
 
-    if (event?.type === "conversation.item.input_audio_transcription.completed") {
-      const transcript = usableTranscript(event.transcript);
+    const transcriptEvent = events.find((event) => event.type === "CALLER_TRANSCRIPT_COMPLETED");
+    if (transcriptEvent?.type === "CALLER_TRANSCRIPT_COMPLETED") {
+      const transcript = usableTranscript(transcriptEvent.transcript);
       if (this.debugEnabledV29()) {
         (this as any).diagnostics?.checkpoint?.("DEBUG_USER_TRANSCRIPT_V29", {
           transcript: transcript ?? "",
@@ -166,7 +152,7 @@ export class CallSession extends BaseConstructor {
         });
       }
       if (transcript) {
-        const itemId = typeof event.item_id === "string" ? event.item_id : null;
+        const itemId = typeof transcriptEvent.itemId === "string" ? transcriptEvent.itemId : null;
         const higherLayerOwns = turnOwnershipRuntimeFor(this).ownsSemanticItem(itemId);
         const runtime = semanticTurnRuntimeFor(this);
         const provisionalIgnoreSuperseded = runtime.shouldReopenAfterProvisionalIgnore(INPUT_IGNORED);
@@ -208,8 +194,16 @@ export class CallSession extends BaseConstructor {
       }
     }
 
-    if (event?.type === "response.function_call_arguments.done" && event.name && isPublicRestaurantTool(event.name)) {
-      if (!this.authorizeToolV29(event)) return;
+    const toolEvent = events.find(
+      (event) => event.type === "SEMANTIC_TOOL_SELECTED" && isPublicRestaurantTool(event.name),
+    );
+    if (toolEvent?.type === "SEMANTIC_TOOL_SELECTED" && isPublicRestaurantTool(toolEvent.name)) {
+      const semanticEvent: SemanticToolEventV29 = {
+        name: toolEvent.name,
+        call_id: toolEvent.callId,
+        arguments: toolEvent.arguments,
+      };
+      if (!this.authorizeToolV29(semanticEvent)) return;
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
