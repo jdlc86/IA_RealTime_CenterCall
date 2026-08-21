@@ -1,6 +1,7 @@
 import { CallSession as CallSessionV37 } from "./call-session-v37";
 import { classifyHandoffFailure, encodeHumanHandoffClientState, parseHumanHandoffConfig } from "./human-handoff";
 import { HumanHandoffStore } from "./human-handoff-store";
+import { humanHandoffSourceLegPortFor } from "./human-handoff-source-leg-port.js";
 import { tenantConfigurationKey, tenantConfigurationKeyV2 } from "./tenant-kv";
 
 const BaseConstructor = CallSessionV37 as unknown as new (...args: any[]) => any;
@@ -27,13 +28,13 @@ function nonEmpty(value: unknown): string | null {
  * A transfer may detach/close the OpenAI SIP sideband before the target leg later
  * reports timeout/busy. Realtime therefore cannot be relied on for the terminal
  * failure sentence. When the source leg is still alive, v38 plays that sentence
- * through Telnyx and waits for call.speak.ended before hanging up.
+ * through the provider-neutral source-leg port and waits for call.speak.ended
+ * before hanging up.
  *
  * ConversationTurnLifecycle owns AI-conversation terminality only. Its CLOSING
- * state is not evidence that the Telnyx source leg has ended during handoff.
- * Source-leg terminality is established by Telnyx transport evidence: an actual
- * source call.hangup event, or error 90018 if the leg ends in the check-to-command
- * race while starting terminal speech. Lucía never resumes after point-of-no-return.
+ * state is not evidence that the physical source leg has ended during handoff.
+ * Source-leg terminality is established by transport evidence normalized by the
+ * source-leg port. Lucía never resumes after point-of-no-return.
  */
 export class CallSession extends BaseConstructor {
   private terminalSpeechTimersV38 = new Map<string, ReturnType<typeof setTimeout>>();
@@ -77,24 +78,14 @@ export class CallSession extends BaseConstructor {
     if (!handoffId || !tenantId || !sourceCallControlId) return;
     this.clearTerminalSpeechTimerV38(handoffId);
 
-    let terminated = false;
-    try {
-      const apiKey = nonEmpty((this as any).env?.TELNYX_API_KEY);
-      if (!apiKey) throw new Error("TELNYX_API_KEY unavailable");
-      const response = await fetch(`https://api.telnyx.com/v2/calls/${encodeURIComponent(sourceCallControlId)}/actions/hangup`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ command_id: `${handoffId}-terminal-hangup-v38` }),
-      });
-      terminated = response.ok;
-      if (!response.ok && response.status !== 422) {
-        const body = await response.text();
-        throw new Error(`Telnyx hangup HTTP ${response.status}: ${body.slice(0, 250)}`);
-      }
-    } catch (error) {
-      (this as any).diagnostics?.fail?.("HUMAN_HANDOFF_TERMINAL_HANGUP_FAILED_V38", "TELNYX_TERMINAL_HANGUP_FAILED", {
+    const result = await humanHandoffSourceLegPortFor(this).hangup({
+      sourceCallControlId,
+      commandId: `${handoffId}-terminal-hangup-v38`,
+    });
+    if (!result.ok && !result.alreadyEnded) {
+      (this as any).diagnostics?.fail?.("HUMAN_HANDOFF_TERMINAL_HANGUP_FAILED_V38", "SOURCE_LEG_TERMINAL_HANGUP_FAILED", {
         handoff_id: handoffId,
-        error: error instanceof Error ? error.message : String(error),
+        error: result.error ?? "source-leg hangup failed",
       });
     }
 
@@ -102,8 +93,10 @@ export class CallSession extends BaseConstructor {
     (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_TERMINAL_CALL_ENDED_V38", {
       handoff_id: handoffId,
       trigger,
-      telephony_terminated: terminated,
+      telephony_terminated: result.ok,
+      source_leg_already_ended: result.alreadyEnded,
       lucia_conversation_resumes: false,
+      transport_owner: "human_handoff_source_leg_port",
     });
   }
 
@@ -140,58 +133,46 @@ export class CallSession extends BaseConstructor {
       return Response.json({ ok: true, action: "failure_recorded_and_hung_up", status });
     }
 
-    try {
-      const apiKey = nonEmpty((this as any).env?.TELNYX_API_KEY);
-      if (!apiKey) throw new Error("TELNYX_API_KEY unavailable");
-      const clientState = encodeHumanHandoffClientState({
-        kind: "human_handoff_v1",
-        handoffId,
-        realtimeCallId,
-        tenantId,
-        sourceCallControlId,
-      });
-      const response = await fetch(`https://api.telnyx.com/v2/calls/${encodeURIComponent(sourceCallControlId)}/actions/speak`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({
-          payload: message,
-          payload_type: "text",
-          voice: "Azure.es-ES-ElviraNeural",
-          language: "es-ES",
-          service_level: "premium",
-          client_state: clientState,
-          command_id: `${handoffId}-failure-terminal-speak-v38`,
-          target_legs: "self",
-        }),
-      });
-      if (!response.ok) {
-        const body = await response.text();
-        if (response.status === 422 && body.includes("90018")) {
-          await this.recordSourceAlreadyTerminalV38(handoffId, tenantId, "telnyx_90018_call_already_ended");
-          return Response.json({ ok: true, action: "failure_recorded_source_ended_during_speak", status });
-        }
-        throw new Error(`Telnyx speak HTTP ${response.status}: ${body.slice(0, 250)}`);
-      }
+    const clientState = encodeHumanHandoffClientState({
+      kind: "human_handoff_v1",
+      handoffId,
+      realtimeCallId,
+      tenantId,
+      sourceCallControlId,
+    });
+    const result = await humanHandoffSourceLegPortFor(this).speakTerminal({
+      sourceCallControlId,
+      text: message,
+      clientState,
+      commandId: `${handoffId}-failure-terminal-speak-v38`,
+    });
 
-      (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_FAILURE_SPEECH_STARTED_V38", {
+    if (result.alreadyEnded) {
+      await this.recordSourceAlreadyTerminalV38(handoffId, tenantId, "source_leg_already_ended_during_terminal_speech");
+      return Response.json({ ok: true, action: "failure_recorded_source_ended_during_speak", status });
+    }
+
+    if (!result.ok) {
+      (this as any).diagnostics?.fail?.("HUMAN_HANDOFF_FAILURE_SPEECH_FAILED_V38", "SOURCE_LEG_FAILURE_SPEECH_FAILED", {
         handoff_id: handoffId,
-        status,
-        transport: "TELNYX_SOURCE_LEG_TTS",
-        lucia_conversation_resumes: false,
+        error: result.error ?? "source-leg terminal speech failed",
       });
-      this.clearTerminalSpeechTimerV38(handoffId);
-      this.terminalSpeechTimersV38.set(handoffId, setTimeout(() => {
-        void this.hangupSourceV38(event, "failure_message_telnyx_watchdog");
-      }, TERMINAL_SPEECH_WATCHDOG_MS));
-      return Response.json({ ok: true, action: "failure_terminal_speech_started", status });
-    } catch (error) {
-      (this as any).diagnostics?.fail?.("HUMAN_HANDOFF_FAILURE_SPEECH_FAILED_V38", "TELNYX_FAILURE_SPEECH_FAILED", {
-        handoff_id: handoffId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      await this.hangupSourceV38(event, "failure_message_telnyx_start_failed");
+      await this.hangupSourceV38(event, "failure_message_source_leg_start_failed");
       return Response.json({ ok: true, action: "failure_speech_failed_and_hung_up", status });
     }
+
+    (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_FAILURE_SPEECH_STARTED_V38", {
+      handoff_id: handoffId,
+      status,
+      transport: "SOURCE_LEG_TTS",
+      transport_owner: "human_handoff_source_leg_port",
+      lucia_conversation_resumes: false,
+    });
+    this.clearTerminalSpeechTimerV38(handoffId);
+    this.terminalSpeechTimersV38.set(handoffId, setTimeout(() => {
+      void this.hangupSourceV38(event, "failure_message_source_leg_watchdog");
+    }, TERMINAL_SPEECH_WATCHDOG_MS));
+    return Response.json({ ok: true, action: "failure_terminal_speech_started", status });
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -221,9 +202,10 @@ export class CallSession extends BaseConstructor {
         (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_FAILURE_SPEECH_COMPLETED_V38", {
           handoff_id: handoffId,
           status: state.status,
-          transport: "TELNYX_SOURCE_LEG_TTS",
+          transport: "SOURCE_LEG_TTS",
+          transport_owner: "human_handoff_source_leg_port",
         });
-        await this.hangupSourceV38(event, "failure_message_telnyx_speak_ended");
+        await this.hangupSourceV38(event, "failure_message_source_leg_speak_ended");
         return Response.json({ ok: true, action: "failure_terminal_speech_completed_and_hung_up" });
       }
     }
