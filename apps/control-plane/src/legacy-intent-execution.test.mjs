@@ -72,3 +72,14 @@ test("V11 query routing uses neutral realtime input and command ports", async ()
   assert.doesNotMatch(v11, /response\.function_call_arguments\.done|conversation\.item\.create|function_call_output|session\.update|TextDecoder/);
   assert.doesNotMatch(v11, /\(this as any\)\.send\(/);
 });
+
+test("V10 cancellation routing uses neutral realtime input and command ports", async () => {
+  const sourceRoot = new URL("./", import.meta.url);
+  const v10 = await readFile(new URL("call-session-v10.ts", sourceRoot), "utf8");
+
+  assert.match(v10, /adaptRealtimeProviderEvents\(data\)/);
+  assert.match(v10, /realtimeCommandPortFor\(this as any\)\.submitToolResult/);
+  assert.match(v10, /this\[LEGACY_INTENT_EXECUTOR\]\(\{ argumentsJson: event\.arguments, callId: event\.callId \}\)/);
+  assert.doesNotMatch(v10, /response\.function_call_arguments\.done|conversation\.item\.create|function_call_output|TextDecoder/);
+  assert.doesNotMatch(v10, /\(this as any\)\.send\(/);
+});

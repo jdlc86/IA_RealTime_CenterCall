@@ -9,19 +9,11 @@ import {
   type LegacyIntentSelection,
 } from "./legacy-intent-execution.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV9 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV9.prototype as any;
-
-type RealtimeEvent = { type?: string; name?: string; call_id?: string; arguments?: string; };
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
 
 function requireRuntimeString(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`Missing runtime configuration: ${name}`);
@@ -53,12 +45,16 @@ export class CallSession extends BaseConstructor {
 
   private sendCancellationClassifierOutput(callId: string | undefined, stage: string, details: Record<string, unknown> = {}): void {
     if (!callId) return;
-    (this as any).send({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify({ ok: true, action: "continue", data_requirement: "RESERVATION", reservation_operation: "CANCEL", stage, ...details }),
+    realtimeCommandPortFor(this as any).submitToolResult({
+      callId,
+      toolName: CONVERSATION_INTENT,
+      output: {
+        ok: true,
+        action: "continue",
+        data_requirement: "RESERVATION",
+        reservation_operation: "CANCEL",
+        stage,
+        ...details,
       },
     });
   }
@@ -196,14 +192,12 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) {
-      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
-    }
+    const event = adaptRealtimeProviderEvents(data).find(
+      (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && candidate.name === CONVERSATION_INTENT,
+    );
 
-    if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
-      await this[LEGACY_INTENT_EXECUTOR]({ argumentsJson: event.arguments, callId: event.call_id });
+    if (event?.type === "SEMANTIC_TOOL_SELECTED") {
+      await this[LEGACY_INTENT_EXECUTOR]({ argumentsJson: event.arguments, callId: event.callId });
       return;
     }
 
