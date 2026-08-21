@@ -23,7 +23,7 @@ export type HangupControllerOptions = {
   backgroundRetryMs?: number;
 };
 
-const DEFAULT_CONFIRMATION_TIMEOUT_MS = 5_000;
+const DEFAULT_CONFIRMATION_TIMEOUT_MS = 8_000;
 const DEFAULT_RETRY_DELAY_MS = 400;
 const DEFAULT_MAX_IMMEDIATE_ATTEMPTS = 4;
 const DEFAULT_BACKGROUND_RETRY_MS = 5_000;
@@ -195,10 +195,12 @@ export class HangupController {
         return;
       }
 
-      this.host.diagnostics?.fail?.("HANGUP_CONFIRMATION_TIMEOUT", "HANGUP_NOT_CONFIRMED", {
+      this.host.diagnostics?.checkpoint?.("HANGUP_CONFIRMATION_TIMEOUT", {
         attempt,
         confirmation_timeout_ms: this.confirmationTimeoutMs,
         socket_still_connected: this.host.getSocketConnected(),
+        retry_scheduled: attempt < this.maxImmediateAttempts,
+        terminal_failure: false,
       });
       if (attempt < this.maxImmediateAttempts) await sleep(this.retryDelayMs);
     }

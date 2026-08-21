@@ -107,9 +107,51 @@ test("provider terminal evidence completes immediately without a sideband timeou
     && entry.details.confirmation === "provider_terminal_state"), true);
 });
 
+test("delayed sideband confirmation is informational when a retry proves the call already terminal", async () => {
+  let attempts = 0;
+  const { host, checkpoints, failures } = makeHost({
+    sourceCallControlId: "source-delayed-sideband",
+    terminateCall: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return {
+          terminated: true,
+          attempts: [{ transport: "TELNYX_SOURCE_LEG", ok: true, httpStatus: 200 }],
+        };
+      }
+      return {
+        terminated: true,
+        terminationConfirmed: true,
+        attempts: [{
+          transport: "TELNYX_SOURCE_LEG",
+          ok: true,
+          httpStatus: 422,
+          terminalEvidence: "ALREADY_TERMINATED",
+        }],
+      };
+    },
+  });
+  const controller = new HangupController(host, {
+    confirmationTimeoutMs: 1,
+    retryDelayMs: 0,
+    maxImmediateAttempts: 2,
+    backgroundRetryMs: 60_000,
+  });
+
+  await controller.perform("test_delayed_sideband");
+  controller.dispose();
+
+  assert.equal(attempts, 2);
+  assert.equal(failures.length, 0);
+  assert.equal(checkpoints.some((entry) => entry.event === "HANGUP_CONFIRMATION_TIMEOUT"
+    && entry.details.terminal_failure === false), true);
+  assert.equal(checkpoints.some((entry) => entry.event === "HANGUP_COMPLETED"
+    && entry.details.confirmation === "provider_terminal_state"), true);
+});
+
 test("default sideband confirmation window covers ordinary provider close latency", () => {
   const source = readFileSync(new URL("./hangup-controller.ts", import.meta.url), "utf8");
-  assert.match(source, /DEFAULT_CONFIRMATION_TIMEOUT_MS = 5_000/);
+  assert.match(source, /DEFAULT_CONFIRMATION_TIMEOUT_MS = 8_000/);
 });
 
 test("hangup controller owns the in-flight lock and rejects overlapping termination attempts", async () => {
