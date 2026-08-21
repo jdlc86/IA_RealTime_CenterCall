@@ -6,6 +6,7 @@ import {
   reservationAvailabilityChangedOutput,
 } from "./reservation-concurrency-policy.js";
 import { reservationContactIdentityRuntimeFor } from "./reservation-contact-identity-runtime.js";
+import { reservationDatetimeRuntimeFor } from "./reservation-datetime-runtime.js";
 import {
   reservationSessionRuntimeFor,
   type ReservationDraft,
@@ -54,7 +55,12 @@ export class CallSession extends BaseConstructor {
       arguments: args,
     });
     if (!contactIdentity.allowed) return;
-    const draft = runtime.mergeDraft(contactIdentity.arguments, callerPhone);
+    const datetime = reservationDatetimeRuntimeFor(this).canonicalizeCreate(this, {
+      callId,
+      arguments: contactIdentity.arguments,
+    });
+    if (!datetime.allowed) return;
+    const draft = runtime.mergeDraft(datetime.arguments, callerPhone);
     const tenantId = session.tenantId as string | null | undefined;
     if (!tenantId) {
       this.sendFunctionOutputV19(callId, { ok: false, status: "ERROR", error: "TENANT_REQUIRED" });
@@ -230,6 +236,7 @@ export class CallSession extends BaseConstructor {
         compatibility_executor: "direct_reservation_controller_v19",
         reservation_state_owner: "reservation_session_runtime",
         reservation_contact_identity_owner: "reservation_contact_identity_runtime",
+        reservation_datetime_owner: "reservation_datetime_runtime",
       });
       try {
         await this.executeDirectCreateV19(event.callId, args);
