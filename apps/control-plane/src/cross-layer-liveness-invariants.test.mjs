@@ -267,7 +267,9 @@ test("runtime wiring: active entrypoint and critical layers consume the policies
   assert.match(malformedToolCorrectionRuntime, /SEMANTIC_TOOL_CROSS_TOOL_CORRECTION_BLOCKED_V51/);
   assert.match(malformedToolCorrectionRuntime, /tools:\s*"DISABLED"/);
   assert.match(v36, /turnConcurrencyCoordinatorFor/);
-  assert.match(v36, /\.observe\(this as any, parseEvent\(data\)\)/);
+  assert.match(v36, /adaptRealtimeProviderEvents/);
+  assert.match(v36, /coordinator\.observe\(session, event\)/);
+  assert.doesNotMatch(v36, /parseEvent|readRealtimeText|TextDecoder/);
   assert.doesNotMatch(v36, /this\.[A-Za-z_$][\w$]*V(?:3[6-9]|4\d|5[0-4])/);
   assert.match(turnConcurrencyCoordinator, /decideTurnConcurrencyAcquire/);
   assert.match(turnConcurrencyCoordinator, /TURN_CONCURRENCY_OLDER_SPLIT_FRAGMENT_DEFERRED_V36/);
