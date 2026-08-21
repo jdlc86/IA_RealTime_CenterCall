@@ -1,6 +1,7 @@
 import { CallSession as CallSessionV15 } from "./call-session-v15";
 import { SupabaseAdapter, type BookedReservationSummary } from "./supabase-adapter";
 import { SupabaseMarketingConsentStore } from "./marketing-consent-store";
+import { adaptRealtimeProviderEvents } from "./realtime-provider-runtime";
 import type { ToolGateway, ToolRequest, ToolResult } from "./tool-gateway";
 
 const BaseConstructor = CallSessionV15 as unknown as new (...args: any[]) => any;
@@ -9,7 +10,6 @@ const CONVERSATION_INTENT = "conversation_intent";
 const CHECK_RESERVATION_AVAILABILITY = "check_reservation_availability";
 const MANAGE_RESERVATION = "manage_reservation";
 
-type RealtimeEvent = { type?: string; name?: string; call_id?: string; arguments?: string };
 type TablePlanRow = {
   allocation_mode: "SINGLE" | "MULTI_EXACT";
   plan_order: number;
@@ -29,12 +29,6 @@ type ModifyPatch = {
   notes?: string;
 };
 
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
 function requireRuntimeString(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`Missing runtime configuration: ${name}`);
   return value.trim();
@@ -374,10 +368,11 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) { try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; } }
-    if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) this.captureStructuredTurnV16(event.arguments);
+    for (const event of adaptRealtimeProviderEvents(data)) {
+      if (event.type === "SEMANTIC_TOOL_SELECTED" && event.name === CONVERSATION_INTENT) {
+        this.captureStructuredTurnV16(event.arguments);
+      }
+    }
     await BasePrototype.handleRealtimeMessage.call(this, data);
   }
 }
