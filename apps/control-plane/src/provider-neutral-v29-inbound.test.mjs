@@ -26,3 +26,12 @@ test("v29 preserves lower compatibility dispatch after neutral event adaptation"
   assert.match(source, /BasePrototype\.handleRealtimeMessage\.call\(this, data\)/);
   assert.match(source, /source:\s*"v29_provider_event_adapter"/);
 });
+
+test("v29 answers a pure greeting without arming backend tools or contextual close", () => {
+  assert.match(source, /isPureGreetingTurn\(transcript\)/);
+  assert.match(source, /purpose:\s*"pure_greeting_v29"/);
+  assert.match(source, /backend_tool_authority:\s*false/);
+  assert.match(source, /contextual_close_question:\s*false/);
+  assert.match(source, /semantic_gate_armed:\s*false/);
+  assert.match(source, /PURE_GREETING_HANDLED_V29/);
+});

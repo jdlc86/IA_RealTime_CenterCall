@@ -16,11 +16,13 @@ import { publicRestaurantToolAuthorizationPortFor } from "./semantic-tool-author
 import { semanticTurnRuntimeFor } from "./semantic-turn-runtime.js";
 import { turnOwnershipRuntimeFor } from "./turn-ownership-runtime.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { isPureGreetingTurn } from "./conversational-turn-policy.js";
 
 const BaseConstructor = CallSessionV28 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV28.prototype as any;
 const V26Prototype = CallSessionV26.prototype as any;
 const INPUT_IGNORED = "restaurant_input_ignored";
+const PURE_GREETING_REPLY = "Hola, ¿en qué puedo ayudarte?";
 
 type SemanticToolEventV29 = {
   name: string;
@@ -154,6 +156,28 @@ export class CallSession extends BaseConstructor {
         });
       }
       if (transcript) {
+        if (isPureGreetingTurn(transcript)) {
+          semanticTurnRuntimeFor(this).clearItemAuthority();
+          realtimeCommandPortFor(this as any).speak({
+            isolated: true,
+            tools: "DISABLED",
+            purpose: "pure_greeting_v29",
+            exactText: PURE_GREETING_REPLY,
+            instructions: `Pronuncia exactamente esta frase y nada más: ${JSON.stringify(PURE_GREETING_REPLY)}`,
+            metadata: {
+              authority: "conversational_turn_policy",
+              backend_tool_authority: false,
+              contextual_close_question: false,
+            },
+          });
+          (this as any).diagnostics?.checkpoint?.("PURE_GREETING_HANDLED_V29", {
+            backend_tool_authority: false,
+            response: "DETERMINISTIC_GREETING",
+            contextual_close_question: false,
+            semantic_gate_armed: false,
+          });
+          return;
+        }
         const itemId = typeof transcriptEvent.itemId === "string" ? transcriptEvent.itemId : null;
         const higherLayerOwns = turnOwnershipRuntimeFor(this).ownsSemanticItem(itemId);
         const runtime = semanticTurnRuntimeFor(this);
