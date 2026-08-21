@@ -9,8 +9,11 @@ import {
   parseReservationTurn,
   type ReservationDraft,
 } from "./reservation-orchestrator";
+import {
+  restaurantReservationPortFor,
+  type RestaurantAvailability,
+} from "./restaurant-reservation-port.js";
 import { parseSemanticDecision } from "./semantic-router";
-import { SupabaseAdapter, type RestaurantAvailability } from "./supabase-adapter";
 import { ToolGateway, requireObject, type ToolDefinition, type ToolRequest, type ToolResult } from "./tool-gateway";
 import { claimClassifierBootstrap, ownsClassifierBootstrap } from "./classifier-bootstrap-authority.js";
 import {
@@ -148,16 +151,14 @@ export class CallSession extends BaseConstructor {
     return response;
   }
 
-  private getSupabaseAdapterV5(): SupabaseAdapter {
-    return new SupabaseAdapter({
-      SUPABASE_URL: requireRuntimeString((this as any).env?.SUPABASE_URL, "SUPABASE_URL"),
-      SUPABASE_SECRET_KEY: requireRuntimeString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
-    });
-  }
-
   private async executeAvailability(args: AvailabilityArgs, tenantId: string): Promise<AvailabilityResult> {
-    const adapter = this.getSupabaseAdapterV5();
-    const exact = await adapter.checkRestaurantAvailability(tenantId, args.startsAt, args.partySize, args.durationMinutes);
+    const reservationPort = restaurantReservationPortFor(this as any);
+    const exact = await reservationPort.checkAvailability({
+      tenantId,
+      startsAt: args.startsAt,
+      partySize: args.partySize,
+      durationMinutes: args.durationMinutes,
+    });
     if (exact.length > 0) {
       return {
         requested_available: true,
@@ -172,7 +173,12 @@ export class CallSession extends BaseConstructor {
     const nearby = nearbyStartTimes(args.startsAt);
     const checked = await Promise.all(nearby.map(async (startsAt) => ({
       startsAt,
-      rows: await adapter.checkRestaurantAvailability(tenantId, startsAt, args.partySize, args.durationMinutes),
+      rows: await reservationPort.checkAvailability({
+        tenantId,
+        startsAt,
+        partySize: args.partySize,
+        durationMinutes: args.durationMinutes,
+      }),
     })));
     const alternatives: AvailabilityOption[] = [];
     for (const candidate of checked) {

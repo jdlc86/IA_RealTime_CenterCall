@@ -6,6 +6,10 @@ import { RestaurantReservationRuntime } from "../.test-dist/restaurant-reservati
 function runtimeWithRecorder() {
   const calls = [];
   const adapter = {
+    async checkRestaurantAvailability(tenantId, startsAt, partySize, durationMinutes) {
+      calls.push({ operation: "availability", tenantId, startsAt, partySize, durationMinutes });
+      return [];
+    },
     async listBookedReservationsByPhone(tenantId, callerPhone) {
       calls.push({ operation: "list", tenantId, callerPhone });
       return [];
@@ -25,6 +29,12 @@ function runtimeWithRecorder() {
 test("restaurant reservation port owns backend RPC names and payload mapping", async () => {
   const { runtime, calls } = runtimeWithRecorder();
 
+  await runtime.checkAvailability({
+    tenantId: "restaurante-centro",
+    startsAt: "2026-08-21T19:00:00+02:00",
+    partySize: 4,
+    durationMinutes: 90,
+  });
   await runtime.checkTablePlan({
     tenantId: "restaurante-centro",
     startsAt: "2026-08-21T20:00:00+02:00",
@@ -56,6 +66,13 @@ test("restaurant reservation port owns backend RPC names and payload mapping", a
   await runtime.cancelBookedReservation("restaurante-centro", "reservation-1", "+34612345678");
 
   assert.deepEqual(calls, [
+    {
+      operation: "availability",
+      tenantId: "restaurante-centro",
+      startsAt: "2026-08-21T19:00:00+02:00",
+      partySize: 4,
+      durationMinutes: 90,
+    },
     {
       operation: "rpc",
       name: "check_restaurant_table_plan",
@@ -146,4 +163,15 @@ test("V10 delegates reservation cancellation without knowing the persistence pro
   assert.doesNotMatch(v10, /\bSUPABASE_URL\b/);
   assert.doesNotMatch(v10, /\bSUPABASE_SECRET_KEY\b/);
   assert.doesNotMatch(v10, /\/rest\/v1\//);
+});
+
+test("V5 delegates reservation availability without knowing the persistence provider", () => {
+  const v5 = readFileSync(new URL("./call-session-v5.ts", import.meta.url), "utf8");
+
+  assert.match(v5, /restaurantReservationPortFor\(this as any\)/);
+  assert.match(v5, /reservationPort\.checkAvailability\(\{/);
+  assert.doesNotMatch(v5, /\bSupabaseAdapter\b/);
+  assert.doesNotMatch(v5, /\bSUPABASE_URL\b/);
+  assert.doesNotMatch(v5, /\bSUPABASE_SECRET_KEY\b/);
+  assert.doesNotMatch(v5, /\/rest\/v1\//);
 });

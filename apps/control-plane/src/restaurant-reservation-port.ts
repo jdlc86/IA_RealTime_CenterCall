@@ -1,6 +1,10 @@
-import { SupabaseAdapter, type BookedReservationSummary } from "./supabase-adapter.js";
+import {
+  SupabaseAdapter,
+  type BookedReservationSummary,
+  type RestaurantAvailability,
+} from "./supabase-adapter.js";
 
-export type { BookedReservationSummary } from "./supabase-adapter.js";
+export type { BookedReservationSummary, RestaurantAvailability } from "./supabase-adapter.js";
 
 export type RestaurantTablePlanRow = {
   allocation_mode: "SINGLE" | "MULTI_EXACT";
@@ -20,6 +24,13 @@ export type RestaurantTablePlanRequest = Readonly<{
   partySize: number;
   durationMinutes: number;
   excludeReservationId?: string | null;
+}>;
+
+export type RestaurantAvailabilityRequest = Readonly<{
+  tenantId: string;
+  startsAt: string;
+  partySize: number;
+  durationMinutes: number;
 }>;
 
 export type MultiTableReservationRequest = Readonly<{
@@ -48,7 +59,7 @@ type RestaurantReservationHost = object & {
   env?: Record<string, unknown>;
 };
 
-type ReservationDataAdapter = Pick<SupabaseAdapter, "listBookedReservationsByPhone" | "cancelBookedReservation"> & {
+type ReservationDataAdapter = Pick<SupabaseAdapter, "checkRestaurantAvailability" | "listBookedReservationsByPhone" | "cancelBookedReservation"> & {
   invokeRpc<T>(name: string, body: Record<string, unknown>): Promise<T[]>;
 };
 
@@ -78,6 +89,15 @@ export class RestaurantReservationRuntime {
 
   cancelBookedReservation(tenantId: string, reservationId: string, callerPhone: string): Promise<BookedReservationSummary | null> {
     return this.adapter.cancelBookedReservation(tenantId, reservationId, callerPhone);
+  }
+
+  checkAvailability(request: RestaurantAvailabilityRequest): Promise<RestaurantAvailability[]> {
+    return this.adapter.checkRestaurantAvailability(
+      request.tenantId,
+      request.startsAt,
+      request.partySize,
+      request.durationMinutes,
+    );
   }
 
   checkTablePlan(request: RestaurantTablePlanRequest): Promise<RestaurantTablePlanRow[]> {
