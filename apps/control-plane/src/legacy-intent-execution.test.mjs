@@ -60,3 +60,15 @@ test("V13 delegates legacy execution without synthesizing provider wire events",
     assert.doesNotMatch(source, /\(this as any\)\.(?:hangupStarted|state\s*={2,3}\s*["']closing["'])/);
   }
 });
+
+test("V11 query routing uses neutral realtime input and command ports", async () => {
+  const sourceRoot = new URL("./", import.meta.url);
+  const v11 = await readFile(new URL("call-session-v11.ts", sourceRoot), "utf8");
+
+  assert.match(v11, /adaptRealtimeProviderEvents\(data\)/);
+  assert.match(v11, /realtimeCommandPortFor\(this as any\)\.updateSessionPolicy/);
+  assert.match(v11, /realtimeCommandPortFor\(this as any\)\.submitToolResult/);
+  assert.match(v11, /this\[LEGACY_INTENT_EXECUTOR\]\(\{ argumentsJson: event\.arguments, callId: event\.callId \}\)/);
+  assert.doesNotMatch(v11, /response\.function_call_arguments\.done|conversation\.item\.create|function_call_output|session\.update|TextDecoder/);
+  assert.doesNotMatch(v11, /\(this as any\)\.send\(/);
+});

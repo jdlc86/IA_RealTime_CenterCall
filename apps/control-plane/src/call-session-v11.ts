@@ -9,18 +9,18 @@ import {
   type LegacyIntentSelection,
 } from "./legacy-intent-execution.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import type { RealtimeFunctionToolDefinition } from "./realtime-provider-command-port.js";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV10 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV10.prototype as any;
 
-type RealtimeEvent = { type?: string; name?: string; call_id?: string; arguments?: string; };
-
 function currentMadridReference(): string {
   return new Intl.DateTimeFormat("es-ES", { timeZone: "Europe/Madrid", dateStyle: "full", timeStyle: "long" }).format(new Date());
 }
 
-function queryAwareIntentTool(): Record<string, unknown> {
+function queryAwareIntentTool(): RealtimeFunctionToolDefinition {
   return {
     type: "function",
     name: CONVERSATION_INTENT,
@@ -66,13 +66,6 @@ function queryAwareIntentTool(): Record<string, unknown> {
   };
 }
 
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
-
 function requireRuntimeString(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`Missing runtime configuration: ${name}`);
   return value.trim();
@@ -100,7 +93,10 @@ export class CallSession extends BaseConstructor {
     const response = await super.fetch(request);
     if (isStart && response.ok && ownsClassifierBootstrap(this, "QUERY_V11") && !this.querySessionUpdateV11Sent) {
       this.querySessionUpdateV11Sent = true;
-      (this as any).send({ type: "session.update", session: { type: "realtime", tools: [queryAwareIntentTool()], tool_choice: "required" } });
+      realtimeCommandPortFor(this as any).updateSessionPolicy({
+        tools: [queryAwareIntentTool()],
+        toolChoice: "REQUIRED",
+      });
       (this as any).diagnostics?.checkpoint?.("RESERVATION_QUERY_CLASSIFIER_SCHEMA_UPDATED", { reservation_operations: ["CREATE", "QUERY", "CANCEL"], identity_policy: "TRUSTED_CALLER_PHONE", multi_cancel_supported: true });
     }
     return response;
@@ -115,7 +111,17 @@ export class CallSession extends BaseConstructor {
 
   private sendQueryClassifierOutput(callId: string | undefined, stage: string): void {
     if (!callId) return;
-    (this as any).send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: JSON.stringify({ ok: true, action: "continue", data_requirement: "RESERVATION", reservation_operation: "QUERY", stage }) } });
+    realtimeCommandPortFor(this as any).submitToolResult({
+      callId,
+      toolName: CONVERSATION_INTENT,
+      output: {
+        ok: true,
+        action: "continue",
+        data_requirement: "RESERVATION",
+        reservation_operation: "QUERY",
+        stage,
+      },
+    });
   }
 
   private async handleReservationQuery(callId: string | undefined): Promise<void> {
@@ -161,12 +167,12 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) { try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; } }
+    const event = adaptRealtimeProviderEvents(data).find(
+      (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && candidate.name === CONVERSATION_INTENT,
+    );
 
-    if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
-      await this[LEGACY_INTENT_EXECUTOR]({ argumentsJson: event.arguments, callId: event.call_id });
+    if (event?.type === "SEMANTIC_TOOL_SELECTED") {
+      await this[LEGACY_INTENT_EXECUTOR]({ argumentsJson: event.arguments, callId: event.callId });
       return;
     }
 
