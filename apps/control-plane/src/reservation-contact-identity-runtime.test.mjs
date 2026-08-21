@@ -59,18 +59,14 @@ test("contact identity runtime is stable per session and isolated across session
   assert.notEqual(reservationContactIdentityRuntimeFor(a), reservationContactIdentityRuntimeFor(b));
 });
 
-test("V52 is compatibility-only and contact authority lives at the neutral V19 boundary", () => {
+test("contact authority lives at the neutral V19 boundary and V53 skips retired V52", () => {
   const v19 = readFileSync(new URL("./call-session-v19.ts", import.meta.url), "utf8");
-  const v52 = readFileSync(new URL("./call-session-v52-trusted-reservation-contact.ts", import.meta.url), "utf8");
+  const v53 = readFileSync(new URL("./call-session-v53-reservation-time-authority.ts", import.meta.url), "utf8");
   const runtime = readFileSync(new URL("./reservation-contact-identity-runtime.ts", import.meta.url), "utf8");
   const policy = readFileSync(new URL("./reservation-contact-identity.ts", import.meta.url), "utf8");
 
-  assert.match(v52, /call-session-v51-malformed-tool-authority/);
-  assert.doesNotMatch(v52, /handleRealtimeMessage/);
-  assert.doesNotMatch(v52, /rewriteReservationCreateContactEvent/);
-  assert.doesNotMatch(v52, /adaptRealtimeProviderEvents/);
-  assert.doesNotMatch(v52, /response\.function_call_arguments\.done/);
-  assert.doesNotMatch(v52, /realtimeCommandPortFor/);
+  assert.match(v53, /call-session-v51-malformed-tool-authority/);
+  assert.doesNotMatch(v53, /call-session-v52-trusted-reservation-contact/);
 
   assert.match(v19, /reservationContactIdentityRuntimeFor/);
   assert.match(v19, /canonicalizeCreate\(this/);

@@ -1,4 +1,4 @@
-import { CallSession as CallSessionV52 } from "./call-session-v52-trusted-reservation-contact";
+import { CallSession as CallSessionV51 } from "./call-session-v51-malformed-tool-authority";
 import { decideReservationTimeAuthority } from "./reservation-time-authority.js";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
@@ -7,8 +7,8 @@ import { reservationTimeSessionRuntimeFor, type ReservationTimeTool } from "./re
 import { callerTurnContextRuntimeFor } from "./caller-turn-context-runtime.js";
 import { publicRestaurantToolAuthorizationPortFor } from "./semantic-tool-authorization-port.js";
 
-const BaseConstructor = CallSessionV52 as unknown as new (...args: any[]) => any;
-const BasePrototype = CallSessionV52.prototype as any;
+const BaseConstructor = CallSessionV51 as unknown as new (...args: any[]) => any;
+const BasePrototype = CallSessionV51.prototype as any;
 const CREATE_RESERVATION: ReservationTimeTool = "restaurant_reservation_create";
 const MODIFY_RESERVATION: ReservationTimeTool = "restaurant_reservation_modify";
 type GuardedReservationTool = typeof CREATE_RESERVATION | typeof MODIFY_RESERVATION;
