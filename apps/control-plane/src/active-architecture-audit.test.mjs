@@ -21,7 +21,8 @@ const forbiddenBoundaries = [
   ["direct session send/update", /(?:\bsession|\bself|\bthis|\(this as any\))\??\.(?:send|update)\s*\(/],
   ["direct semantic authority", /\bauthorizePublicRestaurantTool\s*\(/],
   ["legacy hangupStarted state", /\bhangupStarted\b/],
-  ["direct OpenAI realtime HTTP endpoint", /api\.openai\.com\/v1\/realtime/],
+  ["direct provider credential access", /\b(?:OPENAI_API_KEY|TELNYX_API_KEY|getTelnyxApiKey|getOpenAiApiKey|getOpenAIApiKey)\b/],
+  ["direct provider HTTP endpoint", /api\.(?:openai|telnyx)\.com/],
 ];
 
 test("active V31-V54 consolidation has no provider-wire or authority bypasses", () => {
@@ -43,7 +44,10 @@ test("audit guard itself covers the known regression classes", () => {
     ["session.send({ type: 'response.create' })", "direct session send/update"],
     ["authorizePublicRestaurantTool(this, request)", "direct semantic authority"],
     ["session.hangupStarted", "legacy hangupStarted state"],
-    ["https://api.openai.com/v1/realtime/calls/x/hangup", "direct OpenAI realtime HTTP endpoint"],
+    ["const key = env.TELNYX_API_KEY", "direct provider credential access"],
+    ["getOpenAIApiKey()", "direct provider credential access"],
+    ["https://api.openai.com/v1/realtime/calls/x/hangup", "direct provider HTTP endpoint"],
+    ["https://api.telnyx.com/v2/calls/x/actions/hangup", "direct provider HTTP endpoint"],
   ];
   for (const [source, expectedLabel] of samples) {
     assert.equal(
