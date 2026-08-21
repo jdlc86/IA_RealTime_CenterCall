@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  canonicalizeReservationCreateContactArguments,
   resolveReservationContactIdentity,
-  rewriteReservationCreateContactEvent,
 } from "../.test-dist/reservation-contact-identity.js";
 
 test("trusted caller remains authoritative when model emits national-format phone", () => {
@@ -44,35 +44,40 @@ test("explicit alternate contact must be internationally unambiguous", () => {
   }), { phone: "+93642651015", source: "EXPLICIT_OTHER_CONTACT" });
 });
 
-test("reservation_create wire event is rewritten before lower reservation controller", () => {
-  const wire = JSON.stringify({
-    type: "response.function_call_arguments.done",
-    name: "restaurant_reservation_create",
-    call_id: "call_1",
-    arguments: JSON.stringify({
-      party_size: 15,
-      customer_name: "Efrain",
-      customer_phone: "642651015",
-      confirm: true,
-    }),
+test("reservation create arguments are canonicalized without reconstructing provider wire", () => {
+  const original = {
+    party_size: 15,
+    customer_name: "Efrain",
+    customer_phone: "642651015",
+    confirm: true,
+  };
+  const canonical = canonicalizeReservationCreateContactArguments(original, "+34642651015");
+  assert.equal(canonical.changed, true);
+  assert.equal(canonical.source, "TRUSTED_CALLER");
+  assert.equal(canonical.arguments.customer_phone, "+34642651015");
+  assert.equal(canonical.arguments.use_caller_phone, true);
+  assert.deepEqual(original, {
+    party_size: 15,
+    customer_name: "Efrain",
+    customer_phone: "642651015",
+    confirm: true,
   });
-  const rewritten = rewriteReservationCreateContactEvent(wire, "+34642651015");
-  assert.equal(rewritten.changed, true);
-  assert.equal(rewritten.source, "TRUSTED_CALLER");
-  const event = JSON.parse(rewritten.data);
-  const args = JSON.parse(event.arguments);
-  assert.equal(args.customer_phone, "+34642651015");
-  assert.equal(args.use_caller_phone, true);
 });
 
-test("malformed tool arguments are left to V51/V25 recovery", () => {
-  const wire = JSON.stringify({
-    type: "response.function_call_arguments.done",
-    name: "restaurant_reservation_create",
-    call_id: "call_2",
-    arguments: '{"party_size":15,"customer_phone":',
-  });
-  const rewritten = rewriteReservationCreateContactEvent(wire, "+34642651015");
-  assert.equal(rewritten.changed, false);
-  assert.equal(rewritten.data, wire);
+test("explicit globally unambiguous alternate contact remains authoritative", () => {
+  const canonical = canonicalizeReservationCreateContactArguments({
+    customer_phone: "00 93 642651015",
+    use_caller_phone: false,
+  }, "+34642651015");
+  assert.equal(canonical.changed, true);
+  assert.equal(canonical.source, "EXPLICIT_OTHER_CONTACT");
+  assert.equal(canonical.arguments.customer_phone, "+93642651015");
+  assert.equal(canonical.arguments.use_caller_phone, false);
+});
+
+test("without trusted caller identity the semantic arguments pass through unchanged", () => {
+  const original = { customer_phone: "+34642651015" };
+  const canonical = canonicalizeReservationCreateContactArguments(original, null);
+  assert.equal(canonical.changed, false);
+  assert.equal(canonical.arguments, original);
 });

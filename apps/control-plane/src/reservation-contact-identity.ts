@@ -11,6 +11,12 @@ export type ReservationContactIdentityDecision = {
   source: "TRUSTED_CALLER" | "EXPLICIT_OTHER_CONTACT";
 };
 
+export type ReservationCreateContactCanonicalization = Readonly<{
+  arguments: Record<string, unknown>;
+  changed: boolean;
+  source?: ReservationContactIdentityDecision["source"];
+}>;
+
 function trustedCallerE164(raw: string): string {
   return normalizePhoneToE164(raw);
 }
@@ -38,40 +44,31 @@ export function resolveReservationContactIdentity(
   return { phone: explicitInternationalPhone(supplied), source: "EXPLICIT_OTHER_CONTACT" };
 }
 
-export function rewriteReservationCreateContactEvent(
-  data: unknown,
-  trustedCallerPhone: string,
-): { data: unknown; changed: boolean; source?: ReservationContactIdentityDecision["source"] } {
-  let text: string | null = null;
-  if (typeof data === "string") text = data;
-  else if (data instanceof ArrayBuffer) text = new TextDecoder().decode(data);
-  else if (ArrayBuffer.isView(data)) text = new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  if (!text) return { data, changed: false };
-
-  let event: Record<string, unknown>;
-  try { event = JSON.parse(text) as Record<string, unknown>; } catch { return { data, changed: false }; }
-  if (event.type !== "response.function_call_arguments.done" || event.name !== "restaurant_reservation_create") {
-    return { data, changed: false };
-  }
-
-  let args: Record<string, unknown>;
-  try {
-    const parsed = JSON.parse(typeof event.arguments === "string" ? event.arguments : "{}") as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { data, changed: false };
-    args = parsed as Record<string, unknown>;
-  } catch {
-    // V51/V25 own malformed JSON recovery. Do not interfere with that contract.
-    return { data, changed: false };
-  }
+/**
+ * Provider-neutral reservation-create argument canonicalization.
+ *
+ * This function deliberately operates on already parsed semantic tool arguments.
+ * Malformed provider payloads remain owned by the malformed-tool/argument
+ * validation boundaries and are never reconstructed here as provider wire.
+ */
+export function canonicalizeReservationCreateContactArguments(
+  args: Record<string, unknown>,
+  trustedCallerPhone: string | null | undefined,
+): ReservationCreateContactCanonicalization {
+  const trusted = typeof trustedCallerPhone === "string" ? trustedCallerPhone.trim() : "";
+  if (!trusted) return { arguments: args, changed: false };
 
   const decision = resolveReservationContactIdentity({
-    trustedCallerPhone,
+    trustedCallerPhone: trusted,
     suppliedPhone: args.customer_phone,
     useCallerPhone: args.use_caller_phone,
   });
-  const changed = args.customer_phone !== decision.phone || (decision.source === "TRUSTED_CALLER" && args.use_caller_phone !== true);
-  args.customer_phone = decision.phone;
-  if (decision.source === "TRUSTED_CALLER") args.use_caller_phone = true;
-  event.arguments = JSON.stringify(args);
-  return { data: JSON.stringify(event), changed, source: decision.source };
+  const changed = args.customer_phone !== decision.phone ||
+    (decision.source === "TRUSTED_CALLER" && args.use_caller_phone !== true);
+
+  if (!changed) return { arguments: args, changed: false, source: decision.source };
+
+  const canonical = { ...args, customer_phone: decision.phone };
+  if (decision.source === "TRUSTED_CALLER") canonical.use_caller_phone = true;
+  return { arguments: canonical, changed: true, source: decision.source };
 }

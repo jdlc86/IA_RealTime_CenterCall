@@ -233,6 +233,8 @@ test("runtime wiring: active entrypoint and critical layers consume the policies
   const turnConcurrencyCoordinator = readFileSync(new URL("./turn-concurrency-coordinator.ts", import.meta.url), "utf8");
   const v40 = readFileSync(new URL("./call-session-v40-rebuild.ts", import.meta.url), "utf8");
   const v26 = readFileSync(new URL("./call-session-v26.ts", import.meta.url), "utf8");
+  const v19 = readFileSync(new URL("./call-session-v19.ts", import.meta.url), "utf8");
+  const reservationContactIdentityRuntime = readFileSync(new URL("./reservation-contact-identity-runtime.ts", import.meta.url), "utf8");
   const v50 = readFileSync(new URL("./call-session-v50-reservation-date-scope.ts", import.meta.url), "utf8");
   const reservationDateScopeRuntime = readFileSync(new URL("./reservation-date-scope-runtime.ts", import.meta.url), "utf8");
 
@@ -246,7 +248,12 @@ test("runtime wiring: active entrypoint and critical layers consume the policies
   assert.match(v53, /decideReservationTimeAuthority/);
   assert.match(v53, /RESERVATION_TIME_ASSUMPTION_BLOCKED_V53/);
   assert.match(v52, /call-session-v51-malformed-tool-authority/);
-  assert.match(v52, /rewriteReservationCreateContactEvent/);
+  assert.doesNotMatch(v52, /rewriteReservationCreateContactEvent/);
+  assert.doesNotMatch(v52, /handleRealtimeMessage/);
+  assert.match(v19, /reservationContactIdentityRuntimeFor/);
+  assert.match(v19, /canonicalizeCreate\(this/);
+  assert.match(reservationContactIdentityRuntime, /canonicalizeReservationCreateContactArguments/);
+  assert.match(reservationContactIdentityRuntime, /CONTACT_PHONE_REQUIRES_COUNTRY_CODE/);
   assert.match(v51, /malformedToolCorrectionRuntimeFor/);
   assert.match(v51, /adaptRealtimeProviderEvents/);
   assert.match(v51, /runtime\.observe\(this, event\)/);
@@ -272,6 +279,7 @@ test("runtime wiring: active entrypoint and critical layers consume the policies
   assert.doesNotMatch(v51, /setTimeout|sleep\s*\(|delay\s*\(/);
   assert.doesNotMatch(malformedToolCorrectionRuntime, /setTimeout|sleep\s*\(|delay\s*\(/);
   assert.doesNotMatch(v52, /setTimeout|sleep\s*\(|delay\s*\(/);
+  assert.doesNotMatch(reservationContactIdentityRuntime, /setTimeout|sleep\s*\(|delay\s*\(/);
   assert.doesNotMatch(v53, /setTimeout|sleep\s*\(|delay\s*\(/);
   assert.doesNotMatch(v54, /setTimeout|sleep\s*\(|delay\s*\(/);
 });
