@@ -22,7 +22,17 @@ export type HumanHandoffTransportPort = Readonly<{
 }>;
 
 type HumanHandoffTransportHost = object & {
-  env?: Record<string, unknown>;
+  env?: {
+    TELNYX_API_KEY?: string;
+    SUPABASE_URL?: string;
+    SUPABASE_SECRET_KEY?: string;
+  };
+  tenantId?: unknown;
+  socket?: { close?: (code?: number, reason?: string) => void } | null;
+  diagnostics?: {
+    checkpoint?: (name: string, data?: Record<string, unknown>) => void;
+    fail?: (name: string, code: string, data?: Record<string, unknown>) => void;
+  };
 };
 
 type FetchLike = typeof fetch;
