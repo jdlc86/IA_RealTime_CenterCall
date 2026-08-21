@@ -3,20 +3,14 @@
 ## Flujo oficial
 
 ```text
-commit/push a main
-   ↓
-Cloudflare Workers Builds
-   ↓
-instalación de dependencias
-   ↓
-npm run upload:production
-    ↓
-versión candidata inmutable
-    ↓
-promoción deliberada con deploy explícito
-    ↓
-Worker actualizado
+rama no productiva ─→ Build command ─→ Version command ─→ versión candidata
+
+main ───────────────→ Build command ─→ Deploy command ──→ Worker actualizado
 ```
+
+El Build command ejecuta `npm run types && npm run check`. Los comandos de
+versión y deploy incluyen siempre `--env=""` para seleccionar explícitamente el
+perfil productivo por defecto.
 
 ## Directorio raíz
 
@@ -32,14 +26,15 @@ apps/control-plane
 | preview | `ia-realtime-centercall-preview` | `npm run check:preview` | `npm run upload:preview` | `npm run deploy:preview` |
 | dev | `ia-realtime-centercall-dev` | `npm run check:dev` | `npm run upload:dev` | `npm run deploy:dev` |
 
-CI ejecuta `npm run check`, que construye los tres perfiles sin desplegar.
-Workers Builds sube una versión candidata sin promoverla. Los secretos, KV y
-demás recursos remotos se configuran por Worker; nunca se copian valores
-sensibles al repositorio.
+CI ejecuta `npm run check`, que construye los tres perfiles sin desplegar. En
+ramas no productivas, Workers Builds sube una versión candidata sin promoverla;
+en `main`, su Deploy command actualiza el Worker. Los secretos, KV y demás
+recursos remotos se configuran por Worker; nunca se copian valores sensibles al
+repositorio.
 
 ## Verificación
 
-Tras cada deploy de F0:
+Tras cada deploy de F5:
 
 1. Build finaliza con `Success`.
 2. Worker desplegado como `ia-realtime-centercall`.

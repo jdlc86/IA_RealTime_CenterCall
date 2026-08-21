@@ -33,11 +33,15 @@ El perfil por defecto es producción. Los perfiles nombrados son:
 - `preview` → `ia-realtime-centercall-preview`;
 - `dev` → `ia-realtime-centercall-dev`.
 
-Workers Builds debe usar `npm run upload:production`: valida y sube una versión
-inmutable, pero no cambia por sí solo la versión que recibe tráfico. Para una
-promoción deliberada, usar siempre `npm run deploy:production`,
-`npm run deploy:preview` o `npm run deploy:dev`; no ejecutar un deploy sin
-destino explícito.
+Workers Builds usa estos comandos:
+
+- Build command: `npm run types && npm run check`;
+- Deploy command de `main`: `npx wrangler deploy --env=""`;
+- Version command de ramas no productivas: `npx wrangler versions upload --env=""`.
+
+El Version command sube una versión inmutable sin cambiar el tráfico. El Deploy
+command sólo se ejecuta para `main`. Para una operación manual, usar siempre los
+scripts `upload:*` o `deploy:*`; no ejecutar Wrangler sin destino explícito.
 
 ## Configuración no secreta
 

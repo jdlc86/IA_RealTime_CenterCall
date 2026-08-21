@@ -27,8 +27,9 @@ En Cloudflare Dashboard:
 6. Root directory: `apps/control-plane`.
 7. El nombre productivo debe coincidir con `wrangler.jsonc`: `ia-realtime-centercall`.
 8. Build command: `npm run types && npm run check` (valida production, preview y dev sin desplegar).
-9. Deploy command de Workers Builds: `npm run upload:production`.
-10. Guardar. El build sube una versión inmutable; no la promueve automáticamente a tráfico.
+9. Deploy command para `main`: `npx wrangler deploy --env=""`.
+10. Version command para ramas no productivas: `npx wrangler versions upload --env=""`.
+11. Guardar.
 
 Cloudflare instalará las dependencias desde `package.json` en cada build.
 
@@ -56,9 +57,10 @@ por eso cada perfil declara explícitamente los mismos nombres de bindings. Los
 recursos y secretos reales deben configurarse por separado en Cloudflare antes
 del primer despliegue de cada perfil.
 
-Workers Builds usa `upload:*` para construir versiones candidatas. Los comandos
-`deploy:*` son la operación separada que actualiza el tráfico del Worker y sólo
-se ejecutan durante una promoción deliberada.
+Workers Builds usa el Version command para subir una versión candidata de las
+ramas no productivas sin promoverla. Sólo el Deploy command de la rama `main`
+actualiza el tráfico. Los scripts `upload:*` y `deploy:*` ofrecen los mismos
+límites explícitos para operaciones manuales.
 
 ## Comprobación inicial
 
