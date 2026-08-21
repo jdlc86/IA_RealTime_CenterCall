@@ -19,6 +19,8 @@ test("v35 protected speech layers depend only on neutral provider runtime", () =
   assert.match(legacy, /beginNonInterruptingListening/);
   assert.match(legacy, /restoreInputDetection/);
   assert.match(legacy, /PROVIDER_COMMAND_FAILED/);
+  assert.match(legacy, /conversationLifecyclePortFor\(this\)\.isTerminal\(\)/);
+  assert.doesNotMatch(legacy, /\bhangupStarted\b/);
   assert.doesNotMatch(legacy, /type:\s*"session\.update"/);
   assert.doesNotMatch(legacy, /type:\s*"response\.create"/);
   assert.doesNotMatch(legacy, /response\.function_call_arguments\.done/);

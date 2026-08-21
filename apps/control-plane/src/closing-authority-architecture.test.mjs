@@ -107,8 +107,9 @@ test("closing authority: v22 keeps HangupController as the sole transport execut
 test("closing authority: legacy audio-stop hangup is superseded after lifecycle reaches CLOSING", async () => {
   const v22 = await source("call-session-v22.ts");
 
-  assert.match(v22, /snapshotTurnLifecycleV18\?\.\(\)\?\.state/);
-  assert.match(v22, /trigger === \"output_audio_buffer_stopped\" && lifecycleState === \"CLOSING\"/);
+  assert.match(v22, /conversationLifecyclePortFor\(this\)\.isClosing\(\)/);
+  assert.match(v22, /trigger === \"output_audio_buffer_stopped\" && conversationLifecyclePortFor\(this\)\.isClosing\(\)/);
+  assert.doesNotMatch(v22, /snapshotTurnLifecycleV18/);
   assert.match(v22, /LEGACY_AUDIO_STOP_HANGUP_SUPERSEDED_V22/);
 });
 

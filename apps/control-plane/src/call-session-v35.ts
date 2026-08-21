@@ -7,6 +7,7 @@ import {
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import { inputDetectionConfigRuntimeFor } from "./input-detection-config-runtime.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 
 const BaseConstructor = CallSessionV34 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV34.prototype as any;
@@ -94,7 +95,7 @@ export class CallSession extends BaseConstructor {
 
   private startProtectedSpeechV35(kind: ProtectedSpeechKind, instructions: string): boolean {
     if (this.protectedSpeechLifecycleV35.isActive()) return false;
-    if ((this as any).state === "closing" || (this as any).hangupStarted) return false;
+    if (conversationLifecyclePortFor(this).isTerminal()) return false;
 
     const clientEventId = `protected_speech_v35_${crypto.randomUUID()}`;
     if (!this.protectedSpeechLifecycleV35.begin(kind, clientEventId)) return false;
