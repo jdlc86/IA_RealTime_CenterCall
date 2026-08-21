@@ -12,7 +12,7 @@ test("v31 owns transient multi-table execution while shared reservation facts st
   assert.match(v31, /reservationSessionRuntimeFor\(this\)\.snapshot\(\)\.draft/);
   assert.match(v31, /draft\.separate_tables_acceptable === true/);
   assert.match(v31, /draft\.tables_must_be_close === true/);
-  assert.match(v31, /create_restaurant_reservation_multi/);
+  assert.match(v31, /restaurantReservationPortFor\(this\)\.createMultiTableReservation/);
   assert.match(v31, /this\.planV31/);
 
   assert.doesNotMatch(v31, /multitablePlanV16/);
@@ -20,6 +20,7 @@ test("v31 owns transient multi-table execution while shared reservation facts st
   assert.doesNotMatch(v31, /separateTablesAcceptableV16/);
   assert.doesNotMatch(v31, /tablesMustBeCloseV16/);
   assert.doesNotMatch(v31, /reservationDraftV19/);
+  assert.doesNotMatch(v31, /create_restaurant_reservation_multi/);
 });
 
 test("v31 consumes provider and semantic authority through neutral ports", async () => {

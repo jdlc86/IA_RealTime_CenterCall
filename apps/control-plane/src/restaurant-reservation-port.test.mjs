@@ -62,6 +62,19 @@ test("restaurant reservation port owns backend RPC names and payload mapping", a
     customerName: "Ana Pérez",
     notes: null,
   });
+  await runtime.checkCapacityFit({ tenantId: "restaurante-centro", partySize: 7 });
+  await runtime.searchTableSlots({
+    tenantId: "restaurante-centro",
+    partySize: 7,
+    from: "2026-08-21T19:00:00+02:00",
+    to: "2026-08-21T23:00:00+02:00",
+    durationMinutes: 90,
+    stepMinutes: 30,
+    localTimeFrom: "19:00",
+    localTimeTo: "22:00",
+    timezone: "Europe/Madrid",
+    limit: 5,
+  });
   await runtime.listBookedReservationsByPhone("restaurante-centro", "+34612345678");
   await runtime.cancelBookedReservation("restaurante-centro", "reservation-1", "+34612345678");
 
@@ -110,6 +123,27 @@ test("restaurant reservation port owns backend RPC names and payload mapping", a
         p_duration_minutes: 120,
         p_customer_name: "Ana Pérez",
         p_notes: null,
+      },
+    },
+    {
+      operation: "rpc",
+      name: "check_restaurant_capacity_fit",
+      body: { p_tenant_id: "restaurante-centro", p_party_size: 7 },
+    },
+    {
+      operation: "rpc",
+      name: "search_restaurant_table_slots",
+      body: {
+        p_tenant_id: "restaurante-centro",
+        p_party_size: 7,
+        p_from: "2026-08-21T19:00:00+02:00",
+        p_to: "2026-08-21T23:00:00+02:00",
+        p_duration_minutes: 90,
+        p_step_minutes: 30,
+        p_local_time_from: "19:00",
+        p_local_time_to: "22:00",
+        p_timezone: "Europe/Madrid",
+        p_limit: 5,
       },
     },
     {

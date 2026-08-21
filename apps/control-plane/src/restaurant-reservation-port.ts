@@ -55,6 +55,39 @@ export type ModifyRestaurantReservationRequest = Readonly<{
   notes?: string | null;
 }>;
 
+export type RestaurantCapacityFit = Readonly<{
+  allocation_mode: string;
+  table_count: number;
+  total_capacity: number;
+  unused_seats: number;
+}>;
+
+export type RestaurantCapacityFitRequest = Readonly<{
+  tenantId: string;
+  partySize: number;
+}>;
+
+export type RestaurantSearchSlot = Readonly<{
+  starts_at: string;
+  allocation_mode: string;
+  table_count: number;
+  total_capacity: number;
+  unused_seats: number;
+}>;
+
+export type RestaurantSlotSearchRequest = Readonly<{
+  tenantId: string;
+  partySize: number;
+  from: string;
+  to: string;
+  durationMinutes: number;
+  stepMinutes: number;
+  localTimeFrom?: string | null;
+  localTimeTo?: string | null;
+  timezone: string;
+  limit: number;
+}>;
+
 type RestaurantReservationHost = object & {
   env?: Record<string, unknown>;
 };
@@ -133,6 +166,28 @@ export class RestaurantReservationRuntime {
       p_duration_minutes: request.durationMinutes,
       p_customer_name: request.customerName,
       p_notes: request.notes ?? null,
+    });
+  }
+
+  checkCapacityFit(request: RestaurantCapacityFitRequest): Promise<RestaurantCapacityFit[]> {
+    return this.adapter.invokeRpc<RestaurantCapacityFit>("check_restaurant_capacity_fit", {
+      p_tenant_id: request.tenantId,
+      p_party_size: request.partySize,
+    });
+  }
+
+  searchTableSlots(request: RestaurantSlotSearchRequest): Promise<RestaurantSearchSlot[]> {
+    return this.adapter.invokeRpc<RestaurantSearchSlot>("search_restaurant_table_slots", {
+      p_tenant_id: request.tenantId,
+      p_party_size: request.partySize,
+      p_from: request.from,
+      p_to: request.to,
+      p_duration_minutes: request.durationMinutes,
+      p_step_minutes: request.stepMinutes,
+      p_local_time_from: request.localTimeFrom ?? null,
+      p_local_time_to: request.localTimeTo ?? null,
+      p_timezone: request.timezone,
+      p_limit: request.limit,
     });
   }
 }

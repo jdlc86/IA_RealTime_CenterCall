@@ -1,6 +1,12 @@
 import { CallSession as CallSessionV29 } from "./call-session-v29";
 import type { ToolGateway, ToolRequest, ToolResult } from "./tool-gateway";
-import { SupabaseAdapter, type BusinessHours } from "./supabase-adapter";
+import { restaurantBusinessPortFor, type BusinessHours } from "./restaurant-business-port.js";
+import {
+  restaurantReservationPortFor,
+  type RestaurantCapacityFit,
+  type RestaurantSearchSlot,
+  type RestaurantTablePlanRow,
+} from "./restaurant-reservation-port.js";
 import {
   businessWindowsForDate,
   endOfBusinessLocalDateExclusive,
@@ -20,31 +26,6 @@ const MANAGE_RESERVATION = "manage_reservation";
 const CREATE_RESERVATION = "restaurant_reservation_create";
 const SEARCH_RESERVATION = "restaurant_reservation_search";
 const RESTAURANT_TIMEZONE = "Europe/Madrid";
-
-type TablePlanRow = {
-  allocation_mode: string;
-  plan_order: number;
-  table_id: string;
-  table_code: string;
-  table_name: string;
-  min_capacity: number;
-  max_capacity: number;
-  starts_at: string;
-  ends_at: string;
-};
-type SearchSlot = {
-  starts_at: string;
-  allocation_mode: string;
-  table_count: number;
-  total_capacity: number;
-  unused_seats: number;
-};
-type CapacityFit = {
-  allocation_mode: string;
-  table_count: number;
-  total_capacity: number;
-  unused_seats: number;
-};
 
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -74,31 +55,11 @@ function requireString(value: unknown, name: string): string {
  * v31 owns only the transient table plan required to execute a multi-table commit.
  */
 export class CallSession extends BaseConstructor {
-  private planV31: TablePlanRow[] | null = null;
+  private planV31: RestaurantTablePlanRow[] | null = null;
   private planKeyV31: string | null = null;
 
-  private async rpcV31<T>(name: string, body: Record<string, unknown>): Promise<T[]> {
-    const baseUrl = requireString((this as any).env?.SUPABASE_URL, "SUPABASE_URL").replace(/\/+$/, "");
-    const key = requireString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY");
-    const response = await fetch(`${baseUrl}/rest/v1/rpc/${encodeURIComponent(name)}`, {
-      method: "POST",
-      headers: { apikey: key, "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(body),
-    });
-    const raw = await response.text();
-    if (!response.ok) throw new Error(`${name} failed with HTTP ${response.status}: ${raw.slice(0, 250)}`);
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) throw new Error(`${name} returned invalid payload`);
-    return parsed as T[];
-  }
-
   private async businessHoursV31(): Promise<BusinessHours[]> {
-    const env = (this as any).env ?? {};
-    const adapter = new SupabaseAdapter({
-      SUPABASE_URL: requireString(env.SUPABASE_URL, "SUPABASE_URL"),
-      SUPABASE_SECRET_KEY: requireString(env.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
-    });
-    return adapter.listBusinessHours(requireString((this as any).tenantId, "tenant_id"));
+    return restaurantBusinessPortFor(this).listBusinessHours(requireString((this as any).tenantId, "tenant_id"));
   }
 
   private clearPlanV31(): void {
@@ -106,13 +67,13 @@ export class CallSession extends BaseConstructor {
     this.planKeyV31 = null;
   }
 
-  private async tablePlanV31(partySize: number, startsAt: string, duration: number): Promise<TablePlanRow[]> {
-    return this.rpcV31<TablePlanRow>("check_restaurant_table_plan", {
-      p_tenant_id: requireString((this as any).tenantId, "tenant_id"),
-      p_starts_at: startsAt,
-      p_party_size: partySize,
-      p_duration_minutes: duration,
-      p_exclude_reservation_id: null,
+  private async tablePlanV31(partySize: number, startsAt: string, duration: number): Promise<RestaurantTablePlanRow[]> {
+    return restaurantReservationPortFor(this).checkTablePlan({
+      tenantId: requireString((this as any).tenantId, "tenant_id"),
+      startsAt,
+      partySize,
+      durationMinutes: duration,
+      excludeReservationId: null,
     });
   }
 
@@ -155,15 +116,15 @@ export class CallSession extends BaseConstructor {
     }
 
     try {
-      const rows = await this.rpcV31<Record<string, unknown>>("create_restaurant_reservation_multi", {
-        p_tenant_id: request.context.tenantId,
-        p_customer_name: customerName,
-        p_customer_phone: customerPhone,
-        p_party_size: partySize,
-        p_starts_at: startsAt,
-        p_duration_minutes: duration,
-        p_notes: notes ?? null,
-        p_source: "voice",
+      const rows = await restaurantReservationPortFor(this).createMultiTableReservation({
+        tenantId: request.context.tenantId,
+        customerName,
+        customerPhone,
+        partySize,
+        startsAt,
+        durationMinutes: duration,
+        notes: notes ?? null,
+        source: "voice",
       });
       if (!rows.length) throw new Error("empty booking result");
       const code = rows[0]?.reservation_code;
@@ -243,9 +204,9 @@ export class CallSession extends BaseConstructor {
         this.planKeyV31 = plan.length ? key : null;
 
         if (!plan.length) {
-          const fit = await this.rpcV31<CapacityFit>("check_restaurant_capacity_fit", {
-            p_tenant_id: request.context.tenantId,
-            p_party_size: partySize,
+          const fit: RestaurantCapacityFit[] = await restaurantReservationPortFor(this).checkCapacityFit({
+            tenantId: request.context.tenantId,
+            partySize,
           });
           const structuralFit = fit[0] ?? null;
           return {
@@ -476,17 +437,17 @@ export class CallSession extends BaseConstructor {
     }
 
     const to = requestedTo ?? endOfBusinessLocalDateExclusive(from, RESTAURANT_TIMEZONE);
-    const rows = await this.rpcV31<SearchSlot>("search_restaurant_table_slots", {
-      p_tenant_id: requireString((this as any).tenantId, "tenant_id"),
-      p_party_size: partySize,
-      p_from: from,
-      p_to: to,
-      p_duration_minutes: duration,
-      p_step_minutes: step,
-      p_local_time_from: text(args.time_from) ?? null,
-      p_local_time_to: text(args.time_to) ?? null,
-      p_timezone: RESTAURANT_TIMEZONE,
-      p_limit: maxResults,
+    const rows: RestaurantSearchSlot[] = await restaurantReservationPortFor(this).searchTableSlots({
+      tenantId: requireString((this as any).tenantId, "tenant_id"),
+      partySize,
+      from,
+      to,
+      durationMinutes: duration,
+      stepMinutes: step,
+      localTimeFrom: text(args.time_from) ?? null,
+      localTimeTo: text(args.time_to) ?? null,
+      timezone: RESTAURANT_TIMEZONE,
+      limit: maxResults,
     });
     const sameDateRows = rows.filter((row) => sameBusinessLocalDate(row.starts_at, from, RESTAURANT_TIMEZONE));
 

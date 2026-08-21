@@ -1,7 +1,7 @@
 import { CallSession as CallSessionV23 } from "./call-session-v23";
-import { SupabaseMarketingConsentStore } from "./marketing-consent-store";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { marketingConsentPortFor } from "./marketing-consent-port.js";
 
 const BaseConstructor = CallSessionV23 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV23.prototype as any;
@@ -35,13 +35,6 @@ function parseAction(value: unknown): MarketingAction {
  * Caller ID remains the only supported identity for preference reads/writes.
  */
 export class CallSession extends BaseConstructor {
-  private marketingStoreV24(): SupabaseMarketingConsentStore {
-    return new SupabaseMarketingConsentStore({
-      SUPABASE_URL: requireString((this as any).env?.SUPABASE_URL, "SUPABASE_URL"),
-      SUPABASE_SECRET_KEY: requireString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
-    });
-  }
-
   private sendOutputV24(callId: string | undefined, output: Record<string, unknown>): void {
     const port = realtimeCommandPortFor(this as any);
     port.submitToolResult({ callId, toolName: MARKETING, output });
@@ -64,7 +57,7 @@ export class CallSession extends BaseConstructor {
     const runtimeCallId = requireString((this as any).callId, "call_id");
     const action = parseAction(args.action);
     const explicit = args.explicit === true;
-    const store = this.marketingStoreV24();
+    const store = marketingConsentPortFor(this);
 
     if (action === "QUERY") {
       if (explicit) throw new Error("QUERY must use explicit=false");

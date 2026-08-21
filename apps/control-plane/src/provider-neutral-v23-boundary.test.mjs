@@ -25,3 +25,12 @@ test("v23 business and lifecycle authorities remain unchanged by provider refact
   assert.doesNotMatch(source, /observeEndCallConfirmedV18/);
   assert.doesNotMatch(source, /beginClosing/);
 });
+
+test("v23 consumes reservation and business persistence through neutral ports", () => {
+  assert.match(source, /restaurantReservationPortFor\(this\)/);
+  assert.match(source, /restaurantBusinessPortFor\(this\)/);
+  assert.doesNotMatch(source, /\bSupabaseAdapter\b/);
+  assert.doesNotMatch(source, /\bSUPABASE_(?:URL|SECRET_KEY)\b/);
+  assert.doesNotMatch(source, /\/rest\/v1\//);
+  assert.doesNotMatch(source, /\bfetch\s*\(/);
+});
