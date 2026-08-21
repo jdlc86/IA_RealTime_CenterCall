@@ -1,4 +1,9 @@
 import { CallSession as CallSessionV16 } from "./call-session-v16";
+import {
+  adaptRealtimeProviderEvents,
+  realtimeCommandPortFor,
+} from "./realtime-provider-runtime.js";
+import type { RealtimeFunctionToolDefinition } from "./realtime-provider-command-port.js";
 
 const BaseConstructor = CallSessionV16 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV16.prototype as any;
@@ -17,16 +22,6 @@ const AGENT_TOOL_NAMES = new Set([
   "restaurant_out_of_scope",
 ]);
 
-type RealtimeEvent = { type?: string; name?: string; call_id?: string };
-type RealtimeFunctionTool = { type: "function"; name: string; description: string; parameters: Record<string, unknown> };
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
-
 const RESERVATION_PROPERTIES = {
   party_size: { type: "integer", minimum: 1, maximum: 100 },
   starts_at: { type: "string", description: "Fecha y hora ISO 8601. El controlador normaliza la zona local autorizada cuando procede." },
@@ -40,7 +35,7 @@ const RESERVATION_PROPERTIES = {
   tables_must_be_close: { type: "boolean", description: "true si exige mesas juntas o cercanas." },
 } as const;
 
-const AGENT_TOOLS: RealtimeFunctionTool[] = [
+const AGENT_TOOLS: RealtimeFunctionToolDefinition[] = [
   { type: "function", name: "restaurant_reservation_create", description: "Crea o continúa una reserva. Si faltan datos, pregunta de forma natural. Cuando tengas fecha/hora y personas, llama a esta tool antes de afirmar que compruebas disponibilidad. El backend es la única autoridad sobre disponibilidad y BOOKED.", parameters: { type: "object", properties: RESERVATION_PROPERTIES, additionalProperties: false } },
   {
     type: "function",
@@ -88,20 +83,40 @@ export class CallSession extends BaseConstructor {
     const response = await super.fetch(request);
     if (isStart && response.ok && !this.agentToolsInstalledV17) {
       this.agentToolsInstalledV17 = true;
-      (this as any).send({ type: "session.update", session: { type: "realtime", instructions: agentInstructions(this as any), tools: AGENT_TOOLS, tool_choice: "auto" } });
-      (this as any).diagnostics?.checkpoint?.("LUCIA_DIRECT_TOOLS_V17_ENABLED", { architecture: "agent_tools_mcp_pattern", tool_count: AGENT_TOOLS.length, mandatory_classifier: false, legacy_agent_bridge_enabled: false, tool_choice: "auto", backend_authority_preserved: true });
+      realtimeCommandPortFor(this as any).updateSessionPolicy({
+        instructions: agentInstructions(this as any),
+        tools: AGENT_TOOLS,
+        toolChoice: "AUTO",
+      });
+      (this as any).diagnostics?.checkpoint?.("LUCIA_DIRECT_TOOLS_V17_ENABLED", {
+        architecture: "agent_tools_mcp_pattern",
+        tool_count: AGENT_TOOLS.length,
+        mandatory_classifier: false,
+        legacy_agent_bridge_enabled: false,
+        tool_choice: "auto",
+        backend_authority_preserved: true,
+        provider_command_port: true,
+      });
     }
     return response;
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) { try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; } }
-    if (event?.type === "response.function_call_arguments.done" && event.name && AGENT_TOOL_NAMES.has(event.name)) {
-      (this as any).diagnostics?.fail?.("UNHANDLED_PUBLIC_AGENT_TOOL", "DIRECT_TOOL_CONTROLLER_MISSING", { tool: event.name, legacy_fallback: false });
-      (this as any).send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: event.call_id, output: JSON.stringify({ ok: false, status: "ERROR", error: "DIRECT_TOOL_CONTROLLER_MISSING", retryable: false }) } });
-      (this as any).send({ type: "response.create" });
+    const toolEvent = adaptRealtimeProviderEvents(data).find(
+      (event) => event.type === "SEMANTIC_TOOL_SELECTED" && AGENT_TOOL_NAMES.has(event.name),
+    );
+    if (toolEvent?.type === "SEMANTIC_TOOL_SELECTED") {
+      (this as any).diagnostics?.fail?.("UNHANDLED_PUBLIC_AGENT_TOOL", "DIRECT_TOOL_CONTROLLER_MISSING", {
+        tool: toolEvent.name,
+        legacy_fallback: false,
+      });
+      const realtime = realtimeCommandPortFor(this as any);
+      realtime.submitToolResult({
+        callId: toolEvent.callId,
+        toolName: toolEvent.name,
+        output: { ok: false, status: "ERROR", error: "DIRECT_TOOL_CONTROLLER_MISSING", retryable: false },
+      });
+      realtime.createDefaultResponse();
       return;
     }
     await BasePrototype.handleRealtimeMessage.call(this, data);

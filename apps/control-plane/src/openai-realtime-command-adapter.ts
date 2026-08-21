@@ -2,6 +2,7 @@ import type {
   RealtimeInputDetectionSettings,
   RealtimeProviderCommandPort,
   RealtimeSemanticResponseRequest,
+  RealtimeSessionPolicyUpdate,
   RealtimeSpeechRequest,
   RealtimeTextDecisionRequest,
   RealtimeToolResultRequest,
@@ -126,10 +127,11 @@ export class OpenAIRealtimeCommandAdapter implements RealtimeProviderCommandPort
     });
   }
 
-  updateSessionPolicy(update: { instructions?: string; toolChoice?: "AUTO" | "NONE" | "REQUIRED" }): void {
+  updateSessionPolicy(update: RealtimeSessionPolicyUpdate): void {
     const session: Record<string, unknown> = { type: "realtime" };
     if (update.instructions !== undefined) session.instructions = update.instructions;
     if (update.toolChoice !== undefined) session.tool_choice = update.toolChoice.toLowerCase();
+    if (update.tools !== undefined) session.tools = update.tools;
     this.host.send({ type: "session.update", session });
   }
 

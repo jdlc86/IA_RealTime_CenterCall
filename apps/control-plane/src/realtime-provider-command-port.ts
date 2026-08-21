@@ -39,9 +39,17 @@ export type RealtimeToolResultRequest = {
   output: unknown;
 };
 
+export type RealtimeFunctionToolDefinition = {
+  type: "function";
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+};
+
 export type RealtimeSessionPolicyUpdate = {
   instructions?: string;
   toolChoice?: "AUTO" | "NONE" | "REQUIRED";
+  tools?: RealtimeFunctionToolDefinition[];
 };
 
 /** Provider-neutral command boundary for live conversational runtimes. */
