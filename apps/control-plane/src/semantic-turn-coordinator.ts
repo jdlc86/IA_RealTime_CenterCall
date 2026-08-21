@@ -1,4 +1,5 @@
 import { isPublicRestaurantTool } from "./public-tool-authorization.js";
+import { realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import { semanticTurnRuntimeFor } from "./semantic-turn-runtime.js";
 
 const INPUT_IGNORED = "restaurant_input_ignored";
@@ -9,8 +10,8 @@ export type SemanticToolAuthorityEvent = {
   arguments?: string;
 };
 
-function sendSessionToolChoice(session: any, toolChoice: "auto" | "required"): void {
-  session.send?.({ type: "session.update", session: { type: "realtime", tool_choice: toolChoice } });
+function updateToolChoice(session: object, toolChoice: "AUTO" | "REQUIRED"): void {
+  realtimeCommandPortFor(session as any).updateSessionPolicy({ toolChoice });
 }
 
 export function beginSemanticTurnFromAcousticEvidence(
@@ -48,7 +49,7 @@ export function armCallerDirectedSemanticAuthority(
 export function armSemanticGate(session: object, transcript: string, itemId: string | null): boolean {
   const runtime = semanticTurnRuntimeFor(session);
   if (!runtime.armGate(itemId)) return false;
-  sendSessionToolChoice(session as any, "required");
+  updateToolChoice(session, "REQUIRED");
   const snapshot = runtime.snapshot();
   (session as any).diagnostics?.checkpoint?.("RESTAURANT_SEMANTIC_TOOL_GATE_ARMED_V29", {
     source: "completed_transcription",
@@ -56,16 +57,18 @@ export function armSemanticGate(session: object, transcript: string, itemId: str
     item_id: itemId,
     caller_directed_authority: Boolean(itemId && itemId === snapshot.directedItemId),
     owner: "semantic_turn_runtime",
+    provider_command_boundary: "realtime_command_port",
   });
   return true;
 }
 
 export function releaseSemanticGate(session: object, tool: string): boolean {
   if (!semanticTurnRuntimeFor(session).releaseGate()) return false;
-  sendSessionToolChoice(session as any, "auto");
+  updateToolChoice(session, "AUTO");
   (session as any).diagnostics?.checkpoint?.("RESTAURANT_SEMANTIC_TOOL_GATE_RELEASED_V29", {
     tool,
     owner: "semantic_turn_runtime",
+    provider_command_boundary: "realtime_command_port",
   });
   return true;
 }
@@ -80,6 +83,7 @@ export function authorizePublicRestaurantTool(
 
   const s = session as any;
   const runtime = semanticTurnRuntimeFor(session);
+  const port = realtimeCommandPortFor(session as any);
   if (event.name === INPUT_IGNORED && runtime.directedAuthorityApplies()) {
     s.diagnostics?.checkpoint?.("BACKGROUND_INPUT_RECLASSIFICATION_BLOCKED_V29", {
       item_id: runtime.snapshot().activeItemId,
@@ -88,17 +92,14 @@ export function authorizePublicRestaurantTool(
       semantic_gate_preserved: true,
       presence_unchanged: true,
     });
-    s.send?.({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: event.call_id,
-        output: JSON.stringify({
-          ok: false,
-          status: "REJECTED",
-          reason: "CALLER_DIRECTED_TURN_CONFIRMED",
-          instruction: "The caller-directed turn is already authoritative. Select the appropriate public restaurant tool for the same user turn; do not use restaurant_input_ignored.",
-        }),
+    port.submitToolResult({
+      callId: event.call_id,
+      toolName: event.name,
+      output: {
+        ok: false,
+        status: "REJECTED",
+        reason: "CALLER_DIRECTED_TURN_CONFIRMED",
+        instruction: "The caller-directed turn is already authoritative. Select the appropriate public restaurant tool for the same user turn; do not use restaurant_input_ignored.",
       },
     });
     return { allowed: false, ignored: false, duplicateOf: null, directedIgnoreRejected: true };
@@ -113,17 +114,14 @@ export function authorizePublicRestaurantTool(
       business_action_executed: false,
       presence_unchanged: true,
     });
-    s.send?.({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: event.call_id,
-        output: JSON.stringify({
-          ok: false,
-          status: "REJECTED",
-          reason: "DUPLICATE_SEMANTIC_DECISION",
-          authoritative_tool: selection.duplicateOf,
-        }),
+    port.submitToolResult({
+      callId: event.call_id,
+      toolName: event.name,
+      output: {
+        ok: false,
+        status: "REJECTED",
+        reason: "DUPLICATE_SEMANTIC_DECISION",
+        authoritative_tool: selection.duplicateOf,
       },
     });
     return { allowed: false, ignored: false, duplicateOf: selection.duplicateOf, directedIgnoreRejected: false };
