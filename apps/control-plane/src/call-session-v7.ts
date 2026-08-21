@@ -139,7 +139,10 @@ export class CallSession extends BaseConstructor {
       const latestStatus = await marketingConsentPortFor(this as any).getLatestStatus(tenantId, callerPhone);
       const decision = decideMarketingPrompt(latestStatus);
       if (!decision.ask) {
-        suppressPrompt("existing_decision", decision.status);
+        suppressPrompt(
+          decision.reason.toLowerCase(),
+          decision.reason === "EXISTING_DECISION" ? decision.status : null,
+        );
         return;
       }
       (this as any).diagnostics?.checkpoint?.("MARKETING_CONSENT_PROMPT_ELIGIBLE", { reason: decision.reason });

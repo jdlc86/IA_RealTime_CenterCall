@@ -70,6 +70,7 @@ export function adaptRealtimeTurnEvent(event: RealtimeProviderEvent): LifecycleE
     case "ASSISTANT_TRANSCRIPT_COMPLETED":
     case "TEXT_DECISION_COMPLETED":
     case "INPUT_DETECTION_UPDATED":
+    case "PROVIDER_COMMAND_FAILED":
       return [];
   }
 }

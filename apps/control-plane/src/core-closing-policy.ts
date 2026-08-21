@@ -1,4 +1,4 @@
-import type { CoreWorkflow } from "./core-intent-machine.js";
+import type { CoreIntent, CoreWorkflow } from "./core-intent-machine.js";
 
 export type ClosingDecision =
   | { action: "ALLOW_CLOSE"; pending: false }
@@ -188,7 +188,7 @@ export function decideEndCallProposal(
 
 export function decideClosingTransition(
   _currentWorkflow: CoreWorkflow,
-  requestedWorkflow: CoreWorkflow,
+  requestedWorkflow: CoreIntent,
   closingPending: boolean,
   explicitClosingConfirmed = false,
 ): ClosingDecision {

@@ -15,6 +15,7 @@ const MAX_CALL_DURATION_MS = 15 * 60_000;
 // acknowledgement. Keep the transport drain isolated to terminal hangup so
 // normal Lucia turns receive no additional latency.
 const TERMINAL_TRANSPORT_DRAIN_MS = 750;
+type LifecycleAssistantSpeechKind = NonNullable<Extract<LifecycleEvent, { type: "assistant_audio_started" }>["kind"]>;
 
 export class CallSession extends BaseConstructor {
   private turnLifecycleV18 = new ConversationTurnLifecycle();
@@ -201,7 +202,10 @@ export class CallSession extends BaseConstructor {
     return this.assistantSpeechKindsByResponseIdV18.get(event.responseId) ?? event.kind;
   }
 
-  private lifecycleAssistantSpeechKindV18(event: RealtimeProviderEvent, fallbackKind: AssistantSpeechKind | undefined): AssistantSpeechKind | undefined {
+  private lifecycleAssistantSpeechKindV18(
+    event: RealtimeProviderEvent,
+    fallbackKind: LifecycleAssistantSpeechKind | undefined,
+  ): LifecycleAssistantSpeechKind | undefined {
     const correlatedKind = this.effectiveAssistantSpeechKindV18(event) ?? fallbackKind;
     const lifecycleState = this.turnLifecycleV18.snapshot().state;
 
@@ -249,7 +253,7 @@ export class CallSession extends BaseConstructor {
       return "TERMINAL";
     }
 
-    return correlatedKind;
+    return correlatedKind === "HANDOFF" ? "NORMAL" : correlatedKind;
   }
 
   private releaseAssistantSpeechKindV18(event: RealtimeProviderEvent): void {

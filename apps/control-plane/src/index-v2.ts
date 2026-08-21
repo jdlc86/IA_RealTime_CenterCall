@@ -112,14 +112,14 @@ function getSipHeader(headers: Array<{ name: string; value: string }> | undefine
   return headers?.find((item) => item.name.toLowerCase() === normalized)?.value?.trim() || null;
 }
 
-function decodeBase64(value: string): Uint8Array {
+function decodeBase64(value: string): Uint8Array<ArrayBuffer> {
   const binary = atob(value.replace(/\s+/g, ""));
-  const bytes = new Uint8Array(binary.length);
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length));
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
   return bytes;
 }
 
-function decodeTelnyxPublicKey(value: string): { format: "raw" | "spki"; bytes: Uint8Array } {
+function decodeTelnyxPublicKey(value: string): { format: "raw" | "spki"; bytes: Uint8Array<ArrayBuffer> } {
   const trimmed = requireEnvString(value, "TELNYX_PUBLIC_KEY");
   if (trimmed.includes("BEGIN PUBLIC KEY")) {
     const base64 = trimmed.replace(/-----BEGIN PUBLIC KEY-----/g, "").replace(/-----END PUBLIC KEY-----/g, "").replace(/\s+/g, "");

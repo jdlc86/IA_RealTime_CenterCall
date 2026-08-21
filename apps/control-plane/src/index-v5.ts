@@ -26,7 +26,7 @@ function getSipHeader(headers: Array<{ name?: unknown; value?: unknown }>, name:
   return null;
 }
 
-async function inspectHandoffTransportContext(request: Request): Promise<HandoffTransportContext | null> {
+async function inspectHandoffTransportContext(request: Pick<Body, "text">): Promise<HandoffTransportContext | null> {
   let event: unknown;
   try { event = JSON.parse(await request.text()); } catch { return null; }
   if (!event || typeof event !== "object" || Array.isArray(event)) return null;
