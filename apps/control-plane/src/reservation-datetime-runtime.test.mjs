@@ -60,14 +60,10 @@ test("datetime runtime is stable per session and isolated across sessions", () =
   assert.notEqual(reservationDatetimeRuntimeFor(a), reservationDatetimeRuntimeFor(b));
 });
 
-test("V20 is a compatibility layer without realtime parsing or sending", () => {
-  const v20 = readFileSync(new URL("./call-session-v20.ts", import.meta.url), "utf8");
-  assert.match(v20, /call-session-v19/);
-  assert.match(v20, /ReservationDatetimeRuntime/);
-  assert.doesNotMatch(v20, /handleRealtimeMessage/);
-  assert.doesNotMatch(v20, /readRealtimeText|TextDecoder/);
-  assert.doesNotMatch(v20, /function_call_arguments/);
-  assert.doesNotMatch(v20, /\.send\s*\?\./);
+test("V21 composes directly over the V19 datetime authority", () => {
+  const v21 = readFileSync(new URL("./call-session-v21.ts", import.meta.url), "utf8");
+  assert.match(v21, /call-session-v19/);
+  assert.doesNotMatch(v21, /call-session-v20|CallSessionV20/);
 });
 
 test("V19 applies datetime authority before ReservationSessionRuntime merges the draft", () => {

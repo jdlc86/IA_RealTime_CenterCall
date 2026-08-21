@@ -1,9 +1,9 @@
-import { CallSession as CallSessionV20 } from "./call-session-v20";
+import { CallSession as CallSessionV19 } from "./call-session-v19";
 import { reservationMultitableRuntimeFor } from "./reservation-multitable-runtime.js";
 import { reservationSessionRuntimeFor } from "./reservation-session-runtime.js";
 
-const BaseConstructor = CallSessionV20 as unknown as new (...args: any[]) => any;
-const BasePrototype = CallSessionV20.prototype as any;
+const BaseConstructor = CallSessionV19 as unknown as new (...args: any[]) => any;
+const BasePrototype = CallSessionV19.prototype as any;
 
 /**
  * v21 completes the direct agent-tool migration for multi-table reservations.

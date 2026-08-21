@@ -21,8 +21,9 @@ function hasUsableTranscript(value: unknown): boolean {
 /**
  * v48 owns only authoritative current-time grounding.
  *
- * It does not become the backend authority for reservation validity: v20 and
- * the reservation backend still reject invalid/past/out-of-hours datetimes.
+ * It does not become the backend authority for reservation validity:
+ * ReservationDatetimeRuntime and the reservation backend still reject invalid,
+ * past or out-of-hours datetimes.
  * Session instructions and caller-turn refreshes pass exclusively through the
  * provider-neutral runtime. Retired v47 reservation-search state is bypassed;
  * shared semantic tool authority is owned by the neutral authorization runtime.
