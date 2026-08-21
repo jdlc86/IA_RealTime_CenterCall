@@ -83,3 +83,15 @@ test("V10 cancellation routing uses neutral realtime input and command ports", a
   assert.doesNotMatch(v10, /response\.function_call_arguments\.done|conversation\.item\.create|function_call_output|TextDecoder/);
   assert.doesNotMatch(v10, /\(this as any\)\.send\(/);
 });
+
+test("V9 workflow authority consumes neutral realtime input", async () => {
+  const sourceRoot = new URL("./", import.meta.url);
+  const v9 = await readFile(new URL("call-session-v9.ts", sourceRoot), "utf8");
+
+  assert.match(v9, /adaptRealtimeProviderEvents\(data\)/);
+  assert.match(v9, /realtimeCommandPortFor\(this as any\)\.submitToolResult/);
+  assert.match(v9, /executeLegacyIntent\(BasePrototype, this/);
+  assert.match(v9, /this\[LEGACY_INTENT_EXECUTOR\]\(\{ argumentsJson: event\.arguments, callId: event\.callId \}\)/);
+  assert.doesNotMatch(v9, /response\.function_call_arguments\.done|conversation\.item\.create|function_call_output|TextDecoder/);
+  assert.doesNotMatch(v9, /BasePrototype\.handleRealtimeMessage\.call\(this,\s*JSON\.stringify/);
+});

@@ -6,26 +6,12 @@ import {
   LEGACY_INTENT_EXECUTOR,
   type LegacyIntentSelection,
 } from "./legacy-intent-execution.js";
-import { realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV8 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV8.prototype as any;
-
-type RealtimeEvent = {
-  type?: string;
-  name?: string;
-  call_id?: string;
-  arguments?: string;
-};
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
 
 function hasReservationDraft(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -113,14 +99,12 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) {
-      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
-    }
+    const event = adaptRealtimeProviderEvents(data).find(
+      (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && candidate.name === CONVERSATION_INTENT,
+    );
 
-    if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
-      await this[LEGACY_INTENT_EXECUTOR]({ argumentsJson: event.arguments, callId: event.call_id });
+    if (event?.type === "SEMANTIC_TOOL_SELECTED") {
+      await this[LEGACY_INTENT_EXECUTOR]({ argumentsJson: event.arguments, callId: event.callId });
       return;
     }
 
