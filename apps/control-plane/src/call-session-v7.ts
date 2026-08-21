@@ -1,7 +1,7 @@
 import { CallSession as CallSessionV6 } from "./call-session-v6";
 import { parseMarketingConsentClassifierTurn } from "./marketing-consent-orchestrator";
+import { marketingConsentPortFor } from "./marketing-consent-port.js";
 import { decideMarketingPrompt } from "./marketing-consent-prompt-policy";
-import { SupabaseMarketingConsentStore } from "./marketing-consent-store";
 import { parseSemanticDecision } from "./semantic-router";
 import type { ToolResult } from "./tool-gateway";
 import { claimClassifierBootstrap, ownsClassifierBootstrap } from "./classifier-bootstrap-authority.js";
@@ -25,11 +25,6 @@ function currentMadridReference(): string {
     dateStyle: "full",
     timeStyle: "long",
   }).format(new Date());
-}
-
-function requireRuntimeString(value: unknown, name: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`Missing runtime configuration: ${name}`);
-  return value.trim();
 }
 
 function reservationAndMarketingAwareIntentTool(): RealtimeFunctionToolDefinition {
@@ -111,13 +106,6 @@ export class CallSession extends BaseConstructor {
     return response;
   }
 
-  private getMarketingConsentStoreV7(): SupabaseMarketingConsentStore {
-    return new SupabaseMarketingConsentStore({
-      SUPABASE_URL: requireRuntimeString((this as any).env?.SUPABASE_URL, "SUPABASE_URL"),
-      SUPABASE_SECRET_KEY: requireRuntimeString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
-    });
-  }
-
   private createSpokenResponse(instructions: string): void {
     if (instructions.includes(POST_BOOKING_MARKETING_PROMPT)) {
       void this.createPostBookingResponse(instructions);
@@ -148,7 +136,7 @@ export class CallSession extends BaseConstructor {
     }
 
     try {
-      const latestStatus = await this.getMarketingConsentStoreV7().getLatestStatus(tenantId, callerPhone);
+      const latestStatus = await marketingConsentPortFor(this as any).getLatestStatus(tenantId, callerPhone);
       const decision = decideMarketingPrompt(latestStatus);
       if (!decision.ask) {
         suppressPrompt("existing_decision", decision.status);

@@ -44,3 +44,13 @@ test("V16 delegates marketing persistence without knowing the provider edge", ()
   assert.doesNotMatch(v16, /\/rest\/v1\//);
   assert.doesNotMatch(v16, /\bfetch\s*\(/);
 });
+
+test("V7 delegates marketing status persistence without knowing the provider edge", () => {
+  const v7 = readFileSync(new URL("./call-session-v7.ts", import.meta.url), "utf8");
+
+  assert.match(v7, /marketingConsentPortFor\(this as any\)\.getLatestStatus\(tenantId, callerPhone\)/);
+  assert.doesNotMatch(v7, /\bSupabaseMarketingConsentStore\b/);
+  assert.doesNotMatch(v7, /\bSUPABASE_URL\b/);
+  assert.doesNotMatch(v7, /\bSUPABASE_SECRET_KEY\b/);
+  assert.doesNotMatch(v7, /\/rest\/v1\//);
+});
