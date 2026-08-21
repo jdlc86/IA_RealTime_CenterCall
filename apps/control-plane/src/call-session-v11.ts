@@ -1,7 +1,7 @@
 import { CallSession as CallSessionV10 } from "./call-session-v10";
+import { restaurantReservationPortFor } from "./restaurant-reservation-port.js";
 import { publicReservationQueryResults } from "./reservation-query";
 import { parseSemanticDecision } from "./semantic-router";
-import { SupabaseAdapter } from "./supabase-adapter";
 import { claimClassifierBootstrap, ownsClassifierBootstrap } from "./classifier-bootstrap-authority.js";
 import {
   executeLegacyIntent,
@@ -66,11 +66,6 @@ function queryAwareIntentTool(): RealtimeFunctionToolDefinition {
   };
 }
 
-function requireRuntimeString(value: unknown, name: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`Missing runtime configuration: ${name}`);
-  return value.trim();
-}
-
 function rawReservationOperation(argumentsJson: string | undefined): "CREATE" | "QUERY" | "CANCEL" | null {
   if (!argumentsJson?.trim()) return null;
   try {
@@ -102,13 +97,6 @@ export class CallSession extends BaseConstructor {
     return response;
   }
 
-  private getQueryAdapter(): SupabaseAdapter {
-    return new SupabaseAdapter({
-      SUPABASE_URL: requireRuntimeString((this as any).env?.SUPABASE_URL, "SUPABASE_URL"),
-      SUPABASE_SECRET_KEY: requireRuntimeString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
-    });
-  }
-
   private sendQueryClassifierOutput(callId: string | undefined, stage: string): void {
     if (!callId) return;
     realtimeCommandPortFor(this as any).submitToolResult({
@@ -137,7 +125,7 @@ export class CallSession extends BaseConstructor {
       return;
     }
 
-    const rows = await this.getQueryAdapter().listBookedReservationsByPhone(tenantId, callerPhone);
+    const rows = await restaurantReservationPortFor(this as any).listBookedReservationsByPhone(tenantId, callerPhone);
     (this as any).diagnostics?.checkpoint?.("RESERVATION_QUERY_COMPLETED", { result_count: rows.length, identity_source: "CALLER_ID", status_filter: "BOOKED" });
 
     if (rows.length === 0) {

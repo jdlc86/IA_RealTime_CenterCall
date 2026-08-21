@@ -115,3 +115,13 @@ test("V16 delegates reservation persistence without owning provider RPC wire", (
   assert.doesNotMatch(v16, /modify_restaurant_reservation/);
   assert.doesNotMatch(v16, /\bfetch\s*\(/);
 });
+
+test("V11 delegates reservation queries without knowing the persistence provider", () => {
+  const v11 = readFileSync(new URL("./call-session-v11.ts", import.meta.url), "utf8");
+
+  assert.match(v11, /restaurantReservationPortFor\(this as any\)\.listBookedReservationsByPhone\(tenantId, callerPhone\)/);
+  assert.doesNotMatch(v11, /\bSupabaseAdapter\b/);
+  assert.doesNotMatch(v11, /\bSUPABASE_URL\b/);
+  assert.doesNotMatch(v11, /\bSUPABASE_SECRET_KEY\b/);
+  assert.doesNotMatch(v11, /\/rest\/v1\//);
+});
