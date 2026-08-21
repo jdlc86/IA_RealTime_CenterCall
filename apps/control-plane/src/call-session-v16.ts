@@ -1,6 +1,10 @@
 import { CallSession as CallSessionV15 } from "./call-session-v15";
-import { SupabaseAdapter, type BookedReservationSummary } from "./supabase-adapter";
 import { SupabaseMarketingConsentStore } from "./marketing-consent-store";
+import {
+  restaurantReservationPortFor,
+  type BookedReservationSummary,
+  type RestaurantTablePlanRow,
+} from "./restaurant-reservation-port";
 import { adaptRealtimeProviderEvents } from "./realtime-provider-runtime";
 import type { ToolGateway, ToolRequest, ToolResult } from "./tool-gateway";
 
@@ -10,17 +14,6 @@ const CONVERSATION_INTENT = "conversation_intent";
 const CHECK_RESERVATION_AVAILABILITY = "check_reservation_availability";
 const MANAGE_RESERVATION = "manage_reservation";
 
-type TablePlanRow = {
-  allocation_mode: "SINGLE" | "MULTI_EXACT";
-  plan_order: number;
-  table_id: string;
-  table_code: string;
-  table_name: string;
-  min_capacity: number;
-  max_capacity: number;
-  starts_at: string;
-  ends_at: string;
-};
 type ModifyPatch = {
   partySize?: number;
   startsAt?: string;
@@ -49,7 +42,7 @@ function publicReservation(row: BookedReservationSummary, index: number): Record
 export class CallSession extends BaseConstructor {
   private separateTablesAcceptableV16: boolean | undefined;
   private tablesMustBeCloseV16 = false;
-  private multitablePlanV16: TablePlanRow[] | null = null;
+  private multitablePlanV16: RestaurantTablePlanRow[] | null = null;
   private multitableKeyV16: string | null = null;
 
   private modifyRequestedV16 = false;
@@ -61,28 +54,6 @@ export class CallSession extends BaseConstructor {
   private modifyConfirmationFingerprintV16: string | null = null;
 
   private marketingQueryRequestedV16 = false;
-
-  private adapterV16(): SupabaseAdapter {
-    return new SupabaseAdapter({
-      SUPABASE_URL: requireRuntimeString((this as any).env?.SUPABASE_URL, "SUPABASE_URL"),
-      SUPABASE_SECRET_KEY: requireRuntimeString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
-    });
-  }
-
-  private async rpcV16<T>(name: string, body: Record<string, unknown>): Promise<T[]> {
-    const baseUrl = requireRuntimeString((this as any).env?.SUPABASE_URL, "SUPABASE_URL").replace(/\/+$/, "");
-    const key = requireRuntimeString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY");
-    const response = await fetch(`${baseUrl}/rest/v1/rpc/${encodeURIComponent(name)}`, {
-      method: "POST",
-      headers: { apikey: key, "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(body),
-    });
-    const raw = await response.text();
-    if (!response.ok) throw new Error(`Supabase RPC ${name} failed with HTTP ${response.status}: ${raw.slice(0, 250)}`);
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) throw new Error(`Supabase RPC ${name} returned invalid payload`);
-    return parsed as T[];
-  }
 
   private captureStructuredTurnV16(argumentsJson: string | undefined): void {
     if (!argumentsJson?.trim()) return;
@@ -135,18 +106,18 @@ export class CallSession extends BaseConstructor {
     this.modifyConfirmationFingerprintV16 = null;
   }
 
-  private async tablePlanV16(partySize: number, startsAt: string, duration: number, excludeReservationId: string | null = null): Promise<TablePlanRow[]> {
+  private async tablePlanV16(partySize: number, startsAt: string, duration: number, excludeReservationId: string | null = null): Promise<RestaurantTablePlanRow[]> {
     const tenantId = requireRuntimeString((this as any).tenantId, "tenant_id");
-    return this.rpcV16<TablePlanRow>("check_restaurant_table_plan", {
-      p_tenant_id: tenantId,
-      p_starts_at: startsAt,
-      p_party_size: partySize,
-      p_duration_minutes: duration,
-      p_exclude_reservation_id: excludeReservationId,
+    return restaurantReservationPortFor(this as any).checkTablePlan({
+      tenantId,
+      startsAt,
+      partySize,
+      durationMinutes: duration,
+      excludeReservationId,
     });
   }
 
-  private compositionV16(plan: TablePlanRow[]): string {
+  private compositionV16(plan: RestaurantTablePlanRow[]): string {
     return plan.map((row) => `${row.max_capacity} personas`).join(" + ");
   }
 
@@ -226,15 +197,15 @@ export class CallSession extends BaseConstructor {
             } as ToolResult;
           }
           try {
-            const rows = await this.rpcV16<Record<string, unknown>>("create_restaurant_reservation_multi", {
-              p_tenant_id: request.context.tenantId,
-              p_customer_name: customerName,
-              p_customer_phone: customerPhone,
-              p_party_size: partySize,
-              p_starts_at: startsAt,
-              p_duration_minutes: duration,
-              p_notes: notes ?? null,
-              p_source: "voice",
+            const rows = await restaurantReservationPortFor(this as any).createMultiTableReservation({
+              tenantId: request.context.tenantId,
+              customerName,
+              customerPhone,
+              partySize,
+              startsAt,
+              durationMinutes: duration,
+              notes: notes ?? null,
+              source: "voice",
             });
             if (!rows.length) throw new Error("empty booking result");
             const code = rows[0]?.reservation_code;
@@ -290,7 +261,7 @@ export class CallSession extends BaseConstructor {
     const tenantId = requireRuntimeString((this as any).tenantId, "tenant_id");
     const callerPhone = requireRuntimeString((this as any).callerPhone, "caller_phone");
 
-    if (!this.modifyCandidatesV16) this.modifyCandidatesV16 = await this.adapterV16().listBookedReservationsByPhone(tenantId, callerPhone);
+    if (!this.modifyCandidatesV16) this.modifyCandidatesV16 = await restaurantReservationPortFor(this as any).listBookedReservationsByPhone(tenantId, callerPhone);
     if (this.modifyCandidatesV16.length === 0) {
       this.resetModifyV16();
       (this as any).createSpokenResponse("Indica que no hay reservas futuras confirmadas asociadas a esta llamada que puedan modificarse. Después pregunta exactamente: ¿Necesitas algo más en lo que pueda ayudarte?");
@@ -340,15 +311,15 @@ export class CallSession extends BaseConstructor {
     const fingerprint = JSON.stringify({ reservation_id: current.id, party_size: partySize, starts_at: startsAt, duration_minutes: duration, customer_name: customerName, notes: this.modifyPatchV16.notes ?? null, allocation_mode: plan[0].allocation_mode });
     if (this.modifyConfirmV16 && this.modifyConfirmationFingerprintV16 === fingerprint) {
       try {
-        const rows = await this.rpcV16<Record<string, unknown>>("modify_restaurant_reservation", {
-          p_tenant_id: tenantId,
-          p_reservation_id: current.id,
-          p_caller_phone: callerPhone,
-          p_party_size: partySize,
-          p_starts_at: startsAt,
-          p_duration_minutes: duration,
-          p_customer_name: customerName,
-          p_notes: this.modifyPatchV16.notes ?? null,
+        const rows = await restaurantReservationPortFor(this as any).modifyReservation({
+          tenantId,
+          reservationId: current.id,
+          callerPhone,
+          partySize,
+          startsAt,
+          durationMinutes: duration,
+          customerName,
+          notes: this.modifyPatchV16.notes ?? null,
         });
         if (!rows.length) throw new Error("empty modify result");
         (this as any).diagnostics?.checkpoint?.("RESERVATION_MODIFIED_EVIDENCE", { reservation_code: current.reservation_code, allocation_mode: rows[0]?.allocation_mode ?? null, table_count: rows.length });
