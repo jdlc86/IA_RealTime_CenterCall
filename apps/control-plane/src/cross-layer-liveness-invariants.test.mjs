@@ -211,12 +211,15 @@ test("cross-layer fuzz: malformed and corrected tool sequences never execute mor
 test("runtime wiring: invalid and rejected tool paths both preserve an explicit liveness route", () => {
   const v25 = readFileSync(new URL("./call-session-v25.ts", import.meta.url), "utf8");
   const v51 = readFileSync(new URL("./call-session-v51-malformed-tool-authority.ts", import.meta.url), "utf8");
+  const malformedToolCorrectionRuntime = readFileSync(new URL("./malformed-tool-correction-runtime.ts", import.meta.url), "utf8");
   assert.match(v25, /PUBLIC_TOOL_AUTHORIZATION_INVALID_ARGUMENTS_V25/);
   assert.match(v25, /port\.submitToolResult/);
   assert.match(v25, /port\.createDefaultResponse\(\)/);
-  assert.match(v51, /SEMANTIC_TOOL_CROSS_TOOL_CORRECTION_BLOCKED_V51/);
-  assert.match(v51, /port\.speak\(/);
-  assert.match(v51, /tools:\s*"DISABLED"/);
+  assert.match(v51, /malformedToolCorrectionRuntimeFor/);
+  assert.match(v51, /runtime\.observe\(this, event\)/);
+  assert.match(malformedToolCorrectionRuntime, /SEMANTIC_TOOL_CROSS_TOOL_CORRECTION_BLOCKED_V51/);
+  assert.match(malformedToolCorrectionRuntime, /port\.speak\(/);
+  assert.match(malformedToolCorrectionRuntime, /tools:\s*"DISABLED"/);
 });
 
 test("runtime wiring: active entrypoint and critical layers consume the policies exercised above", () => {
@@ -225,6 +228,7 @@ test("runtime wiring: active entrypoint and critical layers consume the policies
   const v53 = readFileSync(new URL("./call-session-v53-reservation-time-authority.ts", import.meta.url), "utf8");
   const v52 = readFileSync(new URL("./call-session-v52-trusted-reservation-contact.ts", import.meta.url), "utf8");
   const v51 = readFileSync(new URL("./call-session-v51-malformed-tool-authority.ts", import.meta.url), "utf8");
+  const malformedToolCorrectionRuntime = readFileSync(new URL("./malformed-tool-correction-runtime.ts", import.meta.url), "utf8");
   const v36 = readFileSync(new URL("./call-session-v36.ts", import.meta.url), "utf8");
   const turnConcurrencyCoordinator = readFileSync(new URL("./turn-concurrency-coordinator.ts", import.meta.url), "utf8");
   const v40 = readFileSync(new URL("./call-session-v40-rebuild.ts", import.meta.url), "utf8");
@@ -243,13 +247,18 @@ test("runtime wiring: active entrypoint and critical layers consume the policies
   assert.match(v53, /RESERVATION_TIME_ASSUMPTION_BLOCKED_V53/);
   assert.match(v52, /call-session-v51-malformed-tool-authority/);
   assert.match(v52, /rewriteReservationCreateContactEvent/);
-  assert.match(v51, /decideMalformedToolCorrection/);
-  assert.match(v51, /ASSISTANT_RESPONSE_STARTED/);
-  assert.match(v51, /ASSISTANT_AUDIO_STOPPED/);
-  assert.match(v51, /CALLER_SPEECH_STARTED/);
-  assert.match(v51, /CALLER_TRANSCRIPT_COMPLETED/);
-  assert.match(v51, /SEMANTIC_TOOL_CROSS_TOOL_CORRECTION_BLOCKED_V51/);
-  assert.match(v51, /tools:\s*"DISABLED"/);
+  assert.match(v51, /malformedToolCorrectionRuntimeFor/);
+  assert.match(v51, /adaptRealtimeProviderEvents/);
+  assert.match(v51, /runtime\.observe\(this, event\)/);
+  assert.doesNotMatch(v51, /decideMalformedToolCorrection/);
+  assert.doesNotMatch(v51, /authorizePublicRestaurantToolV29/);
+  assert.match(malformedToolCorrectionRuntime, /decideMalformedToolCorrection/);
+  assert.match(malformedToolCorrectionRuntime, /ASSISTANT_RESPONSE_STARTED/);
+  assert.match(malformedToolCorrectionRuntime, /ASSISTANT_AUDIO_STOPPED/);
+  assert.match(malformedToolCorrectionRuntime, /CALLER_SPEECH_STARTED/);
+  assert.match(malformedToolCorrectionRuntime, /CALLER_TRANSCRIPT_COMPLETED/);
+  assert.match(malformedToolCorrectionRuntime, /SEMANTIC_TOOL_CROSS_TOOL_CORRECTION_BLOCKED_V51/);
+  assert.match(malformedToolCorrectionRuntime, /tools:\s*"DISABLED"/);
   assert.match(v36, /turnConcurrencyCoordinatorFor/);
   assert.match(v36, /\.observe\(this as any, parseEvent\(data\)\)/);
   assert.doesNotMatch(v36, /this\.[A-Za-z_$][\w$]*V(?:3[6-9]|4\d|5[0-4])/);
@@ -261,6 +270,7 @@ test("runtime wiring: active entrypoint and critical layers consume the policies
   assert.match(reservationDateScopeRuntime, /decideReservationDateScope/);
   assert.doesNotMatch(v50, /decideReservationDateScope/);
   assert.doesNotMatch(v51, /setTimeout|sleep\s*\(|delay\s*\(/);
+  assert.doesNotMatch(malformedToolCorrectionRuntime, /setTimeout|sleep\s*\(|delay\s*\(/);
   assert.doesNotMatch(v52, /setTimeout|sleep\s*\(|delay\s*\(/);
   assert.doesNotMatch(v53, /setTimeout|sleep\s*\(|delay\s*\(/);
   assert.doesNotMatch(v54, /setTimeout|sleep\s*\(|delay\s*\(/);

@@ -25,6 +25,7 @@ test("v31 owns transient multi-table execution while shared reservation facts st
 test("v31 consumes provider and semantic authority through neutral ports", async () => {
   const v31 = await source("call-session-v31.ts");
   const port = await source("semantic-tool-authorization-port.ts");
+  const correctionRuntime = await source("malformed-tool-correction-runtime.ts");
 
   assert.match(v31, /adaptRealtimeProviderEvents/);
   assert.match(v31, /realtimeCommandPortFor/);
@@ -34,8 +35,8 @@ test("v31 consumes provider and semantic authority through neutral ports", async
   assert.doesNotMatch(v31, /BasePrototype\.sendFunctionOutputV19/);
   assert.doesNotMatch(v31, /this\.authorizePublicRestaurantToolV29/);
 
-  // The historical hook remains isolated in one explicit compatibility adapter
-  // so V51 malformed-tool correction still participates until fully composed.
-  assert.match(port, /authorizePublicRestaurantToolV29/);
+  assert.match(port, /malformedToolCorrectionRuntimeFor\(session\)\.preauthorize/);
   assert.match(port, /authorizePublicRestaurantTool\(session, request\)/);
+  assert.doesNotMatch(port, /authorizePublicRestaurantToolV29/);
+  assert.match(correctionRuntime, /decideMalformedToolCorrection/);
 });
