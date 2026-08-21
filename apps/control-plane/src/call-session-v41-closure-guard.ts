@@ -61,27 +61,15 @@ export class CallSession extends BaseConstructor {
   private contextualMoreHelpDecisionFinalizedResponseIdsV41 = new Set<string>();
   private contextualMoreHelpDecisionSequenceV41 = 0;
   private lastUserTranscriptV41 = "";
-  private closingSendBoundaryInstalledV41 = false;
-  private originalSendV41: ((message: unknown) => void) | null = null;
+  private closingGuidanceBoundaryInstalledV41 = false;
 
   private installClosingGuidanceBoundaryV41(): void {
-    if (this.closingSendBoundaryInstalledV41) return;
-    const session = this as any;
-    const currentSend = session.send;
-    if (typeof currentSend !== "function") return;
-    this.closingSendBoundaryInstalledV41 = true;
-    installRealtimeSessionPolicyTransform(session, (update) => {
+    if (this.closingGuidanceBoundaryInstalledV41) return;
+    this.closingGuidanceBoundaryInstalledV41 = true;
+    installRealtimeSessionPolicyTransform(this as any, (update) => {
       if (typeof update.instructions !== "string") return update;
       return { ...update, instructions: withClosingGuidance(update.instructions) };
     });
-    this.originalSendV41 = currentSend.bind(this);
-    session.send = (message: any) => {
-      if (message?.type === "session.update" && typeof message?.session?.instructions === "string") {
-        this.originalSendV41?.({ ...message, session: { ...message.session, instructions: withClosingGuidance(message.session.instructions) } });
-        return;
-      }
-      this.originalSendV41?.(message);
-    };
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -346,7 +334,7 @@ export class CallSession extends BaseConstructor {
       }
       if (event.type === "SEMANTIC_TOOL_SELECTED" && event.name === END_CALL) {
         const session = this as any;
-        if (session.state === "closing" || session.hangupStarted) return;
+        if (conversationLifecyclePortFor(this).isTerminal()) return;
         const modelConfirmed = readEndCallConfirmedV41(event.arguments);
         if (this.moreHelpSemanticResolutionPendingV41 && this.resolveContextualSemanticEndCallV41(event.callId, modelConfirmed)) return;
         if (this.moreHelpAnswerPendingV41) { this.acknowledgeContextualReplyPendingV41(event.callId); return; }

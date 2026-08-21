@@ -23,11 +23,18 @@ test("v41 emits synthetic tool results through the provider-neutral command boun
   assert.doesNotMatch(source, /function_call_output/);
 });
 
-test("v41 governs migrated session instructions neutrally while retaining the raw compatibility boundary", () => {
+test("v41 governs session instructions exclusively through the provider-neutral policy transform", () => {
   assert.match(source, /installRealtimeSessionPolicyTransform/);
   assert.match(source, /instructions: withClosingGuidance\(update\.instructions\)/);
-  assert.match(source, /message\?\.type === "session\.update"/);
-  assert.match(source, /withClosingGuidance\(message\.session\.instructions\)/);
+  assert.doesNotMatch(source, /originalSendV41/);
+  assert.doesNotMatch(source, /session\.send\s*=/);
+  assert.doesNotMatch(source, /message\?\.type === "session\.update"/);
+});
+
+test("v41 terminal decisions use lifecycle authority instead of legacy session flags", () => {
+  assert.match(source, /conversationLifecyclePortFor\(this\)\.isTerminal\(\)/);
+  assert.doesNotMatch(source, /session\.state\s*===\s*"closing"/);
+  assert.doesNotMatch(source, /session\.hangupStarted/);
 });
 
 test("v41 provider-neutral refactor preserves closing authorities behind neutral owners", () => {
