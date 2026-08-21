@@ -115,11 +115,11 @@ test("termination reports failure without claiming lifecycle completion", async 
   assert.equal(result.attempts.every((attempt) => attempt.ok === false), true);
 });
 
-test("V37 delegates physical hangup and contains no direct realtime hangup endpoint", () => {
+test("V37 delegates physical hangup and source-leg transfer through neutral ports", () => {
   const v37 = readFileSync(new URL("./call-session-v37.ts", import.meta.url), "utf8");
   assert.match(v37, /callTerminationPortFor/);
   assert.match(v37, /\.terminate\(\{/);
-  assert.doesNotMatch(v37, /api\.openai\.com\/v1\/realtime\/calls/);
-  assert.doesNotMatch(v37, /OPENAI_API_KEY/);
-  assert.match(v37, /api\.telnyx\.com\/v2\/calls\/\$\{encodeURIComponent\(prerequisites\.sourceCallControlId\)\}\/actions\/transfer/);
+  assert.match(v37, /humanHandoffTransportPortFor\(this as any\)\.startTransfer\(/);
+  assert.doesNotMatch(v37, /api\.(?:openai|telnyx)\.com/);
+  assert.doesNotMatch(v37, /\b(?:OPENAI_API_KEY|TELNYX_API_KEY)\b/);
 });
