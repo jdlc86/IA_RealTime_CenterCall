@@ -1,4 +1,4 @@
-import { CallSession as CallSessionV47 } from "./call-session-v47-reservation-search-turn-authority";
+import { CallSession as CallSessionV46 } from "./call-session-v46-sideband-lifecycle";
 import {
   adaptRealtimeProviderEvents,
   installRealtimeSessionPolicyTransform,
@@ -11,8 +11,8 @@ import {
   withAuthoritativeNowContext,
 } from "./temporal-grounding";
 
-const BaseConstructor = CallSessionV47 as unknown as new (...args: any[]) => any;
-const BasePrototype = CallSessionV47.prototype as any;
+const BaseConstructor = CallSessionV46 as unknown as new (...args: any[]) => any;
+const BasePrototype = CallSessionV46.prototype as any;
 
 function hasUsableTranscript(value: unknown): boolean {
   return typeof value === "string" && value.replace(/\s+/g, " ").trim().length > 0;
@@ -24,7 +24,8 @@ function hasUsableTranscript(value: unknown): boolean {
  * It does not become the backend authority for reservation validity: v20 and
  * the reservation backend still reject invalid/past/out-of-hours datetimes.
  * Session instructions and caller-turn refreshes pass exclusively through the
- * provider-neutral runtime.
+ * provider-neutral runtime. Retired v47 reservation-search state is bypassed;
+ * shared semantic tool authority is owned by the neutral authorization runtime.
  */
 export class CallSession extends BaseConstructor {
   private temporalPolicyTransformInstalledV48 = false;
