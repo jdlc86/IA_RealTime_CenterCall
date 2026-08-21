@@ -18,7 +18,7 @@ export class CallSession extends BaseConstructor {
     if (
       event?.type === "SEMANTIC_TOOL_SELECTED"
       && isPublicRestaurantTool(event.name)
-      && decideBargeInPublicToolRoute(ownerState as any) === "DEFER_TO_CLASSIFIER"
+      && decideBargeInPublicToolRoute(ownerState) === "DEFER_TO_CLASSIFIER"
     ) {
       (this as any).diagnostics?.checkpoint?.("PUBLIC_TOOL_DEFERRED_TO_BARGE_IN_CLASSIFIER_V45", {
         tool: event.name,

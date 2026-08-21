@@ -15,8 +15,10 @@ test("v45 uses provider-neutral semantic tool events and tool results", () => {
   assert.doesNotMatch(source, /event\.call_id/);
 });
 
-test("v45 preserves the existing classifier deferral authority", () => {
-  assert.match(source, /decideBargeInPublicToolRoute/);
+test("v45 preserves typed classifier deferral authority from ResponseCoordinator", () => {
+  assert.match(source, /responseCoordinatorFor\(this\)\.snapshot\(\)\.state/);
+  assert.match(source, /decideBargeInPublicToolRoute\(ownerState\)/);
+  assert.doesNotMatch(source, /ownerState as any/);
   assert.match(source, /DEFER_TO_CLASSIFIER/);
   assert.match(source, /PUBLIC_TOOL_DEFERRED_TO_BARGE_IN_CLASSIFIER_V45/);
   assert.match(source, /business_action_executed: false/);
