@@ -1,5 +1,5 @@
 import { CallSession as CallSessionV33 } from "./call-session-v33";
-import { CallerSecurityService } from "./caller-security";
+import { callerSecurityPortFor } from "./caller-security-port.js";
 import { tenantConfigurationKeyV2 } from "./tenant-kv";
 import { matchBlockedSecurityPhrase, parseTenantBlockedPhrases } from "./security-blocked-phrases";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
@@ -63,17 +63,12 @@ export class CallSession extends BaseConstructor {
     }
   }
 
-  private securityServiceV34(): CallerSecurityService {
-    const env = (this as any).env ?? {};
-    return new CallerSecurityService({ SUPABASE_URL: env.SUPABASE_URL, SUPABASE_SECRET_KEY: env.SUPABASE_SECRET_KEY });
-  }
-
   private async recordAndCloseV34(transcript: string, match: { phrase?: string; source?: string }): Promise<void> {
     const tenantId = (this as any).tenantId;
     const callerPhone = (this as any).callerPhone;
     if (typeof tenantId === "string" && tenantId.trim() && typeof callerPhone === "string" && callerPhone.trim()) {
       try {
-        const decision = await this.securityServiceV34().recordSignal({
+        const decision = await callerSecurityPortFor(this).recordSignal({
           tenantId: tenantId.trim(),
           callerPhone: callerPhone.trim(),
           eventType: "BLOCKED_PHRASE_HIGH",

@@ -1,5 +1,5 @@
 import { CallSession as CallSessionV38 } from "./call-session-v38";
-import { HumanHandoffStore } from "./human-handoff-store";
+import { humanHandoffPersistencePortFor } from "./human-handoff-persistence-port.js";
 import { humanHandoffTransportPortFor } from "./human-handoff-transport-port.js";
 
 const BaseConstructor = CallSessionV38 as unknown as new (...args: any[]) => any;
@@ -32,11 +32,6 @@ function nonEmpty(value: unknown): string | null {
  * - hangups after confirmed TRANSFERRED are terminal telephony bookkeeping only.
  */
 export class CallSession extends BaseConstructor {
-  private storeV39(): HumanHandoffStore {
-    const env = (this as any).env ?? {};
-    return new HumanHandoffStore({ SUPABASE_URL: env.SUPABASE_URL, SUPABASE_SECRET_KEY: env.SUPABASE_SECRET_KEY });
-  }
-
   private settleTargetFailureLifecycleV39(handoffId: string): void {
     humanHandoffTransportPortFor(this).cancelTransferWatchdog();
     (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_TARGET_RESULT_SETTLED_V39", {
@@ -70,7 +65,7 @@ export class CallSession extends BaseConstructor {
     }
 
     if (eventType === "call.bridged") {
-      const state = await this.storeV39().getState(handoffId, tenantId);
+      const state = await humanHandoffPersistencePortFor(this).getState(handoffId, tenantId);
       if (state && state.status !== "TRANSFERRED") {
         (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_BRIDGE_OBSERVED_V39", {
           handoff_id: handoffId,
@@ -86,7 +81,7 @@ export class CallSession extends BaseConstructor {
     }
 
     if (eventType === "call.answered" && targetLeg && eventCallControlId) {
-      const state = await this.storeV39().getState(handoffId, tenantId);
+      const state = await humanHandoffPersistencePortFor(this).getState(handoffId, tenantId);
       if (state?.status === "TRANSFERRED") {
         return Response.json({ ok: true, ignored: true, reason: "already_transferred" });
       }
@@ -106,10 +101,10 @@ export class CallSession extends BaseConstructor {
     }
 
     if (eventType === "call.hangup") {
-      const state = await this.storeV39().getState(handoffId, tenantId);
+      const state = await humanHandoffPersistencePortFor(this).getState(handoffId, tenantId);
       if (state?.status === "TRANSFERRED") {
         if (!targetLeg) {
-          await this.storeV39().update(handoffId, tenantId, { call_terminated_at: new Date().toISOString() });
+          await humanHandoffPersistencePortFor(this).update(handoffId, tenantId, { call_terminated_at: new Date().toISOString() });
         }
         return Response.json({ ok: true, action: "post_transfer_hangup_recorded" });
       }

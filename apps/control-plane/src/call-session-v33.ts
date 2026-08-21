@@ -1,5 +1,6 @@
 import { CallSession as CallSessionV32 } from "./call-session-v32";
-import { CallerSecurityService, inspectCallerTranscript } from "./caller-security";
+import { inspectCallerTranscript } from "./caller-security";
+import { callerSecurityPortFor } from "./caller-security-port.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 import { adaptRealtimeProviderEvents } from "./realtime-provider-runtime.js";
 
@@ -22,14 +23,6 @@ function usableTranscript(value: unknown): string | null {
  * model/tool selection before lifecycle authority commits the close.
  */
 export class CallSession extends BaseConstructor {
-  private securityServiceV33(): CallerSecurityService {
-    const env = (this as any).env ?? {};
-    return new CallerSecurityService({
-      SUPABASE_URL: env.SUPABASE_URL,
-      SUPABASE_SECRET_KEY: env.SUPABASE_SECRET_KEY,
-    });
-  }
-
   private async recordFindingV33(transcript: string, finding: ReturnType<typeof inspectCallerTranscript>): Promise<void> {
     if (finding.level === "NONE" || !finding.eventType) return;
     const tenantId = (this as any).tenantId;
@@ -37,7 +30,7 @@ export class CallSession extends BaseConstructor {
     if (typeof tenantId !== "string" || !tenantId.trim() || typeof callerPhone !== "string" || !callerPhone.trim()) return;
 
     try {
-      const decision = await this.securityServiceV33().recordSignal({
+      const decision = await callerSecurityPortFor(this).recordSignal({
         tenantId: tenantId.trim(),
         callerPhone: callerPhone.trim(),
         eventType: finding.eventType,

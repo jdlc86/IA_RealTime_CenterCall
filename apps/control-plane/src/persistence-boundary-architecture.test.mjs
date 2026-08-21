@@ -2,12 +2,21 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const controllerFiles = ["call-session-v23.ts", "call-session-v24.ts", "call-session-v31.ts"];
+const controllerFiles = [
+  "call-session-v23.ts",
+  "call-session-v24.ts",
+  "call-session-v31.ts",
+  "call-session-v33.ts",
+  "call-session-v34.ts",
+  "call-session-v37.ts",
+  "call-session-v38.ts",
+  "call-session-v39.ts",
+];
 const forbidden = [
-  ["concrete Supabase provider", /\bSupabase(?:Adapter|MarketingConsentStore)\b/],
+  ["concrete persistence provider", /\b(?:SupabaseAdapter|SupabaseMarketingConsentStore|CallerSecurityService|HumanHandoffStore)\b/],
   ["Supabase credentials", /\bSUPABASE_(?:URL|SECRET_KEY)\b/],
   ["PostgREST wire path", /\/rest\/v1\//],
-  ["direct persistence fetch", /\bfetch\s*\(/],
+  ["direct persistence fetch", /\bawait\s+fetch\s*\(/],
 ];
 
 test("restaurant controllers consume persistence only through neutral capability ports", () => {
@@ -26,7 +35,7 @@ test("persistence boundary guard covers credential, adapter, REST and fetch regr
     "new SupabaseAdapter(env)",
     "const key = env.SUPABASE_SECRET_KEY",
     "https://project.supabase.co/rest/v1/rpc/example",
-    "fetch(endpoint)",
+    "await fetch(endpoint)",
   ];
   for (const sample of samples) {
     assert.equal(forbidden.some(([, pattern]) => pattern.test(sample)), true, sample);

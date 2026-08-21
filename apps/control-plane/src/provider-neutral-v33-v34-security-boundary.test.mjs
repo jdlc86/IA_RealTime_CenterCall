@@ -18,6 +18,11 @@ test("v33 and v34 consume provider-neutral caller transcript events", () => {
 
   assert.match(v33, /inspectCallerTranscript/);
   assert.match(v34, /matchBlockedSecurityPhrase/);
+  for (const source of [v33, v34]) {
+    assert.match(source, /callerSecurityPortFor\(this\)/);
+    assert.doesNotMatch(source, /CallerSecurityService/);
+    assert.doesNotMatch(source, /SUPABASE_(?:URL|SECRET_KEY)/);
+  }
 });
 
 test("v34 keeps tenant configuration parsing separate from provider event parsing", () => {

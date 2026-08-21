@@ -1,6 +1,6 @@
 import { CallSession as CallSessionV37 } from "./call-session-v37";
 import { classifyHandoffFailure, encodeHumanHandoffClientState, parseHumanHandoffConfig } from "./human-handoff";
-import { HumanHandoffStore } from "./human-handoff-store";
+import { humanHandoffPersistencePortFor } from "./human-handoff-persistence-port.js";
 import { humanHandoffSourceLegPortFor } from "./human-handoff-source-leg-port.js";
 import { tenantConfigurationKey, tenantConfigurationKeyV2 } from "./tenant-kv";
 
@@ -39,11 +39,6 @@ function nonEmpty(value: unknown): string | null {
 export class CallSession extends BaseConstructor {
   private terminalSpeechTimersV38 = new Map<string, ReturnType<typeof setTimeout>>();
 
-  private storeV38(): HumanHandoffStore {
-    const env = (this as any).env ?? {};
-    return new HumanHandoffStore({ SUPABASE_URL: env.SUPABASE_URL, SUPABASE_SECRET_KEY: env.SUPABASE_SECRET_KEY });
-  }
-
   private async failureMessageV38(tenantId: string): Promise<string | null> {
     const kv = (this as any).env?.TENANT_CONFIG;
     if (!kv || typeof kv.get !== "function") return null;
@@ -62,7 +57,7 @@ export class CallSession extends BaseConstructor {
 
   private async recordSourceAlreadyTerminalV38(handoffId: string, tenantId: string, evidence: string): Promise<void> {
     this.clearTerminalSpeechTimerV38(handoffId);
-    await this.storeV38().update(handoffId, tenantId, { call_terminated_at: new Date().toISOString() });
+    await humanHandoffPersistencePortFor(this).update(handoffId, tenantId, { call_terminated_at: new Date().toISOString() });
     (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_FAILURE_SOURCE_ALREADY_TERMINAL_V38", {
       handoff_id: handoffId,
       evidence,
@@ -89,7 +84,7 @@ export class CallSession extends BaseConstructor {
       });
     }
 
-    await this.storeV38().update(handoffId, tenantId, { call_terminated_at: new Date().toISOString() });
+    await humanHandoffPersistencePortFor(this).update(handoffId, tenantId, { call_terminated_at: new Date().toISOString() });
     (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_TERMINAL_CALL_ENDED_V38", {
       handoff_id: handoffId,
       trigger,
@@ -110,7 +105,7 @@ export class CallSession extends BaseConstructor {
       return Response.json({ ok: false, error: "missing_handoff_correlation" }, { status: 400 });
     }
 
-    const state = await this.storeV38().getState(handoffId, tenantId);
+    const state = await humanHandoffPersistencePortFor(this).getState(handoffId, tenantId);
     if (state?.status === "TRANSFERRED") {
       return super.fetch(new Request("https://call-session.internal/human-handoff/telnyx-event", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(event),
@@ -119,7 +114,7 @@ export class CallSession extends BaseConstructor {
 
     const status = classifyHandoffFailure(event.hangup_cause);
     const failureReason = `TARGET_CALL_HANGUP:${nonEmpty(event.hangup_cause) ?? "unknown"}`;
-    await this.storeV38().update(handoffId, tenantId, {
+    await humanHandoffPersistencePortFor(this).update(handoffId, tenantId, {
       status,
       transfer_ended_at: new Date().toISOString(),
       callback_required: true,
@@ -197,7 +192,7 @@ export class CallSession extends BaseConstructor {
     }
 
     if (eventType === "call.speak.ended" && !targetLeg && handoffId && tenantId) {
-      const state = await this.storeV38().getState(handoffId, tenantId);
+      const state = await humanHandoffPersistencePortFor(this).getState(handoffId, tenantId);
       if (state && state.callback_required && FAILURE_STATUSES.has(state.status)) {
         (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_FAILURE_SPEECH_COMPLETED_V38", {
           handoff_id: handoffId,
@@ -211,10 +206,10 @@ export class CallSession extends BaseConstructor {
     }
 
     if (eventType === "call.hangup" && !targetLeg && handoffId && tenantId) {
-      const state = await this.storeV38().getState(handoffId, tenantId);
+      const state = await humanHandoffPersistencePortFor(this).getState(handoffId, tenantId);
       if (state && state.callback_required && FAILURE_STATUSES.has(state.status)) {
         this.clearTerminalSpeechTimerV38(handoffId);
-        await this.storeV38().update(handoffId, tenantId, { call_terminated_at: new Date().toISOString() });
+        await humanHandoffPersistencePortFor(this).update(handoffId, tenantId, { call_terminated_at: new Date().toISOString() });
         return Response.json({ ok: true, action: "source_hangup_preserved_failure_status" });
       }
     }

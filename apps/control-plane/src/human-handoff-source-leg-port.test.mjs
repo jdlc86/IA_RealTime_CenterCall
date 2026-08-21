@@ -77,5 +77,7 @@ test("V38 owns policy but contains no direct Telnyx transport calls", () => {
   assert.doesNotMatch(v38, /\/actions\/hangup/);
   assert.match(v38, /TERMINAL_SPEECH_WATCHDOG_MS = 15_000/);
   assert.match(v38, /classifyHandoffFailure/);
-  assert.match(v38, /HumanHandoffStore/);
+  assert.match(v38, /humanHandoffPersistencePortFor/);
+  assert.doesNotMatch(v38, /HumanHandoffStore/);
+  assert.doesNotMatch(v38, /SUPABASE_(?:URL|SECRET_KEY)/);
 });

@@ -7,7 +7,7 @@ import {
   type HandoffFailureStatus,
   type HumanHandoffConfig,
 } from "./human-handoff";
-import { HumanHandoffStore } from "./human-handoff-store";
+import { humanHandoffPersistencePortFor, type HumanHandoffPatch } from "./human-handoff-persistence-port.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 import { releaseSemanticGate } from "./semantic-turn-coordinator.js";
 import { turnConcurrencyCoordinatorFor } from "./turn-concurrency-coordinator.js";
@@ -92,11 +92,6 @@ export class CallSession extends BaseConstructor {
     const response = await super.fetch(request);
     if (isStart && response.ok && tenantIdFromStart) await this.loadHumanHandoffConfigV37(tenantIdFromStart);
     return response;
-  }
-
-  private storeV37(): HumanHandoffStore {
-    const env = (this as any).env ?? {};
-    return new HumanHandoffStore({ SUPABASE_URL: env.SUPABASE_URL, SUPABASE_SECRET_KEY: env.SUPABASE_SECRET_KEY });
   }
 
   private async loadHumanHandoffConfigV37(tenantId: string): Promise<void> {
@@ -188,7 +183,7 @@ export class CallSession extends BaseConstructor {
     const handoffId = crypto.randomUUID();
 
     try {
-      await this.storeV37().create({
+      await humanHandoffPersistencePortFor(this).create({
         id: handoffId,
         tenantId: prerequisites.tenantId,
         callId: prerequisites.callId,
@@ -304,7 +299,7 @@ export class CallSession extends BaseConstructor {
     runtime.clearSpeech("DIALING");
     const now = new Date().toISOString();
     try {
-      await this.storeV37().update(handoff.id, prerequisites.tenantId, { status: "DIALING", transfer_started_at: now });
+      await humanHandoffPersistencePortFor(this).update(handoff.id, prerequisites.tenantId, { status: "DIALING", transfer_started_at: now });
     } catch (error) {
       await this.failHandoffV37("FAILED", `TRACE_UPDATE_BEFORE_TRANSFER_FAILED:${error instanceof Error ? error.message : String(error)}`);
       return;
@@ -342,11 +337,11 @@ export class CallSession extends BaseConstructor {
     }
   }
 
-  private async patchHandoffBestEffortV37(patch: Parameters<HumanHandoffStore["update"]>[2]): Promise<void> {
+  private async patchHandoffBestEffortV37(patch: HumanHandoffPatch): Promise<void> {
     const handoff = this.handoffRuntimeV37().snapshot();
     const tenantId = nonEmpty((this as any).tenantId);
     if (!handoff || !tenantId) return;
-    try { await this.storeV37().update(handoff.id, tenantId, patch); }
+    try { await humanHandoffPersistencePortFor(this).update(handoff.id, tenantId, patch); }
     catch (error) {
       (this as any).diagnostics?.fail?.("HUMAN_HANDOFF_TRACE_UPDATE_FAILED_V37", "HANDOFF_TRACE_UPDATE_FAILED", {
         handoff_id: handoff.id,
