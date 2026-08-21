@@ -3,24 +3,10 @@ import { CallerSecurityService } from "./caller-security";
 import { tenantConfigurationKeyV2 } from "./tenant-kv";
 import { matchBlockedSecurityPhrase, parseTenantBlockedPhrases } from "./security-blocked-phrases";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { adaptRealtimeProviderEvents } from "./realtime-provider-runtime.js";
 
 const BaseConstructor = CallSessionV33 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV33.prototype as any;
-
-type RealtimeEvent = { type?: string; transcript?: string };
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
-
-function parseEvent(data: unknown): RealtimeEvent | null {
-  const text = readRealtimeText(data);
-  if (!text) return null;
-  try { return JSON.parse(text) as RealtimeEvent; } catch { return null; }
-}
 
 function usableTranscript(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -124,17 +110,18 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const event = parseEvent(data);
-    if (event?.type === "conversation.item.input_audio_transcription.completed") {
+    for (const event of adaptRealtimeProviderEvents(data)) {
+      if (event.type !== "CALLER_TRANSCRIPT_COMPLETED") continue;
       const transcript = usableTranscript(event.transcript);
-      if (transcript) {
-        const match = matchBlockedSecurityPhrase(transcript, this.tenantBlockedPhrasesV34);
-        if (match.matched) {
-          await this.recordAndCloseV34(transcript, match);
-          return;
-        }
+      if (!transcript) continue;
+
+      const match = matchBlockedSecurityPhrase(transcript, this.tenantBlockedPhrasesV34);
+      if (match.matched) {
+        await this.recordAndCloseV34(transcript, match);
+        return;
       }
     }
+
     await BasePrototype.handleRealtimeMessage.call(this, data);
   }
 }
