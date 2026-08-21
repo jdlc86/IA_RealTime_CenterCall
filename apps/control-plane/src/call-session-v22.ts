@@ -8,9 +8,10 @@ const BaseConstructor = CallSessionV21 as unknown as new (...args: any[]) => any
 
 /**
  * v22 remains the compatibility adapter for confirmed hangup behavior.
- * Retry/confirmation policy lives in HangupController; physical provider
- * transport is delegated to CallTerminationPort. Cross-generation lifecycle
- * and source-leg state are consumed only through neutral runtimes.
+ * Retry/confirmation policy and the in-flight termination lock live in
+ * HangupController; physical provider transport is delegated to
+ * CallTerminationPort. Cross-generation lifecycle and source-leg state are
+ * consumed only through neutral runtimes.
  */
 export class CallSession extends BaseConstructor {
   private hangupControllerV22: HangupController | null = null;
@@ -24,8 +25,6 @@ export class CallSession extends BaseConstructor {
         getSocketConnected: () => session.socket !== null,
         getSourceCallControlId: () => humanHandoffTransportRuntimeFor(this).transportContext().sourceCallControlId,
         terminateCall: (request) => terminationPort.terminate(request),
-        isHangupStarted: () => session.hangupStarted === true,
-        setHangupStarted: (value) => { session.hangupStarted = value; },
         clearFinalFarewellWatchdog: () => session.clearFinalFarewellWatchdog?.(),
         resetExternalFlow: () => session.resetExternalFlow?.(),
         diagnostics: session.diagnostics,

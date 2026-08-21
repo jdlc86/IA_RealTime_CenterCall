@@ -5,7 +5,6 @@ import { HangupController } from "../.test-dist/hangup-controller.js";
 
 function makeHost({ sourceCallControlId = null, terminateCall }) {
   let connected = true;
-  let hangupStarted = false;
   const checkpoints = [];
   const failures = [];
   const host = {
@@ -13,8 +12,6 @@ function makeHost({ sourceCallControlId = null, terminateCall }) {
     getSocketConnected: () => connected,
     getSourceCallControlId: () => sourceCallControlId,
     terminateCall: async (request) => terminateCall(request, () => { connected = false; }),
-    isHangupStarted: () => hangupStarted,
-    setHangupStarted: (value) => { hangupStarted = value; },
     clearFinalFarewellWatchdog() {},
     resetExternalFlow() {},
     diagnostics: {
@@ -22,7 +19,7 @@ function makeHost({ sourceCallControlId = null, terminateCall }) {
       fail(event, code, details) { failures.push({ event, code, details }); },
     },
   };
-  return { host, checkpoints, failures, hangupStarted: () => hangupStarted };
+  return { host, checkpoints, failures };
 }
 
 test("source-leg hangup retries stay SOURCE_ONLY and never authorize realtime fallback", async () => {
@@ -81,17 +78,53 @@ test("direct realtime hangup uses neutral termination port and waits for sideban
   assert.equal(checkpoints.some((entry) => entry.event === "HANGUP_COMPLETED"), true);
 });
 
-test("hangup controller owns orchestration but contains no provider endpoint or credential knowledge", () => {
+test("hangup controller owns the in-flight lock and rejects overlapping termination attempts", async () => {
+  const requests = [];
+  let resolveTermination;
+  const { host } = makeHost({
+    terminateCall: (request, disconnect) => new Promise((resolve) => {
+      requests.push(request);
+      resolveTermination = () => {
+        disconnect();
+        resolve({
+          terminated: true,
+          attempts: [{ transport: "OPENAI_REALTIME_FALLBACK", ok: true, httpStatus: 204 }],
+        });
+      };
+    }),
+  });
+  const controller = new HangupController(host, {
+    confirmationTimeoutMs: 10,
+    retryDelayMs: 0,
+    maxImmediateAttempts: 1,
+    backgroundRetryMs: 60_000,
+  });
+
+  const first = controller.perform("first");
+  const overlapping = controller.perform("overlapping");
+  await overlapping;
+  assert.equal(requests.length, 1);
+
+  assert.equal(typeof resolveTermination, "function");
+  resolveTermination();
+  await first;
+  controller.dispose();
+});
+
+test("hangup controller owns orchestration but contains no provider endpoint or inherited state authority", () => {
   const source = readFileSync(new URL("./hangup-controller.ts", import.meta.url), "utf8");
   const v22 = readFileSync(new URL("./call-session-v22.ts", import.meta.url), "utf8");
 
+  assert.match(source, /private hangupStarted = false/);
   assert.match(source, /terminateCall\(request\)/);
   assert.match(source, /fallbackMode: "SOURCE_ONLY"/);
   assert.doesNotMatch(source, /api\.telnyx\.com|api\.openai\.com/);
   assert.doesNotMatch(source, /TELNYX_API_KEY|OPENAI_API_KEY/);
   assert.doesNotMatch(source, /fetch\s*\(/);
+  assert.doesNotMatch(source, /isHangupStarted|setHangupStarted/);
 
   assert.match(v22, /callTerminationPortFor/);
   assert.match(v22, /terminateCall: \(request\) => terminationPort\.terminate\(request\)/);
   assert.doesNotMatch(v22, /getApiKey|getTelnyxApiKey/);
+  assert.doesNotMatch(v22, /\bhangupStarted\b/);
 });

@@ -10,8 +10,6 @@ export type HangupControllerHost = {
   getSocketConnected(): boolean;
   getSourceCallControlId?(): string | null;
   terminateCall(request: CallTerminationRequest): Promise<CallTerminationResult>;
-  isHangupStarted(): boolean;
-  setHangupStarted(value: boolean): void;
   clearFinalFarewellWatchdog(): void;
   resetExternalFlow(): void;
   diagnostics?: HangupDiagnostics;
@@ -44,10 +42,10 @@ function terminationFailure(result: CallTerminationResult): string {
  * Lifecycle-facing hangup coordinator.
  *
  * Physical provider transport belongs to CallTerminationPort. This controller
- * owns only retry cadence, sideband-close confirmation and background recovery.
- * When a source call leg exists, SOURCE_ONLY preserves the historical behavior:
- * each retry stays on that authoritative source leg instead of silently changing
- * transport inside a single attempt.
+ * owns retry cadence, sideband-close confirmation, background recovery and the
+ * in-flight lock that prevents overlapping termination attempts. When a source
+ * call leg exists, SOURCE_ONLY preserves the historical behavior: each retry
+ * stays on that authoritative source leg instead of silently changing transport.
  */
 export class HangupController {
   private readonly confirmationTimeoutMs: number;
@@ -55,6 +53,7 @@ export class HangupController {
   private readonly maxImmediateAttempts: number;
   private readonly backgroundRetryMs: number;
   private backgroundRetry: ReturnType<typeof setTimeout> | null = null;
+  private hangupStarted = false;
 
   constructor(private readonly host: HangupControllerHost, options: HangupControllerOptions = {}) {
     this.confirmationTimeoutMs = options.confirmationTimeoutMs ?? DEFAULT_CONFIRMATION_TIMEOUT_MS;
@@ -128,17 +127,17 @@ export class HangupController {
         });
         return;
       }
-      this.host.setHangupStarted(false);
+      this.hangupStarted = false;
       void this.perform("hangup_confirmation_background_retry");
     }, this.backgroundRetryMs);
   }
 
   async perform(trigger: string): Promise<void> {
     const callId = this.host.getCallId();
-    if (this.host.isHangupStarted() || !callId) return;
+    if (this.hangupStarted || !callId) return;
 
     this.clearBackgroundRetry();
-    this.host.setHangupStarted(true);
+    this.hangupStarted = true;
     this.host.clearFinalFarewellWatchdog();
     this.host.resetExternalFlow();
     this.host.diagnostics?.checkpoint?.("HANGUP_STARTED", {
@@ -196,7 +195,7 @@ export class HangupController {
       last_error: lastError instanceof Error ? lastError.message : lastError ? String(lastError) : null,
       background_retry_ms: this.backgroundRetryMs,
     });
-    this.host.setHangupStarted(true);
+    this.hangupStarted = true;
     this.scheduleBackgroundRetry();
   }
 }
