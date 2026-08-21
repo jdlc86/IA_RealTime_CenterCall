@@ -37,12 +37,13 @@ export class CallSession extends BaseConstructor {
     socket.addEventListener("close", (event) => {
       const closeEvent = event as CloseEvent;
       const session = this as any;
+      const lifecycle = conversationLifecyclePortFor(this);
       session.diagnostics?.checkpoint?.("SIDEBAND_CLOSE_OBSERVED_V46", {
         close_code: typeof closeEvent.code === "number" ? closeEvent.code : null,
         close_reason: typeof closeEvent.reason === "string" ? closeEvent.reason : "",
         was_clean: typeof closeEvent.wasClean === "boolean" ? closeEvent.wasClean : null,
-        session_state: session.state ?? null,
-        hangup_started: Boolean(session.hangupStarted),
+        lifecycle_terminal_before_transport_notification: lifecycle.isTerminal(),
+        lifecycle_authority: "conversation_lifecycle_port",
         observed_socket_matches_active: session.socket === socket,
       });
       if (this.observedSidebandSocketV46 === socket) this.observedSidebandSocketV46 = null;

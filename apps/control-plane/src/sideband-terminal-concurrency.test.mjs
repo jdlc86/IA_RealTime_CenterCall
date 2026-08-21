@@ -27,3 +27,12 @@ test("sideband terminal boundary detaches turn concurrency through neutral ports
   assert.match(detachBody, /owner: "turn_concurrency_coordinator"/);
   assert.doesNotMatch(detachBody, /restoreInputDetection/);
 });
+
+test("V46 diagnostics read terminal state only through ConversationLifecyclePort", async () => {
+  const v46 = await source("call-session-v46-sideband-lifecycle.ts");
+  assert.match(v46, /const lifecycle = conversationLifecyclePortFor\(this\)/);
+  assert.match(v46, /lifecycle_terminal_before_transport_notification: lifecycle\.isTerminal\(\)/);
+  assert.doesNotMatch(v46, /session\.state/);
+  assert.doesNotMatch(v46, /session\.hangupStarted/);
+  assert.doesNotMatch(v46, /hangup_started/);
+});
