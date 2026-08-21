@@ -34,7 +34,7 @@ export class SupabaseAdapter {
     return parsed as T[];
   }
 
-  private async rpc<T>(name: string, body: Record<string, unknown>): Promise<T[]> {
+  async invokeRpc<T>(name: string, body: Record<string, unknown>): Promise<T[]> {
     const response = await fetch(`${this.baseUrl}/rest/v1/rpc/${encodeURIComponent(name)}`, { method: "POST", headers: { apikey: this.secretKey, "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body) });
     const raw = await response.text();
     if (!response.ok) throw new Error(`Supabase RPC ${name} failed with HTTP ${response.status}: ${raw.slice(0, 300)}`);
@@ -76,14 +76,14 @@ export class SupabaseAdapter {
     const tenant = assertTenantId(tenantId); const start = assertIsoDateTime(startsAt);
     if (!Number.isInteger(partySize) || partySize < 1 || partySize > 100) throw new Error("Invalid party_size");
     if (!Number.isInteger(durationMinutes) || durationMinutes < 15 || durationMinutes > 480) throw new Error("Invalid duration_minutes");
-    return this.rpc<RestaurantAvailability>("check_restaurant_availability", { p_tenant_id: tenant, p_starts_at: start, p_party_size: partySize, p_duration_minutes: durationMinutes });
+    return this.invokeRpc<RestaurantAvailability>("check_restaurant_availability", { p_tenant_id: tenant, p_starts_at: start, p_party_size: partySize, p_duration_minutes: durationMinutes });
   }
 
   async createRestaurantReservation(tenantId: string, input: CreateRestaurantReservationInput): Promise<RestaurantReservation> {
     const tenant = assertTenantId(tenantId); const customerName = requireNonEmpty(input.customerName, "customer_name"); const customerPhone = assertE164(input.customerPhone); const startsAt = assertIsoDateTime(input.startsAt); const durationMinutes = input.durationMinutes ?? 90;
     if (!Number.isInteger(input.partySize) || input.partySize < 1 || input.partySize > 100) throw new Error("Invalid party_size");
     if (!Number.isInteger(durationMinutes) || durationMinutes < 15 || durationMinutes > 480) throw new Error("Invalid duration_minutes");
-    const rows = await this.rpc<RestaurantReservation>("create_restaurant_reservation", { p_tenant_id: tenant, p_customer_name: customerName, p_customer_phone: customerPhone, p_party_size: input.partySize, p_starts_at: startsAt, p_duration_minutes: durationMinutes, p_notes: input.notes?.trim() || null, p_source: input.source ?? "voice" });
+    const rows = await this.invokeRpc<RestaurantReservation>("create_restaurant_reservation", { p_tenant_id: tenant, p_customer_name: customerName, p_customer_phone: customerPhone, p_party_size: input.partySize, p_starts_at: startsAt, p_duration_minutes: durationMinutes, p_notes: input.notes?.trim() || null, p_source: input.source ?? "voice" });
     if (rows.length !== 1) throw new Error("Reservation creation returned invalid payload");
     return rows[0];
   }
