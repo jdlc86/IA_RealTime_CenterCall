@@ -34,7 +34,7 @@ test("call termination uses Telnyx source leg first", async () => {
   assert.equal(JSON.parse(calls[0].init.body).command_id, "cmd-1");
 });
 
-test("failed Telnyx termination falls back to realtime transport", async () => {
+test("failed Telnyx termination falls back to realtime transport by default", async () => {
   const urls = [];
   const runtime = new CallTerminationRuntime(
     host({ TELNYX_API_KEY: "tel-key", OPENAI_API_KEY: "open-key" }),
@@ -57,6 +57,31 @@ test("failed Telnyx termination falls back to realtime transport", async () => {
     httpStatus: 200,
   });
   assert.match(urls[1], /api\.openai\.com/);
+});
+
+test("source-only termination never changes transport after a Telnyx failure", async () => {
+  const urls = [];
+  const runtime = new CallTerminationRuntime(
+    host({ TELNYX_API_KEY: "tel-key", OPENAI_API_KEY: "open-key" }),
+    async (url) => {
+      urls.push(String(url));
+      return response(500, "source failed");
+    },
+  );
+
+  const result = await runtime.terminate({
+    sourceCallControlId: "source-only-1",
+    realtimeCallId: "rt-unused",
+    fallbackMode: "SOURCE_ONLY",
+  });
+
+  assert.equal(result.terminated, false);
+  assert.equal(result.attempts.length, 1);
+  assert.equal(result.attempts[0].transport, "TELNYX_SOURCE_LEG");
+  assert.equal(result.attempts[0].ok, false);
+  assert.equal(urls.length, 1);
+  assert.match(urls[0], /api\.telnyx\.com/);
+  assert.doesNotMatch(urls[0], /api\.openai\.com/);
 });
 
 test("direct realtime session terminates without a Telnyx attempt", async () => {

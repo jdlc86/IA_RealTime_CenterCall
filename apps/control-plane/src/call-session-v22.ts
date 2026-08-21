@@ -1,5 +1,6 @@
 import { CallSession as CallSessionV21 } from "./call-session-v21";
 import { HangupController } from "./hangup-controller";
+import { callTerminationPortFor } from "./call-termination-port.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 import { humanHandoffTransportRuntimeFor } from "./human-handoff-transport-runtime.js";
 
@@ -7,9 +8,9 @@ const BaseConstructor = CallSessionV21 as unknown as new (...args: any[]) => any
 
 /**
  * v22 remains the compatibility adapter for confirmed hangup behavior.
- * The transport policy itself now lives in HangupController so later CallSession
- * consolidation does not need to inherit this implementation. Cross-generation
- * lifecycle and Telnyx source-leg state are consumed through neutral runtimes.
+ * Retry/confirmation policy lives in HangupController; physical provider
+ * transport is delegated to CallTerminationPort. Cross-generation lifecycle
+ * and source-leg state are consumed only through neutral runtimes.
  */
 export class CallSession extends BaseConstructor {
   private hangupControllerV22: HangupController | null = null;
@@ -17,12 +18,12 @@ export class CallSession extends BaseConstructor {
   private getHangupControllerV22(): HangupController {
     if (!this.hangupControllerV22) {
       const session = this as any;
+      const terminationPort = callTerminationPortFor(session);
       this.hangupControllerV22 = new HangupController({
         getCallId: () => typeof session.callId === "string" && session.callId.trim() ? session.callId : null,
         getSocketConnected: () => session.socket !== null,
-        getApiKey: () => session.env?.OPENAI_API_KEY,
         getSourceCallControlId: () => humanHandoffTransportRuntimeFor(this).transportContext().sourceCallControlId,
-        getTelnyxApiKey: () => session.env?.TELNYX_API_KEY,
+        terminateCall: (request) => terminationPort.terminate(request),
         isHangupStarted: () => session.hangupStarted === true,
         setHangupStarted: (value) => { session.hangupStarted = value; },
         clearFinalFarewellWatchdog: () => session.clearFinalFarewellWatchdog?.(),

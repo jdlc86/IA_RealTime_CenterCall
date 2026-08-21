@@ -1,4 +1,5 @@
 export type CallTerminationTransport = "TELNYX_SOURCE_LEG" | "OPENAI_REALTIME_FALLBACK";
+export type CallTerminationFallbackMode = "REALTIME_FALLBACK" | "SOURCE_ONLY";
 
 export type CallTerminationAttempt = Readonly<{
   transport: CallTerminationTransport;
@@ -11,6 +12,7 @@ export type CallTerminationRequest = Readonly<{
   sourceCallControlId?: string | null;
   realtimeCallId?: string | null;
   commandId?: string;
+  fallbackMode?: CallTerminationFallbackMode;
 }>;
 
 export type CallTerminationResult = Readonly<{
@@ -48,6 +50,7 @@ export class CallTerminationRuntime {
     const attempts: CallTerminationAttempt[] = [];
     const sourceCallControlId = nonEmpty(request.sourceCallControlId);
     const realtimeCallId = nonEmpty(request.realtimeCallId);
+    const fallbackMode = request.fallbackMode ?? "REALTIME_FALLBACK";
 
     if (sourceCallControlId) {
       try {
@@ -74,6 +77,7 @@ export class CallTerminationRuntime {
           ok: false,
           error: error instanceof Error ? error.message : String(error),
         });
+        if (fallbackMode === "SOURCE_ONLY") return { terminated: false, attempts };
       }
     }
 
