@@ -12,6 +12,7 @@ test("sideband terminal boundary detaches turn concurrency through neutral ports
   const coordinator = await source("turn-concurrency-coordinator.ts");
 
   assert.match(v46, /conversationLifecyclePortFor\(this\)\.transportClosed\(lifecycleEvent\.reason\)/);
+  assert.match(v46, /sidebandLifecyclePortFor\(this\)\.installCloseObserver/);
   assert.match(v46, /turnConcurrencyCoordinatorFor\(this\)\.detachForTerminal\(session, `transport_closed:\$\{lifecycleEvent\.reason\}`\)/);
   assert.match(v46, /lifecycle_authority: "conversation_lifecycle_port"/);
   assert.match(v46, /turn_concurrency_detached: true/);
@@ -19,6 +20,7 @@ test("sideband terminal boundary detaches turn concurrency through neutral ports
   assert.doesNotMatch(v46, /observeRealtimeTransportClosedV18/);
   assert.doesNotMatch(v46, /detachTurnConcurrencyForTerminalV36/);
   assert.doesNotMatch(v46, /setTimeout\s*\(/);
+  assert.doesNotMatch(v46, /addEventListener\s*\(/);
 
   const detachBody = coordinator.match(/detachForTerminal\(session: any, reason: string\): void \{([\s\S]*?)\n  \}/)?.[1] ?? "";
   assert.match(detachBody, /this\.lifecycle\.release\(\)/);

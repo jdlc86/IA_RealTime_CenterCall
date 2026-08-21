@@ -42,6 +42,13 @@ test("sideband ingress and stateful watchdogs use the session task owner", () =>
   }
 });
 
+test("V2 is the only active CallSession owner of sideband wire listeners", () => {
+  const violations = activeCallSessionSources()
+    .filter(({ name, source }) => name !== "call-session-v2.ts" && /\.addEventListener\(/.test(source))
+    .map(({ name }) => name);
+  assert.deepEqual(violations, [], `sideband listeners outside V2 are forbidden: ${violations.join(", ")}`);
+});
+
 test("session task owner contains failures and keeps the serial tail live", () => {
   const runtime = readFileSync(new URL("./session-task-runtime.ts", import.meta.url), "utf8");
   assert.match(runtime, /private tail: Promise<void> = Promise\.resolve\(\)/);

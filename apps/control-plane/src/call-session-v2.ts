@@ -15,6 +15,7 @@ import { restaurantReservationPortFor } from "./restaurant-reservation-port.js";
 import { restaurantBusinessPortFor } from "./restaurant-business-port.js";
 import { callDiagnosticPersistencePortFor } from "./call-diagnostic-persistence-port.js";
 import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
+import { sidebandLifecyclePortFor } from "./sideband-lifecycle-port.js";
 
 type CallSessionEnv = {
   OPENAI_API_KEY: string;
@@ -436,13 +437,20 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     socket.addEventListener("message", (event) => {
       this.sessionTasks.enqueue("realtime_sideband_message", () => this.handleRealtimeMessage(event.data));
     });
-    socket.addEventListener("close", () => {
-      this.sessionTasks.enqueue("realtime_sideband_close", () => {
+    socket.addEventListener("close", (event) => {
+      const closeEvent = event as CloseEvent;
+      this.sessionTasks.enqueue("realtime_sideband_close", async () => {
         this.clearFinalFarewellWatchdog();
         this.clearWaitingPlaybackWatchdog();
         this.socket = null;
         this.diagnostics.checkpoint("SIDEBAND_CLOSED", { state: this.state, hangup_started: this.hangupStarted });
         log("info", "realtime_sideband_closed", { call_id: this.callId, tenant_id: this.tenantId, state: this.state, ambiguous_count: this.ambiguousCount, hangup_started: this.hangupStarted });
+        await sidebandLifecyclePortFor(this).transportClosed({
+          reason: "sideband_closed",
+          closeCode: typeof closeEvent.code === "number" ? closeEvent.code : null,
+          providerReason: typeof closeEvent.reason === "string" ? closeEvent.reason : "",
+          wasClean: typeof closeEvent.wasClean === "boolean" ? closeEvent.wasClean : null,
+        });
       });
     });
     socket.addEventListener("error", () => {
