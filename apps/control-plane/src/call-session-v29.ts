@@ -1,7 +1,11 @@
 import { CallSession as CallSessionV28 } from "./call-session-v28";
 import { CallSession as CallSessionV26 } from "./call-session-v26";
 import { isPublicRestaurantTool } from "./public-tool-authorization";
-import { realtimeAssistantResponseActiveFor, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import {
+  installRealtimeToolResultObserver,
+  realtimeAssistantResponseActiveFor,
+  realtimeCommandPortFor,
+} from "./realtime-provider-runtime.js";
 import {
   armCallerDirectedSemanticAuthority,
   armSemanticGate,
@@ -53,14 +57,16 @@ function v29Instructions(session: any): string {
 
 export class CallSession extends BaseConstructor {
   private observabilityInstalledV29 = false;
-  private originalSendV29: ((message: unknown) => void) | null = null;
 
   async fetch(request: Request): Promise<Response> {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
     const response = await super.fetch(request);
     if (isStart && response.ok) {
       this.installObservabilityV29();
-      (this as any).send?.({ type: "session.update", session: { type: "realtime", instructions: v29Instructions(this as any), tool_choice: "auto" } });
+      realtimeCommandPortFor(this as any).updateSessionPolicy({
+        instructions: v29Instructions(this as any),
+        toolChoice: "AUTO",
+      });
       (this as any).diagnostics?.checkpoint?.("SEMANTIC_TURN_GATE_V29_ENABLED", {
         vad_can_arm_tool_gate: false,
         transcript_required_to_arm: true,
@@ -70,6 +76,7 @@ export class CallSession extends BaseConstructor {
         presence_authority: "ConversationTurnLifecycle",
         semantic_state_owner: "semantic_turn_runtime",
         single_public_tool_per_caller_turn: true,
+        provider_command_boundary: "realtime_command_port",
       });
     }
     return response;
@@ -81,22 +88,18 @@ export class CallSession extends BaseConstructor {
 
   private installObservabilityV29(): void {
     if (this.observabilityInstalledV29) return;
-    const currentSend = (this as any).send;
-    if (typeof currentSend !== "function") return;
     this.observabilityInstalledV29 = true;
-    this.originalSendV29 = currentSend.bind(this);
-    (this as any).send = (message: any) => {
-      if (this.debugEnabledV29() && message?.type === "conversation.item.create" && message?.item?.type === "function_call_output") {
-        const output = typeof message.item.output === "string"
-          ? message.item.output.slice(0, 2000)
-          : JSON.stringify(message.item.output ?? {}).slice(0, 2000);
-        (this as any).diagnostics?.checkpoint?.("DEBUG_TOOL_OUTPUT_V29", {
-          call_id: message.item.call_id ?? null,
-          output,
-        });
-      }
-      this.originalSendV29?.(message);
-    };
+    installRealtimeToolResultObserver(this as any, (request) => {
+      if (!this.debugEnabledV29()) return;
+      const output = typeof request.output === "string"
+        ? request.output.slice(0, 2000)
+        : JSON.stringify(request.output ?? {}).slice(0, 2000);
+      (this as any).diagnostics?.checkpoint?.("DEBUG_TOOL_OUTPUT_V29", {
+        call_id: request.callId ?? null,
+        tool: request.toolName ?? null,
+        output,
+      });
+    });
   }
 
   private handleIgnoredInputV29(event: RealtimeEvent): void {
@@ -110,14 +113,12 @@ export class CallSession extends BaseConstructor {
       no_business_action: true,
       no_spoken_response: true,
       lifecycle_authority: true,
+      provider_command_boundary: "realtime_command_port",
     });
-    (this as any).send?.({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: event.call_id,
-        output: JSON.stringify({ ok: true, status: "IGNORED", reason, speak: false, mutation: false }),
-      },
+    realtimeCommandPortFor(this as any).submitToolResult({
+      callId: event.call_id,
+      toolName: INPUT_IGNORED,
+      output: { ok: true, status: "IGNORED", reason, speak: false, mutation: false },
     });
     semanticTurnRuntimeFor(this).clearItemAuthority();
     (this as any).observeSemanticIgnoredV18?.(reason);
