@@ -21,7 +21,7 @@ function hasUsableTranscript(value: unknown): boolean {
 }
 
 function isProtectedKind(kind: string): boolean {
-  return kind === "GREETING" || kind === "RECOVERY";
+  return kind === "GREETING" || kind === "RECOVERY" || kind === "PRESENCE";
 }
 
 export class TurnConcurrencyCoordinator {

@@ -34,8 +34,8 @@ test("turn concurrency coordinator consumes neutral events and lifecycle authori
   assert.doesNotMatch(coordinator, /response\.created/);
 });
 
-test("turn concurrency preserves protected greeting and recovery playback semantics", () => {
-  assert.match(coordinator, /kind === "GREETING" \|\| kind === "RECOVERY"/);
+test("turn concurrency preserves protected greeting, recovery, and presence playback semantics", () => {
+  assert.match(coordinator, /kind === "GREETING" \|\| kind === "RECOVERY" \|\| kind === "PRESENCE"/);
   assert.match(coordinator, /normal_assistant_playback_started/);
   assert.match(coordinator, /protected_playback_completed/);
   assert.match(coordinator, /TURN_CONCURRENCY_WATCHDOG_V36/);
