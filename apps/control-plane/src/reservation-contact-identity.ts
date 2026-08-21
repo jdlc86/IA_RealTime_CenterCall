@@ -68,7 +68,7 @@ export function canonicalizeReservationCreateContactArguments(
 
   if (!changed) return { arguments: args, changed: false, source: decision.source };
 
-  const canonical = { ...args, customer_phone: decision.phone };
+  const canonical: Record<string, unknown> = { ...args, customer_phone: decision.phone };
   if (decision.source === "TRUSTED_CALLER") canonical.use_caller_phone = true;
   return { arguments: canonical, changed: true, source: decision.source };
 }
