@@ -3,6 +3,7 @@ import { KvTenantRepository } from "./tenant-kv";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import type { RealtimeProviderEvent } from "./realtime-provider-event";
 import { inputDetectionConfigRuntimeFor } from "./input-detection-config-runtime.js";
+import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 
 const BaseConstructor = CallSessionV35 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV35.prototype as any;
@@ -114,13 +115,15 @@ export class CallSession extends BaseConstructor {
   private armAtomicGreetingWatchdogV35(): void {
     this.clearAtomicGreetingWatchdogV35();
     this.atomicGreetingWatchdogV35 = setTimeout(() => {
-      if (!this.atomicGreetingActiveV35) return;
-      (this as any).diagnostics?.fail?.("ATOMIC_GREETING_WATCHDOG_V35", "ATOMIC_GREETING_TERMINAL_EVENT_MISSING", {
-        watchdog_ms: ATOMIC_GREETING_WATCHDOG_MS,
-        awaiting_vad_off: this.atomicGreetingAwaitingVadOffV35,
-        response_id: this.atomicGreetingResponseIdV35,
+      sessionTaskRuntimeFor(this).enqueue("atomic_greeting_watchdog_v35", () => {
+        if (!this.atomicGreetingActiveV35) return;
+        (this as any).diagnostics?.fail?.("ATOMIC_GREETING_WATCHDOG_V35", "ATOMIC_GREETING_TERMINAL_EVENT_MISSING", {
+          watchdog_ms: ATOMIC_GREETING_WATCHDOG_MS,
+          awaiting_vad_off: this.atomicGreetingAwaitingVadOffV35,
+          response_id: this.atomicGreetingResponseIdV35,
+        });
+        this.finishAtomicGreetingV35("atomic_greeting_watchdog", true);
       });
-      this.finishAtomicGreetingV35("atomic_greeting_watchdog", true);
     }, ATOMIC_GREETING_WATCHDOG_MS);
   }
 

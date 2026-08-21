@@ -3,6 +3,7 @@ import { classifyHandoffFailure, encodeHumanHandoffClientState, parseHumanHandof
 import { humanHandoffPersistencePortFor } from "./human-handoff-persistence-port.js";
 import { humanHandoffSourceLegPortFor } from "./human-handoff-source-leg-port.js";
 import { tenantConfigurationKey, tenantConfigurationKeyV2 } from "./tenant-kv";
+import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 
 const BaseConstructor = CallSessionV37 as unknown as new (...args: any[]) => any;
 const FAILURE_STATUSES = new Set(["NO_ANSWER", "BUSY", "FAILED"]);
@@ -164,9 +165,14 @@ export class CallSession extends BaseConstructor {
       lucia_conversation_resumes: false,
     });
     this.clearTerminalSpeechTimerV38(handoffId);
-    this.terminalSpeechTimersV38.set(handoffId, setTimeout(() => {
-      void this.hangupSourceV38(event, "failure_message_source_leg_watchdog");
-    }, TERMINAL_SPEECH_WATCHDOG_MS));
+    const timer = setTimeout(() => {
+      sessionTaskRuntimeFor(this).enqueue("failure_message_source_leg_watchdog_v38", () => {
+        if (this.terminalSpeechTimersV38.get(handoffId) !== timer) return;
+        this.terminalSpeechTimersV38.delete(handoffId);
+        return this.hangupSourceV38(event, "failure_message_source_leg_watchdog");
+      });
+    }, TERMINAL_SPEECH_WATCHDOG_MS);
+    this.terminalSpeechTimersV38.set(handoffId, timer);
     return Response.json({ ok: true, action: "failure_terminal_speech_started", status });
   }
 

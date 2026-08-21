@@ -8,6 +8,7 @@ import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import { inputDetectionConfigRuntimeFor } from "./input-detection-config-runtime.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 
 const BaseConstructor = CallSessionV34 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV34.prototype as any;
@@ -130,13 +131,15 @@ export class CallSession extends BaseConstructor {
   private armProtectedSpeechWatchdogV35(): void {
     this.clearProtectedSpeechWatchdogV35();
     this.protectedSpeechWatchdogV35 = setTimeout(() => {
-      const release = this.protectedSpeechLifecycleV35.forceRelease("protected_speech_watchdog");
-      if (!release.released) return;
-      (this as any).diagnostics?.fail?.("PROTECTED_SPEECH_WATCHDOG_V35", "PROTECTED_SPEECH_TERMINAL_EVENT_MISSING", {
-        kind: release.kind ?? null,
-        watchdog_ms: PROTECTED_SPEECH_WATCHDOG_MS,
+      sessionTaskRuntimeFor(this).enqueue("protected_speech_watchdog_v35", () => {
+        const release = this.protectedSpeechLifecycleV35.forceRelease("protected_speech_watchdog");
+        if (!release.released) return;
+        (this as any).diagnostics?.fail?.("PROTECTED_SPEECH_WATCHDOG_V35", "PROTECTED_SPEECH_TERMINAL_EVENT_MISSING", {
+          kind: release.kind ?? null,
+          watchdog_ms: PROTECTED_SPEECH_WATCHDOG_MS,
+        });
+        this.completeProtectedSpeechReleaseV35(release);
       });
-      this.completeProtectedSpeechReleaseV35(release);
     }, PROTECTED_SPEECH_WATCHDOG_MS);
   }
 

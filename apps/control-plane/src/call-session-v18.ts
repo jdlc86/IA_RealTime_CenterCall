@@ -3,6 +3,7 @@ import { ConversationTurnLifecycle, type LifecycleEffect, type LifecycleEvent } 
 import { adaptRealtimeTurnEvent } from "./realtime-turn-lifecycle-adapter";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import type { AssistantSpeechKind, RealtimeProviderEvent } from "./realtime-provider-event";
+import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 
 const BaseConstructor = CallSessionV17 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV17.prototype as any;
@@ -80,13 +81,28 @@ export class CallSession extends BaseConstructor {
   }
   private armSilenceEpochV18(epoch: number): void {
     this.clearPresenceTimersV18();
-    this.presenceTimerV18 = setTimeout(() => { this.presenceTimerV18 = null; this.dispatchLifecycleV18({ type: "presence_deadline", epoch }); }, FIRST_PRESENCE_CHECK_MS);
-    this.silenceCloseTimerV18 = setTimeout(() => { this.silenceCloseTimerV18 = null; this.dispatchLifecycleV18({ type: "silence_close_deadline", epoch }); }, MAX_UNANSWERED_WAIT_MS);
+    this.presenceTimerV18 = setTimeout(() => {
+      sessionTaskRuntimeFor(this).enqueue("presence_deadline_v18", () => {
+        this.presenceTimerV18 = null;
+        this.dispatchLifecycleV18({ type: "presence_deadline", epoch });
+      });
+    }, FIRST_PRESENCE_CHECK_MS);
+    this.silenceCloseTimerV18 = setTimeout(() => {
+      sessionTaskRuntimeFor(this).enqueue("silence_close_deadline_v18", () => {
+        this.silenceCloseTimerV18 = null;
+        this.dispatchLifecycleV18({ type: "silence_close_deadline", epoch });
+      });
+    }, MAX_UNANSWERED_WAIT_MS);
     (this as any).diagnostics?.checkpoint?.("LIFECYCLE_SILENCE_EPOCH_ARMED_V18", { epoch, presence_check_ms: FIRST_PRESENCE_CHECK_MS, silence_close_ms: MAX_UNANSWERED_WAIT_MS });
   }
   private armMaxCallDurationV18(): void {
     this.clearMaxCallTimerV18();
-    this.maxCallTimerV18 = setTimeout(() => { this.maxCallTimerV18 = null; this.dispatchLifecycleV18({ type: "max_call_duration" }); }, MAX_CALL_DURATION_MS);
+    this.maxCallTimerV18 = setTimeout(() => {
+      sessionTaskRuntimeFor(this).enqueue("max_call_duration_v18", () => {
+        this.maxCallTimerV18 = null;
+        this.dispatchLifecycleV18({ type: "max_call_duration" });
+      });
+    }, MAX_CALL_DURATION_MS);
   }
   private commandsV18() { return realtimeCommandPortFor(this as any); }
 
@@ -150,17 +166,19 @@ export class CallSession extends BaseConstructor {
           normal_response_latency_affected: false,
         });
         this.terminalDrainTimerV18 = setTimeout(() => {
-          this.terminalDrainTimerV18 = null;
-          (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_DRAIN_COMPLETED_V18", {
-            authority: "ConversationTurnLifecycle",
-            drain_ms: TERMINAL_TRANSPORT_DRAIN_MS,
+          sessionTaskRuntimeFor(this).enqueue("terminal_transport_drain_v18", async () => {
+            this.terminalDrainTimerV18 = null;
+            (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_DRAIN_COMPLETED_V18", {
+              authority: "ConversationTurnLifecycle",
+              drain_ms: TERMINAL_TRANSPORT_DRAIN_MS,
+            });
+            (this as any).diagnostics?.checkpoint?.("LIFECYCLE_HANGUP_DISPATCHED_V18", {
+              authority: "ConversationTurnLifecycle",
+              transport_executor: "performHangup",
+              trigger: "lifecycle_terminal_transport_drained",
+            });
+            await (this as any).performHangup?.("lifecycle_terminal_transport_drained");
           });
-          (this as any).diagnostics?.checkpoint?.("LIFECYCLE_HANGUP_DISPATCHED_V18", {
-            authority: "ConversationTurnLifecycle",
-            transport_executor: "performHangup",
-            trigger: "lifecycle_terminal_transport_drained",
-          });
-          void (this as any).performHangup?.("lifecycle_terminal_transport_drained");
         }, TERMINAL_TRANSPORT_DRAIN_MS);
         break;
       case "RESET_IGNORED_COUNT":

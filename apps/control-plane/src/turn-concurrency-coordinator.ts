@@ -9,6 +9,7 @@ import {
 } from "./turn-concurrency-acquire-policy.js";
 import { inputDetectionConfigRuntimeFor } from "./input-detection-config-runtime.js";
 import { turnOwnershipRuntimeFor } from "./turn-ownership-runtime.js";
+import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 
 const TURN_LOCK_WATCHDOG_MS = 30_000;
 
@@ -111,12 +112,14 @@ export class TurnConcurrencyCoordinator {
   private armWatchdog(session: any): void {
     this.clearWatchdog();
     this.watchdog = setTimeout(() => {
-      if (!this.lifecycle.isActive()) return;
-      session.diagnostics?.fail?.("TURN_CONCURRENCY_WATCHDOG_V36", "TURN_LOCK_TERMINAL_EVENT_MISSING", {
-        watchdog_ms: TURN_LOCK_WATCHDOG_MS,
-        active_turn_age_ms: this.lifecycle.ageMs(),
+      sessionTaskRuntimeFor(session).enqueue("turn_concurrency_watchdog_v36", () => {
+        if (!this.lifecycle.isActive()) return;
+        session.diagnostics?.fail?.("TURN_CONCURRENCY_WATCHDOG_V36", "TURN_LOCK_TERMINAL_EVENT_MISSING", {
+          watchdog_ms: TURN_LOCK_WATCHDOG_MS,
+          active_turn_age_ms: this.lifecycle.ageMs(),
+        });
+        this.release(session, "watchdog");
       });
-      this.release(session, "watchdog");
     }, TURN_LOCK_WATCHDOG_MS);
   }
 

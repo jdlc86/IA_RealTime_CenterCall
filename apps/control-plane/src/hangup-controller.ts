@@ -1,4 +1,5 @@
 import type { CallTerminationRequest, CallTerminationResult } from "./call-termination-port.js";
+import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 
 export type HangupDiagnostics = {
   checkpoint?: (event: string, details?: Record<string, unknown>) => void;
@@ -119,17 +120,21 @@ export class HangupController {
 
   private scheduleBackgroundRetry(): void {
     this.clearBackgroundRetry();
-    this.backgroundRetry = setTimeout(() => {
-      this.backgroundRetry = null;
-      if (!this.host.getSocketConnected()) {
-        this.host.diagnostics?.checkpoint?.("HANGUP_COMPLETED", {
-          confirmation: "sideband_closed_before_background_retry",
-        });
-        return;
-      }
-      this.hangupStarted = false;
-      void this.perform("hangup_confirmation_background_retry");
+    const retryTimer = setTimeout(() => {
+      sessionTaskRuntimeFor(this.host).enqueue("hangup_confirmation_background_retry", async () => {
+        if (this.backgroundRetry !== retryTimer) return;
+        this.backgroundRetry = null;
+        if (!this.host.getSocketConnected()) {
+          this.host.diagnostics?.checkpoint?.("HANGUP_COMPLETED", {
+            confirmation: "sideband_closed_before_background_retry",
+          });
+          return;
+        }
+        this.hangupStarted = false;
+        await this.perform("hangup_confirmation_background_retry");
+      });
     }, this.backgroundRetryMs);
+    this.backgroundRetry = retryTimer;
   }
 
   async perform(trigger: string): Promise<void> {

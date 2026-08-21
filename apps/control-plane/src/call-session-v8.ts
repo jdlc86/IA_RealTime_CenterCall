@@ -1,6 +1,7 @@
 import { CallSession as CallSessionV7 } from "./call-session-v7";
 import { decideMarketingPrompt } from "./marketing-consent-prompt-policy";
 import { marketingConsentPortFor } from "./marketing-consent-port.js";
+import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 
 const MANAGE_MARKETING_CONSENT = "manage_marketing_consent";
 const POST_BOOKING_MARKETING_PROMPT = "Después pregunta, de forma separada y opcional, si desea recibir ofertas y promociones en este mismo número.";
@@ -17,7 +18,7 @@ export class CallSession extends BaseConstructor {
       BasePrototype.createSpokenResponse.call(this, instructions);
       return;
     }
-    void this.createPostBookingResponseV8(instructions);
+    sessionTaskRuntimeFor(this).enqueue("post_booking_marketing_policy_v8", () => this.createPostBookingResponseV8(instructions));
   }
 
   private async createPostBookingResponseV8(instructions: string): Promise<void> {

@@ -12,6 +12,7 @@ import {
 } from "./legacy-intent-execution.js";
 import type { RealtimeFunctionToolDefinition } from "./realtime-provider-command-port.js";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const MANAGE_MARKETING_CONSENT = "manage_marketing_consent";
@@ -108,7 +109,7 @@ export class CallSession extends BaseConstructor {
 
   private createSpokenResponse(instructions: string): void {
     if (instructions.includes(POST_BOOKING_MARKETING_PROMPT)) {
-      void this.createPostBookingResponse(instructions);
+      sessionTaskRuntimeFor(this).enqueue("post_booking_marketing_policy_v7", () => this.createPostBookingResponse(instructions));
       return;
     }
     BasePrototype.createSpokenResponse.call(this, instructions);

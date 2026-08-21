@@ -19,6 +19,7 @@ import {
 } from "./human-handoff-transport-runtime.js";
 import { humanHandoffTransportPortFor } from "./human-handoff-transport-port.js";
 import { callTerminationPortFor } from "./call-termination-port.js";
+import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 
 const BaseConstructor = CallSessionV36 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV36.prototype as any;
@@ -274,10 +275,12 @@ export class CallSession extends BaseConstructor {
   private armHandoffSpeechWatchdogV37(kind: HumanHandoffSpeechKind): void {
     const runtime = this.handoffRuntimeV37();
     runtime.armSpeechWatchdog(HANDOFF_SPEECH_WATCHDOG_MS, () => {
-      const handoff = runtime.snapshot();
-      if (!handoff || handoff.speechKind !== kind) return;
-      if (kind === "ANNOUNCEMENT") void this.failHandoffV37("FAILED", "ANNOUNCEMENT_PLAYBACK_TIMEOUT");
-      else void this.terminateAfterHandoffFailureV37("failure_message_playback_timeout");
+      sessionTaskRuntimeFor(this).enqueue("human_handoff_speech_watchdog_v37", async () => {
+        const handoff = runtime.snapshot();
+        if (!handoff || handoff.speechKind !== kind) return;
+        if (kind === "ANNOUNCEMENT") await this.failHandoffV37("FAILED", "ANNOUNCEMENT_PLAYBACK_TIMEOUT");
+        else await this.terminateAfterHandoffFailureV37("failure_message_playback_timeout");
+      });
     });
   }
 
@@ -285,7 +288,9 @@ export class CallSession extends BaseConstructor {
     const runtime = this.handoffRuntimeV37();
     const timeoutMs = ((runtime.getConfig()?.transfer.answerTimeoutSeconds ?? 25) * 1000) + HANDOFF_TRANSFER_WEBHOOK_GRACE_MS;
     runtime.armTransferWatchdog(timeoutMs, () => {
-      if (runtime.snapshot()?.phase === "DIALING") void this.failHandoffV37("FAILED", "TRANSFER_RESULT_WEBHOOK_TIMEOUT");
+      sessionTaskRuntimeFor(this).enqueue("human_handoff_transfer_watchdog_v37", async () => {
+        if (runtime.snapshot()?.phase === "DIALING") await this.failHandoffV37("FAILED", "TRANSFER_RESULT_WEBHOOK_TIMEOUT");
+      });
     });
   }
 

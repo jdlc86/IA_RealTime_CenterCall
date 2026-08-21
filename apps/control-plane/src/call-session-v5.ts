@@ -23,6 +23,7 @@ import {
 } from "./legacy-intent-execution.js";
 import type { RealtimeFunctionToolDefinition } from "./realtime-provider-command-port.js";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const CHECK_RESERVATION_AVAILABILITY = "check_reservation_availability";
@@ -249,21 +250,25 @@ export class CallSession extends BaseConstructor {
       arguments: args,
       context: { tenantId, callId },
     }) as Promise<ToolResult<AvailabilityResult>>;
-    void this.reservationAvailabilityPromise.then((result) => {
-      if (this.reservationAvailabilityKey !== key) return;
-      if (result.ok) {
-        (this as any).diagnostics?.checkpoint?.("RESERVATION_AVAILABILITY_COMPLETED", {
-          tool: CHECK_RESERVATION_AVAILABILITY,
-          elapsed_ms: Date.now() - startedAt,
-          requested_available: (result.result as AvailabilityResult).requested_available,
-        });
-      } else {
-        (this as any).diagnostics?.fail?.("RESERVATION_AVAILABILITY_FAILED", "TOOL_GATEWAY_RETURNED_ERROR", {
-          tool: CHECK_RESERVATION_AVAILABILITY,
-          error: result.error,
-          elapsed_ms: Date.now() - startedAt,
-        });
-      }
+    const availability = this.reservationAvailabilityPromise;
+    sessionTaskRuntimeFor(this).runInBackground("reservation_availability_observer", async () => {
+      const result = await availability;
+      sessionTaskRuntimeFor(this).enqueue("reservation_availability_completed", () => {
+        if (this.reservationAvailabilityKey !== key) return;
+        if (result.ok) {
+          (this as any).diagnostics?.checkpoint?.("RESERVATION_AVAILABILITY_COMPLETED", {
+            tool: CHECK_RESERVATION_AVAILABILITY,
+            elapsed_ms: Date.now() - startedAt,
+            requested_available: (result.result as AvailabilityResult).requested_available,
+          });
+        } else {
+          (this as any).diagnostics?.fail?.("RESERVATION_AVAILABILITY_FAILED", "TOOL_GATEWAY_RETURNED_ERROR", {
+            tool: CHECK_RESERVATION_AVAILABILITY,
+            error: result.error,
+            elapsed_ms: Date.now() - startedAt,
+          });
+        }
+      });
     });
     return this.reservationAvailabilityPromise;
   }
