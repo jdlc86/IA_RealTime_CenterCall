@@ -5,6 +5,7 @@ export type CallTerminationAttempt = Readonly<{
   transport: CallTerminationTransport;
   ok: boolean;
   httpStatus?: number;
+  terminalEvidence?: "ALREADY_TERMINATED";
   error?: string;
 }>;
 
@@ -17,6 +18,7 @@ export type CallTerminationRequest = Readonly<{
 
 export type CallTerminationResult = Readonly<{
   terminated: boolean;
+  terminationConfirmed?: boolean;
   attempts: readonly CallTerminationAttempt[];
 }>;
 
@@ -30,10 +32,21 @@ function nonEmpty(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-async function responseFailure(response: Response, label: string): Promise<string> {
-  let detail = "";
-  try { detail = (await response.text()).slice(0, 250); } catch {}
-  return `${label} HTTP ${response.status}${detail ? `: ${detail}` : ""}`;
+async function responseDetail(response: Response): Promise<string> {
+  try { return (await response.text()).slice(0, 250); } catch { return ""; }
+}
+
+function isTelnyxAlreadyTerminated(status: number, detail: string): boolean {
+  if (status !== 422 || !detail) return false;
+  try {
+    const payload = JSON.parse(detail) as { errors?: Array<{ code?: unknown }> };
+    if (payload.errors?.some((error) => String(error.code ?? "") === "90018")) return true;
+  } catch { /* fall through to the provider-code check */ }
+  return /\b90018\b/.test(detail);
+}
+
+function responseFailure(status: number, detail: string, label: string): string {
+  return `${label} HTTP ${status}${detail ? `: ${detail}` : ""}`;
 }
 
 /**
@@ -69,7 +82,19 @@ export class CallTerminationRuntime {
             body: JSON.stringify(request.commandId ? { command_id: request.commandId } : {}),
           },
         );
-        if (!response.ok) throw new Error(await responseFailure(response, "Telnyx hangup"));
+        if (!response.ok) {
+          const detail = await responseDetail(response);
+          if (isTelnyxAlreadyTerminated(response.status, detail)) {
+            attempts.push({
+              transport: "TELNYX_SOURCE_LEG",
+              ok: true,
+              httpStatus: response.status,
+              terminalEvidence: "ALREADY_TERMINATED",
+            });
+            return { terminated: true, terminationConfirmed: true, attempts };
+          }
+          throw new Error(responseFailure(response.status, detail, "Telnyx hangup"));
+        }
         attempts.push({ transport: "TELNYX_SOURCE_LEG", ok: true, httpStatus: response.status });
         return { terminated: true, attempts };
       } catch (error) {
@@ -94,7 +119,10 @@ export class CallTerminationRuntime {
             headers: { Authorization: `Bearer ${apiKey}` },
           },
         );
-        if (!response.ok) throw new Error(await responseFailure(response, "Realtime hangup"));
+        if (!response.ok) {
+          const detail = await responseDetail(response);
+          throw new Error(responseFailure(response.status, detail, "Realtime hangup"));
+        }
         attempts.push({ transport: "OPENAI_REALTIME_FALLBACK", ok: true, httpStatus: response.status });
         return { terminated: true, attempts };
       } catch (error) {

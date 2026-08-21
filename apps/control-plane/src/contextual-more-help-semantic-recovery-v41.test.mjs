@@ -29,6 +29,8 @@ test("v41 dedicated recovery cannot depend on an earlier unrelated response.done
 
 test("v41 semantic recovery still allows explicit model end-call or substantive work to supersede it", () => {
   assert.match(source, /readEndCallConfirmedV41\(event\.arguments\)/);
+  assert.match(source, /if \(modelConfirmed !== true\) \{ this\.emitAmbiguousConfirmationV41\(event\.callId, modelConfirmed\); return; \}/);
+  assert.doesNotMatch(source, /decideCloseConsensus\([^\n]+assessment, modelConfirmed !== false\)/);
   assert.match(source, /CONTEXTUAL_MORE_HELP_SEMANTIC_CONTEXT_RELEASED_V41/);
   assert.match(source, /event\.name !== END_CALL\s*&&\s*event\.name !== "restaurant_input_ignored"/);
   assert.match(source, /this\.contextualMoreHelpDecisionSourceIdV41 = null/);

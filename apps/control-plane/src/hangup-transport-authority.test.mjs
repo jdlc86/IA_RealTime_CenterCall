@@ -13,7 +13,8 @@ test("hangup controller routes provider-neutral termination while preserving sou
   assert.match(controller, /fallbackMode:\s*"SOURCE_ONLY"/);
   assert.match(controller, /fallbackMode:\s*"REALTIME_FALLBACK"/);
   assert.match(controller, /this\.host\.terminateCall\(request\)/);
-  assert.match(controller, /completion_claimed:\s*false/);
+  assert.match(controller, /completion_claimed:\s*result\.terminationConfirmed === true/);
+  assert.match(controller, /confirmation:\s*"provider_terminal_state"/);
   assert.match(controller, /confirmation_source:\s*"sideband_close"/);
 
   assert.doesNotMatch(controller, /\b(?:TELNYX_API_KEY|OPENAI_API_KEY)\b/);

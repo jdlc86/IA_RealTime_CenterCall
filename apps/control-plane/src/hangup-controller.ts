@@ -23,7 +23,7 @@ export type HangupControllerOptions = {
   backgroundRetryMs?: number;
 };
 
-const DEFAULT_CONFIRMATION_TIMEOUT_MS = 2_500;
+const DEFAULT_CONFIRMATION_TIMEOUT_MS = 5_000;
 const DEFAULT_RETRY_DELAY_MS = 400;
 const DEFAULT_MAX_IMMEDIATE_ATTEMPTS = 4;
 const DEFAULT_BACKGROUND_RETRY_MS = 5_000;
@@ -92,7 +92,7 @@ export class HangupController {
     return this.sourceCallControlId() ? "SOURCE_CALL_LEG" : "REALTIME_SESSION";
   }
 
-  private async sendHangupRequest(callId: string, attempt: number, trigger: string): Promise<void> {
+  private async sendHangupRequest(callId: string, attempt: number, trigger: string): Promise<boolean> {
     const sourceCallControlId = this.sourceCallControlId();
     const request: CallTerminationRequest = sourceCallControlId
       ? {
@@ -113,9 +113,11 @@ export class HangupController {
       trigger,
       transport: accepted.transport,
       http_status: accepted.httpStatus ?? null,
-      completion_claimed: false,
+      completion_claimed: result.terminationConfirmed === true,
+      terminal_evidence: accepted.terminalEvidence ?? null,
       termination_port: true,
     });
+    return result.terminationConfirmed === true;
   }
 
   private scheduleBackgroundRetry(): void {
@@ -164,7 +166,14 @@ export class HangupController {
       }
 
       try {
-        await this.sendHangupRequest(callId, attempt, trigger);
+        const providerConfirmed = await this.sendHangupRequest(callId, attempt, trigger);
+        if (providerConfirmed) {
+          this.host.diagnostics?.checkpoint?.("HANGUP_COMPLETED", {
+            attempt,
+            confirmation: "provider_terminal_state",
+          });
+          return;
+        }
       } catch (error) {
         lastError = error;
         this.host.diagnostics?.fail?.("HANGUP_ATTEMPT_FAILED", "HANGUP_REQUEST_FAILED", {

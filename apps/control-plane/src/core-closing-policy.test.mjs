@@ -131,12 +131,12 @@ test("Lucia CLOSE plus pure courtesy requests natural follow-up, not ambiguity",
   assert.deepEqual(decideCloseConsensus(false, { courtesy: true, closeIntent: "ABSTAIN" }, true), { action: "COURTESY_FOLLOWUP", pending: false });
 });
 
-test("Lucia CLOSE plus non-courtesy abstain becomes rare ambiguity confirmation", () => {
-  assert.deepEqual(decideCloseConsensus(false, { courtesy: false, closeIntent: "ABSTAIN" }, true), { action: "AMBIGUOUS_CONFIRM", pending: true });
+test("Lucia confirmed CLOSE plus non-courtesy abstain closes without controller conflict", () => {
+  assert.deepEqual(decideCloseConsensus(false, { courtesy: false, closeIntent: "ABSTAIN" }, true), { action: "SEMANTIC_CLOSE", pending: false });
 });
 
-test("Lucia CLOSE plus controller CONTINUE becomes ambiguity", () => {
-  assert.deepEqual(decideCloseConsensus(false, { courtesy: false, closeIntent: "CONTINUE" }, true), { action: "AMBIGUOUS_CONFIRM", pending: true });
+test("explicit controller continuation overrides Lucia CLOSE", () => {
+  assert.deepEqual(decideCloseConsensus(false, { courtesy: false, closeIntent: "CONTINUE" }, true), { action: "CONTINUE", pending: false });
 });
 
 test("no Lucia close proposal means normal conversation", () => {

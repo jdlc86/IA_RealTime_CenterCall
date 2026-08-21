@@ -18,6 +18,7 @@ export type ControllerCloseAssessment = {
 
 export type CloseConsensusDecision =
   | { action: "CONSENSUS_CLOSE"; pending: false }
+  | { action: "SEMANTIC_CLOSE"; pending: false }
   | { action: "COURTESY_FOLLOWUP"; pending: false }
   | { action: "AMBIGUOUS_CONFIRM"; pending: true }
   | { action: "CONTINUE"; pending: false }
@@ -171,8 +172,9 @@ export function decideCloseConsensus(
   if (confirmationPending) return { action: "ACK_PENDING", pending: true };
   if (!luciaProposesClose) return { action: "CONTINUE", pending: false };
   if (controller.closeIntent === "CLOSE") return { action: "CONSENSUS_CLOSE", pending: false };
+  if (controller.closeIntent === "CONTINUE") return { action: "CONTINUE", pending: false };
   if (controller.closeIntent === "ABSTAIN" && controller.courtesy) return { action: "COURTESY_FOLLOWUP", pending: false };
-  return { action: "AMBIGUOUS_CONFIRM", pending: true };
+  return { action: "SEMANTIC_CLOSE", pending: false };
 }
 
 export function decideEndCallProposal(

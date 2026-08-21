@@ -28,7 +28,7 @@ const CONTEXTUAL_MORE_HELP_DECISION_INSTRUCTIONS =
   "Si hay cualquier duda, responde CONTINUE. No expliques la decisión.";
 const CLOSING_GUIDANCE_START = "[[V41_CLOSING_GUIDANCE_START]]";
 const CLOSING_GUIDANCE_END = "[[V41_CLOSING_GUIDANCE_END]]";
-const CLOSING_GUIDANCE = `${CLOSING_GUIDANCE_START}\nPROTOCOLO NATURAL DE CIERRE:\n- La cortesía y la intención de cierre son dimensiones distintas. Un simple agradecimiento NO implica cierre: pregunta de forma natural si puedes ayudar en algo más.\n- Si acabas de preguntar si el usuario necesita algo más y responde negativamente (por ejemplo 'no, gracias' o 'nada más'), ese contexto YA resuelve el cierre: despídete de forma natural y termina la llamada; no vuelvas a preguntar si quiere terminar.\n- Una frase puede contener cortesía y cierre a la vez. Por ejemplo 'muchas gracias, no necesito nada más' o 'gracias, hasta luego' expresa cierre claro: puedes proponer restaurant_end_call.\n- Para un cierre espontáneo, si tú y el controlador detectáis CLOSE hay consenso fuerte y se cierra. Solo si tú propones cierre y el controlador no lo confirma se pedirá '¿Quieres terminar la llamada?'; esa ruta debe ser excepcional.\n- Si el usuario corrige el cierre con una nueva petición ('hasta luego... espera, una cosa más'), prevalece la nueva petición.\n- Nunca uses restaurant_input_ignored para resolver una intención de cierre.\n${CLOSING_GUIDANCE_END}`;
+const CLOSING_GUIDANCE = `${CLOSING_GUIDANCE_START}\nPROTOCOLO NATURAL DE CIERRE:\n- La cortesía y la intención de cierre son dimensiones distintas. Un simple agradecimiento NO implica cierre: pregunta de forma natural si puedes ayudar en algo más.\n- Si acabas de preguntar si el usuario necesita algo más y responde negativamente (por ejemplo 'no, gracias' o 'nada más'), ese contexto YA resuelve el cierre: despídete de forma natural y termina la llamada; no vuelvas a preguntar si quiere terminar.\n- Una frase puede contener cortesía y cierre a la vez. Por ejemplo 'muchas gracias, no necesito nada más' o 'gracias, hasta luego' expresa cierre claro: usa restaurant_end_call confirmed=true.\n- Para un cierre espontáneo inequívoco usa confirmed=true. Si el controlador también detecta CLOSE hay consenso fuerte; si se abstiene sin detectar cortesía aislada ni una petición de continuar, tu confirmación semántica basta. Una petición explícita de continuar siempre prevalece.\n- Usa confirmed=false solo si la intención de finalizar es realmente ambigua; en ese caso se preguntará una vez si quiere terminar.\n- Si el usuario corrige el cierre con una nueva petición ('hasta luego... espera, una cosa más'), prevalece la nueva petición.\n- Nunca uses restaurant_input_ignored para resolver una intención de cierre.\n${CLOSING_GUIDANCE_END}`;
 
 function usableTranscript(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 1500) : "";
@@ -213,7 +213,7 @@ export class CallSession extends BaseConstructor {
     closingSessionRuntimeFor(this).resetControllerAssessment();
   }
 
-  private emitAmbiguousConfirmationV41(callId: string | undefined): void {
+  private emitAmbiguousConfirmationV41(callId: string | undefined, modelConfirmed: boolean | null): void {
     this.moreHelpAnswerPendingV41 = false;
     this.moreHelpSemanticResolutionPendingV41 = false;
     const closing = closingSessionRuntimeFor(this);
@@ -231,6 +231,7 @@ export class CallSession extends BaseConstructor {
     });
     session.diagnostics?.checkpoint?.("CLOSE_INTENT_AMBIGUOUS_V41", {
       lucia_signal: "CLOSE", controller_close_intent: assessment.closeIntent, courtesy: assessment.courtesy,
+      model_confirmed: modelConfirmed,
       next_action: "ASK_CALLER", confirmation_prompt: CLOSE_CONFIRMATION_PROMPT,
       tool_choice: "none", presence_must_not_resolve: true, restaurant_input_ignored_forbidden: true,
     });
@@ -243,6 +244,23 @@ export class CallSession extends BaseConstructor {
     });
     (this as any).diagnostics?.checkpoint?.("CLOSE_INTENT_DUPLICATE_SUPPRESSED_V41", {
       confirmation_still_pending: true, response_create_emitted: false,
+    });
+  }
+
+  private rejectContradictedEndCallV41(callId: string | undefined): void {
+    this.submitEndCallToolResultV41(callId, {
+      ok: true,
+      status: "CLOSE_INTENT_REJECTED_BY_CALLER_CONTINUATION",
+      instruction: "El usuario indicó que quiere continuar. No termines la llamada y atiende su petición.",
+    });
+    const closing = closingSessionRuntimeFor(this);
+    closing.setConfirmationPending(false);
+    closing.resetControllerAssessment();
+    (this as any).diagnostics?.checkpoint?.("CLOSE_INTENT_REJECTED_V41", {
+      lucia_signal: "CLOSE",
+      model_confirmed: true,
+      controller_close_intent: "CONTINUE",
+      caller_continuation_prevailed: true,
     });
   }
 
@@ -347,14 +365,20 @@ export class CallSession extends BaseConstructor {
         if (this.moreHelpSemanticResolutionPendingV41 && this.resolveContextualSemanticEndCallV41(event.callId, modelConfirmed)) return;
         if (this.moreHelpAnswerPendingV41) { this.acknowledgeContextualReplyPendingV41(event.callId); return; }
         const closing = closingSessionRuntimeFor(this);
+        if (closing.isConfirmationPending()) { this.acknowledgePendingEndCallV41(event.callId); return; }
+        if (modelConfirmed !== true) { this.emitAmbiguousConfirmationV41(event.callId, modelConfirmed); return; }
         const assessment = closing.controllerAssessment();
         const decision = decideCloseConsensus(closing.isConfirmationPending(), assessment, true);
         if (decision.action === "ACK_PENDING") { this.acknowledgePendingEndCallV41(event.callId); return; }
         if (decision.action === "COURTESY_FOLLOWUP") { this.emitCourtesyFollowupV41(event.callId); return; }
-        if (decision.action === "AMBIGUOUS_CONFIRM") { this.emitAmbiguousConfirmationV41(event.callId); return; }
+        if (decision.action === "AMBIGUOUS_CONFIRM") { this.emitAmbiguousConfirmationV41(event.callId, true); return; }
+        if (decision.action === "CONTINUE") { this.rejectContradictedEndCallV41(event.callId); return; }
         session.diagnostics?.checkpoint?.("CLOSE_CONSENSUS_REACHED_V41", {
           lucia_signal: "CLOSE", controller_close_intent: assessment.closeIntent,
-          courtesy: assessment.courtesy, consensus: true, strong_close_consensus: true,
+          model_confirmed: true, courtesy: assessment.courtesy,
+          consensus: decision.action === "CONSENSUS_CLOSE",
+          strong_close_consensus: decision.action === "CONSENSUS_CLOSE",
+          semantic_close_without_controller_conflict: decision.action === "SEMANTIC_CLOSE",
           last_user_transcript_present: Boolean(this.lastUserTranscriptV41),
         });
         closing.setConfirmationPending(false);

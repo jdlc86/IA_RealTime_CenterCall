@@ -78,6 +78,40 @@ test("direct realtime hangup uses neutral termination port and waits for sideban
   assert.equal(checkpoints.some((entry) => entry.event === "HANGUP_COMPLETED"), true);
 });
 
+test("provider terminal evidence completes immediately without a sideband timeout", async () => {
+  const { host, checkpoints, failures } = makeHost({
+    sourceCallControlId: "source-already-ended",
+    terminateCall: async () => ({
+      terminated: true,
+      terminationConfirmed: true,
+      attempts: [{
+        transport: "TELNYX_SOURCE_LEG",
+        ok: true,
+        httpStatus: 422,
+        terminalEvidence: "ALREADY_TERMINATED",
+      }],
+    }),
+  });
+  const controller = new HangupController(host, {
+    confirmationTimeoutMs: 100,
+    retryDelayMs: 0,
+    maxImmediateAttempts: 1,
+    backgroundRetryMs: 60_000,
+  });
+
+  await controller.perform("test_provider_terminal_evidence");
+  controller.dispose();
+
+  assert.equal(failures.length, 0);
+  assert.equal(checkpoints.some((entry) => entry.event === "HANGUP_COMPLETED"
+    && entry.details.confirmation === "provider_terminal_state"), true);
+});
+
+test("default sideband confirmation window covers ordinary provider close latency", () => {
+  const source = readFileSync(new URL("./hangup-controller.ts", import.meta.url), "utf8");
+  assert.match(source, /DEFAULT_CONFIRMATION_TIMEOUT_MS = 5_000/);
+});
+
 test("hangup controller owns the in-flight lock and rejects overlapping termination attempts", async () => {
   const requests = [];
   let resolveTermination;

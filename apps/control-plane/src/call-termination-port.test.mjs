@@ -51,6 +51,45 @@ test("call termination preserves the Workers fetch receiver", async () => {
   assert.equal(receiver, globalThis);
 });
 
+test("Telnyx 90018 is provider-confirmed idempotent termination", async () => {
+  const runtime = new CallTerminationRuntime(
+    host({ TELNYX_API_KEY: "tel-key" }),
+    async () => response(422, JSON.stringify({ errors: [{ code: "90018", title: "Call has already ended" }] })),
+  );
+
+  const result = await runtime.terminate({
+    sourceCallControlId: "source-already-ended",
+    fallbackMode: "SOURCE_ONLY",
+  });
+
+  assert.deepEqual(result, {
+    terminated: true,
+    terminationConfirmed: true,
+    attempts: [{
+      transport: "TELNYX_SOURCE_LEG",
+      ok: true,
+      httpStatus: 422,
+      terminalEvidence: "ALREADY_TERMINATED",
+    }],
+  });
+});
+
+test("unrelated Telnyx 422 remains a termination failure", async () => {
+  const runtime = new CallTerminationRuntime(
+    host({ TELNYX_API_KEY: "tel-key" }),
+    async () => response(422, JSON.stringify({ errors: [{ code: "10000" }] })),
+  );
+
+  const result = await runtime.terminate({
+    sourceCallControlId: "source-invalid-command",
+    fallbackMode: "SOURCE_ONLY",
+  });
+
+  assert.equal(result.terminated, false);
+  assert.equal(result.attempts[0].ok, false);
+  assert.match(result.attempts[0].error, /Telnyx hangup HTTP 422/);
+});
+
 test("failed Telnyx termination falls back to realtime transport by default", async () => {
   const urls = [];
   const runtime = new CallTerminationRuntime(
