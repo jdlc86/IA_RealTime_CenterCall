@@ -11,7 +11,7 @@
     "binding": "CF_VERSION_METADATA"
   },
   "vars": {
-    "ENVIRONMENT": "dev",
+    "ENVIRONMENT": "production",
     "REALTIME_MODEL": "gpt-realtime",
     "REALTIME_VOICE": "marin",
     "OPENAI_PROJECT_ID": "proj_sRULdPh5pWmKIg59z6J01QI9"
@@ -38,5 +38,73 @@
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
+  },
+  "env": {
+    "preview": {
+      "name": "ia-realtime-centercall-preview",
+      "workers_dev": true,
+      "preview_urls": true,
+      "version_metadata": {
+        "binding": "CF_VERSION_METADATA"
+      },
+      "vars": {
+        "ENVIRONMENT": "preview",
+        "REALTIME_MODEL": "gpt-realtime",
+        "REALTIME_VOICE": "marin",
+        "OPENAI_PROJECT_ID": "proj_sRULdPh5pWmKIg59z6J01QI9"
+      },
+      "kv_namespaces": [
+        {
+          "binding": "TENANT_CONFIG"
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "CALL_SESSIONS",
+            "class_name": "CallSession"
+          }
+        ]
+      },
+      "exports": {
+        "CallSession": {
+          "type": "durable-object",
+          "storage": "sqlite"
+        }
+      }
+    },
+    "dev": {
+      "name": "ia-realtime-centercall-dev",
+      "workers_dev": true,
+      "preview_urls": false,
+      "version_metadata": {
+        "binding": "CF_VERSION_METADATA"
+      },
+      "vars": {
+        "ENVIRONMENT": "dev",
+        "REALTIME_MODEL": "gpt-realtime",
+        "REALTIME_VOICE": "marin",
+        "OPENAI_PROJECT_ID": "proj_sRULdPh5pWmKIg59z6J01QI9"
+      },
+      "kv_namespaces": [
+        {
+          "binding": "TENANT_CONFIG"
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "CALL_SESSIONS",
+            "class_name": "CallSession"
+          }
+        ]
+      },
+      "exports": {
+        "CallSession": {
+          "type": "durable-object",
+          "storage": "sqlite"
+        }
+      }
+    }
   }
 }

@@ -25,10 +25,10 @@ En Cloudflare Dashboard:
 4. Seleccionar `jdlc86/IA_RealTime_CenterCall`.
 5. Production branch: `main`.
 6. Root directory: `apps/control-plane`.
-7. El nombre del Worker debe coincidir con `wrangler.jsonc`: `ia-realtime-centercall-dev`.
-8. Build command: `npm run types && npm run check`.
-9. Deploy command: `npx wrangler deploy`.
-10. Guardar y desplegar.
+7. El nombre productivo debe coincidir con `wrangler.jsonc`: `ia-realtime-centercall`.
+8. Build command: `npm run types && npm run check` (valida production, preview y dev sin desplegar).
+9. Deploy command de Workers Builds: `npm run upload:production`.
+10. Guardar. El build sube una versión inmutable; no la promueve automáticamente a tráfico.
 
 Cloudflare instalará las dependencias desde `package.json` en cada build.
 
@@ -38,13 +38,27 @@ Configurar desde el Dashboard del Worker, nunca en GitHub:
 
 - `OPENAI_API_KEY`
 - `OPENAI_WEBHOOK_SECRET`
+- `TELNYX_API_KEY`
+- `TELNYX_PUBLIC_KEY`
+- `SUPABASE_URL`
+- `SUPABASE_SECRET_KEY`
 
-Variables no secretas ya definidas en `wrangler.jsonc`:
+Perfiles no secretos definidos en `wrangler.jsonc`:
 
-- `ENVIRONMENT=dev`
-- `DEFAULT_TENANT_ID=dev-clinic`
+- producción por defecto: `ia-realtime-centercall`, `ENVIRONMENT=production`;
+- preview: `ia-realtime-centercall-preview`, `ENVIRONMENT=preview`;
+- desarrollo: `ia-realtime-centercall-dev`, `ENVIRONMENT=dev`;
 - `REALTIME_MODEL=gpt-realtime`
 - `REALTIME_VOICE=marin`
+
+`vars`, KV y Durable Objects no se heredan automáticamente en entornos nombrados;
+por eso cada perfil declara explícitamente los mismos nombres de bindings. Los
+recursos y secretos reales deben configurarse por separado en Cloudflare antes
+del primer despliegue de cada perfil.
+
+Workers Builds usa `upload:*` para construir versiones candidatas. Los comandos
+`deploy:*` son la operación separada que actualiza el tráfico del Worker y sólo
+se ejecutan durante una promoción deliberada.
 
 ## Comprobación inicial
 
@@ -60,10 +74,15 @@ Debe devolver una respuesta JSON con:
 {
   "ok": true,
   "service": "IA_RealTime_CenterCall",
-  "phase": "F0",
-  "environment": "dev",
-  "tenant_id": "dev-clinic"
+  "phase": "F5",
+  "environment": "production"
 }
+```
+
+Verificación E2E de solo lectura:
+
+```text
+npm run test:e2e:health -- --url https://<worker>.workers.dev --environment production
 ```
 
 No configurar todavía Twilio ni el webhook SIP hasta que `/health` responda correctamente.

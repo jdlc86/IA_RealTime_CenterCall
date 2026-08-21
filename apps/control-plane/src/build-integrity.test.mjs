@@ -56,6 +56,9 @@ test("CI installs the committed lockfile reproducibly", async () => {
 
   assert.equal(nodeVersion, "24.18.0");
   assert.equal(packageJson.packageManager, "npm@10.9.2");
+  assert.match(workflow, /uses: actions\/checkout@v5/);
+  assert.match(workflow, /uses: actions\/setup-node@v5/);
+  assert.doesNotMatch(workflow, /uses: actions\/(?:checkout|setup-node)@v4/);
   assert.match(workflow, /node-version-file: apps\/control-plane\/\.node-version/);
   assert.match(
     workflow,
