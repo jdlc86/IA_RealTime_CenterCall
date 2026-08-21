@@ -3,7 +3,7 @@ import { businessWindowsForDate, normalizeReservationLocalDateTime } from "./res
 import { reservationDateScopeRuntimeFor } from "./reservation-date-scope-runtime.js";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
-import { authorizePublicRestaurantTool } from "./semantic-turn-coordinator.js";
+import { publicRestaurantToolAuthorizationPortFor } from "./semantic-tool-authorization-port.js";
 
 const BaseConstructor = CallSessionV49 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV49.prototype as any;
@@ -60,19 +60,20 @@ export class CallSession extends BaseConstructor {
   }
 
   private authorizeBlockedDateToolV50(event: SemanticToolEvent): boolean {
-    const result = authorizePublicRestaurantTool(this, {
+    const result = publicRestaurantToolAuthorizationPortFor(this).decide({
       name: event.name,
       call_id: event.callId,
       arguments: event.arguments,
     });
-    if (!result.allowed) {
+    const allowed = result.allowed && !result.ignored && !result.directedIgnoreRejected;
+    if (!allowed) {
       (this as any).diagnostics?.fail?.(
         "RESERVATION_DATE_SCOPE_AUTHORITY_MISSING_V50",
         "SEMANTIC_TOOL_AUTHORITY_REJECTED",
         { tool: event.name, duplicate_of: result.duplicateOf },
       );
     }
-    return result.allowed;
+    return allowed;
   }
 
   private sendDateChangeRequiredV50(event: SemanticToolEvent, fromLocalDate: string, toLocalDate: string): void {
