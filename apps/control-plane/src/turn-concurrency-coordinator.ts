@@ -1,4 +1,6 @@
 import { realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 import { TurnConcurrencyLifecycle } from "./turn-concurrency-lifecycle.js";
 import {
   decideTurnConcurrencyAcquire,
@@ -9,22 +11,16 @@ import { inputDetectionConfigRuntimeFor } from "./input-detection-config-runtime
 import { turnOwnershipRuntimeFor } from "./turn-ownership-runtime.js";
 
 const TURN_LOCK_WATCHDOG_MS = 30_000;
-const PROTECTED_METADATA_KEY = "protected_speech_v35";
 
-export type TurnConcurrencyEvent = {
-  type?: string;
-  item_id?: string;
-  response_id?: string;
-  transcript?: unknown;
-  response?: { id?: string; metadata?: Record<string, unknown> | null };
-};
-
-function responseId(event: TurnConcurrencyEvent): string | null {
-  return event.response_id ?? event.response?.id ?? null;
-}
+/** Provider-neutral compatibility alias for callers that still import the type. */
+export type TurnConcurrencyEvent = RealtimeProviderEvent;
 
 function hasUsableTranscript(value: unknown): boolean {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim().length > 0 : false;
+}
+
+function isProtectedKind(kind: string): boolean {
+  return kind === "GREETING" || kind === "RECOVERY";
 }
 
 export class TurnConcurrencyCoordinator {
@@ -38,7 +34,7 @@ export class TurnConcurrencyCoordinator {
 
   private acquire(session: any): void {
     if (!this.lifecycle.acquire()) return;
-    if (session.state === "closing" || session.hangupStarted) { this.lifecycle.release(); return; }
+    if (conversationLifecyclePortFor(session).isTerminal()) { this.lifecycle.release(); return; }
     try {
       realtimeCommandPortFor(session).suspendInputDetection();
       this.armWatchdog(session);
@@ -61,7 +57,7 @@ export class TurnConcurrencyCoordinator {
     const clearInput = shouldClearInputOnTurnConcurrencyRelease(reason);
     const restoreInputDetection = shouldRestoreInputDetectionOnTurnConcurrencyRelease(reason);
     try {
-      if (session.socket && session.state !== "closing" && !session.hangupStarted) {
+      if (session.socket && !conversationLifecyclePortFor(session).isTerminal()) {
         const realtime = realtimeCommandPortFor(session);
         if (clearInput) realtime.clearInput();
         if (restoreInputDetection) realtime.restoreInputDetection(inputDetectionConfigRuntimeFor(session).get());
@@ -93,18 +89,18 @@ export class TurnConcurrencyCoordinator {
     });
   }
 
-  private discardOverlappingTurn(session: any, event: TurnConcurrencyEvent, usable: boolean): void {
-    if (event.item_id && session.socket) {
-      try { realtimeCommandPortFor(session).discardInputItem(event.item_id); }
+  private discardOverlappingTurn(session: any, itemId: string | undefined, usable: boolean): void {
+    if (itemId && session.socket) {
+      try { realtimeCommandPortFor(session).discardInputItem(itemId); }
       catch (error) {
         session.diagnostics?.fail?.("TURN_CONCURRENCY_ITEM_DELETE_FAILED_V36", "OVERLAPPING_ITEM_DELETE_FAILED", {
-          item_id: event.item_id,
+          item_id: itemId,
           error: error instanceof Error ? error.message : String(error),
         });
       }
     }
     session.diagnostics?.checkpoint?.("TURN_CONCURRENCY_OVERLAPPING_TURN_DROPPED_V36", {
-      item_id: event.item_id ?? null,
+      item_id: itemId ?? null,
       active_turn_age_ms: this.lifecycle.ageMs(),
       transcript_usable: usable,
       semantic_processing_unchanged: true,
@@ -131,21 +127,26 @@ export class TurnConcurrencyCoordinator {
   }
 
   /** Returns true when the event must not enter lower semantic layers. */
-  observe(session: any, event: TurnConcurrencyEvent | null): boolean {
+  observe(session: any, event: RealtimeProviderEvent | null): boolean {
     if (!event) return false;
-    if (event.type === "input_audio_buffer.speech_started" && event.item_id) this.latestCallerSpeechItemId = event.item_id;
-    if (event.type === "response.created") {
-      const id = responseId(event);
-      const protectedKind = event.response?.metadata?.[PROTECTED_METADATA_KEY];
-      if (id && (protectedKind === "GREETING" || protectedKind === "RECOVERY")) this.protectedResponseIds.add(id);
+
+    if (event.type === "CALLER_SPEECH_STARTED" && event.itemId) {
+      this.latestCallerSpeechItemId = event.itemId;
     }
 
-    if (event.type === "conversation.item.input_audio_transcription.completed") {
+    if (event.type === "ASSISTANT_RESPONSE_STARTED") {
+      const id = event.responseId ?? null;
+      if (id && isProtectedKind(event.kind)) this.protectedResponseIds.add(id);
+    }
+
+    if (event.type === "CALLER_TRANSCRIPT_COMPLETED") {
       const usable = hasUsableTranscript(event.transcript);
-      const higherLayerOwns = turnOwnershipRuntimeFor(session).ownsSemanticItem(event.item_id);
-      const newerCallerSpeechObserved = Boolean(event.item_id && this.latestCallerSpeechItemId && event.item_id !== this.latestCallerSpeechItemId);
+      const higherLayerOwns = turnOwnershipRuntimeFor(session).ownsSemanticItem(event.itemId);
+      const newerCallerSpeechObserved = Boolean(
+        event.itemId && this.latestCallerSpeechItemId && event.itemId !== this.latestCallerSpeechItemId,
+      );
       if (!higherLayerOwns && this.lifecycle.isActive()) {
-        this.discardOverlappingTurn(session, event, usable);
+        this.discardOverlappingTurn(session, event.itemId, usable);
         return true;
       }
       const decision = decideTurnConcurrencyAcquire({
@@ -157,7 +158,7 @@ export class TurnConcurrencyCoordinator {
       if (decision === "ACQUIRE") this.acquire(session);
       else if (decision === "BYPASS_NEWER_CALLER_SPEECH") {
         session.diagnostics?.checkpoint?.("TURN_CONCURRENCY_OLDER_SPLIT_FRAGMENT_DEFERRED_V36", {
-          item_id: event.item_id ?? null,
+          item_id: event.itemId ?? null,
           latest_caller_speech_item_id: this.latestCallerSpeechItemId,
           ownership_acquired: false, turn_detection_suspended: false,
           semantic_pipeline_entered: false, timing_heuristic: false,
@@ -165,40 +166,46 @@ export class TurnConcurrencyCoordinator {
         return true;
       } else if (decision === "BYPASS_UNUSABLE") {
         session.diagnostics?.checkpoint?.("TURN_CONCURRENCY_UNUSABLE_TRANSCRIPT_BYPASSED_V36", {
-          item_id: event.item_id ?? null, ownership_acquired: false, turn_detection_suspended: false,
+          item_id: event.itemId ?? null, ownership_acquired: false, turn_detection_suspended: false,
         });
       } else if (decision === "BYPASS_PLAYBACK_ALREADY_STARTED") {
         session.diagnostics?.checkpoint?.("TURN_CONCURRENCY_LATE_TRANSCRIPT_BYPASSED_V36", {
-          item_id: event.item_id ?? null, ownership_acquired: false,
+          item_id: event.itemId ?? null, ownership_acquired: false,
           turn_detection_suspended: false, normal_playback_active: true, release_boundary_already_passed: true,
         });
       } else {
-        session.diagnostics?.checkpoint?.("TURN_CONCURRENCY_BYPASSED_V36", { item_id: event.item_id ?? null, owner: "turn_ownership_runtime" });
+        session.diagnostics?.checkpoint?.("TURN_CONCURRENCY_BYPASSED_V36", {
+          item_id: event.itemId ?? null,
+          owner: "turn_ownership_runtime",
+        });
       }
     }
 
-    if (event.type === "output_audio_buffer.started") {
-      const id = responseId(event);
-      const protectedPlayback = Boolean(id && this.protectedResponseIds.has(id));
+    if (event.type === "ASSISTANT_AUDIO_STARTED") {
+      const id = event.responseId ?? null;
+      const protectedPlayback = isProtectedKind(event.kind) || Boolean(id && this.protectedResponseIds.has(id));
       if (!protectedPlayback) {
         this.normalPlaybackActive = true;
         if (this.lifecycle.isActive()) this.release(session, "normal_assistant_playback_started");
       }
     }
-    if (event.type === "output_audio_buffer.stopped") {
-      const id = responseId(event);
-      const protectedPlayback = Boolean(id && this.protectedResponseIds.has(id));
+
+    if (event.type === "ASSISTANT_AUDIO_STOPPED") {
+      const id = event.responseId ?? null;
+      const protectedPlayback = isProtectedKind(event.kind) || Boolean(id && this.protectedResponseIds.has(id));
       if (!protectedPlayback) this.normalPlaybackActive = false;
-      if (id && this.protectedResponseIds.has(id)) {
-        this.protectedResponseIds.delete(id);
+      if (protectedPlayback) {
+        if (id) this.protectedResponseIds.delete(id);
         if (this.lifecycle.isActive()) this.release(session, "protected_playback_completed");
       }
     }
-    if (event.type === "output_audio_buffer.cleared") {
-      const id = responseId(event);
+
+    if (event.type === "ASSISTANT_AUDIO_CLEARED") {
+      const id = event.responseId ?? null;
       this.normalPlaybackActive = false;
       if (id) this.protectedResponseIds.delete(id);
     }
+
     return false;
   }
 }

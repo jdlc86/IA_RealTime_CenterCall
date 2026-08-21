@@ -1,30 +1,18 @@
-import { CallSession as CallSessionV35Runtime } from "./call-session-v35-runtime";
-import { turnConcurrencyCoordinatorFor, type TurnConcurrencyEvent } from "./turn-concurrency-coordinator.js";
+import { CallSession as CallSessionV35 } from "./call-session-v35";
+import { adaptRealtimeProviderEvents } from "./realtime-provider-runtime.js";
+import { turnConcurrencyCoordinatorFor } from "./turn-concurrency-coordinator.js";
 
-const BaseConstructor = CallSessionV35Runtime as unknown as new (...args: any[]) => any;
-const BasePrototype = CallSessionV35Runtime.prototype as any;
+const BaseConstructor = CallSessionV35 as unknown as new (...args: any[]) => any;
+const BasePrototype = CallSessionV35.prototype as any;
 
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
-
-function parseEvent(data: unknown): TurnConcurrencyEvent | null {
-  const text = readRealtimeText(data);
-  if (!text) return null;
-  try { return JSON.parse(text) as TurnConcurrencyEvent; } catch { return null; }
-}
-
-/**
- * Compatibility adapter only. Turn lock, watchdog, playback state and terminal
- * detach are owned by TurnConcurrencyCoordinator.
- */
+/** Compatibility adapter; all shared concurrency state lives in TurnConcurrencyCoordinator. */
 export class CallSession extends BaseConstructor {
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const stopPropagation = turnConcurrencyCoordinatorFor(this).observe(this as any, parseEvent(data));
-    if (stopPropagation) return;
+    const session = this as any;
+    const coordinator = turnConcurrencyCoordinatorFor(this);
+    for (const event of adaptRealtimeProviderEvents(data)) {
+      if (coordinator.observe(session, event)) return;
+    }
     await BasePrototype.handleRealtimeMessage.call(this, data);
   }
 }
