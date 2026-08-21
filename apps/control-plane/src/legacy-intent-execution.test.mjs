@@ -107,3 +107,15 @@ test("V7 marketing routing uses neutral realtime input and command ports", async
   assert.doesNotMatch(v7, /response\.function_call_arguments\.done|conversation\.item\.create|function_call_output|session\.update|TextDecoder/);
   assert.doesNotMatch(v7, /\(this as any\)\.send\(/);
 });
+
+test("V5 reservation routing uses neutral realtime input and command ports", async () => {
+  const sourceRoot = new URL("./", import.meta.url);
+  const v5 = await readFile(new URL("call-session-v5.ts", sourceRoot), "utf8");
+
+  assert.match(v5, /adaptRealtimeProviderEvents\(data\)/);
+  assert.match(v5, /realtimeCommandPortFor\(this as any\)\.updateSessionPolicy/);
+  assert.match(v5, /realtimeCommandPortFor\(this as any\)\.submitToolResult/);
+  assert.match(v5, /this\[LEGACY_INTENT_EXECUTOR\]\(\{ argumentsJson: event\.arguments, callId: event\.callId \}\)/);
+  assert.doesNotMatch(v5, /response\.function_call_arguments\.done|conversation\.item\.create|function_call_output|session\.update|TextDecoder/);
+  assert.doesNotMatch(v5, /\(this as any\)\.send\(/);
+});
