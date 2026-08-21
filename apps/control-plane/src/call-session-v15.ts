@@ -16,6 +16,7 @@ import {
   type RealtimeResponseSerializationState,
 } from "./realtime-response-serialization";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { conversationNextActionRuntimeFor } from "./conversation-next-action-runtime.js";
 
 const BaseConstructor = CallSessionV14 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV14.prototype as any;
@@ -56,7 +57,7 @@ export class CallSession extends BaseConstructor {
   }
 
   private createSpokenResponse(instructions: string): void {
-    const structuredNextAction = (this as any).conversationNextActionV13 as string | undefined;
+    const structuredNextAction = conversationNextActionRuntimeFor(this).current();
     let governed = instructions;
 
     // Closing is the one place where speech and machine state must be identical.

@@ -4,7 +4,6 @@ import {
   returnFromAuxiliaryBusinessInfo,
   transitionCoreIntent,
   type BusinessInfoTopic,
-  type ConversationNextAction,
   type CoreIntentState,
   type CoreWorkflow,
 } from "./core-intent-machine";
@@ -13,6 +12,7 @@ import { adaptHierarchicalIntentToLegacy } from "./core-intent-legacy-adapter";
 import { coreIntentClassifierTool, parseCoreIntentRequest } from "./core-intent-router";
 import type { ToolResult } from "./tool-gateway";
 import { claimClassifierBootstrap, ownsClassifierBootstrap } from "./classifier-bootstrap-authority.js";
+import { conversationNextActionRuntimeFor } from "./conversation-next-action-runtime.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV12 as unknown as new (...args: any[]) => any;
@@ -64,7 +64,6 @@ export class CallSession extends BaseConstructor {
   private coreIntentStateV13: CoreIntentState = initialCoreIntentState();
   private coreIntentSessionUpdateV13Sent = false;
   private closingConfirmationPendingV13 = false;
-  private conversationNextActionV13: ConversationNextAction = "CONTINUE_WORKFLOW";
 
   async fetch(request: Request): Promise<Response> {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
@@ -218,6 +217,7 @@ export class CallSession extends BaseConstructor {
     }
 
     if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
+      const nextAction = conversationNextActionRuntimeFor(this);
       if ((this as any).state === "closing" || (this as any).hangupStarted === true) {
         await BasePrototype.handleRealtimeMessage.call(this, data);
         return;
@@ -235,11 +235,11 @@ export class CallSession extends BaseConstructor {
         return;
       }
 
-      this.conversationNextActionV13 = request.conversation?.nextAction ?? "CONTINUE_WORKFLOW";
+      nextAction.update(request.conversation?.nextAction ?? "CONTINUE_WORKFLOW");
       const closingSignal = request.conversation?.closingSignal ?? "NONE";
       (this as any).diagnostics?.checkpoint?.("CORE_STRUCTURED_CONVERSATION_STATE", {
         intent: request.intent,
-        next_action: this.conversationNextActionV13,
+        next_action: nextAction.current(),
         closing_signal: closingSignal,
         workflow_before: this.coreIntentStateV13.workflow,
         closing_pending_before: this.closingConfirmationPendingV13,
@@ -248,7 +248,7 @@ export class CallSession extends BaseConstructor {
       const rejectedClosing = request.closingResponse === "REJECT" || closingSignal === "REJECTED";
       if (this.closingConfirmationPendingV13 && rejectedClosing) {
         this.closingConfirmationPendingV13 = false;
-        this.conversationNextActionV13 = "CONTINUE_WORKFLOW";
+        nextAction.update("CONTINUE_WORKFLOW");
         (this as any).state = "active";
         (this as any).ambiguousCount = 0;
         const currentWorkflow = this.coreIntentStateV13.workflow;
@@ -282,7 +282,7 @@ export class CallSession extends BaseConstructor {
 
       const explicitStructuredClose = request.intent === "CLOSING"
         && closingSignal === "CONFIRMED"
-        && this.conversationNextActionV13 === "HANGUP_AFTER_SPEECH";
+        && nextAction.current() === "HANGUP_AFTER_SPEECH";
       const requestedIntent = (this.closingConfirmationPendingV13 && request.closingResponse === "CONFIRM") || explicitStructuredClose
         ? "CLOSING"
         : request.intent;
@@ -295,19 +295,19 @@ export class CallSession extends BaseConstructor {
       this.closingConfirmationPendingV13 = closingDecision.pending;
 
       if (closingDecision.action === "ASK_CONFIRMATION") {
-        this.conversationNextActionV13 = "ASK_CLOSE_CONFIRMATION";
+        nextAction.update("ASK_CLOSE_CONFIRMATION");
         this.sendCoreClassifierOutput(event.call_id, { action: "closing_confirmation_required" });
         (this as any).diagnostics?.checkpoint?.("CORE_CLOSING_CONFIRMATION_REQUIRED", {
           active_workflow: this.coreIntentStateV13.workflow,
           irreversible_transition: true,
-          structured_next_action: this.conversationNextActionV13,
+          structured_next_action: nextAction.current(),
         });
         (this as any).createSpokenResponse("Pregunta únicamente y de forma breve: ¿Quieres terminar la llamada? No te despidas, no afirmes que la llamada ha terminado y no abandones el workflow actual todavía.");
         return;
       }
 
       if (closingDecision.action === "ALLOW_CLOSE") {
-        this.conversationNextActionV13 = "HANGUP_AFTER_SPEECH";
+        nextAction.update("HANGUP_AFTER_SPEECH");
       }
 
       const effectiveRequest = requestedIntent === request.intent ? request : { ...request, intent: requestedIntent };
@@ -320,7 +320,7 @@ export class CallSession extends BaseConstructor {
         reason: transition.reason,
         business_info_topics: transition.next.businessInfoTopics,
         suspended_workflow: transition.next.suspendedWorkflow,
-        structured_next_action: this.conversationNextActionV13,
+        structured_next_action: nextAction.current(),
       });
 
       if (effectiveRequest.intent === "BUSINESS_INFO") {
@@ -345,7 +345,7 @@ export class CallSession extends BaseConstructor {
       (this as any).diagnostics?.checkpoint?.("CORE_INTENT_EXECUTOR_DISPATCHED", {
         workflow: transition.next.workflow,
         adapter: "validated_legacy_executor",
-        structured_next_action: this.conversationNextActionV13,
+        structured_next_action: nextAction.current(),
       });
       await BasePrototype.handleRealtimeMessage.call(this, JSON.stringify(synthetic));
       return;
