@@ -58,4 +58,8 @@ test("CI check dry-runs every declared Wrangler profile", () => {
   assert.match(verifier, /body\.runtime_config\?\.tenant_config_binding/);
   assert.match(verifier, /body\.runtime_config\?\.call_sessions_binding/);
   assert.match(verifier, /body\.worker_version\?\.id/);
+  assert.ok(
+    verifier.indexOf("assert.equal(response.status") < verifier.indexOf("await response.json()"),
+    "the E2E verifier must reject HTTP errors before parsing the body",
+  );
 });

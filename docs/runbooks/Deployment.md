@@ -32,6 +32,11 @@ en `main`, su Deploy command actualiza el Worker. Los secretos, KV y demás
 recursos remotos se configuran por Worker; nunca se copian valores sensibles al
 repositorio.
 
+Cloudflare no ofrece Version Preview URLs cuando el Worker implementa Durable
+Objects. Antes de promoción, la prueba de runtime se ejecuta en Workerd; después
+del deploy, el verificador HTTP confirma `/health` y el `worker_version.id` de la
+versión efectiva.
+
 ## Verificación
 
 Tras cada deploy de F5:

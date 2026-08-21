@@ -45,6 +45,11 @@ que no dependa de si Cloudflare ejecuta el campo Build command. Para una
 operación manual, usar siempre los scripts `upload:*` o `deploy:*`; no ejecutar
 Wrangler sin destino explícito.
 
+Este Worker implementa un Durable Object. Cloudflare no genera Version Preview
+URLs para Workers con Durable Objects, aunque `preview_urls` esté habilitado.
+Por eso la comprobación previa a promoción se ejecuta con Workerd y el E2E HTTP
+se ejecuta inmediatamente después del deploy sobre la versión efectiva.
+
 ## Configuración no secreta
 
 Definida en `apps/control-plane/wrangler.jsonc`.

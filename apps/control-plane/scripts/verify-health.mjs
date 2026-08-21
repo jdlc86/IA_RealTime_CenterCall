@@ -18,9 +18,15 @@ const response = await fetch(healthUrl, {
   headers: { Accept: "application/json" },
   signal: AbortSignal.timeout(15_000),
 });
-const body = await response.json();
 
 assert.equal(response.status, 200, `health returned HTTP ${response.status}`);
+assert.match(
+  response.headers.get("content-type") ?? "",
+  /application\/json/i,
+  "health did not return JSON",
+);
+const body = await response.json();
+
 assert.equal(body.ok, true);
 assert.equal(body.service, "IA_RealTime_CenterCall");
 assert.equal(body.environment, expectedEnvironment);
