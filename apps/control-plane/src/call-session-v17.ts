@@ -47,8 +47,8 @@ const AGENT_TOOLS: RealtimeFunctionToolDefinition[] = [
       properties: {
         party_size: { type: "integer", minimum: 1, maximum: 100 },
         preferred_starts_at: { type: "string", description: "Fecha/hora preferida ISO 8601 solo si el cliente eligió ese instante concreto." },
-        from: { type: "string", description: "Inicio ISO 8601 de la fecha exacta o del rango autorizado." },
-        to: { type: "string", description: "Fin ISO 8601 exclusivo del rango autorizado, con un máximo de siete días. No lo uses para ampliar por iniciativa propia una fecha exacta." },
+        from: { type: "string", description: "Inicio de la fecha exacta o del rango autorizado. Puede ser fecha local YYYY-MM-DD o fecha/hora ISO 8601." },
+        to: { type: "string", description: "Fin exclusivo del rango autorizado. Puede ser fecha local YYYY-MM-DD o fecha/hora ISO 8601, con un máximo de siete días. No lo uses para ampliar por iniciativa propia una fecha exacta." },
         date_scope: { type: "string", enum: ["EXACT_DATE", "CALLER_AUTHORIZED_RANGE"], description: "CALLER_AUTHORIZED_RANGE solo cuando el cliente ha expresado flexibilidad entre varios días; nunca para elegirle un día sin avisar." },
         time_from: { type: "string", description: "Hora local mínima HH:MM, por ejemplo 19:00." },
         time_to: { type: "string", description: "Hora local máxima HH:MM, por ejemplo 22:30." },

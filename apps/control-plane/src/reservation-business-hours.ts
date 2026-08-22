@@ -74,6 +74,24 @@ export function normalizeReservationLocalDateTime(value: string, timezone = DEFA
   return `${String(target.year).padStart(4, "0")}-${String(target.month).padStart(2, "0")}-${String(target.day).padStart(2, "0")}T${String(target.hour).padStart(2, "0")}:${String(target.minute).padStart(2, "0")}:${String(target.second).padStart(2, "0")}${sign}${offsetHours}:${offsetMins}`;
 }
 
+export function normalizeReservationSearchBoundary(value: string, timezone = DEFAULT_TIMEZONE): string {
+  const trimmed = value.trim();
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (!dateOnly) return normalizeReservationLocalDateTime(trimmed, timezone);
+  const year = Number(dateOnly[1]);
+  const month = Number(dateOnly[2]);
+  const day = Number(dateOnly[3]);
+  const calendarDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    calendarDate.getUTCFullYear() !== year ||
+    calendarDate.getUTCMonth() !== month - 1 ||
+    calendarDate.getUTCDate() !== day
+  ) {
+    throw new Error("Invalid reservation search date");
+  }
+  return normalizeReservationLocalDateTime(`${trimmed}T00:00:00`, timezone);
+}
+
 function zonedParts(iso: string, timezone: string): { date: string; weekday: number; minutes: number; time: string } {
   const date = new Date(iso);
   if (!Number.isFinite(date.getTime())) throw new Error("Invalid reservation datetime");

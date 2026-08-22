@@ -12,6 +12,7 @@ import {
   endOfBusinessLocalDateExclusive,
   evaluateReservationBusinessHours,
   normalizeReservationLocalDateTime,
+  normalizeReservationSearchBoundary,
   sameBusinessLocalDate,
 } from "./reservation-business-hours";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
@@ -392,10 +393,10 @@ export class CallSession extends BaseConstructor {
     const preferredRaw = text(args.preferred_starts_at);
     const fromRaw = text(args.from) ?? preferredRaw;
     if (!fromRaw) throw new Error("from or preferred_starts_at is required");
-    const from = normalizeReservationLocalDateTime(fromRaw, RESTAURANT_TIMEZONE);
+    const from = normalizeReservationSearchBoundary(fromRaw, RESTAURANT_TIMEZONE);
     const preferred = preferredRaw ? normalizeReservationLocalDateTime(preferredRaw, RESTAURANT_TIMEZONE) : undefined;
     const requestedToRaw = text(args.to);
-    const requestedTo = requestedToRaw ? normalizeReservationLocalDateTime(requestedToRaw, RESTAURANT_TIMEZONE) : undefined;
+    const requestedTo = requestedToRaw ? normalizeReservationSearchBoundary(requestedToRaw, RESTAURANT_TIMEZONE) : undefined;
 
     const fromLocalDate = businessWindowsForDate(from, [], RESTAURANT_TIMEZONE).localDate;
     const toLocalDate = requestedTo

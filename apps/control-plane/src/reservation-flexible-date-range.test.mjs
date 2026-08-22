@@ -60,6 +60,8 @@ test("active policy routes flexible dates to range search without phrase catalog
   assert.match(v29, /día de la semana, la fecha y la hora exactos/);
   assert.match(v31, /search_criteria/);
   assert.match(v31, /no materialices una fecha concreta/);
+  assert.match(v31, /normalizeReservationSearchBoundary\(fromRaw/);
+  assert.match(v31, /normalizeReservationSearchBoundary\(requestedToRaw/);
   assert.match(v31, /callerAuthorizedRange\s*\?\s*rows/);
   assert.match(v31, /date_scope: callerAuthorizedRange \? "CALLER_AUTHORIZED_RANGE"/);
   assert.match(v50, /RESERVATION_DATE_RANGE_DELEGATED_V50/);

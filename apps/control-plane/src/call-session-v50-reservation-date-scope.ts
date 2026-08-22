@@ -1,5 +1,9 @@
 import { CallSession as CallSessionV49 } from "./call-session-v49-provider-selection";
-import { businessWindowsForDate, normalizeReservationLocalDateTime } from "./reservation-business-hours.js";
+import {
+  businessWindowsForDate,
+  normalizeReservationLocalDateTime,
+  normalizeReservationSearchBoundary,
+} from "./reservation-business-hours.js";
 import { reservationDateScopeRuntimeFor } from "./reservation-date-scope-runtime.js";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
@@ -38,6 +42,11 @@ function requestedDateTime(tool: GuardedReservationTool, args: Record<string, un
 
 function reservationLocalDate(raw: string): string {
   const normalized = normalizeReservationLocalDateTime(raw, RESTAURANT_TIMEZONE);
+  return businessWindowsForDate(normalized, [], RESTAURANT_TIMEZONE).localDate;
+}
+
+function reservationSearchLocalDate(raw: string): string {
+  const normalized = normalizeReservationSearchBoundary(raw, RESTAURANT_TIMEZONE);
   return businessWindowsForDate(normalized, [], RESTAURANT_TIMEZONE).localDate;
 }
 
@@ -118,8 +127,8 @@ export class CallSession extends BaseConstructor {
       if (fromRaw && toRaw) {
         try {
           const rangeDecision = decideReservationSearchDateRange({
-            fromLocalDate: reservationLocalDate(fromRaw),
-            toLocalDate: reservationLocalDate(toRaw),
+            fromLocalDate: reservationSearchLocalDate(fromRaw),
+            toLocalDate: reservationSearchLocalDate(toRaw),
             dateScope: text(args.date_scope),
           });
           if (rangeDecision.action !== "SAME_DATE") {
@@ -145,7 +154,11 @@ export class CallSession extends BaseConstructor {
     }
 
     let requestedLocalDate: string;
-    try { requestedLocalDate = reservationLocalDate(rawDateTime); } catch {
+    try {
+      requestedLocalDate = toolEvent.name === SEARCH_RESERVATION
+        ? reservationSearchLocalDate(rawDateTime)
+        : reservationLocalDate(rawDateTime);
+    } catch {
       await BasePrototype.handleRealtimeMessage.call(this, data);
       return;
     }
