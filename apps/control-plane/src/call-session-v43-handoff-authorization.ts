@@ -21,6 +21,7 @@ const BaseConstructor = CallSessionV42 as unknown as new (...args: any[]) => any
 const BasePrototype = CallSessionV42.prototype as any;
 const HUMAN_ASSISTANCE = "restaurant_human_assistance";
 const INPUT_IGNORED = "restaurant_input_ignored";
+const NATURAL_CONVERSATION = "restaurant_conversation";
 
 type SemanticToolEvent = Extract<RealtimeProviderEvent, { type: "SEMANTIC_TOOL_SELECTED" }>;
 
@@ -304,6 +305,7 @@ export class CallSession extends BaseConstructor {
       if (
         event.name !== HUMAN_ASSISTANCE &&
         event.name !== INPUT_IGNORED &&
+        event.name !== NATURAL_CONVERSATION &&
         this.handoffAuthorizationV43.offerPending
       ) {
         this.handoffAuthorizationV43 = clearHumanHandoffOfferForCompetingAction(this.handoffAuthorizationV43);
