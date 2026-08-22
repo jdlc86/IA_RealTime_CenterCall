@@ -48,12 +48,17 @@ function nonEmpty(value: unknown): string | null {
  */
 export class HumanHandoffTransportAdapter implements HumanHandoffTransportPort {
   private readonly runtime;
+  private readonly fetcher: FetchLike;
 
   constructor(
     private readonly session: HumanHandoffTransportHost,
-    private readonly fetcher: FetchLike = fetch,
+    fetcher: FetchLike = fetch,
   ) {
     this.runtime = humanHandoffTransportRuntimeFor(session);
+    // Keep the provider fetch as a bare-call dependency. Calling a native fetch
+    // directly through `this.fetcher(...)` can supply the adapter instance as
+    // the receiver and trigger `Illegal invocation` in receiver-sensitive runtimes.
+    this.fetcher = (...args) => fetcher(...args);
   }
 
   cancelTransferWatchdog(): void {
