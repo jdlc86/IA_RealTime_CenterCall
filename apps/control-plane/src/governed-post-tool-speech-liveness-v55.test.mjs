@@ -13,7 +13,8 @@ test("governed post-tool speech liveness is composed without a V55 CallSession l
   assert.match(runtime, /if \(this\.activeAssistantResponseId !== undefined\)/);
   assert.match(runtime, /responseId !== activeResponseId/);
   assert.match(runtime, /observeAssistantResponseCompleted\(responseId\?: string\)/);
-  assert.match(runtime, /if \(deferred\) this\.delegate\.speak\(deferred\)/);
+  assert.match(runtime, /if \(deferred\) \{[\s\S]*?this\.delegate\.speak\(deferred\)/);
+  assert.match(runtime, /else if \(deferredDefault\) \{[\s\S]*?this\.emitNormalDefaultResponse\(\)/);
 
   assert.match(coordinator, /observeGovernedSpeechBeforeLowerLayers/);
   assert.match(coordinator, /observeRealtimeAssistantResponseStarted/);

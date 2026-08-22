@@ -38,6 +38,7 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
   private sessionPolicyTransforms: RealtimeSessionPolicyTransform[] = [];
   private pendingDefaultResponseReplacement: RealtimeSpeechRequest | null = null;
   private deferredDefaultResponseReplacement: RealtimeSpeechRequest | null = null;
+  private deferredDefaultResponse = false;
   private stagedCallerTurnText: string | null = null;
   private activeAssistantResponseId: string | null | undefined = undefined;
   readonly capabilities: ProviderCapabilities;
@@ -79,12 +80,23 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
     if (replacement) {
       if (this.activeAssistantResponseId !== undefined) {
         this.deferredDefaultResponseReplacement = replacement;
+        this.deferredDefaultResponse = false;
         return;
       }
+      this.stagedCallerTurnText = null;
       this.delegate.speak(replacement);
       return;
     }
 
+    if (this.activeAssistantResponseId !== undefined) {
+      this.deferredDefaultResponse = true;
+      return;
+    }
+
+    this.emitNormalDefaultResponse();
+  }
+
+  private emitNormalDefaultResponse(): void {
     const callerTurnText = this.stagedCallerTurnText;
     this.stagedCallerTurnText = null;
     if (callerTurnText) {
@@ -113,8 +125,15 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
     }
     this.activeAssistantResponseId = undefined;
     const deferred = this.deferredDefaultResponseReplacement;
+    const deferredDefault = this.deferredDefaultResponse;
     this.deferredDefaultResponseReplacement = null;
-    if (deferred) this.delegate.speak(deferred);
+    this.deferredDefaultResponse = false;
+    if (deferred) {
+      this.stagedCallerTurnText = null;
+      this.delegate.speak(deferred);
+    } else if (deferredDefault) {
+      this.emitNormalDefaultResponse();
+    }
   }
 
   cancelResponse(responseId: string): void { this.delegate.cancelResponse(responseId); }

@@ -10,6 +10,7 @@ import {
   observeRealtimeAssistantResponseStarted,
   realtimeCommandPortFor,
   realtimeProviderFor,
+  stageConsolidatedCallerTurnForNextResponse,
 } from "../.test-dist/realtime-provider-runtime.js";
 
 function host() {
@@ -178,6 +179,55 @@ test("stale response completion cannot release governed speech while a newer res
 
   observeRealtimeAssistantResponseCompleted(h, "response-b");
   assert.equal(responseCreates(h.events).length, 1);
+});
+
+test("normal default response is deferred and coalesced while another response is active", () => {
+  const h = host();
+  const port = realtimeCommandPortFor(h);
+
+  observeRealtimeAssistantResponseStarted(h, "response-active");
+  port.createDefaultResponse();
+  port.createDefaultResponse();
+  assert.equal(responseCreates(h.events).length, 0);
+
+  observeRealtimeAssistantResponseCompleted(h, "response-active");
+  assert.deepEqual(responseCreates(h.events), [{ type: "response.create" }]);
+});
+
+test("staged semantic response waits for the active response to complete", () => {
+  const h = host();
+  const port = realtimeCommandPortFor(h);
+
+  observeRealtimeAssistantResponseStarted(h, "response-active");
+  stageConsolidatedCallerTurnForNextResponse(h, "sí, quiero continuar");
+  port.createDefaultResponse();
+  assert.equal(responseCreates(h.events).length, 0);
+
+  observeRealtimeAssistantResponseCompleted(h, "response-active");
+  const created = responseCreates(h.events);
+  assert.equal(created.length, 1);
+  assert.match(h.events[0]?.item?.content?.[0]?.text ?? "", /sí, quiero continuar$/);
+  assert.equal(created[0]?.response?.metadata?.consolidated_caller_turn, "true");
+});
+
+test("governed replacement takes precedence over a deferred default response", () => {
+  const h = host();
+  installRealtimeToolResultPolicy(h, () => ({
+    action: "REPLACE_DEFAULT_RESPONSE",
+    speech: { instructions: "respuesta gobernada", purpose: "governed-precedence" },
+  }));
+  const port = realtimeCommandPortFor(h);
+
+  observeRealtimeAssistantResponseStarted(h, "response-active");
+  port.createDefaultResponse();
+  port.submitToolResult({ callId: "call-governed", output: { ok: true } });
+  port.createDefaultResponse();
+  observeRealtimeAssistantResponseCompleted(h, "response-active");
+
+  const created = responseCreates(h.events);
+  assert.equal(created.length, 1);
+  assert.equal(created[0]?.response?.instructions, "respuesta gobernada");
+  assert.equal(created[0]?.response?.metadata?.purpose, "governed-precedence");
 });
 
 test("neutral tool-result policy preserves normal default response wire behavior", () => {

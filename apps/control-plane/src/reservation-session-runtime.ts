@@ -26,6 +26,7 @@ export type ReservationSessionSnapshot = Readonly<{
   commitEpoch: number;
   availabilityFingerprint: string | null;
   availabilityResult: Record<string, unknown> | null;
+  offeredSlotFingerprint: string | null;
 }>;
 
 const ALLOWED_DRAFT_KEYS = [
@@ -54,6 +55,7 @@ export class ReservationSessionRuntime {
   private stage: ReservationStage = "IDLE";
   private availabilityFingerprint: string | null = null;
   private availabilityResult: Record<string, unknown> | null = null;
+  private offeredSlotFingerprint: string | null = null;
   private commitEpoch = 0;
 
   snapshot(): ReservationSessionSnapshot {
@@ -63,6 +65,7 @@ export class ReservationSessionRuntime {
       commitEpoch: this.commitEpoch,
       availabilityFingerprint: this.availabilityFingerprint,
       availabilityResult: this.availabilityResult ? { ...this.availabilityResult } : null,
+      offeredSlotFingerprint: this.offeredSlotFingerprint,
     });
   }
 
@@ -88,6 +91,33 @@ export class ReservationSessionRuntime {
     });
   }
 
+  slotFingerprintFor(draft: ReservationDraft): string | null {
+    if (!Number.isInteger(draft.party_size) || !draft.starts_at) return null;
+    return JSON.stringify({
+      party_size: draft.party_size,
+      starts_at: draft.starts_at,
+      duration_minutes: draft.duration_minutes ?? 90,
+    });
+  }
+
+  canonicalizeOutstandingConfirmation(args: Record<string, unknown>): Record<string, unknown> {
+    const candidates = this.availabilityResult?.requested_candidates;
+    const confirmsOnlyOutstandingProposal = args.confirm === true
+      && args.separate_tables_acceptable === undefined
+      && this.draft.separate_tables_acceptable === undefined
+      && this.draft.tables_must_be_close !== true
+      && Array.isArray(candidates)
+      && candidates.length > 1;
+    return confirmsOnlyOutstandingProposal
+      ? { ...args, separate_tables_acceptable: true }
+      : args;
+  }
+
+  wasSlotOffered(draft: ReservationDraft): boolean {
+    const fingerprint = this.slotFingerprintFor(draft);
+    return fingerprint !== null && fingerprint === this.offeredSlotFingerprint;
+  }
+
   cachedAvailability(fingerprint: string): Record<string, unknown> | null {
     if (this.availabilityFingerprint !== fingerprint || !this.availabilityResult) return null;
     return { ...this.availabilityResult };
@@ -96,6 +126,11 @@ export class ReservationSessionRuntime {
   recordAvailability(fingerprint: string, result: Record<string, unknown>): void {
     this.availabilityFingerprint = fingerprint;
     this.availabilityResult = { ...result };
+    const candidates = result.requested_candidates;
+    if (result.requested_available === true || (Array.isArray(candidates) && candidates.length > 0)) {
+      const slotFingerprint = this.slotFingerprintFor(this.draft);
+      if (slotFingerprint) this.offeredSlotFingerprint = slotFingerprint;
+    }
     this.stage = result.requested_available === true ? "AVAILABILITY_CONFIRMED" : "COLLECTING";
   }
 
@@ -110,6 +145,7 @@ export class ReservationSessionRuntime {
   invalidateAvailabilityForConflict(): void {
     this.availabilityFingerprint = null;
     this.availabilityResult = null;
+    this.offeredSlotFingerprint = null;
     this.draft.confirm = false;
     this.stage = "CONFLICT";
   }
@@ -118,6 +154,7 @@ export class ReservationSessionRuntime {
     this.draft = {};
     this.availabilityFingerprint = null;
     this.availabilityResult = null;
+    this.offeredSlotFingerprint = null;
     this.stage = "BOOKED";
     this.commitEpoch += 1;
   }

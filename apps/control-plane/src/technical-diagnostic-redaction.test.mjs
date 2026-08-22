@@ -80,11 +80,27 @@ test("diagnostic sanitizer exposes only redacted transcript text", () => {
   });
   assert.deepEqual(details, {
     redacted_text: "Mi nombre es [NOMBRE_REDACTADO] y no quiero continuar",
-    redaction_version: 1,
+    redaction_version: 2,
     usable: true,
   });
   assert.equal(JSON.stringify(details).includes("Carlos"), false);
   assert.equal(JSON.stringify(details).includes("never persist"), false);
+});
+
+test("reservation names and codes are removed from caller and assistant transcripts", () => {
+  const caller = redactTechnicalText("A nombre de Marta Soler.");
+  const assistant = redactTechnicalText(
+    "La reserva para 15 personas a nombre de Marta Soler ha quedado confirmada. Tu código de reserva es R-123456.",
+  );
+
+  assert.equal(caller, "A nombre de [NOMBRE_REDACTADO].");
+  assert.match(assistant, /a nombre de \[NOMBRE_REDACTADO\]/i);
+  assert.match(assistant, /c[oó]digo de reserva es \[CODIGO_REDACTADO\]/i);
+  assert.doesNotMatch(assistant, /Marta|Soler|R-123456/i);
+});
+
+test("a request for the reservation holder remains diagnostically meaningful", () => {
+  assert.equal(redactTechnicalText("¿A nombre de quién?"), "¿A nombre de quién?");
 });
 
 test("unstructured tool payload is never persisted verbatim", () => {
@@ -107,7 +123,7 @@ test("CallDiagnostics stores only the sanitized evidence in its timeline and sin
   const entry = diagnostics.snapshot().timeline.at(-1);
   assert.deepEqual(entry?.details, {
     redacted_text: "Me llamo [NOMBRE_REDACTADO] y mi teléfono es [TELEFONO_REDACTADO]",
-    redaction_version: 1,
+    redaction_version: 2,
     speaker: "caller",
   });
 

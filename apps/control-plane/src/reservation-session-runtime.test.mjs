@@ -41,4 +41,58 @@ test("availability conflict invalidates confirmation but preserves reservation f
   assert.equal(snapshot.draft.confirm, false);
   assert.equal(snapshot.draft.party_size, 2);
   assert.equal(snapshot.draft.starts_at, "2026-09-25T20:00:00+02:00");
+  assert.equal(snapshot.offeredSlotFingerprint, null);
+});
+
+test("a semantic confirmation accepts the only outstanding multi-table proposal", () => {
+  const runtime = new ReservationSessionRuntime();
+  const draft = runtime.mergeDraft({
+    party_size: 15,
+    starts_at: "2026-08-22T21:00:00+02:00",
+  }, null);
+  runtime.recordAvailability(runtime.fingerprintFor(draft), {
+    requested_available: false,
+    requested_candidates: [{ table_code: "T1" }, { table_code: "T2" }],
+  });
+
+  assert.deepEqual(runtime.canonicalizeOutstandingConfirmation({ confirm: true }), {
+    confirm: true,
+    separate_tables_acceptable: true,
+  });
+  assert.equal(runtime.wasSlotOffered(draft), true);
+});
+
+test("outstanding confirmation never overrides explicit table preferences", () => {
+  const runtime = new ReservationSessionRuntime();
+  const draft = runtime.mergeDraft({
+    party_size: 15,
+    starts_at: "2026-08-22T21:00:00+02:00",
+  }, null);
+  runtime.recordAvailability(runtime.fingerprintFor(draft), {
+    requested_available: false,
+    requested_candidates: [{ table_code: "T1" }, { table_code: "T2" }],
+  });
+
+  assert.deepEqual(
+    runtime.canonicalizeOutstandingConfirmation({ confirm: true, separate_tables_acceptable: false }),
+    { confirm: true, separate_tables_acceptable: false },
+  );
+  runtime.mergeDraft({ tables_must_be_close: true }, null);
+  assert.deepEqual(runtime.canonicalizeOutstandingConfirmation({ confirm: true }), { confirm: true });
+});
+
+test("an unavailable recheck is recognized only for the exact previously offered slot", () => {
+  const runtime = new ReservationSessionRuntime();
+  const offered = runtime.mergeDraft({
+    party_size: 15,
+    starts_at: "2026-08-22T21:00:00+02:00",
+  }, null);
+  runtime.recordAvailability(runtime.fingerprintFor(offered), {
+    requested_available: true,
+    requested_candidates: [{ table_code: "T1" }],
+  });
+
+  assert.equal(runtime.wasSlotOffered(offered), true);
+  assert.equal(runtime.wasSlotOffered({ ...offered, starts_at: "2026-08-22T22:00:00+02:00" }), false);
+  assert.equal(runtime.wasSlotOffered({ ...offered, party_size: 14 }), false);
 });

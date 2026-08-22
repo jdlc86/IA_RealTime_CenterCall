@@ -68,8 +68,13 @@ export function redactTechnicalText(value: string): string {
     .replace(/\b(?:[XYZ]\s?[-.]?\s?\d{7,8}\s?[-.]?\s?[A-Z]|\d{8}\s?[-.]?\s?[A-Z])\b/gi, "[DOCUMENTO_REDACTADO]")
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[EMAIL_REDACTADO]")
     .replace(/(?<![\w:+-])(?:\+?\d[\d\s().-]{7,}\d)(?![\w:+-])/g, "[TELEFONO_REDACTADO]")
+    .replace(/\bR[-\s]?\d{4,}\b/gi, "[CODIGO_REDACTADO]")
     .replace(
-      /\b(me llamo|mi nombre es|reserva(?:r)?\s+a\s+nombre\s+de)\s+[\p{L}'-]+(?:\s+[\p{L}'-]+){0,3}?(?=\s*(?:[,.;]|y\b|pero\b|$))/giu,
+      /(c[oó]digo(?:\s+de\s+(?:la\s+)?reserva)?(?:\s+es|\s*:)?\s+)[A-Z0-9][A-Z0-9-]{4,}/giu,
+      "$1[CODIGO_REDACTADO]",
+    )
+    .replace(
+      /\b(me llamo|mi nombre es|reserva(?:r)?\s+a\s+nombre\s+de|a\s+nombre\s+de)\s+(?!(?:qui[eé]n|qu[eé])\b)[\p{L}'-]+(?:\s+[\p{L}'-]+){0,3}?(?=\s*(?:[,.;]|y\b|pero\b|ha\b|queda\b|qued[oó]\b|est[aá]\b|para\b|con\b|$))/giu,
       "$1 [NOMBRE_REDACTADO]",
     )
     .replace(
@@ -145,7 +150,7 @@ export function sanitizeDiagnosticDetails(
     if (lower.includes("transcript")) {
       if (typeof value === "string") {
         sanitized.redacted_text = redactTechnicalText(value);
-        sanitized.redaction_version = 1;
+        sanitized.redaction_version = 2;
       } else if (typeof value === "boolean") {
         sanitized[key] = value;
       }

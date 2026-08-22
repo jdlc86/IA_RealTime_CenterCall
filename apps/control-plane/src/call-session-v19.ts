@@ -50,10 +50,11 @@ export class CallSession extends BaseConstructor {
     const session = this as any;
     const runtime = reservationSessionRuntimeFor(this);
     const callerPhone = trustedCallerPhone(session);
+    const canonicalArguments = runtime.canonicalizeOutstandingConfirmation(args);
     const contactIdentity = reservationContactIdentityRuntimeFor(this).canonicalizeCreate(this, {
       callId,
       trustedCallerPhone: callerPhone,
-      arguments: args,
+      arguments: canonicalArguments,
     });
     if (!contactIdentity.allowed) return;
     const datetime = reservationDatetimeRuntimeFor(this).canonicalizeCreate(this, {
@@ -95,6 +96,7 @@ export class CallSession extends BaseConstructor {
     const fingerprint = runtime.fingerprintFor(draft)!;
     let availabilityResult = runtime.cachedAvailability(fingerprint);
     if (!availabilityResult) {
+      const previouslyOffered = runtime.wasSlotOffered(draft);
       const started = Date.now();
       session.diagnostics?.checkpoint?.("DIRECT_RESERVATION_AVAILABILITY_STARTED", {
         party_size: draft.party_size,
@@ -119,6 +121,22 @@ export class CallSession extends BaseConstructor {
       }
       availabilityResult = availability.result as Record<string, unknown>;
       runtime.recordAvailability(fingerprint, availabilityResult);
+      if (availabilityResult.requested_available !== true && previouslyOffered) {
+        runtime.invalidateAvailabilityForConflict();
+        session.diagnostics?.checkpoint?.("DIRECT_RESERVATION_AVAILABILITY_CHANGED_BEFORE_COMMIT", {
+          party_size: draft.party_size,
+          starts_at: draft.starts_at,
+          reservation_created: false,
+          confirmation_rearmed: true,
+        });
+        this.sendReservationOutput(callId, reservationAvailabilityChangedOutput({
+          party_size: draft.party_size,
+          starts_at: draft.starts_at,
+          customer_name: draft.customer_name,
+          duration_minutes: draft.duration_minutes ?? 90,
+        }));
+        return;
+      }
     }
 
     if (availabilityResult.requested_available !== true) {
