@@ -178,7 +178,21 @@ export class ConversationTurnLifecycle {
         return effects;
       }
       case "transcript_usable": {
-        if (this.state === "CALLER_SPEAKING" || this.state === "PROCESSING_CALLER_TURN") this.state = "PROCESSING_CALLER_TURN";
+        // A confirmed barge-in can clear normal playback before VAD's
+        // speech_started reaches this lifecycle. In that ordering the clear
+        // opens WAITING_FOR_CALLER and arms a silence epoch even though a real
+        // caller turn is already owned by higher semantic layers. A usable
+        // transcript is authoritative evidence that processing is underway,
+        // so it must always cancel that stale silence episode and transfer the
+        // lifecycle into PROCESSING_CALLER_TURN.
+        if (
+          this.state === "WAITING_FOR_CALLER" ||
+          this.state === "CALLER_SPEAKING" ||
+          this.state === "PROCESSING_CALLER_TURN"
+        ) {
+          this.cancelSilence(effects);
+          this.state = "PROCESSING_CALLER_TURN";
+        }
         return effects;
       }
       case "transcript_unusable":
