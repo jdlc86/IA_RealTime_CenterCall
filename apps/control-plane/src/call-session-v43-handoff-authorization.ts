@@ -7,10 +7,15 @@ import {
   observeHumanHandoffCallerTurn,
   type HumanHandoffAuthorizationState,
 } from "./human-handoff-authorization-policy.js";
-import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import {
+  adaptRealtimeProviderEvents,
+  installRealtimeSessionPolicyTransform,
+  realtimeCommandPortFor,
+} from "./realtime-provider-runtime.js";
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import { releaseSemanticGate } from "./semantic-turn-coordinator.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { withHandoffConversationContext } from "./handoff-conversation-context.js";
 
 const BaseConstructor = CallSessionV42 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV42.prototype as any;
@@ -36,6 +41,30 @@ export class CallSession extends BaseConstructor {
   private latestCallerTranscriptV43: string | null = null;
   private explicitPendingOfferRejectionV43 = false;
   private handoffClarificationIssuedV43 = false;
+  private handoffPolicyTransformInstalledV43 = false;
+
+  private installHandoffPolicyTransformV43(): void {
+    if (this.handoffPolicyTransformInstalledV43) return;
+    this.handoffPolicyTransformInstalledV43 = true;
+    installRealtimeSessionPolicyTransform(this as any, (update) => {
+      if (typeof update.instructions !== "string") return update;
+      return {
+        ...update,
+        instructions: withHandoffConversationContext(
+          update.instructions,
+          this.handoffAuthorizationV43.offerPending,
+        ),
+      };
+    });
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/start") {
+      this.installHandoffPolicyTransformV43();
+    }
+    return super.fetch(request);
+  }
 
   protected prepareHumanHandoffOfferFromBackendV26(context: {
     tool: string;
