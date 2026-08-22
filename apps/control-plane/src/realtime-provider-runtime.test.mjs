@@ -12,6 +12,7 @@ import {
   realtimeProviderFor,
   stageConsolidatedCallerTurnForNextResponse,
 } from "../.test-dist/realtime-provider-runtime.js";
+import { decideDirectPostToolResponse } from "../.test-dist/post-booking-conversation-policy.js";
 
 function host() {
   const events = [];
@@ -179,6 +180,45 @@ test("stale response completion cannot release governed speech while a newer res
 
   observeRealtimeAssistantResponseCompleted(h, "response-b");
   assert.equal(responseCreates(h.events).length, 1);
+});
+
+test("production-shaped duplicate rejection resumes with tools disabled after the selecting response completes", () => {
+  const h = host();
+  installRealtimeToolResultPolicy(h, (request) => {
+    const decision = decideDirectPostToolResponse(request.toolName ?? "", request.output);
+    if (decision.action !== "CONTINUE") return { action: "PASS" };
+    return {
+      action: "REPLACE_DEFAULT_RESPONSE",
+      speech: {
+        instructions: decision.instructions,
+        tools: "DISABLED",
+        purpose: "duplicate_semantic_continuation_v26",
+      },
+    };
+  });
+  const port = realtimeCommandPortFor(h);
+
+  observeRealtimeAssistantResponseStarted(h, "response-duplicate-tool");
+  port.submitToolResult({
+    callId: "call-duplicate-cancel",
+    toolName: "restaurant_reservation_cancel",
+    output: {
+      ok: false,
+      status: "REJECTED",
+      reason: "DUPLICATE_SEMANTIC_DECISION",
+      authoritative_tool: "restaurant_reservation_cancel",
+    },
+  });
+  port.createDefaultResponse();
+
+  assert.equal(responseCreates(h.events).length, 0);
+  observeRealtimeAssistantResponseCompleted(h, "response-duplicate-tool");
+
+  const created = responseCreates(h.events);
+  assert.equal(created.length, 1);
+  assert.equal(created[0]?.response?.tool_choice, "none");
+  assert.equal(created[0]?.response?.metadata?.purpose, "duplicate_semantic_continuation_v26");
+  assert.match(created[0]?.response?.instructions ?? "", /resultado autorizado anterior/i);
 });
 
 test("normal default response is deferred and coalesced while another response is active", () => {

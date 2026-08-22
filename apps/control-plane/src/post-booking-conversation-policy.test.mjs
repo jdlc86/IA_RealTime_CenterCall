@@ -248,6 +248,23 @@ test("direct non-terminal confirmation state remains model-driven", () => {
   );
 });
 
+test("duplicate semantic tool rejection produces a tool-free continuation instead of silence", () => {
+  const decision = decideDirectPostToolResponse("restaurant_reservation_cancel", {
+    ok: false,
+    status: "REJECTED",
+    reason: "DUPLICATE_SEMANTIC_DECISION",
+    authoritative_tool: "restaurant_reservation_cancel",
+  });
+
+  assert.equal(decision.action, "CONTINUE");
+  if (decision.action !== "CONTINUE") return;
+  assert.equal(decision.reason, "DUPLICATE_SEMANTIC_DECISION");
+  assert.match(decision.instructions, /resultado autorizado anterior/i);
+  assert.match(decision.instructions, /No vuelvas a llamar ninguna herramienta/i);
+  assert.match(decision.instructions, /No afirmes que la acción se completó/i);
+  assert.match(decision.instructions, /pedía confirmación/i);
+});
+
 test("direct query, cancellation, modification and business-info terminal results are governed", () => {
   const cases = [
     ["restaurant_reservation_query", { ok: true, status: "FOUND" }],

@@ -2,7 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { malformedToolCorrectionRuntimeFor } from "../.test-dist/malformed-tool-correction-runtime.js";
-import { publicRestaurantToolAuthorizationPortFor } from "../.test-dist/semantic-tool-authorization-port.js";
+import {
+  publicRestaurantToolAuthorizationPortFor,
+  semanticToolAuthorizationRequiresContinuation,
+} from "../.test-dist/semantic-tool-authorization-port.js";
 import { semanticTurnRuntimeFor } from "../.test-dist/semantic-turn-runtime.js";
 
 function host() {
@@ -55,6 +58,8 @@ test("same-tool correction is released to semantic authority exactly once", () =
   });
   assert.equal(duplicate.allowed, false);
   assert.equal(duplicate.duplicateOf, "restaurant_reservation_create");
+  assert.equal(semanticToolAuthorizationRequiresContinuation(duplicate), true);
+  assert.equal(session.events.at(-1)?.type, "conversation.item.create");
 });
 
 test("cross-tool correction is rejected before semantic authority can consume it", () => {
@@ -73,6 +78,7 @@ test("cross-tool correction is rejected before semantic authority can consume it
   });
   assert.equal(rejected.allowed, false);
   assert.equal(rejected.ignored, false);
+  assert.equal(semanticToolAuthorizationRequiresContinuation(rejected), false);
   assert.equal(semanticTurnRuntimeFor(session).snapshot().selectedTool, null);
   assert.equal(malformedToolCorrectionRuntimeFor(session).snapshot().recoveryRequired, true);
   assert.equal(session.events.some((event) => event?.type === "conversation.item.create"), true);
@@ -94,6 +100,9 @@ test("V29 and V31 share the same neutral authorization boundary", () => {
   const port = readFileSync(new URL("./semantic-tool-authorization-port.ts", import.meta.url), "utf8");
 
   assert.match(v29, /publicRestaurantToolAuthorizationPortFor\(this\)\.decide\(event\)/);
+  assert.match(v29, /semanticToolAuthorizationRequiresContinuation\(result\)/);
+  assert.match(v29, /SEMANTIC_TOOL_REJECTION_CONTINUATION_REQUESTED_V29/);
+  assert.match(v29, /realtimeCommandPortFor\(this as any\)\.createDefaultResponse\(\)/);
   assert.match(v31, /publicRestaurantToolAuthorizationPortFor\(this\)\.authorize/);
   assert.doesNotMatch(v29, /authorizePublicRestaurantTool\(this/);
   assert.match(port, /malformedToolCorrectionRuntimeFor\(session\)\.preauthorize/);

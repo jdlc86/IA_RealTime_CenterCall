@@ -14,6 +14,14 @@ export type PublicRestaurantToolAuthorizationDecision = Readonly<{
   directedIgnoreRejected: boolean;
 }>;
 
+export function semanticToolAuthorizationRequiresContinuation(
+  decision: PublicRestaurantToolAuthorizationDecision,
+): boolean {
+  return !decision.allowed &&
+    !decision.ignored &&
+    (decision.directedIgnoreRejected || decision.duplicateOf !== null);
+}
+
 export type PublicRestaurantToolAuthorizationPort = Readonly<{
   decide(request: PublicRestaurantToolAuthorizationRequest): PublicRestaurantToolAuthorizationDecision;
   authorize(request: PublicRestaurantToolAuthorizationRequest): boolean;

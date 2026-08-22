@@ -21,6 +21,13 @@ const STRUCTURED_CONTINUATION_INSTRUCTIONS =
   `Después pregunta exactamente: ${CONTINUATION_QUESTION} ` +
   "No añadas ninguna otra pregunta ni llames herramientas en esta respuesta.";
 
+const DUPLICATE_SEMANTIC_CONTINUATION_INSTRUCTIONS =
+  "Continúa la conversación usando el resultado autorizado anterior de este mismo turno. " +
+  "No describas el rechazo técnico ni menciones herramientas. No vuelvas a llamar ninguna herramienta en esta respuesta. " +
+  "No afirmes que la acción se completó salvo que el resultado autorizado anterior confirme explícitamente su éxito. " +
+  "Si ese resultado pedía confirmación, solicita de nuevo una confirmación breve y concreta; si pedía un dato, solicita solo ese dato; si era terminal, comunícalo brevemente. " +
+  "Después espera un nuevo turno del cliente.";
+
 const AVAILABILITY_CHANGED_INSTRUCTIONS =
   `Pronuncia exactamente: ${JSON.stringify(RESERVATION_AVAILABILITY_CHANGED_SPEECH)} ` +
   "No llames herramientas en esta misma respuesta. Espera la respuesta del cliente. " +
@@ -60,6 +67,11 @@ export type DirectPostToolResponseDecision =
       collectSlot: ReservationCollectionSlot;
       instructions: string;
       exactText?: string;
+    }
+  | {
+      action: "CONTINUE";
+      reason: "DUPLICATE_SEMANTIC_DECISION";
+      instructions: string;
     }
   | {
       action: "DEFAULT";
@@ -158,6 +170,15 @@ export function decideDirectPostToolResponse(
 
   const status = stringField(payload, "status");
   const stage = stringField(payload, "stage");
+  const reason = stringField(payload, "reason");
+
+  if (status === "REJECTED" && reason === "DUPLICATE_SEMANTIC_DECISION") {
+    return {
+      action: "CONTINUE",
+      reason: "DUPLICATE_SEMANTIC_DECISION",
+      instructions: DUPLICATE_SEMANTIC_CONTINUATION_INSTRUCTIONS,
+    };
+  }
 
   if (
     toolName === "restaurant_reservation_create" &&

@@ -12,7 +12,10 @@ import {
   armSemanticGate,
   beginSemanticTurnFromAcousticEvidence,
 } from "./semantic-turn-coordinator.js";
-import { publicRestaurantToolAuthorizationPortFor } from "./semantic-tool-authorization-port.js";
+import {
+  publicRestaurantToolAuthorizationPortFor,
+  semanticToolAuthorizationRequiresContinuation,
+} from "./semantic-tool-authorization-port.js";
 import { semanticTurnRuntimeFor } from "./semantic-turn-runtime.js";
 import { turnOwnershipRuntimeFor } from "./turn-ownership-runtime.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
@@ -119,8 +122,18 @@ export class CallSession extends BaseConstructor {
       });
     }
     const result = publicRestaurantToolAuthorizationPortFor(this).decide(event);
-    if (result.directedIgnoreRejected) {
+    if (semanticToolAuthorizationRequiresContinuation(result)) {
       realtimeCommandPortFor(this as any).createDefaultResponse();
+      (this as any).diagnostics?.checkpoint?.("SEMANTIC_TOOL_REJECTION_CONTINUATION_REQUESTED_V29", {
+        attempted_tool: event.name,
+        reason: result.directedIgnoreRejected
+          ? "CALLER_DIRECTED_TURN_CONFIRMED"
+          : "DUPLICATE_SEMANTIC_DECISION",
+        duplicate_of: result.duplicateOf,
+        response_owner: "realtime_provider_runtime",
+        deferred_if_response_active: true,
+        timing_heuristic: false,
+      });
       return false;
     }
     if (result.ignored) {

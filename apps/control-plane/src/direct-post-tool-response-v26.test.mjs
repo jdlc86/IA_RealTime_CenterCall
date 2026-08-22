@@ -23,6 +23,15 @@ test("v26 owns one common structured direct post-tool response boundary", async 
   assert.doesNotMatch(v26, /pendingGovernedPostToolResponseV26/);
 });
 
+test("v26 turns duplicate semantic rejection into a tool-free liveness continuation", async () => {
+  const v26 = await source("call-session-v26.ts");
+
+  assert.match(v26, /decision\.action === "CONTINUE"/);
+  assert.match(v26, /DIRECT_POST_TOOL_DUPLICATE_CONTINUATION_GOVERNED_V26/);
+  assert.match(v26, /purpose: "duplicate_semantic_continuation_v26"/);
+  assert.match(v26, /tools: "DISABLED"/);
+});
+
 test("v26 owns reservation recovery speech without a timing heuristic", async () => {
   const v26 = await source("call-session-v26.ts");
   assert.match(v26, /decision\.action === "RECOVER"/);

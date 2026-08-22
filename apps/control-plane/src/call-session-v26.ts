@@ -180,6 +180,33 @@ export class CallSession extends BaseConstructor {
       }
 
       const decision = decideDirectPostToolResponse(tool, request.output);
+      if (decision.action === "CONTINUE") {
+        session.diagnostics?.checkpoint?.("DIRECT_POST_TOOL_DUPLICATE_CONTINUATION_GOVERNED_V26", {
+          tool,
+          reason: decision.reason,
+          response_boundary: "direct_agent_runtime_v26",
+          tools_disabled: true,
+          authoritative_result_preserved: true,
+          response_liveness_restored: true,
+          timing_heuristic: false,
+        });
+        return {
+          action: "REPLACE_DEFAULT_RESPONSE",
+          speech: {
+            instructions: decision.instructions,
+            tools: "DISABLED",
+            purpose: "duplicate_semantic_continuation_v26",
+            metadata: {
+              authority: "direct_agent_runtime_v26",
+              tool,
+              reason: decision.reason,
+              authoritative_result_preserved: true,
+              response_liveness_restored: true,
+            },
+          },
+        };
+      }
+
       if (decision.action === "GOVERN") {
         session.diagnostics?.checkpoint?.("DIRECT_POST_TOOL_RESPONSE_GOVERNED_V26", {
           tool,
