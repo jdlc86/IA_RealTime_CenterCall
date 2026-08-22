@@ -3,6 +3,8 @@ export type ConversationLifecyclePort = Readonly<{
   humanHandoffStarted(): void;
   transportClosed(reason: string): void;
   semanticIgnored(reason: string): void;
+  acknowledgePresence(source: string): void;
+  isAwaitingPresenceReply(): boolean;
   validateUserTurn(source: string): void;
   suspendForTool(tool: string): void;
   isTerminal(): boolean;
@@ -15,9 +17,10 @@ type LegacyLifecycleSession = {
   observeHumanHandoffStartedV18?: () => void;
   observeRealtimeTransportClosedV18?: (reason: string) => void;
   observeSemanticIgnoredV18?: (reason: string) => void;
+  acknowledgePresenceV18?: (source: string) => void;
   validateUserTurnV18?: (source: string) => void;
   suspendForToolV18?: (tool: string) => void;
-  snapshotTurnLifecycleV18?: () => { state?: string };
+  snapshotTurnLifecycleV18?: () => { state?: string; presenceReplyPending?: boolean };
   beginClosing?: (reason: string, source: string) => void;
   state?: string;
   hangupStarted?: boolean;
@@ -43,6 +46,8 @@ export function conversationLifecyclePortFor(session: object): ConversationLifec
     humanHandoffStarted() { s.observeHumanHandoffStartedV18?.(); },
     transportClosed(reason: string) { s.observeRealtimeTransportClosedV18?.(reason); },
     semanticIgnored(reason: string) { s.observeSemanticIgnoredV18?.(reason); },
+    acknowledgePresence(source: string) { s.acknowledgePresenceV18?.(source); },
+    isAwaitingPresenceReply() { return s.snapshotTurnLifecycleV18?.()?.presenceReplyPending === true; },
     validateUserTurn(source: string) { s.validateUserTurnV18?.(source); },
     suspendForTool(tool: string) { s.suspendForToolV18?.(tool); },
     isTerminal() {

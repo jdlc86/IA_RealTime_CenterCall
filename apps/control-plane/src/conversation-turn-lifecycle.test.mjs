@@ -184,6 +184,26 @@ test("CTL-26 presence speech does not alter semantic counters or create new epoc
   assert.equal(l.snapshot().silenceEpoch, epoch);
   assert.equal(l.snapshot().ignoredCount, 0);
   assert.equal(l.snapshot().state, "WAITING_FOR_CALLER");
+  assert.equal(l.snapshot().presenceReplyPending, true);
+});
+
+test("CTL-26b caller acknowledgement resolves pending presence without a semantic ignore", () => {
+  const l = new ConversationTurnLifecycle();
+  const epoch = startWaiting(l);
+  l.dispatch({ type: "presence_deadline", epoch });
+  l.dispatch({ type: "assistant_audio_started", kind: "PRESENCE" });
+  l.dispatch({ type: "assistant_audio_stopped", kind: "PRESENCE" });
+  l.dispatch({ type: "speech_started" });
+  l.dispatch({ type: "speech_stopped" });
+  l.dispatch({ type: "transcript_usable" });
+
+  assert.equal(l.snapshot().presenceReplyPending, true);
+  const effects = l.dispatch({ type: "presence_acknowledged" });
+  assert.equal(l.snapshot().presenceReplyPending, false);
+  assert.equal(l.snapshot().state, "PROCESSING_CALLER_TURN");
+  assert.equal(l.snapshot().silenceTimerArmed, false);
+  assert.deepEqual(l.dispatch({ type: "silence_close_deadline", epoch }), []);
+  assert.ok(!effectTypes(effects).includes("SPEAK_IGNORED_RECOVERY"));
 });
 
 test("CTL-28/29/30 stale silence timers are harmless", () => {

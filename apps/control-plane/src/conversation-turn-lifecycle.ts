@@ -25,6 +25,7 @@ export type LifecycleEvent =
   | { type: "speech_stopped" }
   | { type: "transcript_usable" }
   | { type: "transcript_unusable" }
+  | { type: "presence_acknowledged" }
   | { type: "semantic_valid"; tool?: string }
   | { type: "semantic_ignored"; reason: IgnoredReason }
   | { type: "out_of_scope" }
@@ -56,6 +57,7 @@ export type LifecycleSnapshot = {
   silenceEpoch: number;
   silenceTimerArmed: boolean;
   presenceCheckIssued: boolean;
+  presenceReplyPending: boolean;
 };
 
 const COUNTED_IGNORED = new Set([
@@ -72,6 +74,7 @@ export class ConversationTurnLifecycle {
   private silenceEpoch = 0;
   private silenceTimerArmed = false;
   private presenceCheckIssued = false;
+  private presenceReplyPending = false;
 
   snapshot(): LifecycleSnapshot {
     return {
@@ -80,6 +83,7 @@ export class ConversationTurnLifecycle {
       silenceEpoch: this.silenceEpoch,
       silenceTimerArmed: this.silenceTimerArmed,
       presenceCheckIssued: this.presenceCheckIssued,
+      presenceReplyPending: this.presenceReplyPending,
     };
   }
 
@@ -87,6 +91,7 @@ export class ConversationTurnLifecycle {
     const effects: LifecycleEffect[] = [];
 
     if (event.type === "transport_closed") {
+      this.presenceReplyPending = false;
       this.cancelSilence(effects);
       effects.push({ type: "CANCEL_MAX_CALL_TIMER" });
       effects.push({ type: "RESET_PRESENCE_RESPONSE_STATE" });
@@ -109,6 +114,7 @@ export class ConversationTurnLifecycle {
     if (this.state === "HANDOFF") return effects;
 
     if (event.type === "max_call_duration") {
+      this.presenceReplyPending = false;
       this.cancelSilence(effects);
       this.state = "TERMINAL_SPEAKING";
       effects.push({ type: "SPEAK_TERMINAL_FAREWELL", protected: true, reason: "max_call_duration" });
@@ -116,6 +122,7 @@ export class ConversationTurnLifecycle {
     }
 
     if (event.type === "handoff_started") {
+      this.presenceReplyPending = false;
       this.cancelSilence(effects);
       this.state = "HANDOFF";
       effects.push({ type: "SUSPEND_FOR_HANDOFF" });
@@ -123,6 +130,7 @@ export class ConversationTurnLifecycle {
     }
 
     if (event.type === "end_call") {
+      this.presenceReplyPending = false;
       this.cancelSilence(effects);
       this.state = "TERMINAL_SPEAKING";
       effects.push({ type: "SPEAK_TERMINAL_FAREWELL", protected: true, reason: "end_call" });
@@ -132,6 +140,7 @@ export class ConversationTurnLifecycle {
     switch (event.type) {
       case "assistant_audio_started": {
         if (event.kind === "PRESENCE") return effects;
+        this.presenceReplyPending = false;
         if ((event.kind === undefined || event.kind === "NORMAL") && this.state === "PROCESSING_CALLER_TURN" && this.ignoredCount !== 0) {
           this.ignoredCount = 0;
           effects.push({ type: "RESET_IGNORED_COUNT" });
@@ -165,14 +174,26 @@ export class ConversationTurnLifecycle {
       case "transcript_unusable":
       case "acoustic_guard_expired":
       case "processing_guard_expired": {
+        this.presenceReplyPending = false;
         if (this.state === "CALLER_SPEAKING" || this.state === "PROCESSING_CALLER_TURN") {
           this.state = "WAITING_FOR_CALLER";
           this.armFreshSilence(effects);
         }
         return effects;
       }
+      case "presence_acknowledged": {
+        this.presenceReplyPending = false;
+        if (this.ignoredCount !== 0) {
+          this.ignoredCount = 0;
+          effects.push({ type: "RESET_IGNORED_COUNT" });
+        }
+        this.cancelSilence(effects);
+        this.state = "PROCESSING_CALLER_TURN";
+        return effects;
+      }
       case "semantic_valid":
       case "out_of_scope": {
+        this.presenceReplyPending = false;
         if (this.ignoredCount !== 0) {
           this.ignoredCount = 0;
           effects.push({ type: "RESET_IGNORED_COUNT" });
@@ -182,6 +203,7 @@ export class ConversationTurnLifecycle {
         return effects;
       }
       case "semantic_ignored": {
+        this.presenceReplyPending = false;
         if (event.reason === "SILENCE") {
           this.state = "WAITING_FOR_CALLER";
           this.armFreshSilence(effects);
@@ -212,11 +234,13 @@ export class ConversationTurnLifecycle {
       case "presence_deadline": {
         if (this.state !== "WAITING_FOR_CALLER" || !this.silenceTimerArmed || event.epoch !== this.silenceEpoch || this.presenceCheckIssued) return effects;
         this.presenceCheckIssued = true;
+        this.presenceReplyPending = true;
         effects.push({ type: "SPEAK_PRESENCE_CHECK" });
         return effects;
       }
       case "silence_close_deadline": {
         if (this.state !== "WAITING_FOR_CALLER" || !this.silenceTimerArmed || event.epoch !== this.silenceEpoch) return effects;
+        this.presenceReplyPending = false;
         this.cancelSilence(effects);
         this.state = "TERMINAL_SPEAKING";
         effects.push({ type: "SPEAK_TERMINAL_FAREWELL", protected: true, reason: "silence_timeout" });

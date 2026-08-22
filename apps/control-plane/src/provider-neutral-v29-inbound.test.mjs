@@ -35,3 +35,12 @@ test("v29 answers a pure greeting without arming backend tools or contextual clo
   assert.match(source, /semantic_gate_armed:\s*false/);
   assert.match(source, /PURE_GREETING_HANDLED_V29/);
 });
+
+test("v29 resolves a contextual presence acknowledgement without model tool classification", () => {
+  assert.match(source, /lifecycle\.isAwaitingPresenceReply\(\)/);
+  assert.match(source, /isPresenceAcknowledgementTurn\(transcript\)/);
+  assert.match(source, /lifecycle\.acknowledgePresence\("deterministic_transcript_v29"\)/);
+  assert.match(source, /purpose:\s*"presence_acknowledgement_v29"/);
+  assert.match(source, /model_classification_bypassed:\s*true/);
+  assert.match(source, /USER_PRESENCE_ACKNOWLEDGEMENT_HANDLED_V29/);
+});

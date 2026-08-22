@@ -16,13 +16,14 @@ import { publicRestaurantToolAuthorizationPortFor } from "./semantic-tool-author
 import { semanticTurnRuntimeFor } from "./semantic-turn-runtime.js";
 import { turnOwnershipRuntimeFor } from "./turn-ownership-runtime.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
-import { isPureGreetingTurn } from "./conversational-turn-policy.js";
+import { isPresenceAcknowledgementTurn, isPureGreetingTurn } from "./conversational-turn-policy.js";
 
 const BaseConstructor = CallSessionV28 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV28.prototype as any;
 const V26Prototype = CallSessionV26.prototype as any;
 const INPUT_IGNORED = "restaurant_input_ignored";
 const PURE_GREETING_REPLY = "Hola, ¿en qué puedo ayudarte?";
+const PRESENCE_ACKNOWLEDGEMENT_REPLY = "Perfecto, te escucho. ¿En qué puedo ayudarte?";
 
 type SemanticToolEventV29 = {
   name: string;
@@ -156,6 +157,30 @@ export class CallSession extends BaseConstructor {
         });
       }
       if (transcript) {
+        const lifecycle = conversationLifecyclePortFor(this);
+        if (lifecycle.isAwaitingPresenceReply() && isPresenceAcknowledgementTurn(transcript)) {
+          semanticTurnRuntimeFor(this).clearItemAuthority();
+          lifecycle.acknowledgePresence("deterministic_transcript_v29");
+          realtimeCommandPortFor(this as any).speak({
+            isolated: true,
+            tools: "DISABLED",
+            purpose: "presence_acknowledgement_v29",
+            exactText: PRESENCE_ACKNOWLEDGEMENT_REPLY,
+            instructions: `Pronuncia exactamente esta frase y nada más: ${JSON.stringify(PRESENCE_ACKNOWLEDGEMENT_REPLY)}`,
+            metadata: {
+              authority: "conversation_lifecycle_port",
+              backend_tool_authority: false,
+              contextual_close_question: false,
+            },
+          });
+          (this as any).diagnostics?.checkpoint?.("USER_PRESENCE_ACKNOWLEDGEMENT_HANDLED_V29", {
+            response: "DETERMINISTIC_PRESENCE_ACKNOWLEDGEMENT",
+            backend_tool_authority: false,
+            semantic_gate_armed: false,
+            model_classification_bypassed: true,
+          });
+          return;
+        }
         if (isPureGreetingTurn(transcript)) {
           semanticTurnRuntimeFor(this).clearItemAuthority();
           realtimeCommandPortFor(this as any).speak({
