@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { HumanHandoffTransportRuntime } from "../.test-dist/human-handoff-transport-runtime.js";
-import { humanHandoffTransportPortFor } from "../.test-dist/human-handoff-transport-port.js";
+import { HumanHandoffTransportAdapter, humanHandoffTransportPortFor } from "../.test-dist/human-handoff-transport-port.js";
 
 const config = {
   enabled: true,
@@ -36,6 +36,44 @@ test("human handoff runtime owns and cancels transfer watchdog", async () => {
   runtime.cancelTransferWatchdog();
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(fired, 0);
+});
+
+test("handoff transfer invokes fetch as a bare dependency and sends the Telnyx transfer payload", async () => {
+  const calls = [];
+  const receiverSensitiveFetch = async function (url, init) {
+    assert.equal(this, undefined, "fetch dependency must not receive the adapter as its receiver");
+    calls.push({ url: String(url), init });
+    return new Response(null, { status: 200 });
+  };
+  const adapter = new HumanHandoffTransportAdapter(
+    { env: { TELNYX_API_KEY: "tel-key" } },
+    receiverSensitiveFetch,
+  );
+
+  const result = await adapter.startTransfer({
+    sourceCallControlId: "source/1",
+    destinationPhone: "+34910000000",
+    originatingNumber: "+34919999999",
+    answerTimeoutSeconds: 25,
+    commandId: "cmd-1",
+    correlationState: "state-1",
+  });
+
+  assert.deepEqual(result, { started: true, httpStatus: 200 });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.telnyx.com/v2/calls/source%2F1/actions/transfer");
+  assert.equal(calls[0].init.method, "POST");
+  assert.equal(calls[0].init.headers.Authorization, "Bearer tel-key");
+  assert.equal(calls[0].init.headers["Content-Type"], "application/json");
+  assert.equal(calls[0].init.headers.Accept, "application/json");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    to: "+34910000000",
+    from: "+34919999999",
+    timeout_secs: 25,
+    command_id: "cmd-1",
+    client_state: "state-1",
+    target_leg_client_state: "state-1",
+  });
 });
 
 test("neutral handoff port marks transfer, persists it and closes through lifecycle authority", async () => {
