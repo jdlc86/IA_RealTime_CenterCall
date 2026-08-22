@@ -24,10 +24,31 @@ const INPUT_IGNORED = "restaurant_input_ignored";
 
 type SemanticToolEvent = Extract<RealtimeProviderEvent, { type: "SEMANTIC_TOOL_SELECTED" }>;
 
+const INCLUSIVE_ASSISTANCE_REASONS = new Set([
+  "ACCESSIBILITY_ARRANGEMENT",
+  "CHILD_OR_INFANT_ACCOMMODATION",
+]);
+
 function usableTranscript(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.replace(/\s+/g, " ").trim();
   return normalized ? normalized.slice(0, 1500) : null;
+}
+
+function humanAssistanceReason(event: SemanticToolEvent): string | null {
+  try {
+    const parsed = event.arguments?.trim() ? JSON.parse(event.arguments) as Record<string, unknown> : {};
+    return typeof parsed.reason === "string" ? parsed.reason : null;
+  } catch {
+    return null;
+  }
+}
+
+function handoffOfferInstructions(event: SemanticToolEvent): string {
+  if (INCLUSIVE_ASSISTANCE_REASONS.has(humanAssistanceReason(event) ?? "")) {
+    return "Formula una respuesta breve, cálida y natural. Explica que, para dar información fiable y procurar que todo esté bien preparado para la visita, prefieres que la necesidad solicitada la confirme directamente el equipo del restaurante. No prometas ni niegues la adaptación, no menciones diagnósticos, no presentes a la persona ni su necesidad como un problema y no sugieras que la transferencia se debe a su condición. Pregunta con amabilidad si desea que le transfieras y espera su consentimiento explícito. No llames herramientas en esta respuesta.";
+  }
+  return "Explica de forma breve y natural que, para dar una respuesta fiable sobre esta gestión, prefieres que la confirme el equipo del restaurante. Pregunta una sola vez si desea que le transfieras y espera su consentimiento explícito. No llames herramientas en esta respuesta.";
 }
 
 /**
@@ -149,11 +170,10 @@ export class CallSession extends BaseConstructor {
       this.emitHandoffToolOutputV43(
         event,
         "HUMAN_HANDOFF_CONFIRMATION_REQUIRED",
-        "No transfieras todavía. Explica brevemente que esta gestión puede requerir una persona y pregunta si desea que le transfieras. Espera una respuesta explícita del usuario.",
+        "No transfieras todavía. Explica con naturalidad que buscas una confirmación fiable del equipo del restaurante y pregunta si desea que le transfieras. Espera una respuesta explícita del usuario.",
       );
       realtimeCommandPortFor(session).speak({
-        instructions: "Explica brevemente que esta gestión puede requerir una persona y pregunta una sola vez si desea que le transfieras. Espera una respuesta explícita del usuario. No llames herramientas en esta respuesta.",
-        exactText: "Esta gestión puede requerir una persona. ¿Quieres que te transfiera?",
+        instructions: handoffOfferInstructions(event),
         tools: "DISABLED",
         isolated: true,
         purpose: "human_handoff_confirmation_v43",
