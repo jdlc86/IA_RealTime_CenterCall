@@ -107,6 +107,20 @@ test("unavailable requested slot must yield speech and wait for caller before se
   assert.match(decision.instructions, /restaurant_reservation_search/i);
 });
 
+test("unavailable speech names the exact day date and time supplied by the backend", () => {
+  const decision = decideDirectPostToolResponse("restaurant_reservation_create", {
+    ok: true,
+    status: "UNAVAILABLE_WITH_SEARCH_OPTION",
+    requested_available: false,
+    requested_starts_at_spoken: "miércoles, 26 de agosto, a las 21:00",
+  });
+  assert.equal(decision.action, "RECOVER");
+  if (decision.action !== "RECOVER") return;
+  assert.match(decision.exactText, /miércoles, 26 de agosto, a las 21:00/);
+  assert.match(decision.instructions, /día de la semana, la fecha y la hora/);
+  assert.doesNotMatch(decision.exactText, /ese horario/);
+});
+
 test("missing starts_at collects date first, not date and time together", () => {
   const decision = decideDirectPostToolResponse("restaurant_reservation_create", {
     ok: true,
@@ -156,6 +170,24 @@ test("party size is collected when temporal slots are complete", () => {
   assert.equal(decision.action, "COLLECT");
   if (decision.action !== "COLLECT") return;
   assert.equal(decision.exactText, "¿Para cuántas personas sería la reserva?");
+});
+
+test("flexible search asks only for party size and remains in the search flow", () => {
+  const decision = decideDirectPostToolResponse("restaurant_reservation_search", {
+    ok: true,
+    status: "MISSING_INFORMATION",
+    missing: ["party_size"],
+    search_criteria: {
+      from: "2026-08-24T00:00:00+02:00",
+      to: "2026-08-31T00:00:00+02:00",
+      date_scope: "CALLER_AUTHORIZED_RANGE",
+      time_from: "21:00",
+    },
+  });
+  assert.equal(decision.action, "COLLECT");
+  if (decision.action !== "COLLECT") return;
+  assert.equal(decision.exactText, "¿Para cuántas personas sería la reserva?");
+  assert.doesNotMatch(decision.exactText, /día|fecha|hora/i);
 });
 
 test("malformed availability conflict evidence is not promoted to deterministic recovery", () => {

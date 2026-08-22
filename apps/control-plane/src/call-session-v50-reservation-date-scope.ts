@@ -4,6 +4,7 @@ import { reservationDateScopeRuntimeFor } from "./reservation-date-scope-runtime
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import { publicRestaurantToolAuthorizationPortFor } from "./semantic-tool-authorization-port.js";
+import { decideReservationSearchDateRange } from "./reservation-search-date-range-policy.js";
 
 const BaseConstructor = CallSessionV49 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV49.prototype as any;
@@ -109,6 +110,33 @@ export class CallSession extends BaseConstructor {
     try { args = parseObject(toolEvent.arguments); } catch {
       await BasePrototype.handleRealtimeMessage.call(this, data);
       return;
+    }
+
+    if (toolEvent.name === SEARCH_RESERVATION) {
+      const fromRaw = text(args.from) ?? text(args.preferred_starts_at);
+      const toRaw = text(args.to);
+      if (fromRaw && toRaw) {
+        try {
+          const rangeDecision = decideReservationSearchDateRange({
+            fromLocalDate: reservationLocalDate(fromRaw),
+            toLocalDate: reservationLocalDate(toRaw),
+            dateScope: text(args.date_scope),
+          });
+          if (rangeDecision.action !== "SAME_DATE") {
+            (this as any).diagnostics?.checkpoint?.("RESERVATION_DATE_RANGE_DELEGATED_V50", {
+              decision: rangeDecision.action,
+              reason: rangeDecision.action === "BLOCK_RANGE" ? rangeDecision.reason : null,
+              concrete_date_scope_unchanged: true,
+              range_authority_owner: "reservation_search_date_range_policy",
+            });
+            await BasePrototype.handleRealtimeMessage.call(this, data);
+            return;
+          }
+        } catch {
+          await BasePrototype.handleRealtimeMessage.call(this, data);
+          return;
+        }
+      }
     }
     const rawDateTime = requestedDateTime(toolEvent.name, args);
     if (!rawDateTime) {

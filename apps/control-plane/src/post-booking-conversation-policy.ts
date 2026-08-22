@@ -27,12 +27,6 @@ const AVAILABILITY_CHANGED_INSTRUCTIONS =
   "Si después acepta buscar alternativas, usa restaurant_reservation_search en un turno posterior, limitado inicialmente a la misma fecha. " +
   "Cualquier alternativa elegida deberá pasar de nuevo por restaurant_reservation_create y por una confirmación explícita nueva.";
 
-const SLOT_UNAVAILABLE_INSTRUCTIONS =
-  `Pronuncia exactamente: ${JSON.stringify(RESERVATION_SLOT_UNAVAILABLE_SPEECH)} ` +
-  "No llames herramientas en esta misma respuesta. Espera la respuesta del cliente. " +
-  "Si después acepta buscar alternativas, usa restaurant_reservation_search en un turno posterior, limitado inicialmente a la misma fecha. " +
-  "No anuncies una alternativa hasta que la búsqueda del backend la confirme.";
-
 export type ReservationCollectionSlot =
   | "starts_at_date"
   | "starts_at_time"
@@ -86,6 +80,21 @@ function stringArrayField(value: Record<string, unknown>, key: string): string[]
   const raw = value[key];
   if (!Array.isArray(raw)) return [];
   return raw.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
+}
+
+function reservationSlotUnavailableSpeech(payload: Record<string, unknown>): string {
+  const spokenDateTime = stringField(payload, "requested_starts_at_spoken");
+  return spokenDateTime
+    ? `No tengo disponibilidad para ${spokenDateTime}. ¿Quieres que busque otros horarios para esa fecha?`
+    : RESERVATION_SLOT_UNAVAILABLE_SPEECH;
+}
+
+function slotUnavailableInstructions(exactText: string): string {
+  return `Pronuncia exactamente: ${JSON.stringify(exactText)} ` +
+    "La respuesta debe identificar explícitamente el día de la semana, la fecha y la hora cuando el backend los proporcione. " +
+    "No llames herramientas en esta misma respuesta. Espera la respuesta del cliente. " +
+    "Si después acepta buscar alternativas, usa restaurant_reservation_search en un turno posterior, limitado inicialmente a la misma fecha. " +
+    "No anuncies una alternativa hasta que la búsqueda del backend la confirme.";
 }
 
 function governed(reason: Extract<DirectPostToolResponseDecision, { action: "GOVERN" }>["reason"]): DirectPostToolResponseDecision {
@@ -157,15 +166,19 @@ export function decideDirectPostToolResponse(
     status === "UNAVAILABLE_WITH_SEARCH_OPTION" &&
     payload.requested_available === false
   ) {
+    const exactText = reservationSlotUnavailableSpeech(payload);
     return {
       action: "RECOVER",
       reason: "RESERVATION_SLOT_UNAVAILABLE",
-      instructions: SLOT_UNAVAILABLE_INSTRUCTIONS,
-      exactText: RESERVATION_SLOT_UNAVAILABLE_SPEECH,
+      instructions: slotUnavailableInstructions(exactText),
+      exactText,
     };
   }
 
-  if (toolName === "restaurant_reservation_create" && status === "MISSING_INFORMATION") {
+  if (
+    (toolName === "restaurant_reservation_create" || toolName === "restaurant_reservation_search") &&
+    status === "MISSING_INFORMATION"
+  ) {
     const missing = stringArrayField(payload, "missing");
     if (missing.length > 0) return collectMissingInformation(missing);
   }

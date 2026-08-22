@@ -12,6 +12,7 @@ const BasePrototype = CallSessionV25.prototype as any;
 const LEGACY_CONVERSATION_INTENT = "conversation_intent";
 const POST_TOOL_POLICY_TOOLS = new Set([
   "restaurant_reservation_create",
+  "restaurant_reservation_search",
   "restaurant_reservation_query",
   "restaurant_reservation_cancel",
   "restaurant_reservation_modify",

@@ -37,25 +37,25 @@ const RESERVATION_PROPERTIES = {
 } as const;
 
 const AGENT_TOOLS: RealtimeFunctionToolDefinition[] = [
-  { type: "function", name: "restaurant_reservation_create", description: "Crea o continúa una reserva multivuelta. Úsala desde que exista una intención de reservar y también para cada respuesta contextual que aporte, corrija o confirme datos de esa reserva; el backend indicará qué falta. Cuando tengas fecha/hora y personas, llámala antes de afirmar que compruebas disponibilidad. Excepción: si el grupo menciona una necesidad de adaptación, accesibilidad, apoyo comunicativo o la presencia o necesidades de bebés, usa restaurant_human_assistance para que el equipo confirme y prepare esa necesidad antes de continuar. El backend es la única autoridad sobre disponibilidad y BOOKED.", parameters: { type: "object", properties: RESERVATION_PROPERTIES, additionalProperties: false } },
+  { type: "function", name: "restaurant_reservation_create", description: "Crea o continúa una reserva multivuelta cuando el cliente ha elegido una fecha y hora concretas. Úsala también para recopilar progresivamente los demás datos; el backend indicará qué falta. Nunca materialices un día representativo si el cliente ha autorizado varios días o un rango flexible: cuando ya tengas personas y criterios usa restaurant_reservation_search con el rango completo. Cuando tengas una fecha exacta, hora y personas, llama esta tool antes de afirmar que compruebas disponibilidad. Excepción: si el grupo menciona una necesidad de adaptación, accesibilidad, apoyo comunicativo o la presencia o necesidades de bebés, usa restaurant_human_assistance para que el equipo confirme y prepare esa necesidad antes de continuar. El backend es la única autoridad sobre disponibilidad y BOOKED.", parameters: { type: "object", properties: RESERVATION_PROPERTIES, additionalProperties: false } },
   {
     type: "function",
     name: "restaurant_reservation_search",
-    description: "Busca y sugiere los turnos disponibles más cercanos para un grupo sin crear ninguna reserva. Úsala cuando el cliente no tenga una fecha/hora cerrada, pida alternativas o la hora solicitada no esté disponible. Respeta la política de asignación de mesas del backend.",
+    description: "Busca y sugiere turnos disponibles para un grupo sin crear ninguna reserva. Úsala cuando el cliente autorice un rango o varios días, no tenga fecha/hora cerrada, pida alternativas o la hora solicitada no esté disponible. Un rango autorizado debe conservarse completo: no elijas un día representativo. Respeta la política de asignación de mesas del backend y presenta siempre cada opción con día de la semana, fecha y hora.",
     parameters: {
       type: "object",
       properties: {
         party_size: { type: "integer", minimum: 1, maximum: 100 },
-        preferred_starts_at: { type: "string", description: "Fecha/hora preferida ISO 8601 si existe." },
-        from: { type: "string", description: "Inicio del rango ISO 8601. Si se omite se usa preferred_starts_at." },
-        to: { type: "string", description: "Fin del rango ISO 8601. Si se omite se buscan hasta 7 días." },
+        preferred_starts_at: { type: "string", description: "Fecha/hora preferida ISO 8601 solo si el cliente eligió ese instante concreto." },
+        from: { type: "string", description: "Inicio ISO 8601 de la fecha exacta o del rango autorizado." },
+        to: { type: "string", description: "Fin ISO 8601 exclusivo del rango autorizado, con un máximo de siete días. No lo uses para ampliar por iniciativa propia una fecha exacta." },
+        date_scope: { type: "string", enum: ["EXACT_DATE", "CALLER_AUTHORIZED_RANGE"], description: "CALLER_AUTHORIZED_RANGE solo cuando el cliente ha expresado flexibilidad entre varios días; nunca para elegirle un día sin avisar." },
         time_from: { type: "string", description: "Hora local mínima HH:MM, por ejemplo 19:00." },
         time_to: { type: "string", description: "Hora local máxima HH:MM, por ejemplo 22:30." },
         duration_minutes: { type: "integer", minimum: 15, maximum: 480 },
         step_minutes: { type: "integer", minimum: 15, maximum: 120, description: "Separación entre candidatos; normalmente 30." },
         max_results: { type: "integer", minimum: 1, maximum: 10 },
       },
-      required: ["party_size"],
       additionalProperties: false,
     },
   },

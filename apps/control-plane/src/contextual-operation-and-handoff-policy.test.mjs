@@ -29,7 +29,7 @@ test("semantic policy keeps multi-turn reservations in the reservation tool", as
   assert.match(v17, /reserva multivuelta/);
   assert.match(v17, /no la elijas por inferencia propia/);
   assert.match(v29, /restaurant_conversation no es memoria operativa/);
-  assert.match(v29, /usa restaurant_reservation_create desde que exista esa intención/);
+  assert.match(v29, /fecha exacta usa restaurant_reservation_create desde que exista esa intención/);
   assert.match(v29, /no escales una reserva ordinaria por el tamaño del grupo/);
   assert.match(v29, /pregunta, objeción o petición de explicación/);
   assert.match(v29, /no conviertas por ello un turno comunicativo dirigido en silencio/);

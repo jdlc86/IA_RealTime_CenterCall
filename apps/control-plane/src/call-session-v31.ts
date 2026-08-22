@@ -17,6 +17,8 @@ import {
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import { reservationSessionRuntimeFor } from "./reservation-session-runtime.js";
 import { publicRestaurantToolAuthorizationPortFor } from "./semantic-tool-authorization-port.js";
+import { decideReservationSearchDateRange } from "./reservation-search-date-range-policy.js";
+import { formatMadridReservationSpeech } from "./reservation-search-output-localization.js";
 
 const BaseConstructor = CallSessionV29 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV29.prototype as any;
@@ -345,10 +347,13 @@ export class CallSession extends BaseConstructor {
       }
 
       if (result.suggestion === "SEARCH_ALTERNATIVE_SLOTS") {
+        const requestedStartsAt = text(draft.starts_at);
         this.emitCreateOutputV31(callId, {
           ...output,
           status: "UNAVAILABLE_WITH_SEARCH_OPTION",
-          instruction: "La hora concreta no está disponible, pero la configuración de mesas sí admite este grupo. Ofrece buscar turnos alternativos únicamente dentro de la misma fecha solicitada con restaurant_reservation_search. Para cambiar de día, espera a que el cliente elija explícitamente otra fecha.",
+          requested_starts_at: requestedStartsAt,
+          requested_starts_at_spoken: requestedStartsAt ? formatMadridReservationSpeech(requestedStartsAt) : null,
+          instruction: "La fecha y hora concretas no están disponibles, pero la configuración de mesas sí admite este grupo. Indica siempre el día de la semana, la fecha y la hora que se comprobaron. Ofrece buscar turnos alternativos únicamente dentro de esa misma fecha con restaurant_reservation_search. Para cambiar de día, espera a que el cliente elija explícitamente otra fecha.",
         });
         return;
       }
@@ -364,7 +369,23 @@ export class CallSession extends BaseConstructor {
 
   private async executeSearchV31(callId: string | undefined, args: Record<string, unknown>): Promise<void> {
     const partySize = integer(args.party_size);
-    if (!partySize || partySize < 1 || partySize > 100) throw new Error("party_size is required");
+    if (!partySize || partySize < 1 || partySize > 100) {
+      this.sendOutputV31(callId, {
+        ok: true,
+        status: "MISSING_INFORMATION",
+        missing: ["party_size"],
+        search_criteria: {
+          preferred_starts_at: text(args.preferred_starts_at) ?? null,
+          from: text(args.from) ?? null,
+          to: text(args.to) ?? null,
+          date_scope: text(args.date_scope) ?? null,
+          time_from: text(args.time_from) ?? null,
+          time_to: text(args.time_to) ?? null,
+        },
+        instruction: "Pregunta únicamente para cuántas personas debe buscarse. Conserva el rango y los criterios ya autorizados y repite restaurant_reservation_search después de la respuesta; no materialices una fecha concreta.",
+      });
+      return;
+    }
     const duration = integer(args.duration_minutes) ?? 90;
     const step = integer(args.step_minutes) ?? 30;
     const maxResults = Math.min(10, Math.max(1, integer(args.max_results) ?? 5));
@@ -376,9 +397,38 @@ export class CallSession extends BaseConstructor {
     const requestedToRaw = text(args.to);
     const requestedTo = requestedToRaw ? normalizeReservationLocalDateTime(requestedToRaw, RESTAURANT_TIMEZONE) : undefined;
 
+    const fromLocalDate = businessWindowsForDate(from, [], RESTAURANT_TIMEZONE).localDate;
+    const toLocalDate = requestedTo
+      ? businessWindowsForDate(requestedTo, [], RESTAURANT_TIMEZONE).localDate
+      : null;
+    const rangeDecision = decideReservationSearchDateRange({
+      fromLocalDate,
+      toLocalDate,
+      dateScope: text(args.date_scope) ?? null,
+    });
+    if (rangeDecision.action === "BLOCK_RANGE") {
+      (this as any).diagnostics?.checkpoint?.("RESERVATION_SEARCH_RANGE_BLOCKED_V31", {
+        reason: rangeDecision.reason,
+        from_local_date: fromLocalDate,
+        to_local_date: toLocalDate,
+        caller_authorized_range: false,
+      });
+      this.sendOutputV31(callId, {
+        ok: true,
+        status: "DATE_SCOPE_REQUIRES_CALLER_CHOICE",
+        from_local_date: fromLocalDate,
+        to_local_date: toLocalDate,
+        instruction: rangeDecision.reason === "RANGE_TOO_WIDE"
+          ? "El intervalo supera siete días. Pide al cliente que concrete un rango de hasta una semana y no elijas fechas por tu cuenta."
+          : "No existe autoridad semántica suficiente para buscar en varios días. Conserva los criterios ya dados y pregunta al cliente qué fecha o rango prefiere; no elijas un día representativo.",
+      });
+      return;
+    }
+    const callerAuthorizedRange = rangeDecision.action === "ALLOW_RANGE";
+
     const businessHours = await this.businessHoursV31();
     const dateScope = businessWindowsForDate(from, businessHours, RESTAURANT_TIMEZONE);
-    if (!dateScope.windows.length) {
+    if (!callerAuthorizedRange && !dateScope.windows.length) {
       (this as any).diagnostics?.checkpoint?.("RESERVATION_BUSINESS_HOURS_BLOCKED_V31", {
         operation: "search",
         reason: "CLOSED_DAY",
@@ -396,7 +446,7 @@ export class CallSession extends BaseConstructor {
       return;
     }
 
-    if (preferred) {
+    if (!callerAuthorizedRange && preferred) {
       const preferredDecision = evaluateReservationBusinessHours(preferred, duration, businessHours, RESTAURANT_TIMEZONE);
       if (!preferredDecision.allowed) {
         (this as any).diagnostics?.checkpoint?.("RESERVATION_BUSINESS_HOURS_BLOCKED_V31", {
@@ -421,21 +471,6 @@ export class CallSession extends BaseConstructor {
       }
     }
 
-    if (requestedTo && !sameBusinessLocalDate(from, requestedTo, RESTAURANT_TIMEZONE)) {
-      (this as any).diagnostics?.checkpoint?.("RESERVATION_SEARCH_CROSS_DATE_BLOCKED_V31", {
-        reason: "CALLER_DATE_SCOPE_REQUIRED",
-        requested_local_date: dateScope.localDate,
-      });
-      this.sendOutputV31(callId, {
-        ok: true,
-        status: "DATE_SCOPE_REQUIRES_CALLER_CHOICE",
-        requested_local_date: dateScope.localDate,
-        business_hours: dateScope.windows,
-        instruction: "La búsqueda automática no puede cambiar de fecha por iniciativa propia. Presenta el resultado de la fecha solicitada o pregunta qué otra fecha quiere el cliente.",
-      });
-      return;
-    }
-
     const to = requestedTo ?? endOfBusinessLocalDateExclusive(from, RESTAURANT_TIMEZONE);
     const rows: RestaurantSearchSlot[] = await restaurantReservationPortFor(this).searchTableSlots({
       tenantId: requireString((this as any).tenantId, "tenant_id"),
@@ -449,30 +484,41 @@ export class CallSession extends BaseConstructor {
       timezone: RESTAURANT_TIMEZONE,
       limit: maxResults,
     });
-    const sameDateRows = rows.filter((row) => sameBusinessLocalDate(row.starts_at, from, RESTAURANT_TIMEZONE));
+    const authorizedRows = callerAuthorizedRange
+      ? rows
+      : rows.filter((row) => sameBusinessLocalDate(row.starts_at, from, RESTAURANT_TIMEZONE));
 
     (this as any).diagnostics?.checkpoint?.("RESERVATION_SLOT_SEARCH_COMPLETED_V31", {
       party_size: partySize,
-      result_count: sameDateRows.length,
+      result_count: authorizedRows.length,
       step_minutes: step,
       max_unused_seats: 1,
-      requested_local_date: dateScope.localDate,
-      same_date_scope_enforced: true,
-      cross_date_rows_discarded: rows.length - sameDateRows.length,
+      requested_local_date: callerAuthorizedRange ? null : dateScope.localDate,
+      from_local_date: fromLocalDate,
+      to_local_date: toLocalDate,
+      date_scope: callerAuthorizedRange ? "CALLER_AUTHORIZED_RANGE" : "SAME_LOCAL_DATE",
+      same_date_scope_enforced: !callerAuthorizedRange,
+      cross_date_rows_discarded: rows.length - authorizedRows.length,
     });
 
     this.sendOutputV31(callId, {
       ok: true,
-      status: sameDateRows.length ? "SUGGESTIONS_AVAILABLE" : "NO_AUTOMATIC_SUGGESTIONS",
+      status: authorizedRows.length ? "SUGGESTIONS_AVAILABLE" : "NO_AUTOMATIC_SUGGESTIONS",
       party_size: partySize,
-      requested_local_date: dateScope.localDate,
-      options: sameDateRows,
+      requested_local_date: callerAuthorizedRange ? null : dateScope.localDate,
+      from_local_date: fromLocalDate,
+      to_local_date: toLocalDate,
+      options: authorizedRows,
       capacity_policy: "MAX_ONE_UNUSED_SEAT",
       business_hours_authoritative: true,
-      date_scope: "SAME_LOCAL_DATE",
-      instruction: sameDateRows.length
-        ? "Presenta como máximo tres opciones de esta misma fecha y pregunta cuál prefiere. No reserves hasta que el cliente elija una y pase por restaurant_reservation_create. No cambies de día sin un nuevo criterio explícito del cliente."
-        : "No se encontraron turnos automáticos en la fecha solicitada. No busques otro día ni escales automáticamente; pregunta al cliente si quiere elegir otra fecha o ampliar criterios.",
+      date_scope: callerAuthorizedRange ? "CALLER_AUTHORIZED_RANGE" : "SAME_LOCAL_DATE",
+      instruction: authorizedRows.length
+        ? callerAuthorizedRange
+          ? "Presenta como máximo tres opciones reales dentro del rango autorizado. Di siempre el día de la semana, la fecha y la hora de cada opción y pregunta cuál prefiere. No reserves hasta que el cliente elija una y pase por restaurant_reservation_create."
+          : "Presenta como máximo tres opciones de esta misma fecha indicando día, fecha y hora, y pregunta cuál prefiere. No reserves hasta que el cliente elija una y pase por restaurant_reservation_create. No cambies de día sin un nuevo criterio explícito del cliente."
+        : callerAuthorizedRange
+          ? "No se encontraron turnos automáticos dentro del rango autorizado. Menciona claramente el intervalo consultado y pregunta si el cliente quiere cambiar o ampliar sus criterios; no elijas otro rango por iniciativa propia."
+          : "No se encontraron turnos automáticos en la fecha solicitada. Menciona la fecha exacta y pregunta al cliente si quiere elegir otra fecha o ampliar criterios; no cambies de día por iniciativa propia.",
     });
   }
 

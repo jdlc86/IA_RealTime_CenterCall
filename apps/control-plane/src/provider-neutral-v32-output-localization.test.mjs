@@ -7,6 +7,7 @@ import {
   realtimeCommandPortFor,
 } from "../.test-dist/realtime-provider-runtime.js";
 import {
+  formatMadridReservationSpeech,
   formatMadridReservationTime,
   localizeReservationSearchToolResult,
 } from "../.test-dist/reservation-search-output-localization.js";
@@ -24,7 +25,9 @@ function asObject(value) {
 
 test("reservation search formatter uses authoritative Europe/Madrid daylight time", () => {
   assert.equal(formatMadridReservationTime("2026-08-20T18:00:00.000Z"), "2026-08-20T20:00");
+  assert.equal(formatMadridReservationSpeech("2026-08-20T18:00:00.000Z"), "jueves, 20 de agosto, a las 20:00");
   assert.equal(formatMadridReservationTime("not-a-date"), null);
+  assert.equal(formatMadridReservationSpeech("not-a-date"), null);
 });
 
 test("reservation search localization is scoped, immutable, and preserves UTC", () => {
@@ -50,12 +53,14 @@ test("reservation search localization is scoped, immutable, and preserves UTC", 
 
   const localizedOutput = asObject(localized.output);
   assert.equal(localizedOutput.timezone, "Europe/Madrid");
-  assert.match(localizedOutput.instruction, /starts_at_local/);
+  assert.match(localizedOutput.instruction, /starts_at_spoken/);
+  assert.match(localizedOutput.instruction, /día de la semana, fecha y hora/);
   assert.deepEqual(localizedOutput.options[0], {
     starts_at: "2026-08-20T18:00:00.000Z",
     allocation_mode: "SINGLE",
     starts_at_utc: "2026-08-20T18:00:00.000Z",
     starts_at_local: "2026-08-20T20:00",
+    starts_at_spoken: "jueves, 20 de agosto, a las 20:00",
     timezone: "Europe/Madrid",
   });
 });
