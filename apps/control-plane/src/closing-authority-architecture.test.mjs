@@ -67,16 +67,20 @@ test("closing authority: terminal audio keeps response kind across metadata-less
   assert.match(v18, /this\.releaseAssistantSpeechKindV18\(providerEvent\)/);
 });
 
-test("closing authority: terminal playback ownership does not require provider response id", async () => {
+test("closing authority: terminal playback ownership requires provider response identity", async () => {
   const v18 = await source("call-session-v18.ts");
 
   assert.match(v18, /terminalPlaybackPendingV18 = false/);
   assert.match(v18, /terminalPlaybackActiveV18 = false/);
+  assert.match(v18, /terminalResponseIdV18: string \| null = null/);
   assert.match(v18, /this\.terminalPlaybackPendingV18 = true/);
+  assert.match(v18, /LIFECYCLE_TERMINAL_RESPONSE_BOUND_V18/);
   assert.match(v18, /LIFECYCLE_TERMINAL_PLAYBACK_BOUND_V18/);
-  assert.match(v18, /provider_response_id_required: false/);
-  assert.match(v18, /event\.type === \"ASSISTANT_AUDIO_STOPPED\" && this\.terminalPlaybackActiveV18/);
-  assert.match(v18, /authoritative_kind: \"TERMINAL\"/);
+  assert.match(v18, /provider_response_id_required: true/);
+  assert.match(v18, /binding_source: "provider_response_identity"/);
+  assert.match(v18, /responseId === this\.terminalResponseIdV18/);
+  assert.match(v18, /event\.type === "ASSISTANT_AUDIO_STOPPED" && this\.terminalPlaybackActiveV18 && matchesTerminalIdentity/);
+  assert.match(v18, /authoritative_kind: "TERMINAL"/);
 });
 
 test("closing authority: lifecycle HANGUP drains terminal transport before executing hangup", async () => {
@@ -85,8 +89,8 @@ test("closing authority: lifecycle HANGUP drains terminal transport before execu
 
   assert.match(hangupCase, /LIFECYCLE_TERMINAL_DRAIN_ARMED_V18/);
   assert.match(hangupCase, /normal_response_latency_affected: false/);
-  assert.match(hangupCase, /performHangup\?\.\(\"lifecycle_terminal_transport_drained\"\)/);
-  assert.doesNotMatch(hangupCase, /performHangup\?\.\(\"lifecycle_terminal_audio_stopped\"\)/);
+  assert.match(hangupCase, /performHangup\?\.\("lifecycle_terminal_transport_drained"\)/);
+  assert.doesNotMatch(hangupCase, /performHangup\?\.\("lifecycle_terminal_audio_stopped"\)/);
   assert.doesNotMatch(hangupCase, /beginClosing/);
   assert.match(hangupCase, /LIFECYCLE_HANGUP_DISPATCHED_V18/);
 });
@@ -103,7 +107,7 @@ test("closing authority: legacy audio-stop hangup is superseded after lifecycle 
   const v22 = await source("call-session-v22.ts");
 
   assert.match(v22, /conversationLifecyclePortFor\(this\)\.isClosing\(\)/);
-  assert.match(v22, /trigger === \"output_audio_buffer_stopped\" && conversationLifecyclePortFor\(this\)\.isClosing\(\)/);
+  assert.match(v22, /trigger === "output_audio_buffer_stopped" && conversationLifecyclePortFor\(this\)\.isClosing\(\)/);
   assert.doesNotMatch(v22, /snapshotTurnLifecycleV18/);
   assert.match(v22, /LEGACY_AUDIO_STOP_HANGUP_SUPERSEDED_V22/);
 });
@@ -111,6 +115,6 @@ test("closing authority: legacy audio-stop hangup is superseded after lifecycle 
 test("closing authority: v2 legacy audio-stop path remains only as compatibility and safety fallback", async () => {
   const v2 = await source("call-session-v2.ts");
 
-  assert.match(v2, /performHangup\(\"output_audio_buffer_stopped\"\)/);
+  assert.match(v2, /performHangup\("output_audio_buffer_stopped"\)/);
   assert.match(v2, /armHangupAfterCurrentAudio/);
 });
