@@ -38,8 +38,23 @@ test("v43 suppresses duplicate handoff explanation while confirmation is pending
 test("v43 clears a stale pending offer only when another semantic business tool wins", async () => {
   const v43 = await source("call-session-v43-handoff-authorization.ts");
 
+  assert.match(v43, /const NATURAL_CONVERSATION = "restaurant_conversation"/);
   assert.match(v43, /clearHumanHandoffOfferForCompetingAction/);
   assert.match(v43, /event\.name !== HUMAN_ASSISTANCE/);
   assert.match(v43, /event\.name !== INPUT_IGNORED/);
+  assert.match(v43, /event\.name !== NATURAL_CONVERSATION/);
   assert.match(v43, /HUMAN_HANDOFF_PENDING_OFFER_CLEARED_BY_COMPETING_ACTION_V43/);
+});
+
+test("v43 preserves a pending handoff offer across model-owned conversation so a later yes can authorize transfer", async () => {
+  const v43 = await source("call-session-v43-handoff-authorization.ts");
+
+  const competingStart = v43.indexOf("if (\n        event.name !== HUMAN_ASSISTANCE");
+  const competingEnd = v43.indexOf("if (event.name === HUMAN_ASSISTANCE)", competingStart);
+  assert.ok(competingStart >= 0 && competingEnd > competingStart, "handoff competing-action boundary must be present");
+  const competingBoundary = v43.slice(competingStart, competingEnd);
+
+  assert.match(competingBoundary, /event\.name !== NATURAL_CONVERSATION/);
+  assert.match(v43, /authorizeHumanHandoff\(this\.handoffAuthorizationV43, this\.latestCallerTranscriptV43\)/);
+  assert.match(v43, /HUMAN_HANDOFF_AUTHORIZED_BY_CALLER_V43/);
 });
