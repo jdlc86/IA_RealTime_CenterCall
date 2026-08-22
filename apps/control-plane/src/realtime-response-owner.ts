@@ -46,12 +46,16 @@ export function initialResponseOwnerSnapshot(): ResponseOwnerSnapshot {
  * Invariants:
  * - one component owns response.create/response.cancel decisions;
  * - playback state and response-generation state are independent;
- * - a confirmed interruption never waits indefinitely for response.done;
+ * - a confirmed interruption with an active provider response waits for correlated
+ *   response.done evidence before emitting the replacement response.create;
+ * - if no provider response remains active, a confirmed interruption may create
+ *   the caller response immediately;
  * - an ignored candidate is non-destructive: it never cancels the authoritative
  *   response and never synthesizes a replacement continuation;
  * - a SIP playback clear is observation about playout, not permission to replace
  *   an ignored assistant response;
- * - response.done is reconciliation evidence, not permission for confirmed interruption;
+ * - response.done is reconciliation evidence and only releases a pending caller
+ *   response when it matches the authoritative active response identity;
  * - if Realtime reports a second response while one is still active, the newest
  *   server-created response becomes authoritative and the conflict is surfaced;
  * - a late response start cannot destroy an already-valid barge-in classification;
@@ -90,7 +94,7 @@ export function reduceResponseOwner(
           state: snapshot.state === "BARGE_IN_CLASSIFYING" ? "BARGE_IN_CLASSIFYING" : "ASSISTANT_ACTIVE",
           activeResponseId: event.responseId,
           playbackCleared: snapshot.state === "BARGE_IN_CLASSIFYING" ? snapshot.playbackCleared : false,
-          callerResponsePending: false,
+          callerResponsePending: snapshot.callerResponsePending,
           resumeAfterActiveDone: snapshot.resumeAfterActiveDone,
         },
         effects: conflict,
@@ -121,7 +125,7 @@ export function reduceResponseOwner(
       const effects: ResponseOwnerEffect[] = [];
       if (snapshot.activeResponseId) effects.push({ type: "cancel_response", responseId: snapshot.activeResponseId });
       if (!snapshot.playbackCleared) effects.push({ type: "clear_playback" });
-      effects.push({ type: "create_caller_response" });
+      if (!snapshot.activeResponseId) effects.push({ type: "create_caller_response" });
       return {
         snapshot: {
           ...snapshot,
@@ -145,6 +149,12 @@ export function reduceResponseOwner(
             resumeAfterActiveDone: false,
           },
           effects: [{ type: "resume_assistant" }],
+        };
+      }
+      if (snapshot.callerResponsePending && snapshot.state === "CALLER_TURN_READY") {
+        return {
+          snapshot: { ...snapshot, activeResponseId: null },
+          effects: [{ type: "create_caller_response" }],
         };
       }
       return {
