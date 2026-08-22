@@ -50,6 +50,9 @@ export function initialResponseOwnerSnapshot(): ResponseOwnerSnapshot {
  *   response.done evidence before emitting the replacement response.create;
  * - if no provider response remains active, a confirmed interruption may create
  *   the caller response immediately;
+ * - callerResponsePending is one-shot authority: emitting create_caller_response
+ *   consumes it immediately, so a later response.done cannot synthesize another
+ *   response without new caller/tool authority;
  * - an ignored candidate is non-destructive: it never cancels the authoritative
  *   response and never synthesizes a replacement continuation;
  * - a SIP playback clear is observation about playout, not permission to replace
@@ -131,14 +134,15 @@ export function reduceResponseOwner(
     case "barge_in_interrupt": {
       if (snapshot.state !== "BARGE_IN_CLASSIFYING") return { snapshot, effects: [] };
       const effects: ResponseOwnerEffect[] = [];
+      const waitsForProviderRelease = snapshot.activeResponseId !== null;
       if (snapshot.activeResponseId) effects.push({ type: "cancel_response", responseId: snapshot.activeResponseId });
       if (!snapshot.playbackCleared) effects.push({ type: "clear_playback" });
-      if (!snapshot.activeResponseId) effects.push({ type: "create_caller_response" });
+      if (!waitsForProviderRelease) effects.push({ type: "create_caller_response" });
       return {
         snapshot: {
           ...snapshot,
           state: "CALLER_TURN_READY",
-          callerResponsePending: true,
+          callerResponsePending: waitsForProviderRelease,
           playbackCleared: true,
           resumeAfterActiveDone: false,
         },
@@ -161,7 +165,11 @@ export function reduceResponseOwner(
       }
       if (snapshot.callerResponsePending && snapshot.state === "CALLER_TURN_READY") {
         return {
-          snapshot: { ...snapshot, activeResponseId: null },
+          snapshot: {
+            ...snapshot,
+            activeResponseId: null,
+            callerResponsePending: false,
+          },
           effects: [{ type: "create_caller_response" }],
         };
       }
