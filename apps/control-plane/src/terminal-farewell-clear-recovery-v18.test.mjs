@@ -32,14 +32,16 @@ test("terminal farewell: provider clear is explicit lifecycle evidence and does 
   assert.equal(lifecycle.snapshot().state, "CLOSING");
 });
 
-test("terminal farewell: v18 re-arms lifecycle-owned terminal playback after clear without a timing heuristic", async () => {
+test("terminal farewell: v18 re-arms only the same terminal response after clear without a timing heuristic", async () => {
   const v18 = await readFile(new URL("./call-session-v18.ts", import.meta.url), "utf8");
 
-  assert.match(v18, /event\.type === "ASSISTANT_AUDIO_CLEARED"[\s\S]*?lifecycleState === "TERMINAL_SPEAKING"[\s\S]*?this\.terminalPlaybackActiveV18/);
+  assert.match(v18, /event\.type === "ASSISTANT_AUDIO_CLEARED"[\s\S]*?lifecycleState === "TERMINAL_SPEAKING"[\s\S]*?this\.terminalPlaybackActiveV18[\s\S]*?matchesTerminalIdentity/);
   assert.match(v18, /this\.terminalPlaybackActiveV18 = false;[\s\S]*?this\.terminalPlaybackPendingV18 = true;[\s\S]*?LIFECYCLE_TERMINAL_PLAYBACK_CLEARED_V18/);
-  assert.match(v18, /terminal_playback_tracking: "rearmed"/);
+  assert.match(v18, /terminal_playback_tracking: "rearmed_same_identity"/);
   assert.match(v18, /lifecycleEvent\.type === "assistant_audio_cleared"/);
-  assert.match(v18, /this\.terminalPlaybackPendingV18 \|\| correlatedKind === "TERMINAL"/);
+  assert.match(v18, /responseId === this\.terminalResponseIdV18/);
+  assert.match(v18, /binding_source: "provider_response_identity"/);
+  assert.doesNotMatch(v18, /this\.terminalPlaybackPendingV18 \|\| correlatedKind === "TERMINAL"/);
 
   const clearStart = v18.indexOf('event.type === "ASSISTANT_AUDIO_CLEARED"');
   const stopStart = v18.indexOf('event.type === "ASSISTANT_AUDIO_STOPPED"', clearStart);
