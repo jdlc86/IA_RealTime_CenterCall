@@ -5,13 +5,19 @@ export type ProtectedSpeechSnapshot = {
   clientEventId: string;
   responseId: string | null;
   playbackStarted: boolean;
+  responseCompleted: boolean;
+  replayPending: boolean;
+  replayCount: number;
 };
 
 export type ProtectedSpeechRelease = {
   released: boolean;
+  replayRequested?: boolean;
   kind?: ProtectedSpeechKind;
   reason?: string;
 };
+
+const DEFAULT_MAX_REPLAYS = 2;
 
 /**
  * Small deterministic lifecycle helper for speech that must remain atomic.
@@ -21,10 +27,24 @@ export type ProtectedSpeechRelease = {
 export class ProtectedSpeechLifecycle {
   private active: ProtectedSpeechSnapshot | null = null;
 
+  constructor(private readonly maxReplays = DEFAULT_MAX_REPLAYS) {
+    if (!Number.isInteger(maxReplays) || maxReplays < 0) {
+      throw new Error("protected speech maxReplays must be a non-negative integer");
+    }
+  }
+
   begin(kind: ProtectedSpeechKind, clientEventId: string): boolean {
     if (this.active) return false;
     if (!clientEventId.trim()) throw new Error("protected speech clientEventId is required");
-    this.active = { kind, clientEventId, responseId: null, playbackStarted: false };
+    this.active = {
+      kind,
+      clientEventId,
+      responseId: null,
+      playbackStarted: false,
+      responseCompleted: false,
+      replayPending: false,
+      replayCount: 0,
+    };
     return true;
   }
 
@@ -56,11 +76,18 @@ export class ProtectedSpeechLifecycle {
 
   onPlaybackCleared(responseId: string | null | undefined): ProtectedSpeechRelease {
     if (!this.matchesResponse(responseId)) return { released: false };
-    return this.release("output_audio_buffer_cleared");
+    this.active!.playbackStarted = false;
+    this.active!.replayPending = true;
+    return this.active!.responseCompleted
+      ? this.requestReplay()
+      : { released: false };
   }
 
   onResponseDone(responseId: string | null | undefined, status: string | null | undefined): ProtectedSpeechRelease {
     if (!this.matchesResponse(responseId)) return { released: false };
+
+    this.active!.responseCompleted = true;
+    if (this.active!.replayPending) return this.requestReplay();
 
     // A completed response may still have audio queued in SIP playback. Even a
     // non-completed response may have already produced buffered audio. In both
@@ -68,6 +95,19 @@ export class ProtectedSpeechLifecycle {
     if (status === "completed" || this.active!.playbackStarted) return { released: false };
 
     return this.release(`response_done_${status || "unknown"}`);
+  }
+
+  prepareReplay(clientEventId: string): boolean {
+    if (!this.active?.replayPending) return false;
+    if (!clientEventId.trim()) throw new Error("protected speech replay clientEventId is required");
+    if (this.active.replayCount >= this.maxReplays) return false;
+    this.active.clientEventId = clientEventId;
+    this.active.responseId = null;
+    this.active.playbackStarted = false;
+    this.active.responseCompleted = false;
+    this.active.replayPending = false;
+    this.active.replayCount += 1;
+    return true;
   }
 
   onClientError(eventId: string | null | undefined): ProtectedSpeechRelease {
@@ -90,5 +130,19 @@ export class ProtectedSpeechLifecycle {
     if (!current) return { released: false };
     this.active = null;
     return { released: true, kind: current.kind, reason };
+  }
+
+  private requestReplay(): ProtectedSpeechRelease {
+    const current = this.active;
+    if (!current) return { released: false };
+    if (current.replayCount >= this.maxReplays) {
+      return this.release("output_audio_buffer_cleared_replay_exhausted");
+    }
+    return {
+      released: false,
+      replayRequested: true,
+      kind: current.kind,
+      reason: "output_audio_buffer_cleared",
+    };
   }
 }

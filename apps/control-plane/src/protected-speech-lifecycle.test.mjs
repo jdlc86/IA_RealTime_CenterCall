@@ -39,7 +39,7 @@ test("failed response before playback releases protection", () => {
   assert.equal(release.reason, "response_done_failed");
 });
 
-test("failed response after playback starts waits for the buffer terminal event", () => {
+test("failed response after playback starts replays when the buffer is cleared", () => {
   const lifecycle = new ProtectedSpeechLifecycle();
   lifecycle.begin("RECOVERY", "evt-4");
   lifecycle.bindResponse("resp-4");
@@ -47,7 +47,76 @@ test("failed response after playback starts waits for the buffer terminal event"
 
   assert.deepEqual(lifecycle.onResponseDone("resp-4", "failed"), { released: false });
   assert.equal(lifecycle.isActive(), true);
-  assert.equal(lifecycle.onPlaybackCleared("resp-4").released, true);
+  assert.deepEqual(lifecycle.onPlaybackCleared("resp-4"), {
+    released: false,
+    replayRequested: true,
+    kind: "RECOVERY",
+    reason: "output_audio_buffer_cleared",
+  });
+  assert.equal(lifecycle.isActive(), true);
+});
+
+test("cleared greeting waits for response completion and then requests a replay", () => {
+  const lifecycle = new ProtectedSpeechLifecycle();
+  lifecycle.begin("GREETING", "evt-clear-1");
+  lifecycle.bindResponse("resp-clear-1");
+  lifecycle.markPlaybackStarted("resp-clear-1");
+
+  assert.deepEqual(lifecycle.onPlaybackCleared("resp-clear-1"), { released: false });
+  assert.equal(lifecycle.snapshot()?.replayPending, true);
+  assert.equal(lifecycle.isActive(), true);
+
+  assert.deepEqual(lifecycle.onResponseDone("resp-clear-1", "completed"), {
+    released: false,
+    replayRequested: true,
+    kind: "GREETING",
+    reason: "output_audio_buffer_cleared",
+  });
+  assert.equal(lifecycle.prepareReplay("evt-clear-2"), true);
+  assert.deepEqual(lifecycle.snapshot(), {
+    kind: "GREETING",
+    clientEventId: "evt-clear-2",
+    responseId: null,
+    playbackStarted: false,
+    responseCompleted: false,
+    replayPending: false,
+    replayCount: 1,
+  });
+
+  lifecycle.bindResponse("resp-clear-2");
+  lifecycle.markPlaybackStarted("resp-clear-2");
+  const release = lifecycle.onPlaybackStopped("resp-clear-2");
+  assert.equal(release.released, true);
+  assert.equal(release.reason, "output_audio_buffer_stopped");
+});
+
+test("cleared playback after response completion requests replay immediately", () => {
+  const lifecycle = new ProtectedSpeechLifecycle();
+  lifecycle.begin("GREETING", "evt-done-first");
+  lifecycle.bindResponse("resp-done-first");
+  lifecycle.markPlaybackStarted("resp-done-first");
+
+  assert.deepEqual(lifecycle.onResponseDone("resp-done-first", "completed"), { released: false });
+  assert.equal(lifecycle.onPlaybackCleared("resp-done-first").replayRequested, true);
+  assert.equal(lifecycle.isActive(), true);
+});
+
+test("protected replay is bounded and releases only after exhaustion", () => {
+  const lifecycle = new ProtectedSpeechLifecycle(1);
+  lifecycle.begin("GREETING", "evt-bounded-1");
+  lifecycle.bindResponse("resp-bounded-1");
+  lifecycle.markPlaybackStarted("resp-bounded-1");
+  lifecycle.onResponseDone("resp-bounded-1", "completed");
+  assert.equal(lifecycle.onPlaybackCleared("resp-bounded-1").replayRequested, true);
+  assert.equal(lifecycle.prepareReplay("evt-bounded-2"), true);
+
+  lifecycle.bindResponse("resp-bounded-2");
+  lifecycle.markPlaybackStarted("resp-bounded-2");
+  lifecycle.onResponseDone("resp-bounded-2", "completed");
+  const exhausted = lifecycle.onPlaybackCleared("resp-bounded-2");
+  assert.equal(exhausted.released, true);
+  assert.equal(exhausted.reason, "output_audio_buffer_cleared_replay_exhausted");
+  assert.equal(lifecycle.isActive(), false);
 });
 
 test("matching response.create error releases when playback never started", () => {

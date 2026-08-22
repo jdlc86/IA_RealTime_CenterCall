@@ -158,6 +158,30 @@ test("CTL-19 protected recovery returns to fresh waiting interval after playback
   assert.ok(effectTypes(effects).includes("ARM_SILENCE_TIMER"));
 });
 
+test("CTL-20 cleared protected greeting remains speaking until its replay drains", () => {
+  const l = new ConversationTurnLifecycle();
+  l.dispatch({ type: "assistant_audio_started", kind: "GREETING" });
+
+  assert.deepEqual(l.dispatch({ type: "assistant_audio_cleared", kind: "GREETING" }), []);
+  assert.equal(l.snapshot().state, "LUCIA_SPEAKING");
+  assert.equal(l.snapshot().silenceTimerArmed, false);
+
+  l.dispatch({ type: "assistant_audio_started", kind: "GREETING" });
+  const effects = l.dispatch({ type: "assistant_audio_stopped", kind: "GREETING" });
+  assert.equal(l.snapshot().state, "WAITING_FOR_CALLER");
+  assert.ok(effectTypes(effects).includes("ARM_SILENCE_TIMER"));
+});
+
+test("CTL-20b cleared normal playback recovers to a fresh caller wait", () => {
+  const l = new ConversationTurnLifecycle();
+  l.dispatch({ type: "assistant_audio_started", kind: "NORMAL" });
+  const effects = l.dispatch({ type: "assistant_audio_cleared", kind: "NORMAL" });
+
+  assert.equal(l.snapshot().state, "WAITING_FOR_CALLER");
+  assert.equal(l.snapshot().silenceTimerArmed, true);
+  assert.ok(effectTypes(effects).includes("ARM_SILENCE_TIMER"));
+});
+
 test("CTL-21/22/23 handoff suspends conversation lifecycle", () => {
   const l = new ConversationTurnLifecycle();
   const epoch = startWaiting(l);

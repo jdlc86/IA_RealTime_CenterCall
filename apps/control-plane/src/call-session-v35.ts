@@ -40,6 +40,7 @@ function ignoredReason(rawArguments: string | undefined): string {
 export class CallSession extends BaseConstructor {
   private protectedSpeechLifecycleV35 = new ProtectedSpeechLifecycle();
   private protectedSpeechWatchdogV35: ReturnType<typeof setTimeout> | null = null;
+  private protectedSpeechTextV35: string | null = null;
   private ignoredEventsV35: number[] = [];
 
   async fetch(request: Request): Promise<Response> {
@@ -49,6 +50,8 @@ export class CallSession extends BaseConstructor {
       (this as any).diagnostics?.checkpoint?.("PROTECTED_SPEECH_POLICY_V35_ENABLED", {
         greeting_uninterruptible: true,
         recovery_uninterruptible: true,
+        input_detection_suspended: true,
+        cleared_playback_replayed: true,
         completion_event: "assistant_audio_stopped",
         response_scoped: true,
         failure_release: true,
@@ -73,7 +76,7 @@ export class CallSession extends BaseConstructor {
 
     const started = this.startProtectedSpeechV35(
       "GREETING",
-      `Pronuncia exactamente este saludo inicial y nada más: ${JSON.stringify(session.initialGreeting)}`,
+      session.initialGreeting,
     );
     if (!started) return;
 
@@ -84,35 +87,62 @@ export class CallSession extends BaseConstructor {
 
   private setInterruptResponseV35(enabled: boolean, reason: string): void {
     const commands = this.commandsV35();
-    const settings = inputDetectionConfigRuntimeFor(this).get();
-    if (enabled) commands.restoreInputDetection(settings);
-    else commands.beginNonInterruptingListening(settings);
+    if (enabled) commands.restoreInputDetection(inputDetectionConfigRuntimeFor(this).get());
+    else commands.suspendInputDetection();
     (this as any).diagnostics?.checkpoint?.("INTERRUPT_RESPONSE_CHANGED_V35", {
       interrupt_response: enabled,
+      input_detection_suspended: !enabled,
       reason,
       provider_command_port: true,
     });
   }
 
-  private startProtectedSpeechV35(kind: ProtectedSpeechKind, instructions: string): boolean {
+  private protectedSpeechInstructionsV35(kind: ProtectedSpeechKind, exactText: string): string {
+    const label = kind === "GREETING" ? "este saludo inicial" : "esta frase completa";
+    return `Pronuncia exactamente ${label} y nada más: ${JSON.stringify(exactText)}`;
+  }
+
+  private emitProtectedSpeechAttemptV35(
+    kind: ProtectedSpeechKind,
+    exactText: string,
+    clientEventId: string,
+    replayCount: number,
+  ): void {
+    this.commandsV35().speak({
+      requestId: clientEventId,
+      isolated: true,
+      tools: "DISABLED",
+      exactText,
+      instructions: this.protectedSpeechInstructionsV35(kind, exactText),
+      metadata: { [PROTECTED_METADATA_KEY]: kind },
+    });
+    this.armProtectedSpeechWatchdogV35();
+    (this as any).diagnostics?.checkpoint?.("PROTECTED_SPEECH_ATTEMPT_REQUESTED_V35", {
+      kind,
+      replay_count: replayCount,
+      input_detection_suspended: true,
+      exact_text_governed: true,
+      provider_command_port: true,
+    });
+  }
+
+  private startProtectedSpeechV35(kind: ProtectedSpeechKind, exactText: string): boolean {
     if (this.protectedSpeechLifecycleV35.isActive()) return false;
     if (conversationLifecyclePortFor(this).isTerminal()) return false;
 
     const clientEventId = `protected_speech_v35_${crypto.randomUUID()}`;
     if (!this.protectedSpeechLifecycleV35.begin(kind, clientEventId)) return false;
+    this.protectedSpeechTextV35 = exactText;
 
     try {
       this.setInterruptResponseV35(false, `${kind.toLowerCase()}_start`);
-      this.commandsV35().speak({
-        requestId: clientEventId,
-        tools: "DISABLED",
-        instructions,
-        metadata: { [PROTECTED_METADATA_KEY]: kind },
-      });
-      this.armProtectedSpeechWatchdogV35();
+      this.commandsV35().clearInput();
+      this.emitProtectedSpeechAttemptV35(kind, exactText, clientEventId, 0);
       (this as any).diagnostics?.checkpoint?.("PROTECTED_SPEECH_STARTED_V35", {
         kind,
         interrupt_response: false,
+        input_detection_suspended: true,
+        input_buffer_cleared: true,
         response_scoped: true,
         provider_command_port: true,
       });
@@ -152,19 +182,78 @@ export class CallSession extends BaseConstructor {
   private completeProtectedSpeechReleaseV35(release: ProtectedSpeechRelease): void {
     if (!release.released) return;
     this.clearProtectedSpeechWatchdogV35();
-    this.setInterruptResponseV35(true, release.reason ?? "protected_speech_complete");
+    this.protectedSpeechTextV35 = null;
+    try {
+      this.commandsV35().clearInput();
+      this.setInterruptResponseV35(true, release.reason ?? "protected_speech_complete");
+    } catch (error) {
+      (this as any).diagnostics?.fail?.("PROTECTED_SPEECH_INPUT_RESTORE_FAILED_V35", "INPUT_DETECTION_RESTORE_FAILED", {
+        kind: release.kind ?? null,
+        reason: release.reason ?? null,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     (this as any).diagnostics?.checkpoint?.("PROTECTED_SPEECH_COMPLETED_V35", {
       kind: release.kind ?? null,
       reason: release.reason ?? null,
       interrupt_response: true,
+      input_buffer_cleared_before_restore: true,
       provider_command_port: true,
     });
+  }
+
+  private applyProtectedSpeechTransitionV35(transition: ProtectedSpeechRelease): void {
+    if (transition.released) {
+      this.completeProtectedSpeechReleaseV35(transition);
+      return;
+    }
+    if (!transition.replayRequested) return;
+
+    const previous = this.protectedSpeechLifecycleV35.snapshot();
+    const exactText = this.protectedSpeechTextV35;
+    if (!previous || !exactText) {
+      this.completeProtectedSpeechReleaseV35(
+        this.protectedSpeechLifecycleV35.forceRelease("protected_speech_replay_state_missing"),
+      );
+      return;
+    }
+
+    const clientEventId = `protected_speech_v35_${crypto.randomUUID()}`;
+    if (!this.protectedSpeechLifecycleV35.prepareReplay(clientEventId)) {
+      this.completeProtectedSpeechReleaseV35(
+        this.protectedSpeechLifecycleV35.forceRelease("protected_speech_replay_prepare_failed"),
+      );
+      return;
+    }
+
+    const replay = this.protectedSpeechLifecycleV35.snapshot();
+    try {
+      this.clearProtectedSpeechWatchdogV35();
+      this.commandsV35().suspendInputDetection();
+      this.commandsV35().clearInput();
+      this.emitProtectedSpeechAttemptV35(previous.kind, exactText, clientEventId, replay?.replayCount ?? 0);
+      (this as any).diagnostics?.checkpoint?.("PROTECTED_SPEECH_REPLAYED_AFTER_CLEAR_V35", {
+        kind: previous.kind,
+        previous_response_id: previous.responseId,
+        replay_count: replay?.replayCount ?? null,
+        input_detection_suspended: true,
+        input_buffer_cleared: true,
+        timing_heuristic: false,
+      });
+    } catch (error) {
+      const release = this.protectedSpeechLifecycleV35.forceRelease("protected_speech_replay_send_failed");
+      this.completeProtectedSpeechReleaseV35(release);
+      (this as any).diagnostics?.fail?.("PROTECTED_SPEECH_REPLAY_FAILED_V35", "PROTECTED_SPEECH_REPLAY_SEND_FAILED", {
+        kind: previous.kind,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private startProtectedRecoveryV35(): void {
     const started = this.startProtectedSpeechV35(
       "RECOVERY",
-      `Pronuncia exactamente esta frase completa y nada más: ${JSON.stringify(RECOVERY_MESSAGE)}`,
+      RECOVERY_MESSAGE,
     );
     if (!started) return;
     (this as any).diagnostics?.checkpoint?.("PROTECTED_RECOVERY_STARTED_V35", {
@@ -223,12 +312,18 @@ export class CallSession extends BaseConstructor {
     }
 
     if (event.type === "ASSISTANT_AUDIO_CLEARED") {
-      this.completeProtectedSpeechReleaseV35(this.protectedSpeechLifecycleV35.onPlaybackCleared(event.responseId));
+      const transition = this.protectedSpeechLifecycleV35.onPlaybackCleared(event.responseId);
+      (this as any).diagnostics?.checkpoint?.("PROTECTED_SPEECH_PLAYBACK_CLEARED_V35", {
+        response_id: event.responseId ?? null,
+        protection_released: transition.released,
+        replay_requested: transition.replayRequested ?? false,
+      });
+      this.applyProtectedSpeechTransitionV35(transition);
       return;
     }
 
     if (event.type === "ASSISTANT_RESPONSE_COMPLETED") {
-      this.completeProtectedSpeechReleaseV35(
+      this.applyProtectedSpeechTransitionV35(
         this.protectedSpeechLifecycleV35.onResponseDone(event.responseId, event.status),
       );
       return;

@@ -156,6 +156,17 @@ export class ConversationTurnLifecycle {
         this.armFreshSilence(effects);
         return effects;
       }
+      case "assistant_audio_cleared": {
+        // Greeting/recovery playback remains owned by ProtectedSpeechLifecycle,
+        // which replays a cleared buffer while input detection stays suspended.
+        // Do not open a caller turn or a silence episode between attempts.
+        if (event.kind === "GREETING" || event.kind === "RECOVERY" || event.kind === "TERMINAL" || event.kind === "PRESENCE") {
+          return effects;
+        }
+        this.state = "WAITING_FOR_CALLER";
+        this.armFreshSilence(effects);
+        return effects;
+      }
       case "speech_started": {
         if (this.state !== "WAITING_FOR_CALLER") return effects;
         this.cancelSilence(effects);
