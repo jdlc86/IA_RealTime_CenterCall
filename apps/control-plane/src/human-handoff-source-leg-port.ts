@@ -41,10 +41,16 @@ function alreadyEnded(status: number, detail: string): boolean {
  * owned by the caller.
  */
 export class HumanHandoffSourceLegRuntime {
+  private readonly fetcher: FetchLike;
+
   constructor(
     private readonly host: HumanHandoffSourceLegHost,
-    private readonly fetcher: FetchLike = fetch,
-  ) {}
+    fetcher: FetchLike = fetch,
+  ) {
+    // Preserve fetch as a bare-call dependency. Receiver-sensitive runtimes such
+    // as Cloudflare Workers reject native fetch when called as an instance method.
+    this.fetcher = (...args) => fetcher(...args);
+  }
 
   private apiKey(): string {
     const value = nonEmpty(this.host.env?.TELNYX_API_KEY);
