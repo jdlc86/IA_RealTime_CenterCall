@@ -8,7 +8,7 @@ const TERMINAL_RESULT_MARKERS = [
 
 export const CONTINUATION_QUESTION = "¿Necesitas algo más en lo que pueda ayudarte?";
 export const RESERVATION_AVAILABILITY_CHANGED_SPEECH =
-  "Justo al confirmar, esa disponibilidad dejó de estar disponible y no se ha creado ninguna reserva. ¿Quieres que busque horarios cercanos para ese mismo día?";
+  "Perdona, pero lamentablemente, mientras confirmábamos, se ha registrado otra reserva y ese horario ha dejado de tener disponibilidad. No se ha creado ninguna reserva para ti. ¿Quieres que busque horarios cercanos para ese mismo día?";
 export const RESERVATION_SLOT_UNAVAILABLE_SPEECH =
   "No tengo disponibilidad para ese horario. ¿Quieres que busque otros horarios ese mismo día?";
 

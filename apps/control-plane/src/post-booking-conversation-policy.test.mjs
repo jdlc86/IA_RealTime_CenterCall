@@ -82,6 +82,8 @@ test("commit-time availability conflict has deterministic caller recovery and no
   if (decision.action !== "RECOVER") return;
   assert.equal(decision.reason, "RESERVATION_AVAILABILITY_CHANGED");
   assert.equal(decision.exactText, RESERVATION_AVAILABILITY_CHANGED_SPEECH);
+  assert.match(decision.exactText, /^Perdona, pero lamentablemente/i);
+  assert.match(decision.exactText, /se ha registrado otra reserva/i);
   assert.match(decision.exactText, /no se ha creado ninguna reserva/i);
   assert.match(decision.exactText, /horarios cercanos/i);
   assert.match(decision.instructions, /No llames herramientas en esta misma respuesta/i);

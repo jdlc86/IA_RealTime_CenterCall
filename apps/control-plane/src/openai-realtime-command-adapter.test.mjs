@@ -11,7 +11,7 @@ function host() {
   return { events, send(event) { events.push(event); } };
 }
 
-test("isolated speech is translated without leaking OpenAI protocol into caller", () => {
+test("isolated exact speech is response-local system authority, never a synthetic caller turn", () => {
   const h = host();
   const port = new OpenAIRealtimeCommandAdapter(h);
   port.speak({
@@ -22,17 +22,36 @@ test("isolated speech is translated without leaking OpenAI protocol into caller"
     instructions: "Say presence check",
     exactText: "¿Sigues ahí?",
   });
-  assert.deepEqual(h.events, [{
-    event_id: "req-1",
-    type: "response.create",
-    response: {
-      instructions: "Say presence check",
-      conversation: "none",
-      tool_choice: "none",
-      metadata: { purpose: "presence" },
-      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "¿Sigues ahí?" }] }],
-    },
-  }]);
+  assert.equal(h.events.length, 1);
+  assert.equal(h.events[0].event_id, "req-1");
+  assert.equal(h.events[0].type, "response.create");
+  assert.equal(h.events[0].response.conversation, "none");
+  assert.equal(h.events[0].response.tool_choice, "none");
+  assert.deepEqual(h.events[0].response.metadata, { purpose: "presence" });
+  assert.match(h.events[0].response.instructions, /Say presence check/);
+  assert.match(h.events[0].response.instructions, /¿Sigues ahí\?/);
+  assert.equal(h.events[0].response.input[0].role, "system");
+  assert.match(h.events[0].response.input[0].content[0].text, /¿Sigues ahí\?/);
+  assert.doesNotMatch(h.events[0].response.input[0].content[0].text, /responde a ese texto/i);
+});
+
+test("governed availability-conflict speech cannot be injected as user input", () => {
+  const h = host();
+  const port = new OpenAIRealtimeCommandAdapter(h);
+  const speech = "Perdona, pero lamentablemente, no se ha creado ninguna reserva para ti.";
+
+  port.speak({
+    instructions: `Pronuncia exactamente: ${JSON.stringify(speech)}`,
+    exactText: speech,
+    tools: "DISABLED",
+    purpose: "reservation_availability_changed_v26",
+  });
+
+  const response = h.events[0].response;
+  assert.equal(response.input[0].role, "system");
+  assert.equal(response.input.some((item) => item.role === "user"), false);
+  assert.match(response.instructions, /no lo parafrasees/i);
+  assert.match(response.instructions, /no se ha creado ninguna reserva para ti/i);
 });
 
 test("OpenAI response metadata values are always strings", () => {

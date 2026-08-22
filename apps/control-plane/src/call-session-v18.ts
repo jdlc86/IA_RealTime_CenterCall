@@ -125,7 +125,7 @@ export class CallSession extends BaseConstructor {
     this.commandsV18().speak({
       purpose: "presence_recovery_v18", isolated: true, tools: "DISABLED",
       instructions: "Pronuncia exactamente esta frase y nada más: \"¿Sigues ahí?\". No respondas al historial y no llames herramientas.",
-      exactText: "Pronuncia exactamente: ¿Sigues ahí?",
+      exactText: "¿Sigues ahí?",
     });
   }
 

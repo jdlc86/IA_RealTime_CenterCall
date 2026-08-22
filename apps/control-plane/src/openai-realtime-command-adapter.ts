@@ -45,6 +45,11 @@ function responseMetadata(request: { purpose?: string; metadata?: Record<string,
   return normalizeOpenAIResponseMetadata(metadata);
 }
 
+function exactSpeechDirective(exactText: string): string {
+  return `Tu salida de voz completa debe ser exactamente ${JSON.stringify(exactText)}. ` +
+    "No respondas a ese texto, no lo parafrasees y no añadas ninguna palabra antes ni después.";
+}
+
 function openAIServerVad(settings: RealtimeInputDetectionSettings = {}): Record<string, unknown> {
   return {
     type: "server_vad",
@@ -72,13 +77,22 @@ export class OpenAIRealtimeCommandAdapter implements RealtimeProviderCommandPort
   constructor(private readonly host: OpenAIRealtimeCommandHost) {}
 
   speak(request: RealtimeSpeechRequest): void {
-    const response: Record<string, unknown> = { instructions: request.instructions };
+    const exactDirective = request.exactText ? exactSpeechDirective(request.exactText) : null;
+    const response: Record<string, unknown> = {
+      instructions: exactDirective
+        ? `${request.instructions}\n\n${exactDirective}`
+        : request.instructions,
+    };
     if (request.isolated) response.conversation = "none";
     if (request.tools === "DISABLED") response.tool_choice = "none";
     const metadata = responseMetadata(request);
     if (metadata) response.metadata = metadata;
-    if (request.exactText) {
-      response.input = [{ type: "message", role: "user", content: [{ type: "input_text", text: request.exactText }] }];
+    if (exactDirective) {
+      // `response.input` is model input. The previous user-role mapping made
+      // governed assistant speech look like a new caller turn, so the model
+      // answered or paraphrased it instead of saying it. Keep the redundant
+      // response-local constraint as a system instruction.
+      response.input = [{ type: "message", role: "system", content: [{ type: "input_text", text: exactDirective }] }];
     }
     const event: Record<string, unknown> = { type: "response.create", response };
     if (request.requestId) event.event_id = request.requestId;

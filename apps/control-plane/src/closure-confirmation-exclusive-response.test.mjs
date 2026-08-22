@@ -27,7 +27,9 @@ test("closure confirmation speech is isolated and cannot select a tool", () => {
   assert.equal(sent[0].response.conversation, "none");
   assert.equal(sent[0].response.metadata.purpose, "close_confirmation_v41");
   assert.equal(sent[0].response.metadata.authority, "closure_guard_v41");
-  assert.equal(sent[0].response.input[0].content[0].text, "¿Quieres que finalice la llamada?");
+  assert.equal(sent[0].response.input[0].role, "system");
+  assert.match(sent[0].response.input[0].content[0].text, /¿Quieres que finalice la llamada\?/);
+  assert.equal(sent[0].response.input.some((item) => item.role === "user"), false);
 });
 
 test("repeated end-call proposal remains acknowledgement-only while confirmation is pending", () => {
