@@ -19,6 +19,7 @@ import {
 import { humanHandoffTransportPortFor } from "./human-handoff-transport-port.js";
 import { callTerminationPortFor } from "./call-termination-port.js";
 import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
+import { buildHumanHandoffAnnouncementInstructions } from "./human-handoff-announcement-policy.js";
 
 const BaseConstructor = CallSessionV36 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV36.prototype as any;
@@ -244,26 +245,45 @@ export class CallSession extends BaseConstructor {
     return true;
   }
 
-  private emitHandoffSpeechV37(kind: HumanHandoffSpeechKind, text: string): void {
+  private emitHandoffSpeechV37(kind: HumanHandoffSpeechKind, text?: string): void {
     const runtime = this.handoffRuntimeV37();
     const handoff = runtime.beginSpeech(kind);
     if (!handoff) return;
     const purpose = kind === "ANNOUNCEMENT" ? ANNOUNCEMENT_PURPOSE : FAILURE_PURPOSE;
-    realtimeCommandPortFor(this as any).speak({
-      requestId: `human_handoff_${crypto.randomUUID()}`,
-      instructions: `Pronuncia exactamente esta frase y nada más: ${JSON.stringify(text)}`,
-      exactText: text,
-      isolated: true,
-      tools: "DISABLED",
-      purpose,
-      metadata: { [HANDOFF_METADATA_KEY]: kind, handoff_id: handoff.id },
-    });
+    const commands = realtimeCommandPortFor(this as any);
+    if (kind === "ANNOUNCEMENT") {
+      const destinationLabel = runtime.getConfig()?.destination.label ?? "el equipo del restaurante";
+      commands.speak({
+        requestId: `human_handoff_${crypto.randomUUID()}`,
+        instructions: buildHumanHandoffAnnouncementInstructions({
+          reason: handoff.reason,
+          summary: handoff.summary,
+          destinationLabel,
+        }),
+        isolated: true,
+        tools: "DISABLED",
+        purpose,
+        metadata: { [HANDOFF_METADATA_KEY]: kind, handoff_id: handoff.id },
+      });
+    } else {
+      if (!text?.trim()) return;
+      commands.speak({
+        requestId: `human_handoff_${crypto.randomUUID()}`,
+        instructions: `Pronuncia exactamente esta frase y nada más: ${JSON.stringify(text)}`,
+        exactText: text,
+        isolated: true,
+        tools: "DISABLED",
+        purpose,
+        metadata: { [HANDOFF_METADATA_KEY]: kind, handoff_id: handoff.id },
+      });
+    }
     this.armHandoffSpeechWatchdogV37(kind);
     (this as any).diagnostics?.checkpoint?.("HUMAN_HANDOFF_PROTECTED_SPEECH_REQUESTED_V37", {
       handoff_id: handoff.id,
       kind,
       vad_disabled: true,
-      exact_speech: true,
+      exact_speech: kind !== "ANNOUNCEMENT",
+      announcement_contextual: kind === "ANNOUNCEMENT",
       provider_boundary: "realtime_provider_runtime",
     });
   }
@@ -518,8 +538,7 @@ export class CallSession extends BaseConstructor {
         && event.present
         && event.settings === null
       ) {
-        const config = runtime.getConfig();
-        if (config) this.emitHandoffSpeechV37("ANNOUNCEMENT", config.successMessage);
+        if (runtime.getConfig()) this.emitHandoffSpeechV37("ANNOUNCEMENT");
         continue;
       }
 
