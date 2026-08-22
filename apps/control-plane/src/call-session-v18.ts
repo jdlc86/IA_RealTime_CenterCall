@@ -217,8 +217,9 @@ export class CallSession extends BaseConstructor {
   private lifecycleAssistantSpeechKindV18(event: RealtimeProviderEvent, fallbackKind: LifecycleAssistantSpeechKind | undefined): LifecycleAssistantSpeechKind | undefined {
     const correlatedKind = this.effectiveAssistantSpeechKindV18(event) ?? fallbackKind;
     const lifecycleState = this.turnLifecycleV18.snapshot().state;
+    const responseId = "responseId" in event ? event.responseId : undefined;
     const matchesTerminalIdentity = Boolean(
-      event.responseId && this.terminalResponseIdV18 && event.responseId === this.terminalResponseIdV18,
+      responseId && this.terminalResponseIdV18 && responseId === this.terminalResponseIdV18,
     );
 
     if (event.type === "ASSISTANT_AUDIO_STARTED" && lifecycleState === "TERMINAL_SPEAKING" && correlatedKind === "TERMINAL" && matchesTerminalIdentity) {
