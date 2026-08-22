@@ -1,5 +1,7 @@
 # Prompt de relevo integral — sesión 2026-08-22
 
+> **ARCHIVADO.** Conservado como snapshot histórico. Para continuar usa [`SESSION_HANDOFF.md`](./SESSION_HANDOFF.md).
+
 Este documento está diseñado para copiarse completo en una nueva sesión de IA. Es el contexto operativo más reciente del trabajo realizado hasta el 22 de agosto de 2026. No sustituye la arquitectura normativa del repositorio; la complementa con el estado real de la rama, producción, E2E y siguientes pasos.
 
 ## Inicio del prompt para la nueva sesión

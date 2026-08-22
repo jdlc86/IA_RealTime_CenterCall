@@ -1,105 +1,53 @@
-# IA_RealTime_CenterCall — Documentación oficial v2.5
+# IA_RealTime_CenterCall — índice documental
 
-Este directorio es la puerta de entrada a la documentación del proyecto. GitHub es la fuente de verdad del código y de la documentación.
+> Estado: vigente
+> Última revisión: 2026-08-22
 
-## Entrada estable
+La documentación usa rutas estables y una sola fuente por tipo de decisión. Los documentos fechados son evidencia histórica; no describen necesariamente el runtime actual.
 
-Para evitar que vuelva a perderse la referencia al documento maestro, el path permanente es:
+## Lectura mínima
 
-1. [`MASTER_PROJECT_GUIDE.md`](./MASTER_PROJECT_GUIDE.md) — entrada estable; no se renombra ni se elimina.
-2. [`PROJECT_STATUS.md`](./PROJECT_STATUS.md) — estado operativo actual de fases.
-3. [`SESSION_HANDOFF_PROMPT_2026-08-22.md`](./SESSION_HANDOFF_PROMPT_2026-08-22.md) — relevo operativo y prompt integral más reciente para continuar en otra sesión.
-4. [`architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — arquitectura normativa y definición canónica del roadmap.
-5. [`architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — reglas no negociables de implementación.
+1. [`SESSION_HANDOFF.md`](./SESSION_HANDOFF.md) — prompt operativo para continuar en otra sesión.
+2. [`PROJECT_STATUS.md`](./PROJECT_STATUS.md) — estado actual, producción y siguiente validación.
+3. [`architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — reglas no negociables.
+4. [`architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — arquitectura estable.
+5. [`DOCUMENTATION_MAINTENANCE.md`](./DOCUMENTATION_MAINTENANCE.md) — qué documento actualizar y cómo evitar duplicación.
 
-## Orden de autoridad documental
+[`MASTER_PROJECT_GUIDE.md`](./MASTER_PROJECT_GUIDE.md) es la entrada de compatibilidad permanente y no debe renombrarse.
 
-Cuando existan dudas o contradicciones, usar este orden:
+## Autoridad documental
 
 ```text
 ADR posterior aplicable
-        ↓
-architecture/SYSTEM_ARCHITECTURE.md
-        ↓
-architecture/DESIGN_RULES.md
-        ↓
-PROJECT_STATUS.md (solo progreso/estado de fases)
-        ↓
-implementation/PHASE_*_IMPLEMENTATION_GUIDE.md
-        ↓
-tests/ + runbooks/ + DEVELOPMENT_LOG.md
+  → architecture/DESIGN_RULES.md
+  → architecture/SYSTEM_ARCHITECTURE.md
+  → PROJECT_STATUS.md
+  → SESSION_HANDOFF.md
+  → runbooks / implementation / tests
+  → handoffs y notas fechadas (historial)
 ```
 
-`MASTER_PROJECT_GUIDE.md` es una puerta de entrada estable, no una copia independiente de la arquitectura. Así evitamos dos fuentes de verdad divergentes.
+- Una decisión arquitectónica nueva exige actualizar una regla existente o crear ADR.
+- Un cambio de estado, deploy o E2E actualiza `PROJECT_STATUS.md` y, si afecta al siguiente trabajo, `SESSION_HANDOFF.md`.
+- Un procedimiento actualiza el runbook correspondiente.
+- No se copian listas completas de commits ni investigaciones antiguas en los documentos canónicos.
 
-## Lectura recomendada
+## Verificación
 
-1. [`MASTER_PROJECT_GUIDE.md`](./MASTER_PROJECT_GUIDE.md) — entrada permanente al proyecto.
-2. [`SESSION_HANDOFF_PROMPT_2026-08-22.md`](./SESSION_HANDOFF_PROMPT_2026-08-22.md) — estado desplegado, incidentes E2E, restricciones y siguiente misión.
-3. [`PROJECT_STATUS.md`](./PROJECT_STATUS.md) — fases y contexto histórico; contrastar con el handoff más reciente.
-4. [`SYSTEM_OVERVIEW.md`](./SYSTEM_OVERVIEW.md) — producto a alto nivel.
-5. [`architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — arquitectura y roadmap canónicos.
-6. [`architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — reglas arquitectónicas.
-7. [`implementation/PHASE_3_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_3_IMPLEMENTATION_GUIDE.md) — **implementación activa: F3 ToolGateway**.
-8. [`implementation/PHASE_1_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_1_IMPLEMENTATION_GUIDE.md) — F1 cerrada.
-9. [`implementation/PHASE_0_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_0_IMPLEMENTATION_GUIDE.md) — F0 cerrada.
-10. [`implementation/END_CALL_INTENT_V9.md`](./implementation/END_CALL_INTENT_V9.md) — cierre por intención semántica.
-11. [`tests/PHASE0.md`](./tests/PHASE0.md) y [`tests/PHASE1.md`](./tests/PHASE1.md) — evidencia de gates anteriores.
-12. [`DEVELOPMENT_LOG.md`](./DEVELOPMENT_LOG.md) — bitácora cronológica.
+Desde `apps/control-plane`:
 
-## Roadmap vigente
-
-Definido por `architecture/SYSTEM_ARCHITECTURE.md`:
-
-```text
-F0 Voz E2E
-  ↓
-F1 Baseline + observabilidad + TenantResolver
-  ↓
-F2 Latencia + barge-in
-  ↓
-F3 ToolGateway
-  ↓
-F4 Clínica + validación multi-negocio
-  ↓
-F5 Persistencia/post-call
-  ↓
-F6 Handoff humano
-  ↓
-F7 Concurrencia
-  ↓
-F8 Hardening producción
+```powershell
+npm run docs:check
+npm test
+npm run check
 ```
 
-El estado de ejecución de estas fases se consulta en `PROJECT_STATUS.md`, no en snapshots históricos dentro de documentos antiguos.
+`docs:check` valida las rutas canónicas, sus enlaces locales y las secciones mínimas del relevo. Los detalles están en [`DOCUMENTATION_MAINTENANCE.md`](./DOCUMENTATION_MAINTENANCE.md).
 
-## Estructura principal
+## Historial útil
 
-```text
-docs/
-├── MASTER_PROJECT_GUIDE.md       # path estable
-├── PROJECT_STATUS.md             # estado actual
-├── README.md                     # índice y autoridad
-├── SYSTEM_OVERVIEW.md
-├── DEVELOPMENT_LOG.md
-├── architecture/
-│   ├── SYSTEM_ARCHITECTURE.md    # arquitectura canónica
-│   ├── DESIGN_RULES.md
-│   └── GLOSSARY.md
-├── implementation/
-│   ├── PHASE_0_IMPLEMENTATION_GUIDE.md
-│   ├── PHASE_1_IMPLEMENTATION_GUIDE.md
-│   ├── PHASE_3_IMPLEMENTATION_GUIDE.md
-│   └── END_CALL_INTENT_V9.md
-├── adr/
-├── runbooks/
-└── tests/
-    ├── PHASE0.md
-    └── PHASE1.md
-```
+- [`SESSION_HANDOFF_PROMPT_2026-08-22.md`](./SESSION_HANDOFF_PROMPT_2026-08-22.md) — snapshot anterior al hardening de seguridad, concurrencia y saludo protegido.
+- [`SESSION_HANDOFF_2026-08-19.md`](./SESSION_HANDOFF_2026-08-19.md) — Gate B y decisiones pre-Gemini.
+- [`DEVELOPMENT_LOG.md`](./DEVELOPMENT_LOG.md) — cronología extensa.
 
-## Compatibilidad documental
-
-`ARCHITECTURE_SPECIFICATION.md` permanece como redirección legado hacia la documentación v2.x.
-
-`MASTER_PROJECT_GUIDE.md` queda restaurado deliberadamente como **path estable de compatibilidad**. Si en el futuro cambia el archivo arquitectónico interno, se actualiza el enlace del master; el nombre del master no vuelve a desaparecer.
+Estos archivos se consultan para reconstruir decisiones, no como instrucciones actuales.

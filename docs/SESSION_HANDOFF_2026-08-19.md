@@ -1,5 +1,7 @@
 # SESSION HANDOFF — 2026-08-19
 
+> **ARCHIVADO.** Evidencia histórica de Gate B. Para instrucciones actuales usa [`SESSION_HANDOFF.md`](./SESSION_HANDOFF.md).
+
 > Repositorio: `jdlc86/IA_RealTime_CenterCall`
 > Rama: `rebuild/v39-stable-baseline`
 > Snapshot estable: `stable/pre-gemini-2026-08-19`

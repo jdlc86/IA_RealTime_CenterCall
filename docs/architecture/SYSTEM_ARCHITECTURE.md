@@ -1,8 +1,8 @@
 # IA_RealTime_CenterCall — System Architecture
 
-> **Arquitectura oficial v2.2**  
-> **Estado:** vigente  
-> **Fecha:** 2026-08-09  
+> **Arquitectura oficial v2.3**
+> **Estado:** vigente
+> **Última revisión:** 2026-08-22
 > **Carácter:** normativo
 
 Este documento es la referencia canónica de arquitectura. Si otro documento contradice este, prevalece este documento salvo ADR posterior que lo modifique explícitamente.
@@ -35,8 +35,8 @@ Este documento es la referencia canónica de arquitectura. Si otro documento con
                                       │ push
                                       ▼
                             ┌────────────────────┐
-                            │ Cloudflare Builds  │
-                            │ build + deploy     │
+                            │ CI + Deploy gate   │
+                            │ SHA exacto         │
                             └─────────┬──────────┘
                                       │
                                       ▼
@@ -381,18 +381,20 @@ Estados conversacionales derivados durante ACTIVE:
 ## 13. Arquitectura de desarrollo y despliegue
 
 ```text
-GitHub main
+rama publicada + PR
    ↓
-Cloudflare Workers Builds
+CI del SHA exacto: tests + Workers runtime + dry-runs
    ↓
-instalación dependencias
+Workers Builds o Wrangler autorizado
    ↓
-wrangler deploy
+versión Cloudflare
    ↓
-Worker público
+promoción verificada al porcentaje de tráfico esperado
+   ↓
+health/version + E2E cuando el cambio afecta voz/event ordering
 ```
 
-El ordenador local es opcional y no forma parte del flujo normal de operación o despliegue del backend.
+El mecanismo de despliegue no cambia la fuente de verdad: producción debe corresponder a un SHA publicado en GitHub. Una versión subida al histórico no está desplegada hasta que recibe tráfico.
 
 La app web/escritorio tendrá su propio pipeline de build/release definido en su fase específica.
 
@@ -444,4 +446,4 @@ La app no accede con credenciales privilegiadas directamente a Supabase. La lóg
 
 ## 15. Estado actual
 
-F0 y F1 cerradas. F2 cerrada sin cambios de optimización por decisión de proyecto. F3 ToolGateway en curso. La persistencia empresarial objetivo queda definida como Supabase PostgreSQL detrás de `SupabaseAdapter`; su implementación pertenece principalmente a F5, con contratos de dominio preparados desde F4.
+El restaurante es el vertical activo en producción. ToolGateway, persistencia Supabase, handoff, concurrencia y hardening están implementados en distintos grados; el estado verificable y la próxima E2E viven únicamente en [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md). OpenAI continúa como único realtime provider activo.

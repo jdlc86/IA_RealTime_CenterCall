@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "apps/control-plane/**"
+      - "docs/**"
       - ".github/workflows/control-plane-ci.yml"
   workflow_dispatch:
 
