@@ -21,6 +21,20 @@
       "binding": "TENANT_CONFIG"
     }
   ],
+  "queues": {
+    "producers": [
+      { "binding": "CALLER_SECURITY_SIGNALS", "queue": "ia-realtime-centercall-security-signals" }
+    ],
+    "consumers": [
+      {
+        "queue": "ia-realtime-centercall-security-signals",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 10,
+        "dead_letter_queue": "ia-realtime-centercall-security-signals-dlq"
+      }
+    ]
+  },
   "durable_objects": {
     "bindings": [
       {
@@ -58,6 +72,20 @@
           "binding": "TENANT_CONFIG"
         }
       ],
+      "queues": {
+        "producers": [
+          { "binding": "CALLER_SECURITY_SIGNALS", "queue": "ia-realtime-centercall-preview-security-signals" }
+        ],
+        "consumers": [
+          {
+            "queue": "ia-realtime-centercall-preview-security-signals",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 10,
+            "dead_letter_queue": "ia-realtime-centercall-preview-security-signals-dlq"
+          }
+        ]
+      },
       "durable_objects": {
         "bindings": [
           {
@@ -91,6 +119,20 @@
           "binding": "TENANT_CONFIG"
         }
       ],
+      "queues": {
+        "producers": [
+          { "binding": "CALLER_SECURITY_SIGNALS", "queue": "ia-realtime-centercall-dev-security-signals" }
+        ],
+        "consumers": [
+          {
+            "queue": "ia-realtime-centercall-dev-security-signals",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 10,
+            "dead_letter_queue": "ia-realtime-centercall-dev-security-signals-dlq"
+          }
+        ]
+      },
       "durable_objects": {
         "bindings": [
           {

@@ -1,6 +1,6 @@
 import { CallerSecurityService } from "./caller-security.js";
 
-export type CallerSecurityPort = Pick<CallerSecurityService, "evaluateInbound" | "recordSignal">;
+export type CallerSecurityPort = Pick<CallerSecurityService, "evaluateInbound" | "callerKey" | "recordSignal" | "recordSignalByCallerKey">;
 
 type CallerSecurityHost = object & {
   env?: Record<string, unknown>;

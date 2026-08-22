@@ -135,9 +135,11 @@ async function handleTelnyxWebhook(request: Request, env: WorkerEnv, ctx: Execut
       return json({ ok: true, accepted: false, action: "security_reject", reason: decision.reason, blocked_until: decision.blocked_until, permanent_block: decision.permanent_block });
     }
   } catch (error) {
-    // Availability of the security store must not become a global denial-of-service vector.
-    // Fail open for this call, but emit a high visibility event for operations.
-    console.error(JSON.stringify({ level: "error", event: "caller_security_inbound_check_failed_open", tenant_id: resolution.tenantId, error: error instanceof Error ? error.message : String(error) }));
+    console.error(JSON.stringify({ level: "error", event: "caller_security_inbound_check_failed_closed", tenant_id: resolution.tenantId, error: error instanceof Error ? error.message : String(error) }));
+    ctx.waitUntil(rejectSecurityBlockedCall(callControlId, eventId, env).catch((rejectError) => {
+      console.error(JSON.stringify({ level: "error", event: "caller_security_unavailable_reject_failed", tenant_id: resolution.tenantId, error: rejectError instanceof Error ? rejectError.message : String(rejectError) }));
+    }));
+    return json({ ok: true, accepted: false, action: "security_unavailable_reject" });
   }
 
   ctx.waitUntil(transferToRealtime(callControlId, eventId, resolution, callerPhone, env));

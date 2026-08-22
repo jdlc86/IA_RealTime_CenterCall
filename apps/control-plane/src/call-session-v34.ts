@@ -1,5 +1,5 @@
 import { CallSession as CallSessionV33 } from "./call-session-v33";
-import { callerSecurityPortFor } from "./caller-security-port.js";
+import { recordCallerSecuritySignalDurably } from "./caller-security-signal-delivery.js";
 import { KvTenantRepository } from "./tenant-kv";
 import { matchBlockedSecurityPhrase } from "./security-blocked-phrases";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
@@ -53,11 +53,15 @@ export class CallSession extends BaseConstructor {
   }
 
   private async recordAndCloseV34(transcript: string, match: { phrase?: string; source?: string }): Promise<void> {
+    conversationLifecyclePortFor(this).confirmEndCall(
+      "blocked_security_phrase_v34",
+      "deterministic_kv_security_monitor_v34",
+    );
     const tenantId = (this as any).tenantId;
     const callerPhone = (this as any).callerPhone;
     if (typeof tenantId === "string" && tenantId.trim() && typeof callerPhone === "string" && callerPhone.trim()) {
       try {
-        const decision = await callerSecurityPortFor(this).recordSignal({
+        const result = await recordCallerSecuritySignalDurably(this, {
           tenantId: tenantId.trim(),
           callerPhone: callerPhone.trim(),
           eventType: "BLOCKED_PHRASE_HIGH",
@@ -74,9 +78,10 @@ export class CallSession extends BaseConstructor {
         (this as any).diagnostics?.checkpoint?.("CALLER_BLOCKED_PHRASE_V34", {
           matched_phrase: match.phrase ?? null,
           phrase_source: match.source ?? null,
-          action: decision.action,
-          risk_score: decision.risk_score,
-          security_strikes: decision.security_strikes,
+          delivery: result.delivery,
+          action: result.decision?.action ?? "PENDING_RETRY",
+          risk_score: result.decision?.risk_score ?? null,
+          security_strikes: result.decision?.security_strikes ?? null,
           transcript_forwarded_to_lucia: false,
         });
       } catch (error) {
@@ -86,11 +91,6 @@ export class CallSession extends BaseConstructor {
         });
       }
     }
-
-    conversationLifecyclePortFor(this).confirmEndCall(
-      "blocked_security_phrase_v34",
-      "deterministic_kv_security_monitor_v34",
-    );
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {

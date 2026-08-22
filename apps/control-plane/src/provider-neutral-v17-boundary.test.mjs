@@ -42,7 +42,11 @@ test("V17 owns semantic security incidents before natural conversation", () => {
   assert.match(v17, /SEMANTIC_SECURITY_TOOL_DEFINITION/);
   assert.match(v17, /toolEvent\.name === RESTAURANT_SECURITY_BOUNDARY_TOOL/);
   assert.match(v17, /handleSemanticSecurityIncidentV17/);
-  assert.match(v17, /tools: "DISABLED"/);
   assert.match(v17, /confidential_content_disclosed: false/);
-  assert.match(v17, /callerSecurityPortFor\(this\)\.recordSignal/);
+  assert.match(v17, /severity: "HIGH"/);
+  assert.match(v17, /riskDelta: 5/);
+  assert.match(v17, /highConfidence: true/);
+  assert.match(v17, /recordCallerSecuritySignalDurably\(this/);
+  assert.match(v17, /conversationLifecyclePortFor\(this\)\.confirmEndCall/);
+  assert.match(v17, /call_terminated: true/);
 });

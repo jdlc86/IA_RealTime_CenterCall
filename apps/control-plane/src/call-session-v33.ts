@@ -1,6 +1,6 @@
 import { CallSession as CallSessionV32 } from "./call-session-v32";
 import { inspectCallerTranscript } from "./caller-security";
-import { callerSecurityPortFor } from "./caller-security-port.js";
+import { recordCallerSecuritySignalDurably } from "./caller-security-signal-delivery.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 import { adaptRealtimeProviderEvents } from "./realtime-provider-runtime.js";
 
@@ -30,7 +30,7 @@ export class CallSession extends BaseConstructor {
     if (typeof tenantId !== "string" || !tenantId.trim() || typeof callerPhone !== "string" || !callerPhone.trim()) return;
 
     try {
-      const decision = await callerSecurityPortFor(this).recordSignal({
+      const result = await recordCallerSecuritySignalDurably(this, {
         tenantId: tenantId.trim(),
         callerPhone: callerPhone.trim(),
         eventType: finding.eventType,
@@ -48,11 +48,12 @@ export class CallSession extends BaseConstructor {
         level: finding.level,
         event_type: finding.eventType,
         matched_rule: finding.matchedRule ?? null,
-        action: decision.action,
-        risk_score: decision.risk_score,
-        security_strikes: decision.security_strikes,
-        permanent_block: decision.permanent_block,
-        blocked_until: decision.blocked_until,
+        delivery: result.delivery,
+        action: result.decision?.action ?? "PENDING_RETRY",
+        risk_score: result.decision?.risk_score ?? null,
+        security_strikes: result.decision?.security_strikes ?? null,
+        permanent_block: result.decision?.permanent_block ?? null,
+        blocked_until: result.decision?.blocked_until ?? null,
         raw_transcript_stored: false,
       });
     } catch (error) {
@@ -89,11 +90,12 @@ export class CallSession extends BaseConstructor {
       if (!transcript) continue;
 
       const finding = inspectCallerTranscript(transcript);
-      if (finding.level !== "NONE") await this.recordFindingV33(transcript, finding);
       if (finding.terminateCurrentCall) {
         this.closeForCybersecurityV33(finding);
+        await this.recordFindingV33(transcript, finding);
         return;
       }
+      if (finding.level !== "NONE") await this.recordFindingV33(transcript, finding);
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
