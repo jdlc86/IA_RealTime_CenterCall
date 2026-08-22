@@ -13,7 +13,6 @@ import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 
 const TURN_LOCK_WATCHDOG_MS = 30_000;
 
-/** Provider-neutral compatibility alias for callers that still import the type. */
 export type TurnConcurrencyEvent = RealtimeProviderEvent;
 
 function hasUsableTranscript(value: unknown): boolean {
@@ -117,8 +116,18 @@ export class TurnConcurrencyCoordinator {
         session.diagnostics?.fail?.("TURN_CONCURRENCY_WATCHDOG_V36", "TURN_LOCK_TERMINAL_EVENT_MISSING", {
           watchdog_ms: TURN_LOCK_WATCHDOG_MS,
           active_turn_age_ms: this.lifecycle.ageMs(),
+          recovery: "terminal_fail_closed",
         });
-        this.release(session, "watchdog");
+        // Never reopen VAD while the original semantic/business operation may
+        // still be in flight. A watchdog expiry is an exceptional loss of the
+        // turn's terminal boundary, so preserve exclusivity and terminate the
+        // conversation through the lifecycle authority instead of admitting a
+        // second caller turn over unknown state.
+        conversationLifecyclePortFor(session).confirmEndCall(
+          "turn_concurrency_watchdog",
+          "turn_concurrency_coordinator",
+        );
+        this.detachForTerminal(session, "watchdog_terminal_fail_closed");
       });
     }, TURN_LOCK_WATCHDOG_MS);
   }
@@ -129,7 +138,6 @@ export class TurnConcurrencyCoordinator {
     this.watchdog = null;
   }
 
-  /** Returns true when the event must not enter lower semantic layers. */
   observe(session: any, event: RealtimeProviderEvent | null): boolean {
     if (!event) return false;
 
