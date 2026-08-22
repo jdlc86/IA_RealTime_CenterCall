@@ -20,24 +20,32 @@ test("raw speech without semantic decision cannot authorize effects", () => {
   assert.equal(s.activeResponseId, "old");
 });
 
-test("INTERRUPT authorizes cancel clear and caller response immediately", () => {
+test("INTERRUPT authorizes cancel and clear but waits for correlated provider release", () => {
   const r = applyBargeInSemanticDecision(classifyingSnapshot(), "INTERRUPT");
   assert.equal(r.accepted, true);
   assert.equal(r.snapshot.state, "CALLER_TURN_READY");
+  assert.equal(r.snapshot.callerResponsePending, true);
   assert.deepEqual(r.effects, [
     { type: "cancel_response", responseId: "old" },
     { type: "clear_playback" },
-    { type: "create_caller_response" },
   ]);
+
+  const done = reduceResponseOwner(r.snapshot, { type: "assistant_response_done", responseId: "old" });
+  assert.deepEqual(done.effects, [{ type: "create_caller_response" }]);
 });
 
-test("INTERRUPT after SIP playback clear never waits for response.done", () => {
+test("INTERRUPT after SIP playback clear still waits for correlated response.done", () => {
   const r = applyBargeInSemanticDecision(classifyingSnapshot({ cleared: true }), "INTERRUPT");
   assert.equal(r.accepted, true);
+  assert.equal(r.snapshot.callerResponsePending, true);
   assert.deepEqual(r.effects, [
     { type: "cancel_response", responseId: "old" },
-    { type: "create_caller_response" },
   ]);
+
+  const stale = reduceResponseOwner(r.snapshot, { type: "assistant_response_done", responseId: "other" });
+  assert.deepEqual(stale.effects, []);
+  const done = reduceResponseOwner(stale.snapshot, { type: "assistant_response_done", responseId: "old" });
+  assert.deepEqual(done.effects, [{ type: "create_caller_response" }]);
 });
 
 test("IGNORE never cancels or creates caller response", () => {
