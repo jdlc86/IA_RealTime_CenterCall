@@ -38,6 +38,33 @@ test("source-leg terminal speech is delegated through the provider boundary", as
   assert.equal(body.target_legs, "self");
 });
 
+test("source-leg fetch is invoked without the runtime as receiver for speech and hangup", async () => {
+  const calls = [];
+  const receiverSensitiveFetch = async function (url, init) {
+    assert.equal(this, undefined, "source-leg fetch must be called as a bare dependency");
+    calls.push({ url: String(url), init });
+    return response(200);
+  };
+  const runtime = new HumanHandoffSourceLegRuntime(
+    host({ TELNYX_API_KEY: "tel-key" }),
+    receiverSensitiveFetch,
+  );
+
+  const speech = await runtime.speakTerminal({
+    sourceCallControlId: "source-1",
+    text: "No hemos podido completar la transferencia.",
+    clientState: "state-1",
+    commandId: "cmd-speak",
+  });
+  const hangup = await runtime.hangup({ sourceCallControlId: "source-1", commandId: "cmd-hangup" });
+
+  assert.equal(speech.ok, true);
+  assert.equal(hangup.ok, true);
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].url, /\/actions\/speak$/);
+  assert.match(calls[1].url, /\/actions\/hangup$/);
+});
+
 test("Telnyx 90018 is normalized as source leg already ended", async () => {
   const runtime = new HumanHandoffSourceLegRuntime(
     host({ TELNYX_API_KEY: "tel-key" }),
