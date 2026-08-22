@@ -12,7 +12,7 @@
   },
   "vars": {
     "ENVIRONMENT": "production",
-    "REALTIME_MODEL": "gpt-realtime",
+    "REALTIME_MODEL": "gpt-realtime-2.1-mini",
     "REALTIME_VOICE": "marin",
     "OPENAI_PROJECT_ID": "proj_sRULdPh5pWmKIg59z6J01QI9"
   },
