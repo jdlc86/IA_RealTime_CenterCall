@@ -11,6 +11,13 @@ test("human assistance is a public restaurant tool", () => {
   assert.equal(PUBLIC_RESTAURANT_TOOLS.includes("restaurant_human_assistance"), true);
 });
 
+test("natural conversation is a public built-in semantic tool without backend capability", () => {
+  assert.equal(isPublicRestaurantTool("restaurant_conversation"), true);
+  const decision = authorizePublicRestaurantTool("restaurant_conversation", {}, []);
+  assert.equal(decision.allowed, true);
+  assert.equal(decision.reason, "BUILTIN_RUNTIME_TOOL");
+});
+
 test("human assistance is always available as a built-in runtime safety/escalation tool", () => {
   const decision = authorizePublicRestaurantTool(
     "restaurant_human_assistance",

@@ -28,3 +28,11 @@ test("V17 consumes semantic tools and emits fallback results through neutral bou
   assert.doesNotMatch(v17, /\b(?:readRealtimeText|TextDecoder|JSON\.parse)\b/);
   assert.doesNotMatch(v17, /response\.create/);
 });
+
+test("V17 gives model-owned natural conversation a non-mutating response path", () => {
+  assert.match(v17, /name: "restaurant_conversation"/);
+  assert.match(v17, /toolEvent\.name === "restaurant_conversation"/);
+  assert.match(v17, /status: "CONVERSATION"/);
+  assert.match(v17, /model_owned_interpretation: true/);
+  assert.match(v17, /deterministic_phrase_matching: false/);
+});

@@ -16,14 +16,11 @@ import { publicRestaurantToolAuthorizationPortFor } from "./semantic-tool-author
 import { semanticTurnRuntimeFor } from "./semantic-turn-runtime.js";
 import { turnOwnershipRuntimeFor } from "./turn-ownership-runtime.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
-import { isPresenceAcknowledgementTurn, isPureGreetingTurn } from "./conversational-turn-policy.js";
 
 const BaseConstructor = CallSessionV28 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV28.prototype as any;
 const V26Prototype = CallSessionV26.prototype as any;
 const INPUT_IGNORED = "restaurant_input_ignored";
-const PURE_GREETING_REPLY = "Hola, ¿en qué puedo ayudarte?";
-const PRESENCE_ACKNOWLEDGEMENT_REPLY = "Perfecto, te escucho. ¿En qué puedo ayudarte?";
 
 type SemanticToolEventV29 = {
   name: string;
@@ -40,7 +37,7 @@ function usableTranscript(value: unknown): string | null {
 function v29Instructions(session: any): string {
   const assistantName = typeof session.assistantName === "string" && session.assistantName.trim() ? session.assistantName.trim() : "Lucía";
   const businessName = typeof session.businessName === "string" && session.businessName.trim() ? session.businessName.trim() : "el restaurante";
-  return `Eres ${assistantName}, agente telefónica de ${businessName}. Tú eres la única inteligencia que interpreta el contenido del usuario. Las señales VAD no son intención: solo una transcripción completada puede iniciar una decisión de tool.\n\nTODO TURNO SIGNIFICATIVO: cuando recibas una transcripción que esté claramente dirigida a ti, selecciona exactamente la tool pública que representa esa intención antes de responder.\n\nRUIDO Y FONDO: si la transcripción parece televisión, radio, eco, otra conversación, palabras sueltas, contenido incoherente o algo no dirigido a ti, usa restaurant_input_ignored. Esa tool no produce acción ni respuesta hablada. Ante duda entre ruido/fondo y una operación que modifica datos (cancelar, modificar, reservar, marketing), usa restaurant_input_ignored. Nunca conviertas audio ambiguo en una mutación.\n\nÁMBITO: atiende solo asuntos relacionados con ${businessName}. Si una petición está claramente dirigida a ti pero no pertenece al restaurante, usa restaurant_out_of_scope. Si pertenece al restaurante pero requiere una persona, usa restaurant_human_assistance.\n\nAUTORIDAD: el backend es la única autoridad sobre datos y acciones. No afirmes que una reserva fue creada, modificada o cancelada hasta recibir el resultado correspondiente. confirm=true solo representa una confirmación explícita del usuario al cambio concreto que acabas de presentar.\n\nRESPUESTAS: tras una tool comunica el resultado brevemente. No hables después de restaurant_input_ignored; simplemente espera otro turno.\n\nCIERRE: una despedida inequívoca usa restaurant_end_call confirmed=true. El silencio y el ruido nunca significan cierre.`;
+  return `Eres ${assistantName}, agente telefónica de ${businessName}. Tú eres la única inteligencia que interpreta el contenido y la intención comunicativa del usuario usando todo el contexto de la conversación. Las señales VAD no son intención: solo una transcripción completada puede iniciar una decisión de tool.\n\nTODO TURNO SIGNIFICATIVO: cuando recibas una transcripción claramente dirigida a ti, selecciona exactamente la tool pública que representa su función comunicativa antes de responder. Si el usuario conversa, saluda, confirma que sigue presente, agradece sin despedirse, responde a una pregunta o expresa cualquier contenido válido que no requiere una operación, usa restaurant_conversation. Esa tool permite responder de forma natural; no fuerces el turno hacia reservas, asistencia humana ni cierre porque no exista otra acción aplicable.\n\nCONTEXTO: interpreta cada respuesta respecto de lo que acabas de decir o preguntar. Las expresiones de presencia o continuación después de «¿Sigues ahí?» significan que debes seguir escuchando y contestar naturalmente mediante restaurant_conversation. No existe una lista cerrada de frases: comprende la intención.\n\nRUIDO Y FONDO: si la transcripción parece televisión, radio, eco, otra conversación, palabras sueltas, contenido incoherente o algo no dirigido a ti, usa restaurant_input_ignored. Esa tool no produce acción ni respuesta hablada. Ante duda entre ruido/fondo y una operación que modifica datos (cancelar, modificar, reservar, marketing), usa restaurant_input_ignored. Nunca conviertas audio ambiguo en una mutación.\n\nÁMBITO: atiende solo asuntos relacionados con ${businessName}. Si una petición está claramente dirigida a ti pero no pertenece al restaurante, usa restaurant_out_of_scope. Si pertenece al restaurante pero requiere una persona, usa restaurant_human_assistance.\n\nAUTORIDAD: el backend es la única autoridad sobre datos y acciones. No afirmes que una reserva fue creada, modificada o cancelada hasta recibir el resultado correspondiente. confirm=true solo representa una confirmación explícita del usuario al cambio concreto que acabas de presentar.\n\nRESPUESTAS: tras una tool comunica el resultado brevemente. Después de restaurant_conversation responde al significado del último turno con naturalidad y coherencia contextual. No hables después de restaurant_input_ignored; simplemente espera otro turno.\n\nCIERRE: una despedida inequívoca usa restaurant_end_call confirmed=true. El silencio y el ruido nunca significan cierre.`;
 }
 
 export class CallSession extends BaseConstructor {
@@ -157,52 +154,6 @@ export class CallSession extends BaseConstructor {
         });
       }
       if (transcript) {
-        const lifecycle = conversationLifecyclePortFor(this);
-        if (lifecycle.isAwaitingPresenceReply() && isPresenceAcknowledgementTurn(transcript)) {
-          semanticTurnRuntimeFor(this).clearItemAuthority();
-          lifecycle.acknowledgePresence("deterministic_transcript_v29");
-          realtimeCommandPortFor(this as any).speak({
-            isolated: true,
-            tools: "DISABLED",
-            purpose: "presence_acknowledgement_v29",
-            exactText: PRESENCE_ACKNOWLEDGEMENT_REPLY,
-            instructions: `Pronuncia exactamente esta frase y nada más: ${JSON.stringify(PRESENCE_ACKNOWLEDGEMENT_REPLY)}`,
-            metadata: {
-              authority: "conversation_lifecycle_port",
-              backend_tool_authority: false,
-              contextual_close_question: false,
-            },
-          });
-          (this as any).diagnostics?.checkpoint?.("USER_PRESENCE_ACKNOWLEDGEMENT_HANDLED_V29", {
-            response: "DETERMINISTIC_PRESENCE_ACKNOWLEDGEMENT",
-            backend_tool_authority: false,
-            semantic_gate_armed: false,
-            model_classification_bypassed: true,
-          });
-          return;
-        }
-        if (isPureGreetingTurn(transcript)) {
-          semanticTurnRuntimeFor(this).clearItemAuthority();
-          realtimeCommandPortFor(this as any).speak({
-            isolated: true,
-            tools: "DISABLED",
-            purpose: "pure_greeting_v29",
-            exactText: PURE_GREETING_REPLY,
-            instructions: `Pronuncia exactamente esta frase y nada más: ${JSON.stringify(PURE_GREETING_REPLY)}`,
-            metadata: {
-              authority: "conversational_turn_policy",
-              backend_tool_authority: false,
-              contextual_close_question: false,
-            },
-          });
-          (this as any).diagnostics?.checkpoint?.("PURE_GREETING_HANDLED_V29", {
-            backend_tool_authority: false,
-            response: "DETERMINISTIC_GREETING",
-            contextual_close_question: false,
-            semantic_gate_armed: false,
-          });
-          return;
-        }
         const itemId = typeof transcriptEvent.itemId === "string" ? transcriptEvent.itemId : null;
         const higherLayerOwns = turnOwnershipRuntimeFor(this).ownsSemanticItem(itemId);
         const runtime = semanticTurnRuntimeFor(this);

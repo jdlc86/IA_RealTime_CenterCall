@@ -16,6 +16,7 @@ const AGENT_TOOL_NAMES = new Set([
   "restaurant_reservation_cancel",
   "restaurant_business_info",
   "restaurant_marketing_preferences",
+  "restaurant_conversation",
   "restaurant_human_assistance",
   "restaurant_input_ignored",
   "restaurant_end_call",
@@ -63,6 +64,7 @@ const AGENT_TOOLS: RealtimeFunctionToolDefinition[] = [
   { type: "function", name: "restaurant_reservation_cancel", description: "Cancela una, varias o todas las reservas futuras del caller. Usa confirm=true solo después de confirmación explícita del usuario a una propuesta concreta de cancelación.", parameters: { type: "object", properties: { selection_index: { type: "integer", minimum: 1, maximum: 20 }, selection_indexes: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: { type: "integer", minimum: 1, maximum: 20 } }, select_all: { type: "boolean" }, confirm: { type: "boolean" } }, additionalProperties: false } },
   { type: "function", name: "restaurant_business_info", description: "Obtiene información oficial del restaurante. Para peticiones relacionadas con el restaurante que requieren intervención humana usa restaurant_human_assistance; para peticiones ajenas usa restaurant_out_of_scope.", parameters: { type: "object", properties: { topics: { type: "array", minItems: 1, maxItems: 5, uniqueItems: true, items: { type: "string", enum: ["MENU", "HOURS", "LOCATION", "SERVICES", "GENERAL_INFO"] } } }, required: ["topics"], additionalProperties: false } },
   { type: "function", name: "restaurant_marketing_preferences", description: "Consulta o modifica preferencias de promociones del número llamante. QUERY usa explicit=false y nunca modifica; GRANT, DECLINE y REVOKE requieren explicit=true.", parameters: { type: "object", properties: { action: { type: "string", enum: ["QUERY", "GRANT", "DECLINE", "REVOKE"] }, explicit: { type: "boolean" } }, required: ["action", "explicit"], additionalProperties: false } },
+  { type: "function", name: "restaurant_conversation", description: "Representa un turno significativo dirigido a ti que debe resolverse conversando de forma natural y no requiere consultar datos, ejecutar una acción, escalar a una persona ni terminar la llamada. Interpreta la intención usando todo el contexto de la conversación. Úsala para mantener el diálogo cuando el contenido comunicativo es válido pero ninguna operación del restaurante corresponde; no la uses para ruido o habla de fondo.", parameters: { type: "object", properties: {}, additionalProperties: false } },
   { type: "function", name: "restaurant_human_assistance", description: "Escala una petición relacionada con el restaurante que necesita una persona. No implica que exista transferencia telefónica.", parameters: { type: "object", properties: { reason: { type: "string", enum: ["USER_REQUESTED_HUMAN", "TABLES_MUST_BE_CLOSE", "COMPLEX_RESERVATION", "COMPLAINT", "LOST_PROPERTY", "ALLERGY_OR_SAFETY", "ACCESSIBILITY_ARRANGEMENT", "BILLING_OR_PAYMENT_ISSUE", "EVENT_OR_LARGE_GROUP", "SYSTEM_LIMITATION", "OTHER_RESTAURANT_MATTER"] }, context_summary: { type: "string" } }, required: ["reason"], additionalProperties: false } },
   { type: "function", name: "restaurant_input_ignored", description: "Usa esta tool cuando la transcripción parece ruido, televisión, conversación de fondo, eco, palabras sueltas o un turno que no está dirigido a ti. No realiza ninguna acción y no debe producir respuesta hablada. Ante duda entre una acción destructiva y ruido/fondo, usa esta tool.", parameters: { type: "object", properties: { reason: { type: "string", enum: ["BACKGROUND_SPEECH", "TV_OR_MEDIA", "ECHO", "INCOHERENT", "NOT_DIRECTED_TO_ASSISTANT", "UNCERTAIN"] } }, required: ["reason"], additionalProperties: false } },
   { type: "function", name: "restaurant_end_call", description: "Gestiona el cierre. Si el usuario expresa inequívocamente que quiere terminar usa confirmed=true directamente. Usa confirmed=false solo si la intención es ambigua. No deduzcas cierre del silencio.", parameters: { type: "object", properties: { confirmed: { type: "boolean" } }, required: ["confirmed"], additionalProperties: false } },
@@ -72,7 +74,7 @@ const AGENT_TOOLS: RealtimeFunctionToolDefinition[] = [
 function agentInstructions(session: any): string {
   const assistantName = typeof session.assistantName === "string" && session.assistantName.trim() ? session.assistantName.trim() : "Lucía";
   const businessName = typeof session.businessName === "string" && session.businessName.trim() ? session.businessName.trim() : "el restaurante";
-  return `Eres ${assistantName}, agente telefónica de ${businessName}. Tú eres la inteligencia que interpreta el lenguaje natural y eliges las tools; ninguna señal acústica por sí sola representa intención.\n\nREGLA CENTRAL: toda interacción significativa dirigida a ti debe quedar representada por una tool antes de responder. Si una transcripción parece TV, eco, conversación de fondo, ruido o no está claramente dirigida a ti, usa restaurant_input_ignored. Ante duda entre una mutación y ruido/fondo, elige siempre restaurant_input_ignored y no realices ninguna acción.\n\nRESERVAS: si el cliente no sabe exactamente cuándo reservar, pide criterios básicos y usa restaurant_reservation_search para proponer opciones reales. Si una hora concreta no está disponible, ofrece buscar alternativas. La asignación automática de mesas solo puede desperdiciar como máximo un asiento total; si el backend indica que la configuración de mesas necesita una persona, no rechaces ni canceles nada y ofrece asistencia humana.\n\nÁMBITO: atiende únicamente cuestiones relacionadas con ${businessName}. Para una petición claramente dirigida a ti pero externa usa restaurant_out_of_scope. Para asuntos legítimos del restaurante que requieren una persona usa restaurant_human_assistance.\n\nAUTORIDAD: disponibilidad, reservas, cancelaciones, modificaciones, marketing e identidad solo pueden afirmarse tras la tool correspondiente. Nunca inventes acciones ni confirmaciones.\n\nCIERRE: usa restaurant_end_call para intención real de cierre; nunca deduzcas cierre del silencio o de audio de fondo.`;
+  return `Eres ${assistantName}, agente telefónica de ${businessName}. Tú eres la inteligencia que interpreta el lenguaje natural y eliges las tools; ninguna señal acústica por sí sola representa intención.\n\nREGLA CENTRAL: toda interacción significativa dirigida a ti debe quedar representada por una tool antes de responder. Si el turno es una comunicación natural dirigida a ti pero no requiere datos ni una acción operativa, usa restaurant_conversation y responde comprendiendo el contexto completo. Si una transcripción parece TV, eco, conversación de fondo, ruido o no está claramente dirigida a ti, usa restaurant_input_ignored. Ante duda entre una mutación y ruido/fondo, elige siempre restaurant_input_ignored y no realices ninguna acción.\n\nRESERVAS: si el cliente no sabe exactamente cuándo reservar, pide criterios básicos y usa restaurant_reservation_search para proponer opciones reales. Si una hora concreta no está disponible, ofrece buscar alternativas. La asignación automática de mesas solo puede desperdiciar como máximo un asiento total; si el backend indica que la configuración de mesas necesita una persona, no rechaces ni canceles nada y ofrece asistencia humana.\n\nÁMBITO: atiende únicamente cuestiones relacionadas con ${businessName}. Para una petición claramente dirigida a ti pero externa usa restaurant_out_of_scope. Para asuntos legítimos del restaurante que requieren una persona usa restaurant_human_assistance.\n\nAUTORIDAD: disponibilidad, reservas, cancelaciones, modificaciones, marketing e identidad solo pueden afirmarse tras la tool correspondiente. Nunca inventes acciones ni confirmaciones.\n\nCIERRE: usa restaurant_end_call para intención real de cierre; nunca deduzcas cierre del silencio o de audio de fondo.`;
 }
 
 export class CallSession extends BaseConstructor {
@@ -106,6 +108,26 @@ export class CallSession extends BaseConstructor {
       (event) => event.type === "SEMANTIC_TOOL_SELECTED" && AGENT_TOOL_NAMES.has(event.name),
     );
     if (toolEvent?.type === "SEMANTIC_TOOL_SELECTED") {
+      if (toolEvent.name === "restaurant_conversation") {
+        const realtime = realtimeCommandPortFor(this as any);
+        realtime.submitToolResult({
+          callId: toolEvent.callId,
+          toolName: toolEvent.name,
+          output: {
+            ok: true,
+            status: "CONVERSATION",
+            mutation: false,
+            instruction: "Responde ahora al último turno del usuario de forma breve, natural y coherente con todo el contexto. No inventes datos del restaurante ni conviertas este intercambio conversacional en una operación, una transferencia o un cierre.",
+          },
+        });
+        realtime.createDefaultResponse();
+        (this as any).diagnostics?.checkpoint?.("NATURAL_CONVERSATION_TURN_ACCEPTED_V17", {
+          model_owned_interpretation: true,
+          mutation: false,
+          deterministic_phrase_matching: false,
+        });
+        return;
+      }
       (this as any).diagnostics?.fail?.("UNHANDLED_PUBLIC_AGENT_TOOL", "DIRECT_TOOL_CONTROLLER_MISSING", {
         tool: toolEvent.name,
         legacy_fallback: false,

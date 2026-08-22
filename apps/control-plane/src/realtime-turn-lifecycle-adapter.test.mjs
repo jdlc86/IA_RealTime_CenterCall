@@ -46,6 +46,11 @@ test("provider-neutral: business tool is coherent semantic activity", () => {
   assert.equal(m.snapshot().silenceTimerArmed, false);
 });
 
+test("provider-neutral: natural conversation is coherent semantic activity", () => {
+  const events = adaptRealtimeTurnEvent({ type: "SEMANTIC_TOOL_SELECTED", name: "restaurant_conversation", arguments: "{}" });
+  assert.deepEqual(events, [{ type: "semantic_valid", tool: "restaurant_conversation" }]);
+});
+
 test("provider-neutral: model end-call selection is semantic only until v41 authorizes terminal action", () => {
   const events = adaptRealtimeTurnEvent({ type: "SEMANTIC_TOOL_SELECTED", name: "restaurant_end_call", arguments: '{"confirmed":true}' });
   assert.deepEqual(events, [{ type: "semantic_valid", tool: "restaurant_end_call" }]);

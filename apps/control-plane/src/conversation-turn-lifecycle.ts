@@ -25,7 +25,6 @@ export type LifecycleEvent =
   | { type: "speech_stopped" }
   | { type: "transcript_usable" }
   | { type: "transcript_unusable" }
-  | { type: "presence_acknowledged" }
   | { type: "semantic_valid"; tool?: string }
   | { type: "semantic_ignored"; reason: IgnoredReason }
   | { type: "out_of_scope" }
@@ -179,16 +178,6 @@ export class ConversationTurnLifecycle {
           this.state = "WAITING_FOR_CALLER";
           this.armFreshSilence(effects);
         }
-        return effects;
-      }
-      case "presence_acknowledged": {
-        this.presenceReplyPending = false;
-        if (this.ignoredCount !== 0) {
-          this.ignoredCount = 0;
-          effects.push({ type: "RESET_IGNORED_COUNT" });
-        }
-        this.cancelSilence(effects);
-        this.state = "PROCESSING_CALLER_TURN";
         return effects;
       }
       case "semantic_valid":

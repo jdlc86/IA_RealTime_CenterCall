@@ -30,12 +30,11 @@ test("closing authority: v23 cannot bypass the neutral lifecycle port", async ()
   assert.doesNotMatch(v23, /beginClosing/);
 });
 
-test("closing authority: v41 caller-resolved close paths enter the neutral lifecycle port instead of historical session methods", async () => {
+test("closing authority: v41 model-resolved contextual close enters the neutral lifecycle port instead of historical session methods", async () => {
   const v41 = await source("call-session-v41-closure-guard.ts");
 
   assert.match(v41, /private commitCloseV41\(reason: string, source: string\): void/);
   assert.match(v41, /conversationLifecyclePortFor\(this\)\.confirmEndCall\(reason, source\)/);
-  assert.match(v41, /this\.commitCloseV41\(\"contextual_close_resolved_v41\", \"caller_declined_more_help_v41\"\)/);
   assert.match(v41, /this\.commitCloseV41\(\"contextual_close_semantic_resolution_v41\", \"lucia_confirmed_contextual_end_call_v41\"\)/);
   assert.match(v41, /closingSessionRuntimeFor\(this\)/);
   assert.doesNotMatch(v41, /observeEndCallConfirmedV18/);

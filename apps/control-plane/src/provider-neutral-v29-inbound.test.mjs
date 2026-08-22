@@ -27,20 +27,11 @@ test("v29 preserves lower compatibility dispatch after neutral event adaptation"
   assert.match(source, /source:\s*"v29_provider_event_adapter"/);
 });
 
-test("v29 answers a pure greeting without arming backend tools or contextual close", () => {
-  assert.match(source, /isPureGreetingTurn\(transcript\)/);
-  assert.match(source, /purpose:\s*"pure_greeting_v29"/);
-  assert.match(source, /backend_tool_authority:\s*false/);
-  assert.match(source, /contextual_close_question:\s*false/);
-  assert.match(source, /semantic_gate_armed:\s*false/);
-  assert.match(source, /PURE_GREETING_HANDLED_V29/);
-});
-
-test("v29 resolves a contextual presence acknowledgement without model tool classification", () => {
-  assert.match(source, /lifecycle\.isAwaitingPresenceReply\(\)/);
-  assert.match(source, /isPresenceAcknowledgementTurn\(transcript\)/);
-  assert.match(source, /lifecycle\.acknowledgePresence\("deterministic_transcript_v29"\)/);
-  assert.match(source, /purpose:\s*"presence_acknowledgement_v29"/);
-  assert.match(source, /model_classification_bypassed:\s*true/);
-  assert.match(source, /USER_PRESENCE_ACKNOWLEDGEMENT_HANDLED_V29/);
+test("v29 delegates greetings and presence replies to contextual model interpretation", () => {
+  assert.match(source, /usa restaurant_conversation/);
+  assert.match(source, /No existe una lista cerrada de frases/);
+  assert.doesNotMatch(source, /isPureGreetingTurn/);
+  assert.doesNotMatch(source, /isPresenceAcknowledgementTurn/);
+  assert.doesNotMatch(source, /DETERMINISTIC_GREETING/);
+  assert.doesNotMatch(source, /DETERMINISTIC_PRESENCE_ACKNOWLEDGEMENT/);
 });

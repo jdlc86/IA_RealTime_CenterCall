@@ -31,20 +31,16 @@ test("lifecycle port preserves legacy terminal behavior only when no lifecycle o
 test("lifecycle port hides historical tool-turn method names from callers", () => {
   const calls = [];
   const lifecycle = conversationLifecyclePortFor({
-    snapshotTurnLifecycleV18() { return { state: "WAITING_FOR_CALLER", presenceReplyPending: true }; },
-    acknowledgePresenceV18(source) { calls.push(["presence", source]); },
+    snapshotTurnLifecycleV18() { return { state: "WAITING_FOR_CALLER" }; },
     validateUserTurnV18(source) { calls.push(["validate", source]); },
     suspendForToolV18(tool) { calls.push(["suspend", tool]); },
     observeSemanticIgnoredV18(reason) { calls.push(["ignored", reason]); },
   });
   lifecycle.validateUserTurn("agent_tool");
-  assert.equal(lifecycle.isAwaitingPresenceReply(), true);
-  lifecycle.acknowledgePresence("deterministic_transcript_v29");
   lifecycle.suspendForTool("restaurant_reservation_query");
   lifecycle.semanticIgnored("BACKGROUND_AUDIO");
   assert.deepEqual(calls, [
     ["validate", "agent_tool"],
-    ["presence", "deterministic_transcript_v29"],
     ["suspend", "restaurant_reservation_query"],
     ["ignored", "BACKGROUND_AUDIO"],
   ]);

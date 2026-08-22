@@ -40,7 +40,8 @@ test("v41 terminal decisions use lifecycle authority instead of legacy session f
 test("v41 provider-neutral refactor preserves closing authorities behind neutral owners", () => {
   assert.match(source, /closingSessionRuntimeFor/);
   assert.match(source, /conversationLifecyclePortFor/);
-  assert.match(source, /resolveReplyToMoreHelpQuestion/);
+  assert.match(source, /contextual_authority:\s*"MAIN_CONVERSATION_MODEL"/);
+  assert.doesNotMatch(source, /resolveReplyToMoreHelpQuestion/);
   assert.match(source, /decideCloseConsensus/);
   assert.match(source, /V41_CLOSE_COMMITTED_TO_LIFECYCLE/);
   assert.match(source, /CONTEXTUAL_CLOSE_RESOLVED_V41/);

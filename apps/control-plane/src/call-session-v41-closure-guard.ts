@@ -8,8 +8,6 @@ import {
   assessControllerCloseIntent,
   decideCloseConsensus,
   isAssistantMoreHelpQuestion,
-  parseContextualMoreHelpSemanticDecision,
-  resolveReplyToMoreHelpQuestion,
 } from "./core-closing-policy.js";
 import { closingSessionRuntimeFor } from "./closing-session-runtime.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
@@ -20,12 +18,6 @@ const BasePrototype = CallSessionV40.prototype as any;
 const END_CALL = "restaurant_end_call";
 const CLOSE_CONFIRMATION_PROMPT = "¿Quieres terminar la llamada?";
 const COURTESY_FOLLOWUP_INSTRUCTION = "Responde de forma breve y natural preguntando si puedes ayudar al usuario en algo más. No menciones terminar, colgar ni cerrar la llamada.";
-const CONTEXTUAL_MORE_HELP_DECISION_PURPOSE = "contextual_more_help_resolution_v41";
-const CONTEXTUAL_MORE_HELP_DECISION_INSTRUCTIONS =
-  "Decide únicamente qué significa la respuesta del usuario a la pregunta de si necesita algo más. " +
-  "Responde exactamente CLOSE si rechaza más ayuda, indica que no necesita nada más, se despide, da la conversación por terminada o pide colgar. " +
-  "Responde exactamente CONTINUE si acepta o pide más ayuda, formula una nueva petición, corrige algo, quiere continuar o la intención no está clara. " +
-  "Si hay cualquier duda, responde CONTINUE. No expliques la decisión.";
 const CLOSING_GUIDANCE_START = "[[V41_CLOSING_GUIDANCE_START]]";
 const CLOSING_GUIDANCE_END = "[[V41_CLOSING_GUIDANCE_END]]";
 const CLOSING_GUIDANCE = `${CLOSING_GUIDANCE_START}\nPROTOCOLO NATURAL DE CIERRE:\n- La cortesía y la intención de cierre son dimensiones distintas. Un simple agradecimiento NO implica cierre: pregunta de forma natural si puedes ayudar en algo más.\n- Si acabas de preguntar si el usuario necesita algo más y responde negativamente (por ejemplo 'no, gracias' o 'nada más'), ese contexto YA resuelve el cierre: despídete de forma natural y termina la llamada; no vuelvas a preguntar si quiere terminar.\n- Una frase puede contener cortesía y cierre a la vez. Por ejemplo 'muchas gracias, no necesito nada más' o 'gracias, hasta luego' expresa cierre claro: usa restaurant_end_call confirmed=true.\n- Para un cierre espontáneo inequívoco usa confirmed=true. Si el controlador también detecta CLOSE hay consenso fuerte; si se abstiene sin detectar cortesía aislada ni una petición de continuar, tu confirmación semántica basta. Una petición explícita de continuar siempre prevalece.\n- Usa confirmed=false solo si la intención de finalizar es realmente ambigua; en ese caso se preguntará una vez si quiere terminar.\n- Si el usuario corrige el cierre con una nueva petición ('hasta luego... espera, una cosa más'), prevalece la nueva petición.\n- Nunca uses restaurant_input_ignored para resolver una intención de cierre.\n${CLOSING_GUIDANCE_END}`;
@@ -56,11 +48,6 @@ function withClosingGuidance(instructions: string): string {
 export class CallSession extends BaseConstructor {
   private moreHelpAnswerPendingV41 = false;
   private moreHelpSemanticResolutionPendingV41 = false;
-  private contextualMoreHelpDecisionSourceIdV41: string | null = null;
-  private contextualMoreHelpDecisionByResponseV41 = new Map<string, string>();
-  private contextualMoreHelpDecisionOwnedResponseIdsV41 = new Set<string>();
-  private contextualMoreHelpDecisionFinalizedResponseIdsV41 = new Set<string>();
-  private contextualMoreHelpDecisionSequenceV41 = 0;
   private lastUserTranscriptV41 = "";
   private closingGuidanceBoundaryInstalledV41 = false;
 
@@ -100,95 +87,20 @@ export class CallSession extends BaseConstructor {
     });
   }
 
-  private requestContextualMoreHelpDecisionV41(transcript: string, itemId?: string): void {
+  private resolveMoreHelpAnswerV41(): void {
+    if (!this.moreHelpAnswerPendingV41) return;
     const session = this as any;
-    const sourceItemId = itemId?.trim() || `more_help_reply_v41_${++this.contextualMoreHelpDecisionSequenceV41}`;
-    this.contextualMoreHelpDecisionSourceIdV41 = sourceItemId;
-    realtimeCommandPortFor(session).requestTextDecision({
-      purpose: CONTEXTUAL_MORE_HELP_DECISION_PURPOSE,
-      metadata: { source_item_id: sourceItemId }, maxOutputTokens: 8,
-      instructions: CONTEXTUAL_MORE_HELP_DECISION_INSTRUCTIONS,
-      inputText: `Respuesta del usuario: ${JSON.stringify(transcript)}`,
-    });
-    session.diagnostics?.checkpoint?.("CONTEXTUAL_MORE_HELP_DECISION_REQUESTED_V41", {
-      source_item_id_present: Boolean(itemId), transcript_length: transcript.length,
-      provider_command_port: true, fail_safe_decision: "CONTINUE",
-    });
-  }
-
-  private finalizeContextualMoreHelpDecisionV41(responseId: string, text: unknown): void {
-    if (this.contextualMoreHelpDecisionFinalizedResponseIdsV41.has(responseId)) return;
-    this.contextualMoreHelpDecisionFinalizedResponseIdsV41.add(responseId);
-    const sourceItemId = this.contextualMoreHelpDecisionByResponseV41.get(responseId) ?? "";
-    const session = this as any;
-    if (!sourceItemId || !this.moreHelpSemanticResolutionPendingV41 || !this.contextualMoreHelpDecisionSourceIdV41 || sourceItemId !== this.contextualMoreHelpDecisionSourceIdV41) {
-      session.diagnostics?.checkpoint?.("CONTEXTUAL_MORE_HELP_DECISION_STALE_V41", {
-        response_id: responseId,
-        source_item_matches_pending: Boolean(sourceItemId && sourceItemId === this.contextualMoreHelpDecisionSourceIdV41),
-        contextual_resolution_pending: this.moreHelpSemanticResolutionPendingV41, ignored: true,
-      });
-      return;
-    }
-    const decision = parseContextualMoreHelpSemanticDecision(text);
-    this.moreHelpSemanticResolutionPendingV41 = false;
-    this.contextualMoreHelpDecisionSourceIdV41 = null;
-    if (decision === "CLOSE") {
-      this.moreHelpAnswerPendingV41 = false;
-      const closing = closingSessionRuntimeFor(this);
-      closing.setConfirmationPending(false);
-      closing.setControllerAssessment({ courtesy: false, closeIntent: "CLOSE" });
-      session.diagnostics?.checkpoint?.("CONTEXTUAL_CLOSE_RESOLVED_V41", {
-        context: "ANSWER_TO_MORE_HELP_QUESTION", caller_resolution: "NO_MORE_HELP",
-        resolution_source: "DEDICATED_MORE_HELP_DECISION_V41", arbitration_required: false,
-        explicit_close_confirmation_required: false,
-      });
-      this.commitCloseV41("contextual_close_dedicated_semantic_resolution_v41", "dedicated_more_help_decision_v41");
-      return;
-    }
-    session.diagnostics?.checkpoint?.("CONTEXTUAL_MORE_HELP_SEMANTIC_CONTEXT_RELEASED_V41", {
-      reason: "DEDICATED_DECISION_CONTINUE_OR_UNCLEAR", contextual_close_committed: false,
-      context_leaked_to_next_turn: false, lower_semantic_pipeline_preserved: true,
-    });
-  }
-
-  private resolveMoreHelpAnswerV41(transcript: string, itemId?: string): boolean {
-    if (!this.moreHelpAnswerPendingV41) return false;
-    const resolution = resolveReplyToMoreHelpQuestion(transcript);
-    const session = this as any;
-    if (resolution === "CLOSE") {
-      this.moreHelpAnswerPendingV41 = false;
-      this.moreHelpSemanticResolutionPendingV41 = false;
-      this.contextualMoreHelpDecisionSourceIdV41 = null;
-      const closing = closingSessionRuntimeFor(this);
-      closing.setConfirmationPending(false);
-      closing.setControllerAssessment({ courtesy: /gracias/i.test(transcript), closeIntent: "CLOSE" });
-      session.diagnostics?.checkpoint?.("CONTEXTUAL_CLOSE_RESOLVED_V41", {
-        context: "ANSWER_TO_MORE_HELP_QUESTION", caller_resolution: "NO_MORE_HELP",
-        arbitration_required: false, explicit_close_confirmation_required: false,
-      });
-      this.commitCloseV41("contextual_close_resolved_v41", "caller_declined_more_help_v41");
-      return true;
-    }
-    if (resolution === "CONTINUE") {
-      this.moreHelpAnswerPendingV41 = false;
-      this.moreHelpSemanticResolutionPendingV41 = false;
-      this.contextualMoreHelpDecisionSourceIdV41 = null;
-      session.diagnostics?.checkpoint?.("MORE_HELP_QUESTION_RESOLVED_V41", {
-        caller_resolution: resolution, close_committed: false, context_preserved: false,
-      });
-      return false;
-    }
     this.moreHelpAnswerPendingV41 = false;
     this.moreHelpSemanticResolutionPendingV41 = true;
     session.diagnostics?.checkpoint?.("MORE_HELP_QUESTION_RESOLVED_V41", {
-      caller_resolution: resolution, close_committed: false, context_preserved: true, awaiting_semantic_resolution: true,
+      caller_resolution: "MODEL_SEMANTIC_TOOL_PENDING", close_committed: false,
+      context_preserved: true, awaiting_semantic_resolution: true,
     });
     session.diagnostics?.checkpoint?.("CONTEXTUAL_MORE_HELP_AWAITING_SEMANTIC_RESOLUTION_V41", {
-      contextual_authority: "MORE_HELP_REPLY", transcript_resolution: "UNRESOLVED",
-      context_preserved: true, confirmation_question_emitted: false, dedicated_post_transcript_decision: true,
+      contextual_authority: "MAIN_CONVERSATION_MODEL", transcript_resolution: "NOT_RULE_CLASSIFIED",
+      context_preserved: true, confirmation_question_emitted: false,
+      dedicated_post_transcript_decision: false, phrase_enumeration_used: false,
     });
-    this.requestContextualMoreHelpDecisionV41(transcript, itemId);
-    return false;
   }
 
   private submitEndCallToolResultV41(callId: string | undefined, output: Record<string, unknown>): void {
@@ -277,7 +189,6 @@ export class CallSession extends BaseConstructor {
   private resolveContextualSemanticEndCallV41(callId: string | undefined, modelConfirmed: boolean | null): boolean {
     if (!this.moreHelpSemanticResolutionPendingV41) return false;
     this.moreHelpSemanticResolutionPendingV41 = false;
-    this.contextualMoreHelpDecisionSourceIdV41 = null;
     const session = this as any;
     if (modelConfirmed !== true) {
       session.diagnostics?.checkpoint?.("CONTEXTUAL_MORE_HELP_SEMANTIC_CONTEXT_RELEASED_V41", {
@@ -311,27 +222,6 @@ export class CallSession extends BaseConstructor {
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const providerEvents = adaptRealtimeProviderEvents(data);
     for (const event of providerEvents) {
-      const responseId = "responseId" in event && typeof event.responseId === "string" ? event.responseId : "";
-      if (event.type === "ASSISTANT_RESPONSE_STARTED" && event.purpose === CONTEXTUAL_MORE_HELP_DECISION_PURPOSE) {
-        if (responseId) {
-          const sourceItemId = event.sourceItemId ?? "";
-          this.contextualMoreHelpDecisionOwnedResponseIdsV41.add(responseId);
-          this.contextualMoreHelpDecisionByResponseV41.set(responseId, sourceItemId);
-          (this as any).diagnostics?.checkpoint?.("CONTEXTUAL_MORE_HELP_DECISION_BOUND_V41", {
-            response_id: responseId,
-            source_item_matches_pending: Boolean(sourceItemId && this.contextualMoreHelpDecisionSourceIdV41 && sourceItemId === this.contextualMoreHelpDecisionSourceIdV41),
-            provider_neutral_event: event.type,
-          });
-        }
-        return;
-      }
-      if (event.type === "TEXT_DECISION_COMPLETED" && responseId && this.contextualMoreHelpDecisionOwnedResponseIdsV41.has(responseId)) {
-        this.finalizeContextualMoreHelpDecisionV41(responseId, event.text); return;
-      }
-      if (event.type === "ASSISTANT_RESPONSE_COMPLETED" && responseId && this.contextualMoreHelpDecisionOwnedResponseIdsV41.has(responseId)) {
-        if (!this.contextualMoreHelpDecisionFinalizedResponseIdsV41.has(responseId)) this.finalizeContextualMoreHelpDecisionV41(responseId, "CONTINUE");
-        this.contextualMoreHelpDecisionByResponseV41.delete(responseId); return;
-      }
       if (event.type === "ASSISTANT_TRANSCRIPT_COMPLETED") {
         const assistantTranscript = usableTranscript(event.transcript);
         if (assistantTranscript && isAssistantMoreHelpQuestion(assistantTranscript)) this.markMoreHelpQuestionV41("LUCIA_ASSISTANT_TRANSCRIPT", assistantTranscript);
@@ -341,18 +231,13 @@ export class CallSession extends BaseConstructor {
         if (transcript) {
           const effectiveTranscript = callerTurnContextRuntimeFor(this).current() || transcript;
           if (this.moreHelpAnswerPendingV41) {
-            if (this.resolveMoreHelpAnswerV41(effectiveTranscript, event.itemId)) return;
-            // The isolated text decision now owns an unresolved contextual
-            // reply. Letting the generic pipeline process the same turn would
-            // create a second active response and race its eventual tool result.
-            if (this.moreHelpSemanticResolutionPendingV41) return;
+            this.resolveMoreHelpAnswerV41();
           }
           this.recordUserTranscriptV41(effectiveTranscript);
         }
       }
       if (event.type === "SEMANTIC_TOOL_SELECTED" && this.moreHelpSemanticResolutionPendingV41 && event.name !== END_CALL && event.name !== "restaurant_input_ignored") {
         this.moreHelpSemanticResolutionPendingV41 = false;
-        this.contextualMoreHelpDecisionSourceIdV41 = null;
         (this as any).diagnostics?.checkpoint?.("CONTEXTUAL_MORE_HELP_SEMANTIC_CONTEXT_RELEASED_V41", {
           reason: "SUBSTANTIVE_TOOL_SELECTED", tool: event.name,
           contextual_close_committed: false, lower_semantic_pipeline_preserved: true,
@@ -384,7 +269,6 @@ export class CallSession extends BaseConstructor {
         closing.setConfirmationPending(false);
         this.moreHelpAnswerPendingV41 = false;
         this.moreHelpSemanticResolutionPendingV41 = false;
-        this.contextualMoreHelpDecisionSourceIdV41 = null;
         closing.resetControllerAssessment();
       }
     }

@@ -6,6 +6,7 @@ export const PUBLIC_RESTAURANT_TOOLS = [
   "restaurant_reservation_cancel",
   "restaurant_business_info",
   "restaurant_marketing_preferences",
+  "restaurant_conversation",
   "restaurant_human_assistance",
   "restaurant_input_ignored",
   "restaurant_end_call",
@@ -53,6 +54,7 @@ export function authorizePublicRestaurantTool(
 ): PublicToolAuthorizationDecision {
   if (
     tool === "restaurant_end_call"
+    || tool === "restaurant_conversation"
     || tool === "restaurant_out_of_scope"
     || tool === "restaurant_human_assistance"
     || tool === "restaurant_input_ignored"

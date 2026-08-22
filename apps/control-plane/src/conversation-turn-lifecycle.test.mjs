@@ -187,7 +187,7 @@ test("CTL-26 presence speech does not alter semantic counters or create new epoc
   assert.equal(l.snapshot().presenceReplyPending, true);
 });
 
-test("CTL-26b caller acknowledgement resolves pending presence without a semantic ignore", () => {
+test("CTL-26b model-owned conversational intent resolves pending presence semantically", () => {
   const l = new ConversationTurnLifecycle();
   const epoch = startWaiting(l);
   l.dispatch({ type: "presence_deadline", epoch });
@@ -198,9 +198,9 @@ test("CTL-26b caller acknowledgement resolves pending presence without a semanti
   l.dispatch({ type: "transcript_usable" });
 
   assert.equal(l.snapshot().presenceReplyPending, true);
-  const effects = l.dispatch({ type: "presence_acknowledged" });
+  const effects = l.dispatch({ type: "semantic_valid", tool: "restaurant_conversation" });
   assert.equal(l.snapshot().presenceReplyPending, false);
-  assert.equal(l.snapshot().state, "PROCESSING_CALLER_TURN");
+  assert.equal(l.snapshot().state, "LUCIA_SPEAKING");
   assert.equal(l.snapshot().silenceTimerArmed, false);
   assert.deepEqual(l.dispatch({ type: "silence_close_deadline", epoch }), []);
   assert.ok(!effectTypes(effects).includes("SPEAK_IGNORED_RECOVERY"));

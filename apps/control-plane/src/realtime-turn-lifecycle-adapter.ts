@@ -11,6 +11,7 @@ const PUBLIC_SEMANTIC_TOOLS = new Set([
   "restaurant_reservation_modify",
   "restaurant_reservation_cancel",
   "restaurant_marketing_preferences",
+  "restaurant_conversation",
   "restaurant_human_assistance",
   "restaurant_out_of_scope",
   "restaurant_end_call",
