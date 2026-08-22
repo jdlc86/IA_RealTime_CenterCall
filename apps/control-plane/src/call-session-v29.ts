@@ -80,13 +80,10 @@ export class CallSession extends BaseConstructor {
     this.observabilityInstalledV29 = true;
     installRealtimeToolResultObserver(this as any, (request) => {
       if (!this.debugEnabledV29()) return;
-      const output = typeof request.output === "string"
-        ? request.output.slice(0, 2000)
-        : JSON.stringify(request.output ?? {}).slice(0, 2000);
       (this as any).diagnostics?.checkpoint?.("DEBUG_TOOL_OUTPUT_V29", {
         call_id: request.callId ?? null,
         tool: request.toolName ?? null,
-        output,
+        output: request.output ?? {},
       });
     });
   }
@@ -117,7 +114,7 @@ export class CallSession extends BaseConstructor {
     if (this.debugEnabledV29() && event.name) {
       (this as any).diagnostics?.checkpoint?.("DEBUG_MODEL_TOOL_DECISION_V29", {
         tool: event.name,
-        arguments: (event.arguments ?? "{}").slice(0, 2000),
+        arguments: event.arguments ?? "{}",
         call_id: event.call_id ?? null,
       });
     }
@@ -152,7 +149,6 @@ export class CallSession extends BaseConstructor {
       const transcript = usableTranscript(transcriptEvent.transcript);
       if (this.debugEnabledV29()) {
         (this as any).diagnostics?.checkpoint?.("DEBUG_USER_TRANSCRIPT_V29", {
-          transcript: transcript ?? "",
           usable: transcript !== null,
         });
       }

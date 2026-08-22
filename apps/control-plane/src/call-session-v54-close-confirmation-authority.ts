@@ -42,6 +42,25 @@ export class CallSession extends BaseConstructor {
     observeGovernedSpeechBeforeLowerLayers(session, events);
 
     for (const event of events) {
+      if (event.type === "CALLER_TRANSCRIPT_COMPLETED") {
+        session.diagnostics?.checkpoint?.("TECHNICAL_CALLER_TEXT_REDACTED", {
+          item_id: event.itemId ?? null,
+          speaker: "caller",
+          transcript: event.transcript,
+          source: "provider_completed_transcript",
+        });
+      }
+      if (event.type === "ASSISTANT_TRANSCRIPT_COMPLETED") {
+        session.diagnostics?.checkpoint?.("TECHNICAL_ASSISTANT_TEXT_REDACTED", {
+          response_id: event.responseId ?? null,
+          speaker: "assistant",
+          transcript: event.transcript,
+          source: "provider_completed_transcript",
+        });
+      }
+    }
+
+    for (const event of events) {
       if (event.type === "CALLER_SPEECH_STARTED") {
         clearConsolidatedCallerTurnForNextResponse(session);
         turnContext.clear();
@@ -60,6 +79,8 @@ export class CallSession extends BaseConstructor {
       if (fragmentDecision.action === "DEFER") {
         session.diagnostics?.checkpoint?.("CALLER_TURN_FRAGMENT_DEFERRED_V54", {
           item_id: callerTurn.itemId ?? null,
+          speaker: "caller",
+          transcript: callerTurn.transcript,
           authority: "structural_split_turn_evidence",
           timer_used: false,
           semantic_response_requested: false,
@@ -76,6 +97,8 @@ export class CallSession extends BaseConstructor {
           if (fragmentDecision.fragmentCount > 1) stageConsolidatedCallerTurnForNextResponse(session, consolidatedCallerTurn);
           session.diagnostics?.checkpoint?.("CALLER_TURN_CONSOLIDATED_V54", {
             item_id: callerTurn.itemId ?? null,
+            speaker: "caller",
+            transcript: consolidatedCallerTurn,
             fragment_count: fragmentDecision.fragmentCount,
             split_turn_consolidated: fragmentDecision.fragmentCount > 1,
             semantic_response_context_staged: fragmentDecision.fragmentCount > 1,
