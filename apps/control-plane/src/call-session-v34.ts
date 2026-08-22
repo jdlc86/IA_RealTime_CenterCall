@@ -1,25 +1,12 @@
 import { CallSession as CallSessionV33 } from "./call-session-v33";
-import { CallerSecurityService } from "./caller-security";
-import { tenantConfigurationKeyV2 } from "./tenant-kv";
-import { matchBlockedSecurityPhrase, parseTenantBlockedPhrases } from "./security-blocked-phrases";
+import { recordCallerSecuritySignalDurably } from "./caller-security-signal-delivery.js";
+import { KvTenantRepository } from "./tenant-kv";
+import { matchBlockedSecurityPhrase } from "./security-blocked-phrases";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { adaptRealtimeProviderEvents } from "./realtime-provider-runtime.js";
 
 const BaseConstructor = CallSessionV33 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV33.prototype as any;
-
-type RealtimeEvent = { type?: string; transcript?: string };
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
-
-function parseEvent(data: unknown): RealtimeEvent | null {
-  const text = readRealtimeText(data);
-  if (!text) return null;
-  try { return JSON.parse(text) as RealtimeEvent; } catch { return null; }
-}
 
 function usableTranscript(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -30,7 +17,8 @@ function usableTranscript(value: unknown): string | null {
 /**
  * v34 adds a tenant-editable deterministic denylist on top of v33.
  * Policy remains code-owned: any exact normalized blocked phrase is HIGH risk,
- * is never forwarded to Lucia, records a security strike, and closes the call.
+ * is never forwarded to Lucia, records a security strike, and closes the call
+ * through the neutral conversation lifecycle authority.
  * KV only controls additional phrases; a minimal built-in list always remains.
  */
 export class CallSession extends BaseConstructor {
@@ -49,19 +37,8 @@ export class CallSession extends BaseConstructor {
     if (typeof tenantId !== "string" || !tenantId.trim() || !kv || typeof kv.get !== "function") return;
 
     try {
-      const raw = await kv.get(tenantConfigurationKeyV2(tenantId.trim()), { cacheTtl: 30 });
-      if (!raw) {
-        this.tenantBlockedPhrasesV34 = [];
-        return;
-      }
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      const security = parsed.security;
-      if (security === undefined) {
-        this.tenantBlockedPhrasesV34 = [];
-      } else {
-        if (!security || typeof security !== "object" || Array.isArray(security)) throw new Error("security must be an object");
-        this.tenantBlockedPhrasesV34 = parseTenantBlockedPhrases((security as Record<string, unknown>).blockedPhrases);
-      }
+      const config = await new KvTenantRepository(kv).getTenantConfiguration(tenantId.trim());
+      this.tenantBlockedPhrasesV34 = config?.security?.blockedPhrases ?? [];
       (this as any).diagnostics?.checkpoint?.("TENANT_SECURITY_PHRASES_LOADED_V34", {
         tenant_phrase_count: this.tenantBlockedPhrasesV34.length,
         builtin_fallback_active: true,
@@ -75,17 +52,16 @@ export class CallSession extends BaseConstructor {
     }
   }
 
-  private securityServiceV34(): CallerSecurityService {
-    const env = (this as any).env ?? {};
-    return new CallerSecurityService({ SUPABASE_URL: env.SUPABASE_URL, SUPABASE_SECRET_KEY: env.SUPABASE_SECRET_KEY });
-  }
-
   private async recordAndCloseV34(transcript: string, match: { phrase?: string; source?: string }): Promise<void> {
+    conversationLifecyclePortFor(this).confirmEndCall(
+      "blocked_security_phrase_v34",
+      "deterministic_kv_security_monitor_v34",
+    );
     const tenantId = (this as any).tenantId;
     const callerPhone = (this as any).callerPhone;
     if (typeof tenantId === "string" && tenantId.trim() && typeof callerPhone === "string" && callerPhone.trim()) {
       try {
-        const decision = await this.securityServiceV34().recordSignal({
+        const result = await recordCallerSecuritySignalDurably(this, {
           tenantId: tenantId.trim(),
           callerPhone: callerPhone.trim(),
           eventType: "BLOCKED_PHRASE_HIGH",
@@ -102,9 +78,10 @@ export class CallSession extends BaseConstructor {
         (this as any).diagnostics?.checkpoint?.("CALLER_BLOCKED_PHRASE_V34", {
           matched_phrase: match.phrase ?? null,
           phrase_source: match.source ?? null,
-          action: decision.action,
-          risk_score: decision.risk_score,
-          security_strikes: decision.security_strikes,
+          delivery: result.delivery,
+          action: result.decision?.action ?? "PENDING_RETRY",
+          risk_score: result.decision?.risk_score ?? null,
+          security_strikes: result.decision?.security_strikes ?? null,
           transcript_forwarded_to_lucia: false,
         });
       } catch (error) {
@@ -114,24 +91,21 @@ export class CallSession extends BaseConstructor {
         });
       }
     }
-
-    if ((this as any).state !== "closing" && !(this as any).hangupStarted) {
-      (this as any).beginClosing?.("blocked_security_phrase_v34", "deterministic_kv_security_monitor_v34");
-    }
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const event = parseEvent(data);
-    if (event?.type === "conversation.item.input_audio_transcription.completed") {
+    for (const event of adaptRealtimeProviderEvents(data)) {
+      if (event.type !== "CALLER_TRANSCRIPT_COMPLETED") continue;
       const transcript = usableTranscript(event.transcript);
-      if (transcript) {
-        const match = matchBlockedSecurityPhrase(transcript, this.tenantBlockedPhrasesV34);
-        if (match.matched) {
-          await this.recordAndCloseV34(transcript, match);
-          return;
-        }
+      if (!transcript) continue;
+
+      const match = matchBlockedSecurityPhrase(transcript, this.tenantBlockedPhrasesV34);
+      if (match.matched) {
+        await this.recordAndCloseV34(transcript, match);
+        return;
       }
     }
+
     await BasePrototype.handleRealtimeMessage.call(this, data);
   }
 }

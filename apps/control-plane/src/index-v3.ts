@@ -38,7 +38,7 @@ function getHeader(headers: SipHeader[], name: string): string | null {
   return headers.find((header) => header.name.trim().toLowerCase() === normalized)?.value?.trim() || null;
 }
 
-async function inspectIncomingCallerContext(request: Request): Promise<IncomingCallerContext | null> {
+async function inspectIncomingCallerContext(request: Pick<Body, "text">): Promise<IncomingCallerContext | null> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(await request.text());

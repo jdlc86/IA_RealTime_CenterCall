@@ -1,3 +1,5 @@
+import { redactTechnicalText, sanitizeDiagnosticDetails } from "./technical-diagnostic-redaction.js";
+
 export type DiagnosticLevel = "info" | "error";
 
 export type DiagnosticEntry = {
@@ -22,34 +24,9 @@ export type DiagnosticSnapshot = {
 };
 
 export type DiagnosticSink = (entry: DiagnosticEntry, snapshot: DiagnosticSnapshot) => void | Promise<void>;
+export type DiagnosticTaskOwner = (promise: Promise<void>) => void;
 
 const MAX_TIMELINE_ENTRIES = 80;
-
-function sanitizeDetails(details: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
-  if (!details) return undefined;
-  const sanitized: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(details)) {
-    const lower = key.toLowerCase();
-    if (
-      lower.includes("secret") ||
-      lower.includes("token") ||
-      lower.includes("authorization") ||
-      lower.includes("api_key") ||
-      lower.includes("apikey") ||
-      lower.includes("phone") ||
-      lower.includes("transcript") ||
-      lower.includes("prompt") ||
-      lower.includes("audio")
-    ) {
-      continue;
-    }
-    if (typeof value === "string") sanitized[key] = value.slice(0, 300);
-    else if (typeof value === "number" || typeof value === "boolean" || value === null) sanitized[key] = value;
-    else if (Array.isArray(value)) sanitized[key] = { count: value.length };
-    else if (typeof value === "object") sanitized[key] = "[object]";
-  }
-  return sanitized;
-}
 
 export function isDebugEnabled(value: unknown): boolean {
   if (typeof value !== "string") return false;
@@ -68,16 +45,25 @@ export class CallDiagnostics {
   private recovery: string | null = null;
   private timeline: DiagnosticEntry[] = [];
   private sink: DiagnosticSink | null = null;
+  private sinkTaskOwner: DiagnosticTaskOwner | null = null;
+  private sinkTail: Promise<void> = Promise.resolve();
 
   constructor(enabled: boolean) {
     this.enabled = enabled;
   }
 
-  configure(enabled: boolean, callId?: string | null, tenantId?: string | null, sink?: DiagnosticSink | null): void {
+  configure(
+    enabled: boolean,
+    callId?: string | null,
+    tenantId?: string | null,
+    sink?: DiagnosticSink | null,
+    sinkTaskOwner?: DiagnosticTaskOwner | null,
+  ): void {
     this.enabled = enabled;
     if (callId) this.callId = callId;
     if (tenantId) this.tenantId = tenantId;
     if (sink !== undefined) this.sink = sink;
+    if (sinkTaskOwner !== undefined) this.sinkTaskOwner = sinkTaskOwner;
     this.checkpoint("DEBUG_CONFIGURED", { enabled });
   }
 
@@ -91,7 +77,7 @@ export class CallDiagnostics {
   fail(stage: string, diagnosis: string, details?: Record<string, unknown>): void {
     this.currentStage = stage;
     this.lastError = stage;
-    this.diagnosis = diagnosis;
+    this.diagnosis = redactTechnicalText(diagnosis);
     if (!this.enabled) return;
     this.push("error", stage, { diagnosis, ...details });
   }
@@ -99,7 +85,7 @@ export class CallDiagnostics {
   recovered(stage: string, recovery: string, details?: Record<string, unknown>): void {
     this.currentStage = stage;
     this.lastSuccess = stage;
-    this.recovery = recovery;
+    this.recovery = redactTechnicalText(recovery);
     if (!this.enabled) return;
     this.push("info", stage, { recovery, ...details });
   }
@@ -125,7 +111,7 @@ export class CallDiagnostics {
       stage,
       level,
       elapsed_ms: Date.now() - this.startedAt,
-      details: sanitizeDetails(details),
+      details: sanitizeDiagnosticDetails(details),
     };
     this.timeline.push(entry);
     if (this.timeline.length > MAX_TIMELINE_ENTRIES) {
@@ -152,8 +138,10 @@ export class CallDiagnostics {
     else console.log(serialized);
 
     if (this.sink) {
-      try {
-        void Promise.resolve(this.sink(entry, snapshot)).catch((error) => {
+      const sink = this.sink;
+      this.sinkTail = this.sinkTail
+        .then(() => sink(entry, snapshot))
+        .catch((error) => {
           console.error(JSON.stringify({
             level: "error",
             event: "call_diagnostic_sink_failed",
@@ -163,16 +151,7 @@ export class CallDiagnostics {
             error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
           }));
         });
-      } catch (error) {
-        console.error(JSON.stringify({
-          level: "error",
-          event: "call_diagnostic_sink_failed",
-          component: "CallDiagnostics",
-          call_id: this.callId,
-          tenant_id: this.tenantId,
-          error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
-        }));
-      }
+      this.sinkTaskOwner?.(this.sinkTail);
     }
   }
 }

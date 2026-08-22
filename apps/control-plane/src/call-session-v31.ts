@@ -1,45 +1,36 @@
 import { CallSession as CallSessionV29 } from "./call-session-v29";
 import type { ToolGateway, ToolRequest, ToolResult } from "./tool-gateway";
+import { restaurantBusinessPortFor, type BusinessHours } from "./restaurant-business-port.js";
+import {
+  restaurantReservationPortFor,
+  type RestaurantCapacityFit,
+  type RestaurantSearchSlot,
+  type RestaurantTablePlanRow,
+} from "./restaurant-reservation-port.js";
+import {
+  businessWindowsForDate,
+  endOfBusinessLocalDateExclusive,
+  evaluateReservationBusinessHours,
+  normalizeReservationLocalDateTime,
+  normalizeReservationSearchBoundary,
+  sameBusinessLocalDate,
+} from "./reservation-business-hours";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { reservationSessionRuntimeFor } from "./reservation-session-runtime.js";
+import { reservationTimeSessionRuntimeFor } from "./reservation-time-session-runtime.js";
+import { publicRestaurantToolAuthorizationPortFor } from "./semantic-tool-authorization-port.js";
+import { decideReservationSearchDateRange } from "./reservation-search-date-range-policy.js";
+import { formatMadridReservationSpeech } from "./reservation-search-output-localization.js";
 
 const BaseConstructor = CallSessionV29 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV29.prototype as any;
 
 const CHECK_AVAILABILITY = "check_reservation_availability";
 const MANAGE_RESERVATION = "manage_reservation";
+const CREATE_RESERVATION = "restaurant_reservation_create";
 const SEARCH_RESERVATION = "restaurant_reservation_search";
+const RESTAURANT_TIMEZONE = "Europe/Madrid";
 
-type RealtimeEvent = { type?: string; name?: string; call_id?: string; arguments?: string };
-type TablePlanRow = {
-  allocation_mode: string;
-  plan_order: number;
-  table_id: string;
-  table_code: string;
-  table_name: string;
-  min_capacity: number;
-  max_capacity: number;
-  starts_at: string;
-  ends_at: string;
-};
-type SearchSlot = {
-  starts_at: string;
-  allocation_mode: string;
-  table_count: number;
-  total_capacity: number;
-  unused_seats: number;
-};
-type CapacityFit = {
-  allocation_mode: string;
-  table_count: number;
-  total_capacity: number;
-  unused_seats: number;
-};
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -57,69 +48,169 @@ function requireString(value: unknown, name: string): string {
 }
 
 /**
- * v31 centralises two reservation usability policies:
- * - automatic seating may waste at most one seat in total;
- * - Lucia can search nearby slots by simple date/time criteria without creating a reservation.
+ * v31 centralises reservation capacity and slot-search policy.
  *
- * SQL remains authoritative for table allocation and slot availability. If the
- * restaurant's table topology cannot satisfy the <=1 unused-seat rule, the
- * result escalates to human assistance instead of rejecting/cancelling anything.
+ * Business hours are authoritative here: table availability is never consulted
+ * for a closed day/out-of-hours request, and automatic alternative search never
+ * silently crosses into another local calendar date.
+ *
+ * Shared reservation facts live in ReservationSessionRuntime. Public-tool
+ * authority and realtime output are consumed only through version-neutral ports.
+ * v31 owns only the transient table plan required to execute a multi-table commit.
  */
 export class CallSession extends BaseConstructor {
-  private planV31: TablePlanRow[] | null = null;
+  private planV31: RestaurantTablePlanRow[] | null = null;
   private planKeyV31: string | null = null;
 
-  private async rpcV31<T>(name: string, body: Record<string, unknown>): Promise<T[]> {
-    const baseUrl = requireString((this as any).env?.SUPABASE_URL, "SUPABASE_URL").replace(/\/+$/, "");
-    const key = requireString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY");
-    const response = await fetch(`${baseUrl}/rest/v1/rpc/${encodeURIComponent(name)}`, {
-      method: "POST",
-      headers: { apikey: key, "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(body),
-    });
-    const raw = await response.text();
-    if (!response.ok) throw new Error(`${name} failed with HTTP ${response.status}: ${raw.slice(0, 250)}`);
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) throw new Error(`${name} returned invalid payload`);
-    return parsed as T[];
+  private async businessHoursV31(): Promise<BusinessHours[]> {
+    return restaurantBusinessPortFor(this).listBusinessHours(requireString((this as any).tenantId, "tenant_id"));
   }
 
-  private async tablePlanV31(partySize: number, startsAt: string, duration: number): Promise<TablePlanRow[]> {
-    return this.rpcV31<TablePlanRow>("check_restaurant_table_plan", {
-      p_tenant_id: requireString((this as any).tenantId, "tenant_id"),
-      p_starts_at: startsAt,
-      p_party_size: partySize,
-      p_duration_minutes: duration,
-      p_exclude_reservation_id: null,
+  private clearPlanV31(): void {
+    this.planV31 = null;
+    this.planKeyV31 = null;
+  }
+
+  private async tablePlanV31(partySize: number, startsAt: string, duration: number): Promise<RestaurantTablePlanRow[]> {
+    return restaurantReservationPortFor(this).checkTablePlan({
+      tenantId: requireString((this as any).tenantId, "tenant_id"),
+      startsAt,
+      partySize,
+      durationMinutes: duration,
+      excludeReservationId: null,
     });
+  }
+
+  private async executeMultiTableReservationV31(request: ToolRequest, baseGateway: ToolGateway): Promise<ToolResult> {
+    const plan = this.planV31;
+    const draft = reservationSessionRuntimeFor(this).snapshot().draft;
+    if (!plan?.length || plan.length < 2 || draft.separate_tables_acceptable !== true || draft.tables_must_be_close === true) {
+      return baseGateway.execute(request) as Promise<ToolResult>;
+    }
+
+    const args = asObject(request.arguments);
+    const partySize = integer(args.party_size);
+    const rawStartsAt = text(args.starts_at);
+    const customerName = text(args.customer_name);
+    const customerPhone = text(args.customer_phone);
+    const duration = integer(args.duration_minutes) ?? 90;
+    const notes = text(args.notes);
+    if (!partySize || !rawStartsAt || !customerName || !customerPhone) {
+      return baseGateway.execute(request) as Promise<ToolResult>;
+    }
+
+    const startsAt = normalizeReservationLocalDateTime(rawStartsAt, RESTAURANT_TIMEZONE);
+    const key = JSON.stringify({ party_size: partySize, starts_at: startsAt, duration_minutes: duration });
+    if (key !== this.planKeyV31) return baseGateway.execute(request) as Promise<ToolResult>;
+
+    if (args.confirm !== true) {
+      return {
+        ok: true,
+        tool: MANAGE_RESERVATION,
+        tenantId: request.context.tenantId,
+        result: {
+          stage: "CONFIRM_RESERVATION",
+          party_size: partySize,
+          starts_at: startsAt,
+          customer_name: customerName,
+          allocation_mode: "MULTI_EXACT",
+          tables: plan.map((row) => ({ table_name: row.table_name, capacity: row.max_capacity })),
+        },
+      } as ToolResult;
+    }
+
+    try {
+      const rows = await restaurantReservationPortFor(this).createMultiTableReservation({
+        tenantId: request.context.tenantId,
+        customerName,
+        customerPhone,
+        partySize,
+        startsAt,
+        durationMinutes: duration,
+        notes: notes ?? null,
+        source: "voice",
+      });
+      if (!rows.length) throw new Error("empty booking result");
+      const code = rows[0]?.reservation_code;
+      this.clearPlanV31();
+      return {
+        ok: true,
+        tool: MANAGE_RESERVATION,
+        tenantId: request.context.tenantId,
+        result: {
+          stage: "BOOKED",
+          reservation_code: code,
+          party_size: partySize,
+          starts_at: startsAt,
+          allocation_mode: "MULTI_EXACT",
+          tables: rows.map((row) => ({ table_name: row.table_name, table_code: row.table_code })),
+        },
+      } as ToolResult;
+    } catch (error) {
+      return {
+        ok: false,
+        tool: MANAGE_RESERVATION,
+        tenantId: request.context.tenantId,
+        error: "EXECUTION_FAILED",
+        message: error instanceof Error ? error.message : String(error),
+      } as ToolResult;
+    }
   }
 
   private createToolGateway(): ToolGateway {
     const baseGateway = BasePrototype.createToolGateway.call(this) as ToolGateway;
     return {
       execute: async (request: ToolRequest): Promise<ToolResult> => {
+        if (request.name === MANAGE_RESERVATION) {
+          return this.executeMultiTableReservationV31(request, baseGateway);
+        }
         if (request.name !== CHECK_AVAILABILITY) return baseGateway.execute(request) as Promise<ToolResult>;
 
         const args = asObject(request.arguments);
         const partySize = integer(args.party_size);
-        const startsAt = text(args.starts_at);
+        const rawStartsAt = text(args.starts_at);
         const duration = integer(args.duration_minutes) ?? 90;
-        if (!partySize || !startsAt) return baseGateway.execute(request) as Promise<ToolResult>;
+        if (!partySize || !rawStartsAt) return baseGateway.execute(request) as Promise<ToolResult>;
+        const startsAt = normalizeReservationLocalDateTime(rawStartsAt, RESTAURANT_TIMEZONE);
+
+        const businessHours = await this.businessHoursV31();
+        const hoursDecision = evaluateReservationBusinessHours(startsAt, duration, businessHours, RESTAURANT_TIMEZONE);
+        if (!hoursDecision.allowed) {
+          this.clearPlanV31();
+          (this as any).diagnostics?.checkpoint?.("RESERVATION_BUSINESS_HOURS_BLOCKED_V31", {
+            operation: "check_availability",
+            reason: hoursDecision.reason,
+            local_date: hoursDecision.localDate,
+            requested_local_time: hoursDecision.requestedLocalTime,
+            duration_minutes: duration,
+            weekday: hoursDecision.weekday,
+            windows: hoursDecision.windows,
+          });
+          return {
+            ok: true,
+            tool: CHECK_AVAILABILITY,
+            tenantId: request.context.tenantId,
+            result: {
+              requested_available: false,
+              business_hours_blocked: true,
+              business_hours_authoritative: true,
+              business_hours_reason: hoursDecision.reason,
+              requested_local_date: hoursDecision.localDate,
+              requested_local_time: hoursDecision.requestedLocalTime,
+              business_hours: hoursDecision.windows,
+            },
+          } as ToolResult;
+        }
 
         const plan = await this.tablePlanV31(partySize, startsAt, duration);
         const key = JSON.stringify({ party_size: partySize, starts_at: startsAt, duration_minutes: duration });
         this.planV31 = plan.length ? plan : null;
         this.planKeyV31 = plan.length ? key : null;
 
-        // Keep the older multi-table booking executor synchronized so it can
-        // perform the final atomic write after the customer accepts separation.
-        (this as any).multitablePlanV16 = plan.length > 1 ? plan : null;
-        (this as any).multitableKeyV16 = plan.length > 1 ? key : null;
-
         if (!plan.length) {
-          const fit = await this.rpcV31<CapacityFit>("check_restaurant_capacity_fit", {
-            p_tenant_id: request.context.tenantId,
-            p_party_size: partySize,
+          const fit: RestaurantCapacityFit[] = await restaurantReservationPortFor(this).checkCapacityFit({
+            tenantId: request.context.tenantId,
+            partySize,
           });
           const structuralFit = fit[0] ?? null;
           return {
@@ -146,8 +237,9 @@ export class CallSession extends BaseConstructor {
         const totalCapacity = plan.reduce((sum, row) => sum + row.max_capacity, 0);
         const unusedSeats = totalCapacity - partySize;
         const multi = plan.length > 1;
-        const separateAccepted = (this as any).separateTablesAcceptableV16 === true;
-        const mustBeClose = (this as any).tablesMustBeCloseV16 === true;
+        const draft = reservationSessionRuntimeFor(this).snapshot().draft;
+        const separateAccepted = draft.separate_tables_acceptable === true;
+        const mustBeClose = draft.tables_must_be_close === true;
         const canAutoProceed = !multi || (separateAccepted && !mustBeClose);
 
         (this as any).diagnostics?.checkpoint?.("RESERVATION_CAPACITY_PLAN_V31", {
@@ -157,6 +249,7 @@ export class CallSession extends BaseConstructor {
           total_capacity: totalCapacity,
           unused_seats: unusedSeats,
           policy_max_unused_seats: 1,
+          reservation_state_owner: "reservation_session_runtime",
         });
 
         return {
@@ -182,11 +275,33 @@ export class CallSession extends BaseConstructor {
     } as ToolGateway;
   }
 
-  private sendFunctionOutputV19(callId: string | undefined, output: Record<string, unknown>): void {
+  private emitCreateOutputV31(callId: string | undefined, output: Record<string, unknown>): void {
+    const port = realtimeCommandPortFor(this as any);
+    port.submitToolResult({ callId, toolName: CREATE_RESERVATION, output });
+    port.createDefaultResponse();
+  }
+
+  protected sendReservationOutput(callId: string | undefined, output: Record<string, unknown>): void {
     if (output.status === "UNAVAILABLE") {
       const result = output as Record<string, unknown>;
+      if (result.business_hours_blocked === true) {
+        const closedDay = result.business_hours_reason === "CLOSED_DAY";
+        this.emitCreateOutputV31(callId, {
+          ok: true,
+          status: closedDay ? "RESTAURANT_CLOSED" : "OUTSIDE_BUSINESS_HOURS",
+          business_hours_authoritative: true,
+          requested_local_date: result.requested_local_date,
+          requested_local_time: result.requested_local_time,
+          business_hours: result.business_hours,
+          instruction: closedDay
+            ? "El restaurante está cerrado en la fecha solicitada. No busques ni propongas otro día automáticamente. Informa del cierre y pregunta al cliente si quiere elegir otra fecha."
+            : "La reserva solicitada no cabe completamente dentro del horario comercial de ese día. No busques ni propongas otro día automáticamente. Indica el horario disponible y pregunta por otra hora o fecha.",
+        });
+        return;
+      }
+
       if (result.human_assistance_required === true || result.structural_fit_available === false) {
-        BasePrototype.sendFunctionOutputV19.call(this, callId, {
+        this.emitCreateOutputV31(callId, {
           ok: true,
           status: "HUMAN_ASSISTANCE_REQUIRED",
           reason: "CAPACITY_POLICY_REQUIRES_HUMAN",
@@ -197,16 +312,16 @@ export class CallSession extends BaseConstructor {
       }
 
       const plan = this.planV31;
-      const draft = asObject((this as any).reservationDraftV19);
+      const draft = reservationSessionRuntimeFor(this).snapshot().draft;
       if (Array.isArray(plan) && plan.length > 1) {
         const capacities = plan.map((row) => row.max_capacity);
-        const partySize = Number(draft.party_size ?? 0);
+        const partySize = integer(draft.party_size) ?? 0;
         const totalCapacity = capacities.reduce((sum, value) => sum + value, 0);
         const unusedSeats = totalCapacity - partySize;
         const rejected = draft.separate_tables_acceptable === false;
         const mustBeClose = draft.tables_must_be_close === true;
         if (rejected || mustBeClose) {
-          BasePrototype.sendFunctionOutputV19.call(this, callId, {
+          this.emitCreateOutputV31(callId, {
             ok: true,
             status: "HUMAN_ASSISTANCE_REQUIRED",
             reason: mustBeClose ? "TABLES_MUST_BE_CLOSE" : "SEPARATE_TABLES_REJECTED",
@@ -218,7 +333,7 @@ export class CallSession extends BaseConstructor {
           return;
         }
         if (draft.separate_tables_acceptable !== true) {
-          BasePrototype.sendFunctionOutputV19.call(this, callId, {
+          this.emitCreateOutputV31(callId, {
             ok: true,
             status: "MULTITABLE_OPTION",
             allocation_mode: plan[0]?.allocation_mode,
@@ -234,83 +349,209 @@ export class CallSession extends BaseConstructor {
       }
 
       if (result.suggestion === "SEARCH_ALTERNATIVE_SLOTS") {
-        BasePrototype.sendFunctionOutputV19.call(this, callId, {
+        const requestedStartsAt = text(draft.starts_at);
+        this.emitCreateOutputV31(callId, {
           ...output,
           status: "UNAVAILABLE_WITH_SEARCH_OPTION",
-          instruction: "La hora concreta no está disponible, pero la configuración de mesas sí admite este grupo. Ofrece buscar los turnos más cercanos con restaurant_reservation_search.",
+          requested_starts_at: requestedStartsAt,
+          requested_starts_at_spoken: requestedStartsAt ? formatMadridReservationSpeech(requestedStartsAt) : null,
+          instruction: "La fecha y hora concretas no están disponibles, pero la configuración de mesas sí admite este grupo. Indica siempre el día de la semana, la fecha y la hora que se comprobaron. Ofrece buscar turnos alternativos únicamente dentro de esa misma fecha con restaurant_reservation_search. Para cambiar de día, espera a que el cliente elija explícitamente otra fecha.",
         });
         return;
       }
     }
-    BasePrototype.sendFunctionOutputV19.call(this, callId, output);
+    this.emitCreateOutputV31(callId, output);
   }
 
   private sendOutputV31(callId: string | undefined, output: Record<string, unknown>): void {
-    (this as any).send?.({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: JSON.stringify(output) } });
-    (this as any).send?.({ type: "response.create" });
+    const port = realtimeCommandPortFor(this as any);
+    port.submitToolResult({ callId, toolName: SEARCH_RESERVATION, output });
+    port.createDefaultResponse();
   }
 
   private async executeSearchV31(callId: string | undefined, args: Record<string, unknown>): Promise<void> {
     const partySize = integer(args.party_size);
-    if (!partySize || partySize < 1 || partySize > 100) throw new Error("party_size is required");
+    if (!partySize || partySize < 1 || partySize > 100) {
+      this.sendOutputV31(callId, {
+        ok: true,
+        status: "MISSING_INFORMATION",
+        missing: ["party_size"],
+        search_criteria: {
+          preferred_starts_at: text(args.preferred_starts_at) ?? null,
+          from: text(args.from) ?? null,
+          to: text(args.to) ?? null,
+          date_scope: text(args.date_scope) ?? null,
+          time_from: text(args.time_from) ?? null,
+          time_to: text(args.time_to) ?? null,
+        },
+        instruction: "Pregunta únicamente para cuántas personas debe buscarse. Conserva el rango y los criterios ya autorizados y repite restaurant_reservation_search después de la respuesta; no materialices una fecha concreta.",
+      });
+      return;
+    }
     const duration = integer(args.duration_minutes) ?? 90;
     const step = integer(args.step_minutes) ?? 30;
     const maxResults = Math.min(10, Math.max(1, integer(args.max_results) ?? 5));
-    const preferred = text(args.preferred_starts_at);
-    const from = text(args.from) ?? preferred;
-    if (!from) throw new Error("from or preferred_starts_at is required");
-    const fromMs = Date.parse(from);
-    if (!Number.isFinite(fromMs)) throw new Error("invalid search start");
-    const to = text(args.to) ?? new Date(fromMs + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const preferredRaw = text(args.preferred_starts_at);
+    const fromRaw = text(args.from) ?? preferredRaw;
+    if (!fromRaw) throw new Error("from or preferred_starts_at is required");
+    const from = normalizeReservationSearchBoundary(fromRaw, RESTAURANT_TIMEZONE);
+    const preferred = preferredRaw ? normalizeReservationLocalDateTime(preferredRaw, RESTAURANT_TIMEZONE) : undefined;
+    const requestedToRaw = text(args.to);
+    const requestedTo = requestedToRaw ? normalizeReservationSearchBoundary(requestedToRaw, RESTAURANT_TIMEZONE) : undefined;
 
-    const rows = await this.rpcV31<SearchSlot>("search_restaurant_table_slots", {
-      p_tenant_id: requireString((this as any).tenantId, "tenant_id"),
-      p_party_size: partySize,
-      p_from: from,
-      p_to: to,
-      p_duration_minutes: duration,
-      p_step_minutes: step,
-      p_local_time_from: text(args.time_from) ?? null,
-      p_local_time_to: text(args.time_to) ?? null,
-      p_timezone: "Europe/Madrid",
-      p_limit: maxResults,
+    const fromLocalDate = businessWindowsForDate(from, [], RESTAURANT_TIMEZONE).localDate;
+    const toLocalDate = requestedTo
+      ? businessWindowsForDate(requestedTo, [], RESTAURANT_TIMEZONE).localDate
+      : null;
+    const rangeDecision = decideReservationSearchDateRange({
+      fromLocalDate,
+      toLocalDate,
+      dateScope: text(args.date_scope) ?? null,
     });
+    if (rangeDecision.action === "BLOCK_RANGE") {
+      (this as any).diagnostics?.checkpoint?.("RESERVATION_SEARCH_RANGE_BLOCKED_V31", {
+        reason: rangeDecision.reason,
+        from_local_date: fromLocalDate,
+        to_local_date: toLocalDate,
+        caller_authorized_range: false,
+      });
+      this.sendOutputV31(callId, {
+        ok: true,
+        status: "DATE_SCOPE_REQUIRES_CALLER_CHOICE",
+        from_local_date: fromLocalDate,
+        to_local_date: toLocalDate,
+        instruction: rangeDecision.reason === "RANGE_TOO_WIDE"
+          ? "El intervalo supera siete días. Pide al cliente que concrete un rango de hasta una semana y no elijas fechas por tu cuenta."
+          : "No existe autoridad semántica suficiente para buscar en varios días. Conserva los criterios ya dados y pregunta al cliente qué fecha o rango prefiere; no elijas un día representativo.",
+      });
+      return;
+    }
+    const callerAuthorizedRange = rangeDecision.action === "ALLOW_RANGE";
+
+    const businessHours = await this.businessHoursV31();
+    const dateScope = businessWindowsForDate(from, businessHours, RESTAURANT_TIMEZONE);
+    if (!callerAuthorizedRange && !dateScope.windows.length) {
+      (this as any).diagnostics?.checkpoint?.("RESERVATION_BUSINESS_HOURS_BLOCKED_V31", {
+        operation: "search",
+        reason: "CLOSED_DAY",
+        local_date: dateScope.localDate,
+        weekday: dateScope.weekday,
+      });
+      this.sendOutputV31(callId, {
+        ok: true,
+        status: "RESTAURANT_CLOSED",
+        business_hours_authoritative: true,
+        requested_local_date: dateScope.localDate,
+        business_hours: [],
+        instruction: "El restaurante está cerrado en la fecha solicitada. No amplíes la búsqueda a otro día. Pregunta al cliente si quiere elegir otra fecha.",
+      });
+      return;
+    }
+
+    if (!callerAuthorizedRange && preferred) {
+      const preferredDecision = evaluateReservationBusinessHours(preferred, duration, businessHours, RESTAURANT_TIMEZONE);
+      if (!preferredDecision.allowed) {
+        (this as any).diagnostics?.checkpoint?.("RESERVATION_BUSINESS_HOURS_BLOCKED_V31", {
+          operation: "search",
+          reason: preferredDecision.reason,
+          local_date: preferredDecision.localDate,
+          requested_local_time: preferredDecision.requestedLocalTime,
+          duration_minutes: duration,
+        });
+        this.sendOutputV31(callId, {
+          ok: true,
+          status: preferredDecision.reason === "CLOSED_DAY" ? "RESTAURANT_CLOSED" : "OUTSIDE_BUSINESS_HOURS",
+          business_hours_authoritative: true,
+          requested_local_date: preferredDecision.localDate,
+          requested_local_time: preferredDecision.requestedLocalTime,
+          business_hours: preferredDecision.windows,
+          instruction: preferredDecision.reason === "CLOSED_DAY"
+            ? "El restaurante está cerrado en la fecha solicitada. No busques otro día automáticamente; pide al cliente otra fecha."
+            : "La hora solicitada no cabe completamente dentro del horario comercial. No cambies de día automáticamente; ofrece elegir otra hora dentro de ese día o una nueva fecha.",
+        });
+        return;
+      }
+    }
+
+    const to = requestedTo ?? endOfBusinessLocalDateExclusive(from, RESTAURANT_TIMEZONE);
+    const rows: RestaurantSearchSlot[] = await restaurantReservationPortFor(this).searchTableSlots({
+      tenantId: requireString((this as any).tenantId, "tenant_id"),
+      partySize,
+      from,
+      to,
+      durationMinutes: duration,
+      stepMinutes: step,
+      localTimeFrom: text(args.time_from) ?? null,
+      localTimeTo: text(args.time_to) ?? null,
+      timezone: RESTAURANT_TIMEZONE,
+      limit: maxResults,
+    });
+    const authorizedRows = callerAuthorizedRange
+      ? rows
+      : rows.filter((row) => sameBusinessLocalDate(row.starts_at, from, RESTAURANT_TIMEZONE));
+    reservationTimeSessionRuntimeFor(this).recordOfferedSlots(authorizedRows.map((row) => row.starts_at));
 
     (this as any).diagnostics?.checkpoint?.("RESERVATION_SLOT_SEARCH_COMPLETED_V31", {
       party_size: partySize,
-      result_count: rows.length,
+      result_count: authorizedRows.length,
       step_minutes: step,
       max_unused_seats: 1,
+      requested_local_date: callerAuthorizedRange ? null : dateScope.localDate,
+      from_local_date: fromLocalDate,
+      to_local_date: toLocalDate,
+      date_scope: callerAuthorizedRange ? "CALLER_AUTHORIZED_RANGE" : "SAME_LOCAL_DATE",
+      same_date_scope_enforced: !callerAuthorizedRange,
+      cross_date_rows_discarded: rows.length - authorizedRows.length,
     });
 
     this.sendOutputV31(callId, {
       ok: true,
-      status: rows.length ? "SUGGESTIONS_AVAILABLE" : "NO_AUTOMATIC_SUGGESTIONS",
+      status: authorizedRows.length ? "SUGGESTIONS_AVAILABLE" : "NO_AUTOMATIC_SUGGESTIONS",
       party_size: partySize,
-      options: rows,
+      requested_local_date: callerAuthorizedRange ? null : dateScope.localDate,
+      from_local_date: fromLocalDate,
+      to_local_date: toLocalDate,
+      options: authorizedRows,
       capacity_policy: "MAX_ONE_UNUSED_SEAT",
-      instruction: rows.length
-        ? "Presenta como máximo tres opciones de forma breve y pregunta cuál prefiere. No reserves hasta que el cliente elija una y pase por restaurant_reservation_create."
-        : "No se encontraron turnos automáticos en el rango. No rechaces ni canceles nada; ofrece ampliar criterios o asistencia humana.",
+      business_hours_authoritative: true,
+      date_scope: callerAuthorizedRange ? "CALLER_AUTHORIZED_RANGE" : "SAME_LOCAL_DATE",
+      instruction: authorizedRows.length
+        ? callerAuthorizedRange
+          ? "Presenta como máximo tres opciones reales dentro del rango autorizado. Di siempre el día de la semana, la fecha y la hora de cada opción y pregunta cuál prefiere. No reserves hasta que el cliente elija una y pase por restaurant_reservation_create."
+          : "Presenta como máximo tres opciones de esta misma fecha indicando día, fecha y hora, y pregunta cuál prefiere. No reserves hasta que el cliente elija una y pase por restaurant_reservation_create. No cambies de día sin un nuevo criterio explícito del cliente."
+        : callerAuthorizedRange
+          ? "No se encontraron turnos automáticos dentro del rango autorizado. Menciona claramente el intervalo consultado y pregunta si el cliente quiere cambiar o ampliar sus criterios; no elijas otro rango por iniciativa propia."
+          : "No se encontraron turnos automáticos en la fecha solicitada. Menciona la fecha exacta y pregunta al cliente si quiere elegir otra fecha o ampliar criterios; no cambies de día por iniciativa propia.",
     });
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const textData = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (textData) { try { event = JSON.parse(textData) as RealtimeEvent; } catch { event = null; } }
+    const event = adaptRealtimeProviderEvents(data).find(
+      (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && candidate.name === SEARCH_RESERVATION,
+    );
 
-    if (event?.type === "response.function_call_arguments.done" && event.name === SEARCH_RESERVATION) {
+    if (event?.type === "SEMANTIC_TOOL_SELECTED" && event.name === SEARCH_RESERVATION) {
+      const authorized = publicRestaurantToolAuthorizationPortFor(this).authorize({
+        name: event.name,
+        call_id: event.callId,
+        arguments: event.arguments,
+      });
+      if (!authorized) return;
+
       let args: Record<string, unknown>;
       try { args = parseObject(event.arguments); }
       catch (error) {
-        this.sendOutputV31(event.call_id, { ok: false, status: "ERROR", error: "INVALID_ARGUMENTS", message: error instanceof Error ? error.message : String(error) });
+        this.sendOutputV31(event.callId, { ok: false, status: "ERROR", error: "INVALID_ARGUMENTS", message: error instanceof Error ? error.message : String(error) });
         return;
       }
-      (this as any).diagnostics?.checkpoint?.("LUCIA_AGENT_TOOL_SELECTED", { tool: SEARCH_RESERVATION, compatibility_executor: "direct_reservation_search_v31" });
-      try { await this.executeSearchV31(event.call_id, args); }
+      (this as any).diagnostics?.checkpoint?.("LUCIA_AGENT_TOOL_SELECTED", {
+        tool: SEARCH_RESERVATION,
+        compatibility_executor: "direct_reservation_search_v31",
+        semantic_authority: "semantic_tool_authorization_port",
+      });
+      try { await this.executeSearchV31(event.callId, args); }
       catch (error) {
-        this.sendOutputV31(event.call_id, { ok: false, status: "ERROR", error: "SEARCH_FAILED", message: error instanceof Error ? error.message : String(error) });
+        this.sendOutputV31(event.callId, { ok: false, status: "ERROR", error: "SEARCH_FAILED", message: error instanceof Error ? error.message : String(error) });
       }
       return;
     }

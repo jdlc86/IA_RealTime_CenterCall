@@ -87,9 +87,10 @@ export function parseReservationTurn(argumentsJson: string | undefined): Reserva
   const allowed = new Set(["operation", "party_size", "starts_at", "customer_name", "customer_phone", "use_caller_phone", "duration_minutes", "notes", "confirm", "selection_index", "selection_indexes", "select_all"]);
   for (const key of Object.keys(reservation)) if (!allowed.has(key)) throw new Error(`Unexpected reservation field: ${key}`);
 
+  const operation = optionalOperation(reservation);
   const startsAtRaw = optionalString(reservation, "starts_at", 64);
   const startsAt = startsAtRaw ? tryNormalizeIso(startsAtRaw) : undefined;
-  const phoneRaw = optionalString(reservation, "customer_phone", 32);
+  const phoneRaw = operation === "CREATE" ? optionalString(reservation, "customer_phone", 32) : undefined;
   const confirm = optionalBoolean(reservation, "confirm") ?? false;
   const selectionIndex = optionalInteger(reservation, "selection_index", 1, 20);
   const selectionIndexes = optionalIntegerArray(reservation, "selection_indexes", 1, 20);
@@ -98,13 +99,13 @@ export function parseReservationTurn(argumentsJson: string | undefined): Reserva
   if (selectAll && (selectionIndex !== undefined || selectionIndexes !== undefined)) throw new Error("Conflicting reservation select_all");
 
   return {
-    operation: optionalOperation(reservation),
+    operation,
     patch: {
       partySize: optionalInteger(reservation, "party_size", 1, 100),
       startsAt,
       customerName: optionalString(reservation, "customer_name", 160),
       customerPhone: phoneRaw ? normalizeE164(phoneRaw) : undefined,
-      useCallerPhone: optionalBoolean(reservation, "use_caller_phone"),
+      useCallerPhone: operation === "CREATE" ? optionalBoolean(reservation, "use_caller_phone") : undefined,
       durationMinutes: optionalInteger(reservation, "duration_minutes", 15, 480),
       notes: optionalString(reservation, "notes", 1000),
     },

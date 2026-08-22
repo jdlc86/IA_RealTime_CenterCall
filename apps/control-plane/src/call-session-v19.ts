@@ -1,5 +1,17 @@
 import { CallSession as CallSessionV18 } from "./call-session-v18";
 import type { ToolGateway, ToolResult } from "./tool-gateway";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import {
+  isReservationAvailabilityConflict,
+  reservationAvailabilityChangedOutput,
+} from "./reservation-concurrency-policy.js";
+import { reservationContactIdentityRuntimeFor } from "./reservation-contact-identity-runtime.js";
+import { reservationDatetimeRuntimeFor } from "./reservation-datetime-runtime.js";
+import {
+  reservationSessionRuntimeFor,
+  type ReservationDraft,
+} from "./reservation-session-runtime.js";
+import { reservationMultitableRuntimeFor } from "./reservation-multitable-runtime.js";
 
 const BaseConstructor = CallSessionV18 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV18.prototype as any;
@@ -7,36 +19,6 @@ const BasePrototype = CallSessionV18.prototype as any;
 const CREATE_RESERVATION = "restaurant_reservation_create";
 const CHECK_AVAILABILITY = "check_reservation_availability";
 const MANAGE_RESERVATION = "manage_reservation";
-const LUCIA_PROCESSING_MAX_MS = 12_000;
-
-type RealtimeEvent = {
-  type?: string;
-  name?: string;
-  call_id?: string;
-  arguments?: string;
-};
-
-type ReservationDraft = {
-  party_size?: number;
-  starts_at?: string;
-  customer_name?: string;
-  customer_phone?: string;
-  use_caller_phone?: boolean;
-  duration_minutes?: number;
-  notes?: string;
-  confirm?: boolean;
-  separate_tables_acceptable?: boolean;
-  tables_must_be_close?: boolean;
-};
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) {
-    return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  }
-  return null;
-}
 
 function parseObject(argumentsJson: string | undefined): Record<string, unknown> {
   if (!argumentsJson?.trim()) return {};
@@ -53,98 +35,50 @@ function publicToolOutput(result: ToolResult): Record<string, unknown> {
   return { ok: true, ...payload };
 }
 
+function trustedCallerPhone(session: any): string | null {
+  return typeof session.callerPhone === "string" && session.callerPhone.trim() ? session.callerPhone.trim() : null;
+}
+
 export class CallSession extends BaseConstructor {
-  private reservationDraftV19: ReservationDraft = {};
-  private reservationAvailabilityFingerprintV19: string | null = null;
-  private reservationAvailabilityResultV19: Record<string, unknown> | null = null;
-  private luciaProcessingTimerV19: ReturnType<typeof setTimeout> | null = null;
-
-  private clearLuciaProcessingTimerV19(): void {
-    if (this.luciaProcessingTimerV19 !== null) {
-      clearTimeout(this.luciaProcessingTimerV19);
-      this.luciaProcessingTimerV19 = null;
-    }
-  }
-
-  private suspendPresenceWhileLuciaProcessesV19(): void {
-    this.clearLuciaProcessingTimerV19();
-    // Reuse the v18 relative-suspension flag WITHOUT resetting inactivityStartedAtV18.
-    // This prevents presence prompts while Lucia is processing a real transcript while
-    // preserving the original absolute unanswered deadline and the 15-minute call cap.
-    (this as any).toolExecutionActiveV18 = true;
-    (this as any).diagnostics?.checkpoint?.("USER_PRESENCE_SUSPENDED_WHILE_LUCIA_PROCESSING", {
-      max_processing_ms: LUCIA_PROCESSING_MAX_MS,
-      absolute_deadline_preserved: true,
-    });
-    this.luciaProcessingTimerV19 = setTimeout(() => {
-      this.luciaProcessingTimerV19 = null;
-      if ((this as any).state === "closing" || (this as any).hangupStarted) return;
-      (this as any).toolExecutionActiveV18 = false;
-      (this as any).diagnostics?.checkpoint?.("LUCIA_PROCESSING_WATCHDOG_RELEASED", {
-        max_processing_ms: LUCIA_PROCESSING_MAX_MS,
-      });
-      (this as any).scheduleNextInactivityCheckV18?.();
-    }, LUCIA_PROCESSING_MAX_MS);
-  }
-
-  private mergeReservationDraftV19(args: Record<string, unknown>): ReservationDraft {
-    const allowed = [
-      "party_size", "starts_at", "customer_name", "customer_phone", "use_caller_phone",
-      "duration_minutes", "notes", "confirm", "separate_tables_acceptable", "tables_must_be_close",
-    ] as const;
-    for (const key of allowed) {
-      if (args[key] !== undefined) (this.reservationDraftV19 as Record<string, unknown>)[key] = args[key];
-    }
-    if (this.reservationDraftV19.use_caller_phone === true && !this.reservationDraftV19.customer_phone) {
-      const caller = (this as any).callerPhone;
-      if (typeof caller === "string" && caller.trim()) this.reservationDraftV19.customer_phone = caller.trim();
-    }
-    return { ...this.reservationDraftV19 };
-  }
-
-  private reservationAvailabilityFingerprint(draft: ReservationDraft): string | null {
-    if (!Number.isInteger(draft.party_size) || !draft.starts_at) return null;
-    return JSON.stringify({
-      party_size: draft.party_size,
-      starts_at: draft.starts_at,
-      duration_minutes: draft.duration_minutes ?? 90,
-      separate_tables_acceptable: draft.separate_tables_acceptable ?? null,
-      tables_must_be_close: draft.tables_must_be_close ?? null,
-    });
-  }
-
-  private sendFunctionOutputV19(callId: string | undefined, output: Record<string, unknown>): void {
-    (this as any).send({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify(output),
-      },
-    });
-    (this as any).send({ type: "response.create" });
+  protected sendReservationOutput(callId: string | undefined, output: Record<string, unknown>): void {
+    const port = realtimeCommandPortFor(this as any);
+    port.submitToolResult({ callId, toolName: CREATE_RESERVATION, output });
+    port.createDefaultResponse();
   }
 
   private async executeDirectCreateV19(callId: string | undefined, args: Record<string, unknown>): Promise<void> {
-    const draft = this.mergeReservationDraftV19(args);
-    const tenantId = (this as any).tenantId as string | null | undefined;
+    const session = this as any;
+    const runtime = reservationSessionRuntimeFor(this);
+    const callerPhone = trustedCallerPhone(session);
+    const canonicalArguments = runtime.canonicalizeOutstandingConfirmation(args);
+    const contactIdentity = reservationContactIdentityRuntimeFor(this).canonicalizeCreate(this, {
+      callId,
+      trustedCallerPhone: callerPhone,
+      arguments: canonicalArguments,
+    });
+    if (!contactIdentity.allowed) return;
+    const datetime = reservationDatetimeRuntimeFor(this).canonicalizeCreate(this, {
+      callId,
+      arguments: contactIdentity.arguments,
+    });
+    if (!datetime.allowed) return;
+    const draft = runtime.mergeDraft(datetime.arguments, callerPhone);
+    const tenantId = session.tenantId as string | null | undefined;
     if (!tenantId) {
-      this.sendFunctionOutputV19(callId, { ok: false, status: "ERROR", error: "TENANT_REQUIRED" });
+      this.sendReservationOutput(callId, { ok: false, status: "ERROR", error: "TENANT_REQUIRED" });
       return;
     }
 
-    // Keep v16 multi-table preference state synchronized, but do not route execution
-    // through conversation_intent / CoreIntent / legacy reservation collection.
-    (this as any).captureStructuredTurnV16?.(JSON.stringify({
-      intent: "CREATE_RESERVATION",
-      reservation: draft,
-    }));
+    reservationMultitableRuntimeFor(this).capturePreferences({
+      separateTablesAcceptable: draft.separate_tables_acceptable,
+      tablesMustBeClose: draft.tables_must_be_close,
+    });
 
     const missingAvailability: string[] = [];
     if (!Number.isInteger(draft.party_size)) missingAvailability.push("party_size");
     if (!draft.starts_at) missingAvailability.push("starts_at");
     if (missingAvailability.length) {
-      this.sendFunctionOutputV19(callId, {
+      this.sendReservationOutput(callId, {
         ok: true,
         status: "MISSING_INFORMATION",
         missing: missingAvailability,
@@ -153,16 +87,18 @@ export class CallSession extends BaseConstructor {
       return;
     }
 
-    const gateway = (this as any).createToolGateway?.() as ToolGateway | undefined;
+    const gateway = session.createToolGateway?.() as ToolGateway | undefined;
     if (!gateway) {
-      this.sendFunctionOutputV19(callId, { ok: false, status: "ERROR", error: "TOOL_GATEWAY_UNAVAILABLE" });
+      this.sendReservationOutput(callId, { ok: false, status: "ERROR", error: "TOOL_GATEWAY_UNAVAILABLE" });
       return;
     }
 
-    const fingerprint = this.reservationAvailabilityFingerprint(draft)!;
-    if (this.reservationAvailabilityFingerprintV19 !== fingerprint || !this.reservationAvailabilityResultV19) {
+    const fingerprint = runtime.fingerprintFor(draft)!;
+    let availabilityResult = runtime.cachedAvailability(fingerprint);
+    if (!availabilityResult) {
+      const previouslyOffered = runtime.wasSlotOffered(draft);
       const started = Date.now();
-      (this as any).diagnostics?.checkpoint?.("DIRECT_RESERVATION_AVAILABILITY_STARTED", {
+      session.diagnostics?.checkpoint?.("DIRECT_RESERVATION_AVAILABILITY_STARTED", {
         party_size: draft.party_size,
         starts_at: draft.starts_at,
       });
@@ -173,23 +109,38 @@ export class CallSession extends BaseConstructor {
           starts_at: draft.starts_at,
           duration_minutes: draft.duration_minutes ?? 90,
         },
-        context: { tenantId, callId: (this as any).callId ?? undefined },
+        context: { tenantId, callId: session.callId ?? undefined },
       });
-      (this as any).diagnostics?.checkpoint?.("DIRECT_RESERVATION_AVAILABILITY_COMPLETED", {
+      session.diagnostics?.checkpoint?.("DIRECT_RESERVATION_AVAILABILITY_COMPLETED", {
         elapsed_ms: Date.now() - started,
         ok: availability.ok,
       });
       if (!availability.ok) {
-        this.sendFunctionOutputV19(callId, publicToolOutput(availability));
+        this.sendReservationOutput(callId, publicToolOutput(availability));
         return;
       }
-      this.reservationAvailabilityFingerprintV19 = fingerprint;
-      this.reservationAvailabilityResultV19 = availability.result as Record<string, unknown>;
+      availabilityResult = availability.result as Record<string, unknown>;
+      runtime.recordAvailability(fingerprint, availabilityResult);
+      if (availabilityResult.requested_available !== true && previouslyOffered) {
+        runtime.invalidateAvailabilityForConflict();
+        session.diagnostics?.checkpoint?.("DIRECT_RESERVATION_AVAILABILITY_CHANGED_BEFORE_COMMIT", {
+          party_size: draft.party_size,
+          starts_at: draft.starts_at,
+          reservation_created: false,
+          confirmation_rearmed: true,
+        });
+        this.sendReservationOutput(callId, reservationAvailabilityChangedOutput({
+          party_size: draft.party_size,
+          starts_at: draft.starts_at,
+          customer_name: draft.customer_name,
+          duration_minutes: draft.duration_minutes ?? 90,
+        }));
+        return;
+      }
     }
 
-    const availabilityResult = this.reservationAvailabilityResultV19 ?? {};
     if (availabilityResult.requested_available !== true) {
-      this.sendFunctionOutputV19(callId, {
+      this.sendReservationOutput(callId, {
         ok: true,
         status: "UNAVAILABLE",
         ...availabilityResult,
@@ -201,7 +152,8 @@ export class CallSession extends BaseConstructor {
     if (!draft.customer_name) missingContact.push("customer_name");
     if (!draft.customer_phone) missingContact.push("customer_phone");
     if (missingContact.length) {
-      this.sendFunctionOutputV19(callId, {
+      runtime.markNeedsContact();
+      this.sendReservationOutput(callId, {
         ok: true,
         status: "AVAILABLE_NEEDS_CONTACT",
         missing: missingContact,
@@ -212,7 +164,8 @@ export class CallSession extends BaseConstructor {
     }
 
     if (draft.confirm !== true) {
-      this.sendFunctionOutputV19(callId, {
+      runtime.markReadyToConfirm();
+      this.sendReservationOutput(callId, {
         ok: true,
         status: "READY_TO_CONFIRM",
         availability: availabilityResult,
@@ -228,7 +181,7 @@ export class CallSession extends BaseConstructor {
     }
 
     const started = Date.now();
-    (this as any).diagnostics?.checkpoint?.("DIRECT_RESERVATION_BOOKING_STARTED", {
+    session.diagnostics?.checkpoint?.("DIRECT_RESERVATION_BOOKING_STARTED", {
       party_size: draft.party_size,
       starts_at: draft.starts_at,
     });
@@ -243,9 +196,9 @@ export class CallSession extends BaseConstructor {
         notes: draft.notes,
         confirm: true,
       },
-      context: { tenantId, callId: (this as any).callId ?? undefined },
+      context: { tenantId, callId: session.callId ?? undefined },
     });
-    (this as any).diagnostics?.checkpoint?.("DIRECT_RESERVATION_BOOKING_COMPLETED", {
+    session.diagnostics?.checkpoint?.("DIRECT_RESERVATION_BOOKING_COMPLETED", {
       elapsed_ms: Date.now() - started,
       ok: booking.ok,
       stage: booking.ok && booking.result && typeof booking.result === "object"
@@ -253,33 +206,40 @@ export class CallSession extends BaseConstructor {
         : null,
     });
 
-    if (booking.ok && booking.result && typeof booking.result === "object" && (booking.result as Record<string, unknown>).stage === "BOOKED") {
-      this.reservationDraftV19 = {};
-      this.reservationAvailabilityFingerprintV19 = null;
-      this.reservationAvailabilityResultV19 = null;
+    if (isReservationAvailabilityConflict(booking)) {
+      runtime.invalidateAvailabilityForConflict();
+      session.diagnostics?.checkpoint?.("DIRECT_RESERVATION_AVAILABILITY_CHANGED_AT_COMMIT", {
+        party_size: draft.party_size,
+        starts_at: draft.starts_at,
+        reservation_created: false,
+        confirmation_rearmed: true,
+      });
+      this.sendReservationOutput(callId, reservationAvailabilityChangedOutput({
+        party_size: draft.party_size,
+        starts_at: draft.starts_at,
+        customer_name: draft.customer_name,
+        duration_minutes: draft.duration_minutes ?? 90,
+      }));
+      return;
     }
-    this.sendFunctionOutputV19(callId, publicToolOutput(booking));
+
+    if (booking.ok && booking.result && typeof booking.result === "object" && (booking.result as Record<string, unknown>).stage === "BOOKED") {
+      runtime.markBooked();
+    }
+    this.sendReservationOutput(callId, publicToolOutput(booking));
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) {
-      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
-    }
+    const event = adaptRealtimeProviderEvents(data).find(
+      (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && candidate.name === CREATE_RESERVATION,
+    );
 
-    if (event?.type === "conversation.item.input_audio_transcription.completed") {
-      this.suspendPresenceWhileLuciaProcessesV19();
-    }
-
-    if (event?.type === "response.function_call_arguments.done" && event.name === CREATE_RESERVATION) {
-      this.clearLuciaProcessingTimerV19();
-      (this as any).toolExecutionActiveV18 = true;
+    if (event?.type === "SEMANTIC_TOOL_SELECTED" && event.name === CREATE_RESERVATION) {
       let args: Record<string, unknown>;
       try {
         args = parseObject(event.arguments);
       } catch (error) {
-        this.sendFunctionOutputV19(event.call_id, {
+        this.sendReservationOutput(event.callId, {
           ok: false,
           status: "ERROR",
           error: "INVALID_ARGUMENTS",
@@ -291,14 +251,17 @@ export class CallSession extends BaseConstructor {
       (this as any).diagnostics?.checkpoint?.("LUCIA_AGENT_TOOL_SELECTED", {
         tool: CREATE_RESERVATION,
         compatibility_executor: "direct_reservation_controller_v19",
+        reservation_state_owner: "reservation_session_runtime",
+        reservation_contact_identity_owner: "reservation_contact_identity_runtime",
+        reservation_datetime_owner: "reservation_datetime_runtime",
       });
       try {
-        await this.executeDirectCreateV19(event.call_id, args);
+        await this.executeDirectCreateV19(event.callId, args);
       } catch (error) {
         (this as any).diagnostics?.fail?.("DIRECT_RESERVATION_FAILED", "DIRECT_RESERVATION_EXECUTION_FAILED", {
           error: error instanceof Error ? error.message : String(error),
         });
-        this.sendFunctionOutputV19(event.call_id, {
+        this.sendReservationOutput(event.callId, {
           ok: false,
           status: "ERROR",
           error: "EXECUTION_FAILED",
@@ -306,10 +269,6 @@ export class CallSession extends BaseConstructor {
         });
       }
       return;
-    }
-
-    if (event?.type === "response.output_audio_transcript.done" || event?.type === "response.function_call_arguments.done") {
-      this.clearLuciaProcessingTimerV19();
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);

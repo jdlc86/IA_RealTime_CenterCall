@@ -6,6 +6,16 @@ export type MadridTemporalLabel = {
   spoken_date: string;
 };
 
+export type AuthoritativeMadridNowContext = {
+  timezone: "Europe/Madrid";
+  now_iso: string;
+  calendar_date: string;
+  clock_time: string;
+  weekday: string;
+};
+
+const AUTHORITATIVE_NOW_MARKER = "[AUTHORITATIVE_NOW_V48]";
+
 function madridParts(value: Date): { y: number; m: number; d: number } {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Europe/Madrid",
@@ -19,6 +29,66 @@ function madridParts(value: Date): { y: number; m: number; d: number } {
 
 function ordinalDay(parts: { y: number; m: number; d: number }): number {
   return Math.floor(Date.UTC(parts.y, parts.m - 1, parts.d) / 86_400_000);
+}
+
+function madridOffsetIso(value: Date): string {
+  const dateParts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Madrid",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(value);
+  const read = (type: Intl.DateTimeFormatPartTypes): string => dateParts.find((p) => p.type === type)?.value ?? "00";
+  const localEpoch = Date.UTC(Number(read("year")), Number(read("month")) - 1, Number(read("day")), Number(read("hour")), Number(read("minute")), Number(read("second")));
+  const offsetMinutes = Math.round((localEpoch - value.getTime()) / 60_000);
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absolute = Math.abs(offsetMinutes);
+  const hh = String(Math.floor(absolute / 60)).padStart(2, "0");
+  const mm = String(absolute % 60).padStart(2, "0");
+  return `${read("year")}-${read("month")}-${read("day")}T${read("hour")}:${read("minute")}:${read("second")}${sign}${hh}:${mm}`;
+}
+
+export function authoritativeMadridNowContext(now: Date = new Date()): AuthoritativeMadridNowContext {
+  if (!Number.isFinite(now.getTime())) throw new Error("Invalid current time");
+  return {
+    timezone: "Europe/Madrid",
+    now_iso: madridOffsetIso(now),
+    calendar_date: new Intl.DateTimeFormat("es-ES", {
+      timeZone: "Europe/Madrid",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    }).format(now),
+    clock_time: new Intl.DateTimeFormat("es-ES", {
+      timeZone: "Europe/Madrid",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).format(now),
+    weekday: new Intl.DateTimeFormat("es-ES", {
+      timeZone: "Europe/Madrid",
+      weekday: "long",
+    }).format(now),
+  };
+}
+
+export function authoritativeTemporalPromptContext(now: Date = new Date()): string {
+  const context = authoritativeMadridNowContext(now);
+  return `CONTEXTO TEMPORAL AUTORITATIVO DEL BACKEND: ${JSON.stringify(context)}. Usa exclusivamente este contexto para interpretar hoy, mañana, pasado mañana, este lunes/domingo y cualquier fecha relativa. Nunca inventes el año ni la fecha actual. Si una petición temporal es ambigua, pide aclaración. Este contexto orienta tu interpretación; las validaciones temporales del backend siguen siendo la autoridad final.`;
+}
+
+export function stripAuthoritativeNowContext(instructions: string): string {
+  const markerIndex = instructions.indexOf(`\n\n${AUTHORITATIVE_NOW_MARKER}\n`);
+  return markerIndex >= 0 ? instructions.slice(0, markerIndex) : instructions;
+}
+
+export function withAuthoritativeNowContext(instructions: string, now: Date = new Date()): string {
+  const base = stripAuthoritativeNowContext(instructions);
+  return `${base}\n\n${AUTHORITATIVE_NOW_MARKER}\n${authoritativeTemporalPromptContext(now)}`;
 }
 
 export function groundMadridDateTime(iso: string, now: Date = new Date()): MadridTemporalLabel {

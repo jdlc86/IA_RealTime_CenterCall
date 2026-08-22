@@ -1,4 +1,5 @@
 import { CallSession as CallSessionV27 } from "./call-session-v27";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 
 const BaseConstructor = CallSessionV27 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV27.prototype as any;
@@ -114,8 +115,9 @@ export class CallSession extends BaseConstructor {
         ? args.context_summary.trim().slice(0, 500)
         : undefined;
 
-      (this as any).validateUserTurnV18?.("agent_tool");
-      (this as any).suspendForToolV18?.(HUMAN_ASSISTANCE);
+      const lifecycle = conversationLifecyclePortFor(this);
+      lifecycle.validateUserTurn("agent_tool");
+      lifecycle.suspendForTool(HUMAN_ASSISTANCE);
       (this as any).diagnostics?.checkpoint?.("DIRECT_HUMAN_ASSISTANCE_REQUESTED_V28", {
         reason,
         has_context_summary: Boolean(contextSummary),

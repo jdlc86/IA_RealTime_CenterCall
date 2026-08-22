@@ -1,6 +1,7 @@
 import { CallSession as CallSessionV11 } from "./call-session-v11";
 import { reservationSpeechTruthState, applyReservationSpeechTruth } from "./reservation-speech-state";
 import { withAuthoritativeTemporalGrounding } from "./temporal-grounding";
+import { reservationRoutingRuntimeFor } from "./reservation-routing-runtime.js";
 
 const BaseConstructor = CallSessionV11 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV11.prototype as any;
@@ -13,9 +14,10 @@ const BasePrototype = CallSessionV11.prototype as any;
  */
 export class CallSession extends BaseConstructor {
   private createSpokenResponse(instructions: string): void {
+    const routing = reservationRoutingRuntimeFor(this).snapshot();
     const reservationState = reservationSpeechTruthState({
       reservationBookedThisCall: (this as any).reservationBookedThisCall === true,
-      reservationIntentActive: (this as any).createReservationIntentActiveV9 === true,
+      reservationIntentActive: routing.createIntentActive,
       reservationDraft: (this as any).reservationDraft,
     });
     const truthBound = applyReservationSpeechTruth(instructions, reservationState);
@@ -24,7 +26,7 @@ export class CallSession extends BaseConstructor {
     (this as any).diagnostics?.checkpoint?.("RESERVATION_SPEECH_STATE_APPLIED", {
       state: reservationState,
       booked_evidence: (this as any).reservationBookedThisCall === true,
-      reservation_intent_active: (this as any).createReservationIntentActiveV9 === true,
+      reservation_intent_active: routing.createIntentActive,
     });
     (this as any).diagnostics?.checkpoint?.("TEMPORAL_GROUNDING_APPLIED", {
       applied: grounded !== truthBound,

@@ -1,4 +1,5 @@
 import { CallSession as CallSessionV5 } from "./call-session-v5";
+import { claimClassifierBootstrap, ownsClassifierBootstrap } from "./classifier-bootstrap-authority.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV5 as unknown as new (...args: any[]) => any;
@@ -50,13 +51,11 @@ export class CallSession extends BaseConstructor {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const isStart = request.method === "POST" && url.pathname === "/start";
-
-    // Suppress the v5 session.update, which omitted the required session.type field.
-    if (isStart) (this as any).reservationSessionUpdateSent = true;
+    if (isStart) claimClassifierBootstrap(this, "RESERVATION_V6");
 
     const response = await super.fetch(request);
 
-    if (isStart && response.ok && !this.reservationSessionUpdateV6Sent) {
+    if (isStart && response.ok && ownsClassifierBootstrap(this, "RESERVATION_V6") && !this.reservationSessionUpdateV6Sent) {
       this.reservationSessionUpdateV6Sent = true;
       try {
         (this as any).send({

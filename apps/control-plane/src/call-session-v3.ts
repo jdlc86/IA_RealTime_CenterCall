@@ -5,10 +5,11 @@ import {
   validateMarketingConsentFlowArgs,
   type MarketingConsentFlowArgs,
 } from "./marketing-consent-flow";
-import { SupabaseMarketingConsentStore } from "./marketing-consent-store";
+import { marketingConsentPortFor } from "./marketing-consent-port.js";
 import { withResolvedReservationContact, type ReservationFlowArgs } from "./reservation-flow";
 import type { DataRequirement } from "./semantic-router";
 import { ToolGateway, type ToolDefinition, type ToolRequest, type ToolResult } from "./tool-gateway";
+import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 
 const MANAGE_RESERVATION = "manage_reservation";
 const MANAGE_MARKETING_CONSENT = "manage_marketing_consent";
@@ -171,29 +172,33 @@ export class CallSession extends BaseConstructor {
 
     this.clearForcedToolCallWatchdog();
     this.forcedToolCallWatchdog = setTimeout(() => {
-      if (this.awaitingForcedToolName !== tool.name) return;
-      this.awaitingForcedToolName = null;
-      diagnostics?.fail?.("FORCED_TOOL_CALL_STALLED", "FORCED_TOOL_FUNCTION_EVENT_MISSING", {
-        data_requirement: requirement,
-        tool: tool.name,
-        watchdog_ms: FORCED_TOOL_CALL_WATCHDOG_MS,
-      });
-      (this as any).sendBestEffortCancel?.();
-      setTimeout(() => {
-        try {
-          (this as any).createSpokenResponse(
-            requirement === "RESERVATION"
-              ? "He tenido un problema al consultar la disponibilidad. Discúlpate brevemente e indica que no se ha creado ninguna reserva. Pide al usuario que repita la fecha, hora y número de personas para intentarlo de nuevo."
-              : "He tenido un problema al gestionar las preferencias de promociones. Indica brevemente que no se ha realizado ningún cambio y ofrece intentarlo de nuevo.",
-          );
-          diagnostics?.recovered?.("FORCED_TOOL_SILENCE_RECOVERY", "cancel_stalled_tool_response_and_speak_fallback", {
-            data_requirement: requirement,
-            tool: tool.name,
+      sessionTaskRuntimeFor(this).enqueue("forced_tool_call_watchdog", () => {
+        if (this.awaitingForcedToolName !== tool.name) return;
+        this.awaitingForcedToolName = null;
+        diagnostics?.fail?.("FORCED_TOOL_CALL_STALLED", "FORCED_TOOL_FUNCTION_EVENT_MISSING", {
+          data_requirement: requirement,
+          tool: tool.name,
+          watchdog_ms: FORCED_TOOL_CALL_WATCHDOG_MS,
+        });
+        (this as any).sendBestEffortCancel?.();
+        setTimeout(() => {
+          sessionTaskRuntimeFor(this).enqueue("forced_tool_silence_recovery", () => {
+            try {
+              (this as any).createSpokenResponse(
+                requirement === "RESERVATION"
+                  ? "He tenido un problema al consultar la disponibilidad. Discúlpate brevemente e indica que no se ha creado ninguna reserva. Pide al usuario que repita la fecha, hora y número de personas para intentarlo de nuevo."
+                  : "He tenido un problema al gestionar las preferencias de promociones. Indica brevemente que no se ha realizado ningún cambio y ofrece intentarlo de nuevo.",
+              );
+              diagnostics?.recovered?.("FORCED_TOOL_SILENCE_RECOVERY", "cancel_stalled_tool_response_and_speak_fallback", {
+                data_requirement: requirement,
+                tool: tool.name,
+              });
+            } catch {
+              // Best-effort recovery: never turn the watchdog itself into a call failure.
+            }
           });
-        } catch {
-          // Best-effort recovery: never turn the watchdog itself into a call failure.
-        }
-      }, 100);
+        }, 100);
+      });
     }, FORCED_TOOL_CALL_WATCHDOG_MS);
   }
 
@@ -219,10 +224,7 @@ export class CallSession extends BaseConstructor {
     }
 
     const callId = requireRuntimeString((this as any).callId, "call_id");
-    const store = new SupabaseMarketingConsentStore({
-      SUPABASE_URL: requireRuntimeString((this as any).env?.SUPABASE_URL, "SUPABASE_URL"),
-      SUPABASE_SECRET_KEY: requireRuntimeString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
-    });
+    const store = marketingConsentPortFor(this);
     const event = await store.record(tenantId, {
       action: decision.action,
       phone: decision.phone,
@@ -312,13 +314,15 @@ export class CallSession extends BaseConstructor {
     });
 
     this.classifierDoneWatchdog = setTimeout(() => {
-      if (this.pendingForcedRequirement !== requirement) return;
-      diagnostics?.fail?.("CLASSIFIER_RESPONSE_DONE_STALLED", "CLASSIFIER_RESPONSE_DONE_EVENT_MISSING", {
-        data_requirement: requirement,
-        tool: tool.name,
-        watchdog_ms: CLASSIFIER_DONE_WATCHDOG_MS,
+      sessionTaskRuntimeFor(this).enqueue("classifier_done_watchdog", () => {
+        if (this.pendingForcedRequirement !== requirement) return;
+        diagnostics?.fail?.("CLASSIFIER_RESPONSE_DONE_STALLED", "CLASSIFIER_RESPONSE_DONE_EVENT_MISSING", {
+          data_requirement: requirement,
+          tool: tool.name,
+          watchdog_ms: CLASSIFIER_DONE_WATCHDOG_MS,
+        });
+        this.dispatchForcedTool(requirement, "classifier_done_watchdog");
       });
-      this.dispatchForcedTool(requirement, "classifier_done_watchdog");
     }, CLASSIFIER_DONE_WATCHDOG_MS);
   }
 

@@ -1,3 +1,6 @@
+import type { CallTerminationRequest, CallTerminationResult } from "./call-termination-port.js";
+import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
+
 export type HangupDiagnostics = {
   checkpoint?: (event: string, details?: Record<string, unknown>) => void;
   fail?: (event: string, code: string, details?: Record<string, unknown>) => void;
@@ -6,9 +9,8 @@ export type HangupDiagnostics = {
 export type HangupControllerHost = {
   getCallId(): string | null;
   getSocketConnected(): boolean;
-  getApiKey(): string;
-  isHangupStarted(): boolean;
-  setHangupStarted(value: boolean): void;
+  getSourceCallControlId?(): string | null;
+  terminateCall(request: CallTerminationRequest): Promise<CallTerminationResult>;
   clearFinalFarewellWatchdog(): void;
   resetExternalFlow(): void;
   diagnostics?: HangupDiagnostics;
@@ -21,24 +23,30 @@ export type HangupControllerOptions = {
   backgroundRetryMs?: number;
 };
 
-const DEFAULT_CONFIRMATION_TIMEOUT_MS = 2_500;
+const DEFAULT_CONFIRMATION_TIMEOUT_MS = 8_000;
 const DEFAULT_RETRY_DELAY_MS = 400;
 const DEFAULT_MAX_IMMEDIATE_ATTEMPTS = 4;
 const DEFAULT_BACKGROUND_RETRY_MS = 5_000;
-
-function requiredString(value: unknown, name: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`Missing runtime configuration: ${name}`);
-  return value.trim();
-}
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function terminationFailure(result: CallTerminationResult): string {
+  if (result.attempts.length === 0) return "No call termination transport available";
+  return result.attempts
+    .map((attempt) => `${attempt.transport}: ${attempt.error ?? `HTTP ${attempt.httpStatus ?? "unknown"}`}`)
+    .join("; ");
+}
+
 /**
- * Transport-level hangup controller.
- * HTTP 2xx only acknowledges the hangup request; completion is emitted only
- * after the realtime sideband is actually disconnected.
+ * Lifecycle-facing hangup coordinator.
+ *
+ * Physical provider transport belongs to CallTerminationPort. This controller
+ * owns retry cadence, sideband-close confirmation, background recovery and the
+ * in-flight lock that prevents overlapping termination attempts. When a source
+ * call leg exists, SOURCE_ONLY preserves the historical behavior: each retry
+ * stays on that authoritative source leg instead of silently changing transport.
  */
 export class HangupController {
   private readonly confirmationTimeoutMs: number;
@@ -46,6 +54,7 @@ export class HangupController {
   private readonly maxImmediateAttempts: number;
   private readonly backgroundRetryMs: number;
   private backgroundRetry: ReturnType<typeof setTimeout> | null = null;
+  private hangupStarted = false;
 
   constructor(private readonly host: HangupControllerHost, options: HangupControllerOptions = {}) {
     this.confirmationTimeoutMs = options.confirmationTimeoutMs ?? DEFAULT_CONFIRMATION_TIMEOUT_MS;
@@ -74,53 +83,76 @@ export class HangupController {
     return !this.host.getSocketConnected();
   }
 
-  private async sendHangupRequest(callId: string, attempt: number, trigger: string): Promise<void> {
-    const started = Date.now();
-    const apiKey = requiredString(this.host.getApiKey(), "OPENAI_API_KEY");
-    const response = await fetch(`https://api.openai.com/v1/realtime/calls/${encodeURIComponent(callId)}/hangup`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    const body = await response.text();
-    if (!response.ok) {
-      throw new Error(`OpenAI hangup failed with HTTP ${response.status}: ${body.slice(0, 250)}`);
-    }
+  private sourceCallControlId(): string | null {
+    const value = this.host.getSourceCallControlId?.();
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+
+  private transportAuthority(): "SOURCE_CALL_LEG" | "REALTIME_SESSION" {
+    return this.sourceCallControlId() ? "SOURCE_CALL_LEG" : "REALTIME_SESSION";
+  }
+
+  private async sendHangupRequest(callId: string, attempt: number, trigger: string): Promise<boolean> {
+    const sourceCallControlId = this.sourceCallControlId();
+    const request: CallTerminationRequest = sourceCallControlId
+      ? {
+          sourceCallControlId,
+          realtimeCallId: callId,
+          fallbackMode: "SOURCE_ONLY",
+        }
+      : {
+          realtimeCallId: callId,
+          fallbackMode: "REALTIME_FALLBACK",
+        };
+    const result = await this.host.terminateCall(request);
+    const accepted = result.attempts.find((candidate) => candidate.ok);
+    if (!result.terminated || !accepted) throw new Error(terminationFailure(result));
+
     this.host.diagnostics?.checkpoint?.("HANGUP_REQUEST_ACCEPTED", {
       attempt,
       trigger,
-      http_status: response.status,
-      elapsed_ms: Date.now() - started,
-      completion_claimed: false,
+      transport: accepted.transport,
+      http_status: accepted.httpStatus ?? null,
+      completion_claimed: result.terminationConfirmed === true,
+      terminal_evidence: accepted.terminalEvidence ?? null,
+      termination_port: true,
     });
+    return result.terminationConfirmed === true;
   }
 
   private scheduleBackgroundRetry(): void {
     this.clearBackgroundRetry();
-    this.backgroundRetry = setTimeout(() => {
-      this.backgroundRetry = null;
-      if (!this.host.getSocketConnected()) {
-        this.host.diagnostics?.checkpoint?.("HANGUP_COMPLETED", {
-          confirmation: "sideband_closed_before_background_retry",
-        });
-        return;
-      }
-      this.host.setHangupStarted(false);
-      void this.perform("hangup_confirmation_background_retry");
+    const retryTimer = setTimeout(() => {
+      sessionTaskRuntimeFor(this.host).enqueue("hangup_confirmation_background_retry", async () => {
+        if (this.backgroundRetry !== retryTimer) return;
+        this.backgroundRetry = null;
+        if (!this.host.getSocketConnected()) {
+          this.host.diagnostics?.checkpoint?.("HANGUP_COMPLETED", {
+            confirmation: "sideband_closed_before_background_retry",
+          });
+          return;
+        }
+        this.hangupStarted = false;
+        await this.perform("hangup_confirmation_background_retry");
+      });
     }, this.backgroundRetryMs);
+    this.backgroundRetry = retryTimer;
   }
 
   async perform(trigger: string): Promise<void> {
     const callId = this.host.getCallId();
-    if (this.host.isHangupStarted() || !callId) return;
+    if (this.hangupStarted || !callId) return;
 
     this.clearBackgroundRetry();
-    this.host.setHangupStarted(true);
+    this.hangupStarted = true;
     this.host.clearFinalFarewellWatchdog();
     this.host.resetExternalFlow();
     this.host.diagnostics?.checkpoint?.("HANGUP_STARTED", {
       trigger,
+      transport_authority: this.transportAuthority(),
       confirmation_required: true,
       confirmation_source: "sideband_close",
+      termination_port: true,
     });
 
     let lastError: unknown = null;
@@ -134,11 +166,19 @@ export class HangupController {
       }
 
       try {
-        await this.sendHangupRequest(callId, attempt, trigger);
+        const providerConfirmed = await this.sendHangupRequest(callId, attempt, trigger);
+        if (providerConfirmed) {
+          this.host.diagnostics?.checkpoint?.("HANGUP_COMPLETED", {
+            attempt,
+            confirmation: "provider_terminal_state",
+          });
+          return;
+        }
       } catch (error) {
         lastError = error;
-        this.host.diagnostics?.fail?.("HANGUP_ATTEMPT_FAILED", "OPENAI_HANGUP_REQUEST_FAILED", {
+        this.host.diagnostics?.fail?.("HANGUP_ATTEMPT_FAILED", "HANGUP_REQUEST_FAILED", {
           attempt,
+          transport_authority: this.transportAuthority(),
           error: error instanceof Error ? error.message : String(error),
         });
         if (attempt < this.maxImmediateAttempts) await sleep(this.retryDelayMs);
@@ -155,10 +195,12 @@ export class HangupController {
         return;
       }
 
-      this.host.diagnostics?.fail?.("HANGUP_CONFIRMATION_TIMEOUT", "HANGUP_NOT_CONFIRMED", {
+      this.host.diagnostics?.checkpoint?.("HANGUP_CONFIRMATION_TIMEOUT", {
         attempt,
         confirmation_timeout_ms: this.confirmationTimeoutMs,
         socket_still_connected: this.host.getSocketConnected(),
+        retry_scheduled: attempt < this.maxImmediateAttempts,
+        terminal_failure: false,
       });
       if (attempt < this.maxImmediateAttempts) await sleep(this.retryDelayMs);
     }
@@ -169,7 +211,7 @@ export class HangupController {
       last_error: lastError instanceof Error ? lastError.message : lastError ? String(lastError) : null,
       background_retry_ms: this.backgroundRetryMs,
     });
-    this.host.setHangupStarted(true);
+    this.hangupStarted = true;
     this.scheduleBackgroundRetry();
   }
 }

@@ -1,21 +1,23 @@
 import { CallSession as CallSessionV9 } from "./call-session-v9";
-import { cancellationFingerprint, chooseCancellationCandidates, emptyCancellationState, publicCancellationOptions, publicSelectedReservations, type CancellationState } from "./reservation-cancellation";
+import {
+  restaurantReservationPortFor,
+  type BookedReservationSummary,
+} from "./restaurant-reservation-port.js";
+import { cancellationFingerprint, chooseCancellationCandidates, publicCancellationOptions, publicSelectedReservations } from "./reservation-cancellation";
 import { parseReservationTurn } from "./reservation-orchestrator";
 import { parseSemanticDecision } from "./semantic-router";
-import { SupabaseAdapter, type BookedReservationSummary } from "./supabase-adapter";
+import {
+  executeLegacyIntent,
+  LEGACY_INTENT_EXECUTOR,
+  type LegacyIntentSelection,
+} from "./legacy-intent-execution.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { reservationRoutingRuntimeFor } from "./reservation-routing-runtime.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV9 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV9.prototype as any;
-
-type RealtimeEvent = { type?: string; name?: string; call_id?: string; arguments?: string; };
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
 
 function requireRuntimeString(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`Missing runtime configuration: ${name}`);
@@ -36,38 +38,34 @@ function rawReservationOperation(argumentsJson: string | undefined): "CREATE" | 
 }
 
 export class CallSession extends BaseConstructor {
-  private cancellationStateV10: CancellationState | null = null;
-
-  private getCancellationAdapter(): SupabaseAdapter {
-    return new SupabaseAdapter({
-      SUPABASE_URL: requireRuntimeString((this as any).env?.SUPABASE_URL, "SUPABASE_URL"),
-      SUPABASE_SECRET_KEY: requireRuntimeString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
-    });
-  }
-
   private sendCancellationClassifierOutput(callId: string | undefined, stage: string, details: Record<string, unknown> = {}): void {
     if (!callId) return;
-    (this as any).send({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify({ ok: true, action: "continue", data_requirement: "RESERVATION", reservation_operation: "CANCEL", stage, ...details }),
+    realtimeCommandPortFor(this as any).submitToolResult({
+      callId,
+      toolName: CONVERSATION_INTENT,
+      output: {
+        ok: true,
+        action: "continue",
+        data_requirement: "RESERVATION",
+        reservation_operation: "CANCEL",
+        stage,
+        ...details,
       },
     });
   }
 
   private resetCancellation(): void {
-    this.cancellationStateV10 = null;
+    reservationRoutingRuntimeFor(this).clearCancellation();
   }
 
   private async loadCandidates(): Promise<BookedReservationSummary[]> {
     const tenantId = requireRuntimeString((this as any).tenantId, "tenant_id");
     const callerPhone = requireRuntimeString((this as any).callerPhone, "caller_phone");
-    return this.getCancellationAdapter().listBookedReservationsByPhone(tenantId, callerPhone);
+    return restaurantReservationPortFor(this as any).listBookedReservationsByPhone(tenantId, callerPhone);
   }
 
   private async handleCancellationTurn(argumentsJson: string | undefined, callId: string | undefined): Promise<void> {
+    const routing = reservationRoutingRuntimeFor(this);
     (this as any).state = "active";
     (this as any).ambiguousCount = 0;
     let turn;
@@ -90,9 +88,9 @@ export class CallSession extends BaseConstructor {
       return;
     }
 
-    if (!this.cancellationStateV10) {
+    if (!routing.snapshot().cancellationActive) {
       const candidates = await this.loadCandidates();
-      this.cancellationStateV10 = { ...emptyCancellationState(), candidates };
+      routing.startCancellation(candidates);
       (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCEL_LOOKUP_COMPLETED", { candidate_count: candidates.length, identity_source: "CALLER_ID" });
       if (candidates.length === 0) {
         this.sendCancellationClassifierOutput(callId, "NO_BOOKED_RESERVATIONS");
@@ -102,7 +100,8 @@ export class CallSession extends BaseConstructor {
       }
     }
 
-    const state = this.cancellationStateV10;
+    let state = routing.cancellation();
+    if (!state) throw new Error("Cancellation routing state was not initialized");
     if (state.selectedIds.length === 0) {
       const selected = chooseCancellationCandidates(state.candidates, turn);
       if (selected.length === 0) {
@@ -112,8 +111,10 @@ export class CallSession extends BaseConstructor {
         (this as any).createSpokenResponse(`Hay reservas futuras verificadas asociadas a esta llamada. Presenta de forma breve y numerada únicamente estas opciones: ${JSON.stringify(options)}. No leas identificadores internos ni teléfonos. El usuario puede elegir una, varias opciones o todas. Todavía no canceles nada.`);
         return;
       }
-      state.selectedIds = selected.map((reservation) => reservation.id);
-      state.confirmationFingerprints = Object.fromEntries(selected.map((reservation) => [reservation.id, cancellationFingerprint(reservation)]));
+      state = routing.selectCancellation(
+        selected.map((reservation) => reservation.id),
+        Object.fromEntries(selected.map((reservation) => [reservation.id, cancellationFingerprint(reservation)])),
+      );
       this.sendCancellationClassifierOutput(callId, "CONFIRM_CANCEL_RESERVATIONS", { selected_count: selected.length });
       (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCEL_CONFIRMATION_ARMED", { selected_count: selected.length, reservation_ids: state.selectedIds });
       (this as any).createSpokenResponse(`Resume brevemente estas reservas verificadas que se van a cancelar: ${JSON.stringify(publicSelectedReservations(selected))}. Pregunta de forma inequívoca si confirma cancelar exactamente ${selected.length === 1 ? "esta reserva" : "estas reservas"}. No canceles nada hasta recibir una confirmación explícita en un turno posterior.`);
@@ -136,7 +137,7 @@ export class CallSession extends BaseConstructor {
 
     (this as any).diagnostics?.checkpoint?.("RESERVATION_CANCEL_FINAL_RECHECK_STARTED", { selected_count: selected.length, reservation_ids: state.selectedIds });
     const latest = await this.loadCandidates();
-    const adapter = this.getCancellationAdapter();
+    const reservationPort = restaurantReservationPortFor(this as any);
     const results: Array<{ reservation_code: string; starts_at: string; party_size: number; status: "CANCELLED" | "NOT_CANCELLED"; reason?: string }> = [];
 
     for (const reservation of selected) {
@@ -148,7 +149,7 @@ export class CallSession extends BaseConstructor {
         continue;
       }
 
-      const cancelled = await adapter.cancelBookedReservation(tenantId, reservation.id, callerPhone);
+      const cancelled = await reservationPort.cancelBookedReservation(tenantId, reservation.id, callerPhone);
       if (!cancelled) {
         results.push({ reservation_code: reservation.reservation_code, starts_at: reservation.starts_at, party_size: reservation.party_size, status: "NOT_CANCELLED", reason: "write_precondition_failed" });
         (this as any).diagnostics?.fail?.("RESERVATION_CANCEL_WRITE_FAILED", "BOOKED_ROW_NOT_FOUND_AT_WRITE", { reservation_id: reservation.id });
@@ -168,30 +169,36 @@ export class CallSession extends BaseConstructor {
     (this as any).createSpokenResponse(`Usa únicamente este resultado autorizado de cancelación: ${JSON.stringify(results)}. Informa claramente cuáles quedaron canceladas y, si alguna no pudo cancelarse, cuál no cambió. Usa solo reservation_code como referencia pública; nunca pronuncies ni muestres identificadores internos. No afirmes atomicidad ni rollback. No preguntes por promociones como consecuencia de una cancelación.`);
   }
 
-  private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) {
-      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
+  async [LEGACY_INTENT_EXECUTOR](selection: LegacyIntentSelection): Promise<void> {
+    if (conversationLifecyclePortFor(this).isTerminal()) {
+      await executeLegacyIntent(BasePrototype, this, selection);
+      return;
     }
 
-    if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
-      if ((this as any).state === "closing" || (this as any).hangupStarted === true) {
-        await BasePrototype.handleRealtimeMessage.call(this, data);
+    const semantic = parseSemanticDecision(selection.argumentsJson);
+    if (semantic.intent === "CONTINUE" && semantic.dataRequirement === "RESERVATION") {
+      const explicitOperation = rawReservationOperation(selection.argumentsJson);
+      const routing = reservationRoutingRuntimeFor(this).snapshot();
+      if ((explicitOperation === "CREATE" || explicitOperation === "QUERY") && routing.cancellationActive) this.resetCancellation();
+      const cancellationOwned = explicitOperation === "CANCEL" || (routing.cancellationActive && explicitOperation !== "CREATE" && explicitOperation !== "QUERY");
+      if (cancellationOwned) {
+        (this as any).diagnostics?.checkpoint?.("RESERVATION_OPERATION_ROUTED", { operation: "CANCEL", source: explicitOperation === "CANCEL" ? "classifier" : "active_workflow" });
+        await this.handleCancellationTurn(selection.argumentsJson, selection.callId);
         return;
       }
+    }
 
-      const semantic = parseSemanticDecision(event.arguments);
-      if (semantic.intent === "CONTINUE" && semantic.dataRequirement === "RESERVATION") {
-        const explicitOperation = rawReservationOperation(event.arguments);
-        if ((explicitOperation === "CREATE" || explicitOperation === "QUERY") && this.cancellationStateV10) this.resetCancellation();
-        const cancellationOwned = explicitOperation === "CANCEL" || (this.cancellationStateV10 !== null && explicitOperation !== "CREATE" && explicitOperation !== "QUERY");
-        if (cancellationOwned) {
-          (this as any).diagnostics?.checkpoint?.("RESERVATION_OPERATION_ROUTED", { operation: "CANCEL", source: explicitOperation === "CANCEL" ? "classifier" : "active_workflow" });
-          await this.handleCancellationTurn(event.arguments, event.call_id);
-          return;
-        }
-      }
+    await executeLegacyIntent(BasePrototype, this, selection);
+  }
+
+  private async handleRealtimeMessage(data: unknown): Promise<void> {
+    const event = adaptRealtimeProviderEvents(data).find(
+      (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && candidate.name === CONVERSATION_INTENT,
+    );
+
+    if (event?.type === "SEMANTIC_TOOL_SELECTED") {
+      await this[LEGACY_INTENT_EXECUTOR]({ argumentsJson: event.arguments, callId: event.callId });
+      return;
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);

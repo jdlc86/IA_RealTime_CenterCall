@@ -1,6 +1,7 @@
 import { CallSession as CallSessionV7 } from "./call-session-v7";
 import { decideMarketingPrompt } from "./marketing-consent-prompt-policy";
-import { SupabaseMarketingConsentStore } from "./marketing-consent-store";
+import { marketingConsentPortFor } from "./marketing-consent-port.js";
+import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 
 const MANAGE_MARKETING_CONSENT = "manage_marketing_consent";
 const POST_BOOKING_MARKETING_PROMPT = "Después pregunta, de forma separada y opcional, si desea recibir ofertas y promociones en este mismo número.";
@@ -11,25 +12,13 @@ const SILENT_MARKETING_SUPPRESSION = "No menciones ofertas, promociones, marketi
 const BaseConstructor = CallSessionV7 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV7.prototype as any;
 
-function requireRuntimeString(value: unknown, name: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`Missing runtime configuration: ${name}`);
-  return value.trim();
-}
-
 export class CallSession extends BaseConstructor {
-  private getMarketingStoreV8(): SupabaseMarketingConsentStore {
-    return new SupabaseMarketingConsentStore({
-      SUPABASE_URL: requireRuntimeString((this as any).env?.SUPABASE_URL, "SUPABASE_URL"),
-      SUPABASE_SECRET_KEY: requireRuntimeString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
-    });
-  }
-
   private createSpokenResponse(instructions: string): void {
     if (!instructions.includes(POST_BOOKING_MARKETING_PROMPT)) {
       BasePrototype.createSpokenResponse.call(this, instructions);
       return;
     }
-    void this.createPostBookingResponseV8(instructions);
+    sessionTaskRuntimeFor(this).enqueue("post_booking_marketing_policy_v8", () => this.createPostBookingResponseV8(instructions));
   }
 
   private async createPostBookingResponseV8(instructions: string): Promise<void> {
@@ -52,7 +41,7 @@ export class CallSession extends BaseConstructor {
     }
 
     try {
-      const store = this.getMarketingStoreV8();
+      const store = marketingConsentPortFor(this);
       const latestStatus = await store.getLatestStatus(tenantId, callerPhone);
       const latestOfferAt = latestStatus === null ? await store.getLatestOfferAt(tenantId, callerPhone) : null;
       const decision = decideMarketingPrompt(latestStatus, latestOfferAt);

@@ -62,6 +62,22 @@ test("classifier can express QUERY without requiring creation fields", () => {
   assert.equal(turn.confirm, false);
 });
 
+test("QUERY never accepts a dictated phone as caller identity", () => {
+  const turn = parseReservationTurn(JSON.stringify({
+    intent: "CONTINUE",
+    data_requirement: "RESERVATION",
+    reason: "consulta la reserva de otro número dictado",
+    reservation: {
+      operation: "QUERY",
+      customer_phone: "+93642651015",
+      use_caller_phone: false,
+    },
+  }));
+  assert.equal(turn.operation, "QUERY");
+  assert.equal(turn.patch.customerPhone, undefined);
+  assert.equal(turn.patch.useCallerPhone, undefined);
+});
+
 test("classifier can express one CANCEL selection", () => {
   const turn = parseReservationTurn(JSON.stringify({
     intent: "CONTINUE",
@@ -72,6 +88,26 @@ test("classifier can express one CANCEL selection", () => {
   assert.equal(turn.operation, "CANCEL");
   assert.equal(turn.selectionIndex, 2);
   assert.equal(turn.confirm, false);
+});
+
+test("CANCEL never accepts a dictated phone as caller identity", () => {
+  const turn = parseReservationTurn(JSON.stringify({
+    intent: "CONTINUE",
+    data_requirement: "RESERVATION",
+    reason: "cancela la reserva asociada a un número dictado",
+    reservation: {
+      operation: "CANCEL",
+      customer_phone: "+93642651015",
+      use_caller_phone: false,
+      select_all: true,
+      confirm: true,
+    },
+  }));
+  assert.equal(turn.operation, "CANCEL");
+  assert.equal(turn.patch.customerPhone, undefined);
+  assert.equal(turn.patch.useCallerPhone, undefined);
+  assert.equal(turn.selectAll, true);
+  assert.equal(turn.confirm, true);
 });
 
 test("classifier can express several CANCEL selections", () => {

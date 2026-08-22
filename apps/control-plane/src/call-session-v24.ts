@@ -1,21 +1,14 @@
 import { CallSession as CallSessionV23 } from "./call-session-v23";
-import { SupabaseMarketingConsentStore } from "./marketing-consent-store";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { marketingConsentPortFor } from "./marketing-consent-port.js";
 
 const BaseConstructor = CallSessionV23 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV23.prototype as any;
 const MARKETING = "restaurant_marketing_preferences";
 const CONSENT_TEXT_VERSION = "voice-promotions-v1";
 
-type RealtimeEvent = { type?: string; name?: string; call_id?: string; arguments?: string };
-
 type MarketingAction = "QUERY" | "GRANT" | "DECLINE" | "REVOKE";
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
 
 function parseObject(raw: string | undefined): Record<string, unknown> {
   if (!raw?.trim()) return {};
@@ -42,28 +35,16 @@ function parseAction(value: unknown): MarketingAction {
  * Caller ID remains the only supported identity for preference reads/writes.
  */
 export class CallSession extends BaseConstructor {
-  private marketingStoreV24(): SupabaseMarketingConsentStore {
-    return new SupabaseMarketingConsentStore({
-      SUPABASE_URL: requireString((this as any).env?.SUPABASE_URL, "SUPABASE_URL"),
-      SUPABASE_SECRET_KEY: requireString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
-    });
-  }
-
   private sendOutputV24(callId: string | undefined, output: Record<string, unknown>): void {
-    (this as any).send?.({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify(output),
-      },
-    });
-    (this as any).send?.({ type: "response.create" });
+    const port = realtimeCommandPortFor(this as any);
+    port.submitToolResult({ callId, toolName: MARKETING, output });
+    port.createDefaultResponse();
   }
 
   private markDirectMarketingV24(): void {
-    (this as any).validateUserTurnV18?.("agent_tool");
-    (this as any).suspendForToolV18?.(MARKETING);
+    const lifecycle = conversationLifecyclePortFor(this);
+    lifecycle.validateUserTurn("agent_tool");
+    lifecycle.suspendForTool(MARKETING);
     (this as any).diagnostics?.checkpoint?.("LUCIA_AGENT_TOOL_SELECTED", {
       tool: MARKETING,
       compatibility_executor: "direct_marketing_controller_v24",
@@ -76,7 +57,7 @@ export class CallSession extends BaseConstructor {
     const runtimeCallId = requireString((this as any).callId, "call_id");
     const action = parseAction(args.action);
     const explicit = args.explicit === true;
-    const store = this.marketingStoreV24();
+    const store = marketingConsentPortFor(this);
 
     if (action === "QUERY") {
       if (explicit) throw new Error("QUERY must use explicit=false");
@@ -133,18 +114,16 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) {
-      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
-    }
+    const event = adaptRealtimeProviderEvents(data).find(
+      (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && candidate.name === MARKETING,
+    );
 
-    if (event?.type === "response.function_call_arguments.done" && event.name === MARKETING) {
+    if (event?.type === "SEMANTIC_TOOL_SELECTED" && event.name === MARKETING) {
       let args: Record<string, unknown>;
       try {
         args = parseObject(event.arguments);
       } catch (error) {
-        this.sendOutputV24(event.call_id, {
+        this.sendOutputV24(event.callId, {
           ok: false,
           status: "ERROR",
           error: "INVALID_ARGUMENTS",
@@ -155,12 +134,12 @@ export class CallSession extends BaseConstructor {
 
       this.markDirectMarketingV24();
       try {
-        await this.executeMarketingV24(event.call_id, args);
+        await this.executeMarketingV24(event.callId, args);
       } catch (error) {
         (this as any).diagnostics?.fail?.("DIRECT_MARKETING_TOOL_FAILED_V24", "DIRECT_MARKETING_EXECUTION_FAILED", {
           error: error instanceof Error ? error.message : String(error),
         });
-        this.sendOutputV24(event.call_id, {
+        this.sendOutputV24(event.callId, {
           ok: false,
           status: "ERROR",
           error: "EXECUTION_FAILED",

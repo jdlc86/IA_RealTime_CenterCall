@@ -4,7 +4,6 @@ import {
   returnFromAuxiliaryBusinessInfo,
   transitionCoreIntent,
   type BusinessInfoTopic,
-  type ConversationNextAction,
   type CoreIntentState,
   type CoreWorkflow,
 } from "./core-intent-machine";
@@ -12,12 +11,16 @@ import { decideClosingTransition } from "./core-closing-policy";
 import { adaptHierarchicalIntentToLegacy } from "./core-intent-legacy-adapter";
 import { coreIntentClassifierTool, parseCoreIntentRequest } from "./core-intent-router";
 import type { ToolResult } from "./tool-gateway";
+import { claimClassifierBootstrap, ownsClassifierBootstrap } from "./classifier-bootstrap-authority.js";
+import { conversationNextActionRuntimeFor } from "./conversation-next-action-runtime.js";
+import { executeLegacyIntent } from "./legacy-intent-execution.js";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { reservationRoutingRuntimeFor } from "./reservation-routing-runtime.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV12 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV12.prototype as any;
-
-type RealtimeEvent = { type?: string; name?: string; call_id?: string; arguments?: string; };
 
 type TopicResult = {
   topic: BusinessInfoTopic;
@@ -33,13 +36,6 @@ const TOOL_BY_TOPIC: Record<BusinessInfoTopic, string> = {
   SERVICES: "get_services",
   GENERAL_INFO: "get_business_information",
 };
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
 
 function currentMadridReference(): string {
   return new Intl.DateTimeFormat("es-ES", {
@@ -63,29 +59,18 @@ export class CallSession extends BaseConstructor {
   private coreIntentStateV13: CoreIntentState = initialCoreIntentState();
   private coreIntentSessionUpdateV13Sent = false;
   private closingConfirmationPendingV13 = false;
-  private conversationNextActionV13: ConversationNextAction = "CONTINUE_WORKFLOW";
 
   async fetch(request: Request): Promise<Response> {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
-
-    if (isStart) {
-      (this as any).reservationSessionUpdateSent = true;
-      (this as any).reservationSessionUpdateV6Sent = true;
-      (this as any).marketingSessionUpdateV7Sent = true;
-      (this as any).querySessionUpdateV11Sent = true;
-    }
+    if (isStart) claimClassifierBootstrap(this, "CORE_INTENT_V13");
 
     const response = await super.fetch(request);
 
-    if (isStart && response.ok && !this.coreIntentSessionUpdateV13Sent) {
+    if (isStart && response.ok && ownsClassifierBootstrap(this, "CORE_INTENT_V13") && !this.coreIntentSessionUpdateV13Sent) {
       this.coreIntentSessionUpdateV13Sent = true;
-      (this as any).send({
-        type: "session.update",
-        session: {
-          type: "realtime",
-          tools: [coreIntentClassifierTool(currentMadridReference())],
-          tool_choice: "required",
-        },
+      realtimeCommandPortFor(this as any).updateSessionPolicy({
+        tools: [coreIntentClassifierTool(currentMadridReference())],
+        toolChoice: "REQUIRED",
       });
       (this as any).diagnostics?.checkpoint?.("CORE_INTENT_CLASSIFIER_SCHEMA_UPDATED", {
         strategy: "structured_conversation_state_v2",
@@ -102,27 +87,25 @@ export class CallSession extends BaseConstructor {
 
   private sendCoreClassifierOutput(callId: string | undefined, payload: Record<string, unknown>): void {
     if (!callId) return;
-    (this as any).send({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify({ ok: true, ...payload }),
-      },
+    realtimeCommandPortFor(this as any).submitToolResult({
+      callId,
+      toolName: CONVERSATION_INTENT,
+      output: { ok: true, ...payload },
     });
   }
 
   private clearTransientStateForWorkflow(workflow: CoreWorkflow): void {
+    const routing = reservationRoutingRuntimeFor(this);
     if (workflow === "CREATE_RESERVATION") {
       (this as any).reservationDraft = {};
       (this as any).reservationAvailabilityKey = null;
       (this as any).reservationAvailabilityPromise = null;
       (this as any).reservationConfirmationFingerprint = null;
-      (this as any).createReservationIntentActiveV9 = false;
+      routing.clearCreateIntent();
       return;
     }
     if (workflow === "CANCEL_RESERVATION") {
-      (this as any).cancellationStateV10 = null;
+      routing.clearCancellation();
     }
   }
 
@@ -216,14 +199,13 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) {
-      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
-    }
+    const event = adaptRealtimeProviderEvents(data).find(
+      (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && candidate.name === CONVERSATION_INTENT,
+    );
 
-    if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
-      if ((this as any).state === "closing" || (this as any).hangupStarted === true) {
+    if (event?.type === "SEMANTIC_TOOL_SELECTED") {
+      const nextAction = conversationNextActionRuntimeFor(this);
+      if (conversationLifecyclePortFor(this).isTerminal()) {
         await BasePrototype.handleRealtimeMessage.call(this, data);
         return;
       }
@@ -232,7 +214,7 @@ export class CallSession extends BaseConstructor {
       try {
         request = parseCoreIntentRequest(event.arguments);
       } catch (error) {
-        this.sendCoreClassifierOutput(event.call_id, { action: "classifier_invalid", retry: true });
+        this.sendCoreClassifierOutput(event.callId, { action: "classifier_invalid", retry: true });
         (this as any).diagnostics?.fail?.("CORE_INTENT_TURN_INVALID", "HIERARCHICAL_CLASSIFIER_PAYLOAD_INVALID", {
           error: error instanceof Error ? error.message : String(error),
         });
@@ -240,11 +222,11 @@ export class CallSession extends BaseConstructor {
         return;
       }
 
-      this.conversationNextActionV13 = request.conversation?.nextAction ?? "CONTINUE_WORKFLOW";
+      nextAction.update(request.conversation?.nextAction ?? "CONTINUE_WORKFLOW");
       const closingSignal = request.conversation?.closingSignal ?? "NONE";
       (this as any).diagnostics?.checkpoint?.("CORE_STRUCTURED_CONVERSATION_STATE", {
         intent: request.intent,
-        next_action: this.conversationNextActionV13,
+        next_action: nextAction.current(),
         closing_signal: closingSignal,
         workflow_before: this.coreIntentStateV13.workflow,
         closing_pending_before: this.closingConfirmationPendingV13,
@@ -253,7 +235,7 @@ export class CallSession extends BaseConstructor {
       const rejectedClosing = request.closingResponse === "REJECT" || closingSignal === "REJECTED";
       if (this.closingConfirmationPendingV13 && rejectedClosing) {
         this.closingConfirmationPendingV13 = false;
-        this.conversationNextActionV13 = "CONTINUE_WORKFLOW";
+        nextAction.update("CONTINUE_WORKFLOW");
         (this as any).state = "active";
         (this as any).ambiguousCount = 0;
         const currentWorkflow = this.coreIntentStateV13.workflow;
@@ -264,7 +246,7 @@ export class CallSession extends BaseConstructor {
             && request.businessInfoTopics?.length === 1
             && request.businessInfoTopics[0] === "GENERAL_INFO");
 
-        this.sendCoreClassifierOutput(event.call_id, {
+        this.sendCoreClassifierOutput(event.callId, {
           action: "closing_rejected",
           resumed_workflow: currentWorkflow,
           has_new_intent: !pureRejection,
@@ -287,7 +269,7 @@ export class CallSession extends BaseConstructor {
 
       const explicitStructuredClose = request.intent === "CLOSING"
         && closingSignal === "CONFIRMED"
-        && this.conversationNextActionV13 === "HANGUP_AFTER_SPEECH";
+        && nextAction.current() === "HANGUP_AFTER_SPEECH";
       const requestedIntent = (this.closingConfirmationPendingV13 && request.closingResponse === "CONFIRM") || explicitStructuredClose
         ? "CLOSING"
         : request.intent;
@@ -300,19 +282,19 @@ export class CallSession extends BaseConstructor {
       this.closingConfirmationPendingV13 = closingDecision.pending;
 
       if (closingDecision.action === "ASK_CONFIRMATION") {
-        this.conversationNextActionV13 = "ASK_CLOSE_CONFIRMATION";
-        this.sendCoreClassifierOutput(event.call_id, { action: "closing_confirmation_required" });
+        nextAction.update("ASK_CLOSE_CONFIRMATION");
+        this.sendCoreClassifierOutput(event.callId, { action: "closing_confirmation_required" });
         (this as any).diagnostics?.checkpoint?.("CORE_CLOSING_CONFIRMATION_REQUIRED", {
           active_workflow: this.coreIntentStateV13.workflow,
           irreversible_transition: true,
-          structured_next_action: this.conversationNextActionV13,
+          structured_next_action: nextAction.current(),
         });
         (this as any).createSpokenResponse("Pregunta únicamente y de forma breve: ¿Quieres terminar la llamada? No te despidas, no afirmes que la llamada ha terminado y no abandones el workflow actual todavía.");
         return;
       }
 
       if (closingDecision.action === "ALLOW_CLOSE") {
-        this.conversationNextActionV13 = "HANGUP_AFTER_SPEECH";
+        nextAction.update("HANGUP_AFTER_SPEECH");
       }
 
       const effectiveRequest = requestedIntent === request.intent ? request : { ...request, intent: requestedIntent };
@@ -325,11 +307,11 @@ export class CallSession extends BaseConstructor {
         reason: transition.reason,
         business_info_topics: transition.next.businessInfoTopics,
         suspended_workflow: transition.next.suspendedWorkflow,
-        structured_next_action: this.conversationNextActionV13,
+        structured_next_action: nextAction.current(),
       });
 
       if (effectiveRequest.intent === "BUSINESS_INFO") {
-        await this.handleBusinessInfoTurn(event.call_id, transition.next.businessInfoTopics, effectiveRequest.auxiliary === true);
+        await this.handleBusinessInfoTurn(event.callId, transition.next.businessInfoTopics, effectiveRequest.auxiliary === true);
         return;
       }
 
@@ -338,21 +320,19 @@ export class CallSession extends BaseConstructor {
         : JSON.stringify({ ...(event.arguments ? JSON.parse(event.arguments) : {}), intent: requestedIntent });
       const legacy = adaptHierarchicalIntentToLegacy(legacyArguments);
       if (!legacy) {
-        this.sendCoreClassifierOutput(event.call_id, { action: "no_legacy_route" });
+        this.sendCoreClassifierOutput(event.callId, { action: "no_legacy_route" });
         return;
       }
 
-      const synthetic: RealtimeEvent = {
-        ...event,
-        name: CONVERSATION_INTENT,
-        arguments: JSON.stringify(legacy),
-      };
       (this as any).diagnostics?.checkpoint?.("CORE_INTENT_EXECUTOR_DISPATCHED", {
         workflow: transition.next.workflow,
         adapter: "validated_legacy_executor",
-        structured_next_action: this.conversationNextActionV13,
+        structured_next_action: nextAction.current(),
       });
-      await BasePrototype.handleRealtimeMessage.call(this, JSON.stringify(synthetic));
+      await executeLegacyIntent(BasePrototype, this, {
+        argumentsJson: JSON.stringify(legacy),
+        callId: event.callId,
+      });
       return;
     }
 

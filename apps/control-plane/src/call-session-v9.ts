@@ -1,24 +1,18 @@
 import { CallSession as CallSessionV8 } from "./call-session-v8";
 import { authorizeSpecializedFlow } from "./conversation-state-authority";
 import { parseSemanticDecision } from "./semantic-router";
+import {
+  executeLegacyIntent,
+  LEGACY_INTENT_EXECUTOR,
+  type LegacyIntentSelection,
+} from "./legacy-intent-execution.js";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { reservationRoutingRuntimeFor } from "./reservation-routing-runtime.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV8 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV8.prototype as any;
-
-type RealtimeEvent = {
-  type?: string;
-  name?: string;
-  call_id?: string;
-  arguments?: string;
-};
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
 
 function hasReservationDraft(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -46,62 +40,73 @@ function rawReservationOperation(argumentsJson: string | undefined): "CREATE" | 
  * while making routing precedence explicit in one place.
  */
 export class CallSession extends BaseConstructor {
-  private createReservationIntentActiveV9 = false;
-
-  private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) {
-      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
+  async [LEGACY_INTENT_EXECUTOR](selection: LegacyIntentSelection): Promise<void> {
+    const routing = reservationRoutingRuntimeFor(this);
+    const semantic = parseSemanticDecision(selection.argumentsJson);
+    const operation = semantic.dataRequirement === "RESERVATION" ? rawReservationOperation(selection.argumentsJson) : null;
+    if (semantic.intent === "CONTINUE" && semantic.dataRequirement === "RESERVATION" && operation !== "QUERY" && operation !== "CANCEL") {
+      routing.markCreateIntentActive();
+    }
+    if ((this as any).reservationBookedThisCall === true || operation === "QUERY" || operation === "CANCEL") {
+      routing.clearCreateIntent();
     }
 
-    if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
-      const semantic = parseSemanticDecision(event.arguments);
-      const operation = semantic.dataRequirement === "RESERVATION" ? rawReservationOperation(event.arguments) : null;
-      if (semantic.intent === "CONTINUE" && semantic.dataRequirement === "RESERVATION" && operation !== "QUERY" && operation !== "CANCEL") {
-        this.createReservationIntentActiveV9 = true;
-      }
-      if ((this as any).reservationBookedThisCall === true || operation === "QUERY" || operation === "CANCEL") {
-        this.createReservationIntentActiveV9 = false;
-      }
+    const routingState = routing.snapshot();
+    const reservationInProgress = (routingState.createIntentActive || hasReservationDraft((this as any).reservationDraft))
+      && (this as any).reservationBookedThisCall !== true;
+    const terminal = conversationLifecyclePortFor(this).isTerminal();
+    const authority = authorizeSpecializedFlow({
+      lifecycleState: terminal ? "closing" : "active",
+      hangupStarted: false,
+      reservationInProgress,
+    }, semantic);
 
-      const reservationInProgress = (this.createReservationIntentActiveV9 || hasReservationDraft((this as any).reservationDraft))
-        && (this as any).reservationBookedThisCall !== true;
-      const authority = authorizeSpecializedFlow({
-        lifecycleState: String((this as any).state ?? "active"),
-        hangupStarted: (this as any).hangupStarted === true,
-        reservationInProgress,
-      }, semantic);
+    (this as any).diagnostics?.checkpoint?.("CONVERSATION_STATE_AUTHORITY", {
+      lifecycle_state: terminal ? "closing" : "active",
+      reservation_in_progress: reservationInProgress,
+      reservation_intent_active: routingState.createIntentActive,
+      classifier_requirement: semantic.dataRequirement,
+      classifier_degraded: semantic.degraded,
+      authorized_flow: authority.flow,
+      authority_reason: authority.reason,
+    });
 
-      (this as any).diagnostics?.checkpoint?.("CONVERSATION_STATE_AUTHORITY", {
-        lifecycle_state: String((this as any).state ?? "active"),
-        reservation_in_progress: reservationInProgress,
-        reservation_intent_active: this.createReservationIntentActiveV9,
-        classifier_requirement: semantic.dataRequirement,
-        classifier_degraded: semantic.degraded,
-        authorized_flow: authority.flow,
-        authority_reason: authority.reason,
-      });
-
-      if (authority.reason === "CALL_TERMINAL") {
-        (this as any).sendToolResult?.(event.call_id, { ok: true, action: "closing_already_in_progress" });
-        return;
-      }
-
-      if (authority.flow === "RESERVATION" && semantic.dataRequirement !== "RESERVATION") {
-        let parsed: Record<string, unknown> = {};
-        try { parsed = JSON.parse(event.arguments ?? "{}") as Record<string, unknown>; } catch { parsed = {}; }
-        const routed: RealtimeEvent = {
-          ...event,
-          arguments: JSON.stringify({ ...parsed, intent: "CONTINUE", data_requirement: "RESERVATION" }),
-        };
-        (this as any).diagnostics?.checkpoint?.("RESERVATION_ROUTING_RECOVERED_BY_STATE", {
-          from_requirement: semantic.dataRequirement,
-          reason: authority.reason,
+    if (authority.reason === "CALL_TERMINAL") {
+      if (selection.callId) {
+        realtimeCommandPortFor(this as any).submitToolResult({
+          callId: selection.callId,
+          toolName: CONVERSATION_INTENT,
+          output: { ok: true, action: "closing_already_in_progress" },
         });
-        await BasePrototype.handleRealtimeMessage.call(this, JSON.stringify(routed));
-        return;
       }
+      return;
+    }
+
+    if (authority.flow === "RESERVATION" && semantic.dataRequirement !== "RESERVATION") {
+      let parsed: Record<string, unknown> = {};
+      try { parsed = JSON.parse(selection.argumentsJson ?? "{}") as Record<string, unknown>; } catch { parsed = {}; }
+      (this as any).diagnostics?.checkpoint?.("RESERVATION_ROUTING_RECOVERED_BY_STATE", {
+        from_requirement: semantic.dataRequirement,
+        reason: authority.reason,
+      });
+      await executeLegacyIntent(BasePrototype, this, {
+        ...selection,
+        argumentsJson: JSON.stringify({ ...parsed, intent: "CONTINUE", data_requirement: "RESERVATION" }),
+      });
+      return;
+    }
+
+    await executeLegacyIntent(BasePrototype, this, selection);
+  }
+
+  private async handleRealtimeMessage(data: unknown): Promise<void> {
+    const event = adaptRealtimeProviderEvents(data).find(
+      (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && candidate.name === CONVERSATION_INTENT,
+    );
+
+    if (event?.type === "SEMANTIC_TOOL_SELECTED") {
+      await this[LEGACY_INTENT_EXECUTOR]({ argumentsJson: event.arguments, callId: event.callId });
+      return;
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);

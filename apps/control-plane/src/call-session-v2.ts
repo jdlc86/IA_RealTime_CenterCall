@@ -1,6 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
 import { CallDiagnostics, isDebugEnabled } from "./call-diagnostics";
-import { SupabaseAdapter } from "./supabase-adapter";
 import { KvTenantRepository, type TenantKvNamespace } from "./tenant-kv";
 import { parseSemanticDecision, type DataRequirement } from "./semantic-router";
 import {
@@ -11,11 +10,15 @@ import {
   type ReservationFlowArgs,
 } from "./reservation-flow";
 import { ToolGateway, requireObject, type ToolDefinition, type ToolResult } from "./tool-gateway";
+import { LEGACY_INTENT_EXECUTOR, type LegacyIntentSelection } from "./legacy-intent-execution.js";
+import { restaurantReservationPortFor } from "./restaurant-reservation-port.js";
+import { restaurantBusinessPortFor } from "./restaurant-business-port.js";
+import { callDiagnosticPersistencePortFor } from "./call-diagnostic-persistence-port.js";
+import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
+import { sidebandLifecyclePortFor } from "./sideband-lifecycle-port.js";
 
 type CallSessionEnv = {
   OPENAI_API_KEY: string;
-  SUPABASE_URL: string;
-  SUPABASE_SECRET_KEY: string;
   DEBUG_KEY?: string;
   TENANT_CONFIG: TenantKvNamespace;
 };
@@ -216,6 +219,21 @@ function isExternalRequirement(requirement: DataRequirement): boolean {
 }
 
 export class CallSession extends DurableObject<CallSessionEnv> {
+  private sessionTasks = sessionTaskRuntimeFor(this).configure({
+    waitUntil: (promise) => this.ctx.waitUntil(promise),
+    onError: (task, error) => {
+      this.diagnostics.fail("SESSION_TASK_FAILED", "SERIALIZED_SESSION_TASK_FAILED", {
+        task,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      log("error", "serialized_session_task_failed", {
+        call_id: this.callId,
+        tenant_id: this.tenantId,
+        task,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    },
+  });
   private socket: WebSocket | null = null;
   private connectPromise: Promise<void> | null = null;
   private callId: string | null = null;
@@ -293,7 +311,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
           : typeof details.required_tool === "string"
             ? details.required_tool
             : null;
-        await this.getSupabaseAdapter().writeDiagnosticEvent({
+        await callDiagnosticPersistencePortFor(this).write({
           call_id: snapshot.call_id ?? callId,
           tenant_id: snapshot.tenant_id,
           component: "CallSession",
@@ -307,7 +325,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
           diagnosis: snapshot.diagnosis,
           details,
         });
-      } : null);
+      } : null, (promise) => this.ctx.waitUntil(promise));
       this.diagnostics.checkpoint("CALL_SESSION_STARTED", { allowed_tools_count: allowedTools.length });
 
       try {
@@ -416,17 +434,30 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       allowed_tools: this.allowedTools,
       waiting_phrases: this.waitingPhrases.length,
     });
-    socket.addEventListener("message", (event) => { void this.handleRealtimeMessage(event.data); });
-    socket.addEventListener("close", () => {
-      this.clearFinalFarewellWatchdog();
-      this.clearWaitingPlaybackWatchdog();
-      this.socket = null;
-      this.diagnostics.checkpoint("SIDEBAND_CLOSED", { state: this.state, hangup_started: this.hangupStarted });
-      log("info", "realtime_sideband_closed", { call_id: this.callId, tenant_id: this.tenantId, state: this.state, ambiguous_count: this.ambiguousCount, hangup_started: this.hangupStarted });
+    socket.addEventListener("message", (event) => {
+      this.sessionTasks.enqueue("realtime_sideband_message", () => this.handleRealtimeMessage(event.data));
+    });
+    socket.addEventListener("close", (event) => {
+      const closeEvent = event as CloseEvent;
+      this.sessionTasks.enqueue("realtime_sideband_close", async () => {
+        this.clearFinalFarewellWatchdog();
+        this.clearWaitingPlaybackWatchdog();
+        this.socket = null;
+        this.diagnostics.checkpoint("SIDEBAND_CLOSED", { state: this.state, hangup_started: this.hangupStarted });
+        log("info", "realtime_sideband_closed", { call_id: this.callId, tenant_id: this.tenantId, state: this.state, ambiguous_count: this.ambiguousCount, hangup_started: this.hangupStarted });
+        await sidebandLifecyclePortFor(this).transportClosed({
+          reason: "sideband_closed",
+          closeCode: typeof closeEvent.code === "number" ? closeEvent.code : null,
+          providerReason: typeof closeEvent.reason === "string" ? closeEvent.reason : "",
+          wasClean: typeof closeEvent.wasClean === "boolean" ? closeEvent.wasClean : null,
+        });
+      });
     });
     socket.addEventListener("error", () => {
-      this.diagnostics.fail("SIDEBAND_SOCKET_ERROR", "OPENAI_SIDEBAND_SOCKET_ERROR", { state: this.state });
-      log("error", "realtime_sideband_socket_error", { call_id: this.callId, tenant_id: this.tenantId, state: this.state, ambiguous_count: this.ambiguousCount });
+      this.sessionTasks.enqueue("realtime_sideband_error", () => {
+        this.diagnostics.fail("SIDEBAND_SOCKET_ERROR", "OPENAI_SIDEBAND_SOCKET_ERROR", { state: this.state });
+        log("error", "realtime_sideband_socket_error", { call_id: this.callId, tenant_id: this.tenantId, state: this.state, ambiguous_count: this.ambiguousCount });
+      });
     });
   }
 
@@ -529,13 +560,6 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     });
   }
 
-  private getSupabaseAdapter(): SupabaseAdapter {
-    return new SupabaseAdapter({
-      SUPABASE_URL: requireEnvString(this.env.SUPABASE_URL, "SUPABASE_URL"),
-      SUPABASE_SECRET_KEY: requireEnvString(this.env.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
-    });
-  }
-
   private async executeReservationFlow(args: ReservationFlowArgs, tenantId: string): Promise<Record<string, unknown>> {
     const availabilityMissing = missingAvailabilityFields(args);
     if (availabilityMissing.length) {
@@ -547,12 +571,12 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       };
     }
 
-    const availability = await this.getSupabaseAdapter().checkRestaurantAvailability(
+    const availability = await restaurantReservationPortFor(this).checkAvailability({
       tenantId,
-      args.startsAt!,
-      args.partySize!,
-      args.durationMinutes ?? 90,
-    );
+      startsAt: args.startsAt!,
+      partySize: args.partySize!,
+      durationMinutes: args.durationMinutes ?? 90,
+    });
 
     if (availability.length === 0) {
       this.resetReservationConfirmation();
@@ -599,14 +623,17 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       };
     }
 
-    const reservation = await this.getSupabaseAdapter().createRestaurantReservation(tenantId, {
-      customerName: args.customerName!,
-      customerPhone: args.customerPhone!,
-      partySize: args.partySize!,
-      startsAt: args.startsAt!,
-      durationMinutes: args.durationMinutes ?? 90,
-      notes: args.notes ?? null,
-      source: "voice",
+    const reservation = await restaurantReservationPortFor(this).createReservation({
+      tenantId,
+      input: {
+        customerName: args.customerName!,
+        customerPhone: args.customerPhone!,
+        partySize: args.partySize!,
+        startsAt: args.startsAt!,
+        durationMinutes: args.durationMinutes ?? 90,
+        notes: args.notes ?? null,
+        source: "voice",
+      },
     });
     this.resetReservationConfirmation();
     return {
@@ -632,28 +659,28 @@ export class CallSession extends DurableObject<CallSessionEnv> {
         access: "READ",
         description: SERVICES_REALTIME_TOOL.description,
         validate: emptyObjectValidator,
-        execute: async (_args, context) => ({ services: await this.getSupabaseAdapter().listServices(context.tenantId), source: "supabase" }),
+        execute: async (_args, context) => ({ services: await restaurantBusinessPortFor(this).listServices(context.tenantId), source: "supabase" }),
       },
       {
         name: GET_MENU,
         access: "READ",
         description: MENU_REALTIME_TOOL.description,
         validate: emptyObjectValidator,
-        execute: async (_args, context) => ({ menu_items: await this.getSupabaseAdapter().listMenuItems(context.tenantId), source: "supabase" }),
+        execute: async (_args, context) => ({ menu_items: await restaurantBusinessPortFor(this).listMenuItems(context.tenantId), source: "supabase" }),
       },
       {
         name: GET_PROFESSIONALS,
         access: "READ",
         description: PROFESSIONALS_REALTIME_TOOL.description,
         validate: emptyObjectValidator,
-        execute: async (_args, context) => ({ professionals: await this.getSupabaseAdapter().listProfessionals(context.tenantId), source: "supabase" }),
+        execute: async (_args, context) => ({ professionals: await restaurantBusinessPortFor(this).listProfessionals(context.tenantId), source: "supabase" }),
       },
       {
         name: GET_BUSINESS_HOURS,
         access: "READ",
         description: BUSINESS_HOURS_REALTIME_TOOL.description,
         validate: emptyObjectValidator,
-        execute: async (_args, context) => ({ business_hours: await this.getSupabaseAdapter().listBusinessHours(context.tenantId), source: "supabase" }),
+        execute: async (_args, context) => ({ business_hours: await restaurantBusinessPortFor(this).listBusinessHours(context.tenantId), source: "supabase" }),
       },
       {
         name: MANAGE_RESERVATION,
@@ -666,7 +693,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     return new ToolGateway(definitions, [{ tenantId: this.tenantId, allowedTools: this.allowedTools }]);
   }
 
-  private async executeExternalRequirement(requirement: DataRequirement): Promise<void> {
+  private startExternalRequirement(requirement: DataRequirement): void {
     if (!this.tenantId || !this.callId || this.pendingExternalRequirement !== requirement) return;
     const tool = TOOL_BY_REQUIREMENT[requirement];
     if (!tool || !isExternalRequirement(requirement) || !this.allowedTools.includes(tool.name)) {
@@ -683,6 +710,9 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     }
 
     const startedAt = Date.now();
+    const tenantId = this.tenantId;
+    const callId = this.callId;
+    const gateway = this.createToolGateway();
     this.diagnostics.checkpoint("BACKEND_QUERY_STARTED", { data_requirement: requirement, tool: tool.name });
     log("info", "business_data_backend_query_started", {
       call_id: this.callId,
@@ -692,50 +722,62 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       execution: "direct_tool_gateway_parallel",
     });
 
-    try {
-      const result = await this.createToolGateway().execute({
-        name: tool.name,
-        arguments: {},
-        context: { tenantId: this.tenantId, callId: this.callId },
+    this.sessionTasks.runInBackground(`external_requirement:${requirement}`, async () => {
+      let result: ToolResult;
+      let exception = false;
+      try {
+        result = await gateway.execute({
+          name: tool.name,
+          arguments: {},
+          context: { tenantId, callId },
+        });
+      } catch (error) {
+        exception = true;
+        result = {
+          ok: false,
+          tool: tool.name,
+          tenantId,
+          error: "EXECUTION_FAILED",
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+
+      this.sessionTasks.enqueue(`external_requirement_completed:${requirement}`, () => {
+        this.completeExternalRequirement(requirement, tool.name, startedAt, result, exception);
       });
-      if (this.pendingExternalRequirement !== requirement) return;
-      this.pendingExternalResult = result;
-      if (result.ok) this.diagnostics.checkpoint("BACKEND_QUERY_COMPLETED", { data_requirement: requirement, tool: tool.name, elapsed_ms: Date.now() - startedAt });
-      else this.diagnostics.fail("BACKEND_QUERY_FAILED", "TOOL_GATEWAY_RETURNED_ERROR", { data_requirement: requirement, tool: tool.name, elapsed_ms: Date.now() - startedAt, error: result.error });
-      log(result.ok ? "info" : "error", "business_data_backend_query_completed", {
-        call_id: this.callId,
-        tenant_id: this.tenantId,
-        data_requirement: requirement,
-        tool: tool.name,
-        ok: result.ok,
-        elapsed_ms: Date.now() - startedAt,
-        error: result.ok ? undefined : result.error,
-      });
-    } catch (error) {
-      if (this.pendingExternalRequirement !== requirement) return;
-      this.pendingExternalResult = {
-        ok: false,
-        tool: tool.name,
-        tenantId: this.tenantId,
-        error: "EXECUTION_FAILED",
-        message: error instanceof Error ? error.message : String(error),
-      };
+    });
+  }
+
+  private completeExternalRequirement(
+    requirement: DataRequirement,
+    toolName: string,
+    startedAt: number,
+    result: ToolResult,
+    exception: boolean,
+  ): void {
+    if (this.pendingExternalRequirement !== requirement) return;
+    this.pendingExternalResult = result;
+    if (exception) {
       this.diagnostics.fail("BACKEND_QUERY_EXCEPTION", "EXTERNAL_DATA_QUERY_EXCEPTION", {
         data_requirement: requirement,
-        tool: tool.name,
+        tool: toolName,
         elapsed_ms: Date.now() - startedAt,
-        error: error instanceof Error ? error.message : String(error),
+        error: result.ok ? undefined : result.message,
       });
-      log("error", "business_data_backend_query_failed", {
-        call_id: this.callId,
-        tenant_id: this.tenantId,
-        data_requirement: requirement,
-        tool: tool.name,
-        elapsed_ms: Date.now() - startedAt,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    } else if (result.ok) {
+      this.diagnostics.checkpoint("BACKEND_QUERY_COMPLETED", { data_requirement: requirement, tool: toolName, elapsed_ms: Date.now() - startedAt });
+    } else {
+      this.diagnostics.fail("BACKEND_QUERY_FAILED", "TOOL_GATEWAY_RETURNED_ERROR", { data_requirement: requirement, tool: toolName, elapsed_ms: Date.now() - startedAt, error: result.error });
     }
-
+    log(result.ok ? "info" : "error", exception ? "business_data_backend_query_failed" : "business_data_backend_query_completed", {
+      call_id: this.callId,
+      tenant_id: this.tenantId,
+      data_requirement: requirement,
+      tool: toolName,
+      ok: result.ok,
+      elapsed_ms: Date.now() - startedAt,
+      error: result.ok ? undefined : result.error,
+    });
     this.maybeDeliverExternalResult("backend_completed");
   }
 
@@ -764,7 +806,9 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.diagnostics.checkpoint("WAITING_PHRASE_REQUESTED", { data_requirement: requirement, phrase_chars: waitingPhrase.length });
     this.clearWaitingPlaybackWatchdog();
     this.waitingPlaybackWatchdog = setTimeout(() => {
-      this.markWaitingPhrasePlaybackComplete("playback_watchdog");
+      this.sessionTasks.enqueue("waiting_phrase_playback_watchdog", () => {
+        this.markWaitingPhrasePlaybackComplete("playback_watchdog");
+      });
     }, WAITING_PLAYBACK_WATCHDOG_MS);
     log("info", "business_data_waiting_phrase_requested", {
       call_id: this.callId,
@@ -857,7 +901,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
       data_requirement: requirement,
       sequencing: "backend_parallel_then_waiting_phrase_after_classifier_done",
     });
-    void this.executeExternalRequirement(requirement);
+    this.startExternalRequirement(requirement);
   }
 
   private async handleBusinessToolCall(event: RealtimeSidebandEvent): Promise<void> {
@@ -949,7 +993,9 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.sendBestEffortCancel();
     this.createSpokenResponse("Despídete ahora con una sola frase muy breve, natural y amable en español. No preguntes nada más ni ofrezcas más ayuda. Esta es la despedida final.");
     this.clearFinalFarewellWatchdog();
-    this.finalFarewellWatchdog = setTimeout(() => { void this.performHangup("final_farewell_watchdog"); }, FINAL_FAREWELL_WATCHDOG_MS);
+    this.finalFarewellWatchdog = setTimeout(() => {
+      this.sessionTasks.enqueue("final_farewell_watchdog", () => this.performHangup("final_farewell_watchdog"));
+    }, FINAL_FAREWELL_WATCHDOG_MS);
   }
 
   private armHangupAfterCurrentAudio(reason: string, source: string): void {
@@ -962,7 +1008,9 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     this.diagnostics.fail("HANGUP_COMMITMENT_GUARD", "ASSISTANT_ANNOUNCED_HANGUP_OUTSIDE_CORE_CLOSE", { source, reason });
     log("info", "end_call_closing_armed_current_audio", { call_id: this.callId, tenant_id: this.tenantId, source, reason, ambiguous_count: this.ambiguousCount });
     this.clearFinalFarewellWatchdog();
-    this.finalFarewellWatchdog = setTimeout(() => { void this.performHangup("assistant_commitment_watchdog"); }, FINAL_FAREWELL_WATCHDOG_MS);
+    this.finalFarewellWatchdog = setTimeout(() => {
+      this.sessionTasks.enqueue("assistant_commitment_watchdog", () => this.performHangup("assistant_commitment_watchdog"));
+    }, FINAL_FAREWELL_WATCHDOG_MS);
   }
 
   private async performHangup(trigger: string): Promise<void> {
@@ -1005,6 +1053,48 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     if (!response.ok) throw new Error(`OpenAI hangup failed with HTTP ${response.status}`);
   }
 
+  async [LEGACY_INTENT_EXECUTOR](selection: LegacyIntentSelection): Promise<void> {
+    if (this.state === "closing" || this.hangupStarted) {
+      this.sendToolResult(selection.callId, { ok: true, action: "closing_already_in_progress" });
+      return;
+    }
+
+    const classification = parseSemanticDecision(selection.argumentsJson);
+    if (classification.degraded) {
+      this.diagnostics.fail("INTENT_CLASSIFIER_DEGRADED", "SEMANTIC_CLASSIFIER_FALLBACK_USED", { fallback_intent: classification.intent, fallback_data_requirement: classification.dataRequirement });
+      log("error", "call_intent_degraded_fallback", {
+        call_id: this.callId,
+        tenant_id: this.tenantId,
+        arguments_chars: selection.argumentsJson?.length ?? 0,
+        fallback_intent: classification.intent,
+        fallback_data_requirement: classification.dataRequirement,
+        reason: classification.reason,
+      });
+    } else {
+      this.diagnostics.checkpoint("INTENT_CLASSIFIED", { intent: classification.intent, data_requirement: classification.dataRequirement });
+    }
+
+    log("info", "call_intent_classified", {
+      call_id: this.callId,
+      tenant_id: this.tenantId,
+      intent: classification.intent,
+      data_requirement: classification.dataRequirement,
+      reason: classification.reason,
+      degraded: classification.degraded,
+      state_before: this.state,
+      ambiguous_count_before: this.ambiguousCount,
+    });
+    if (classification.intent === "CONTINUE") {
+      this.continueConversation(classification.reason, classification.dataRequirement, selection.callId);
+      return;
+    }
+    if (classification.intent === "END_CLEAR") {
+      this.handleClearEndIntent(classification.reason, selection.callId);
+      return;
+    }
+    this.handleAmbiguousIntent(classification.reason, selection.callId);
+  }
+
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const text = readWebSocketText(data);
     if (!text) return;
@@ -1028,45 +1118,7 @@ export class CallSession extends DurableObject<CallSessionEnv> {
     }
 
     if (event.type === "response.function_call_arguments.done" && event.name === "conversation_intent") {
-      if (this.state === "closing" || this.hangupStarted) {
-        this.sendToolResult(event.call_id, { ok: true, action: "closing_already_in_progress" });
-        return;
-      }
-
-      const classification = parseSemanticDecision(event.arguments);
-      if (classification.degraded) {
-        this.diagnostics.fail("INTENT_CLASSIFIER_DEGRADED", "SEMANTIC_CLASSIFIER_FALLBACK_USED", { fallback_intent: classification.intent, fallback_data_requirement: classification.dataRequirement });
-        log("error", "call_intent_degraded_fallback", {
-          call_id: this.callId,
-          tenant_id: this.tenantId,
-          arguments_chars: event.arguments?.length ?? 0,
-          fallback_intent: classification.intent,
-          fallback_data_requirement: classification.dataRequirement,
-          reason: classification.reason,
-        });
-      } else {
-        this.diagnostics.checkpoint("INTENT_CLASSIFIED", { intent: classification.intent, data_requirement: classification.dataRequirement });
-      }
-
-      log("info", "call_intent_classified", {
-        call_id: this.callId,
-        tenant_id: this.tenantId,
-        intent: classification.intent,
-        data_requirement: classification.dataRequirement,
-        reason: classification.reason,
-        degraded: classification.degraded,
-        state_before: this.state,
-        ambiguous_count_before: this.ambiguousCount,
-      });
-      if (classification.intent === "CONTINUE") {
-        this.continueConversation(classification.reason, classification.dataRequirement, event.call_id);
-        return;
-      }
-      if (classification.intent === "END_CLEAR") {
-        this.handleClearEndIntent(classification.reason, event.call_id);
-        return;
-      }
-      this.handleAmbiguousIntent(classification.reason, event.call_id);
+      await this[LEGACY_INTENT_EXECUTOR]({ argumentsJson: event.arguments, callId: event.call_id });
       return;
     }
 

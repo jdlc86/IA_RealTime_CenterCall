@@ -1,36 +1,21 @@
-import { CallSession as CallSessionV20 } from "./call-session-v20";
+import { CallSession as CallSessionV19 } from "./call-session-v19";
+import { reservationMultitableRuntimeFor } from "./reservation-multitable-runtime.js";
+import { reservationSessionRuntimeFor } from "./reservation-session-runtime.js";
 
-const BaseConstructor = CallSessionV20 as unknown as new (...args: any[]) => any;
-const BasePrototype = CallSessionV20.prototype as any;
-
-type TablePlanRow = {
-  allocation_mode?: string;
-  table_id?: string;
-  table_code?: string;
-  table_name?: string;
-  min_capacity?: number;
-  max_capacity?: number;
-  starts_at?: string;
-  ends_at?: string;
-};
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-}
+const BaseConstructor = CallSessionV19 as unknown as new (...args: any[]) => any;
+const BasePrototype = CallSessionV19.prototype as any;
 
 /**
  * v21 completes the direct agent-tool migration for multi-table reservations.
- * The authoritative multi-table plan is still produced by v16/backend logic;
- * v21 only exposes that existing plan as an explicit structured tool result so
+ * The authoritative multi-table plan is produced by the backend and retained by
+ * the neutral runtime; v21 exposes it as an explicit structured tool result so
  * Lucia can ask the customer whether separate tables are acceptable.
  */
 export class CallSession extends BaseConstructor {
-  private sendFunctionOutputV19(callId: string | undefined, output: Record<string, unknown>): void {
+  protected sendReservationOutput(callId: string | undefined, output: Record<string, unknown>): void {
     if (output.status === "UNAVAILABLE") {
-      const plan = (this as any).multitablePlanV16 as TablePlanRow[] | null | undefined;
-      const draft = asRecord((this as any).reservationDraftV19);
+      const plan = reservationMultitableRuntimeFor(this).snapshot().plan;
+      const draft = reservationSessionRuntimeFor(this).snapshot().draft;
 
       if (Array.isArray(plan) && plan.length > 1 && plan[0]?.allocation_mode === "MULTI_EXACT") {
         const capacities = plan.map((row) => Number(row.max_capacity ?? 0)).filter((value) => value > 0);
@@ -48,7 +33,7 @@ export class CallSession extends BaseConstructor {
               tables_must_be_close: mustBeClose,
               separate_tables_acceptable: separateRejected ? false : null,
             });
-            BasePrototype.sendFunctionOutputV19.call(this, callId, {
+            BasePrototype.sendReservationOutput.call(this, callId, {
               ok: true,
               status: "HUMAN_ASSISTANCE_REQUIRED",
               reason: mustBeClose ? "TABLES_MUST_BE_CLOSE" : "SEPARATE_TABLES_REJECTED",
@@ -67,7 +52,7 @@ export class CallSession extends BaseConstructor {
               capacities,
               exact_capacity: exactCapacity,
             });
-            BasePrototype.sendFunctionOutputV19.call(this, callId, {
+            BasePrototype.sendReservationOutput.call(this, callId, {
               ok: true,
               status: "MULTITABLE_OPTION",
               party_size: partySize,
@@ -84,6 +69,6 @@ export class CallSession extends BaseConstructor {
       }
     }
 
-    BasePrototype.sendFunctionOutputV19.call(this, callId, output);
+    BasePrototype.sendReservationOutput.call(this, callId, output);
   }
 }

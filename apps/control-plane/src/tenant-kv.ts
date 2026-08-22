@@ -1,4 +1,6 @@
 import { isBusinessType, type BusinessType } from "./business-types.js";
+import { parseHumanHandoffConfig, type HumanHandoffConfig } from "./human-handoff.js";
+import { parseTenantBlockedPhrases } from "./security-blocked-phrases.js";
 
 export const TENANT_KV_SCHEMA_VERSION = 1 as const;
 export const TENANT_KV_SCHEMA_VERSION_V2 = 2 as const;
@@ -36,6 +38,10 @@ type TenantConfigurationCommon = {
   tools: {
     allowed: string[];
   };
+  security?: {
+    blockedPhrases: string[];
+  };
+  humanHandoff?: HumanHandoffConfig;
 };
 
 export type LegacyTenantConfigurationV1 = TenantConfigurationCommon & {
@@ -187,6 +193,16 @@ function parseCommon(record: Record<string, unknown>, expectedTenantId?: string)
     }
   }
 
+  let security: TenantConfigurationCommon["security"];
+  if (record.security !== undefined) {
+    const securityRecord = requireRecord(record.security, "security");
+    security = {
+      blockedPhrases: parseTenantBlockedPhrases(securityRecord.blockedPhrases),
+    };
+  }
+
+  const humanHandoff = parseHumanHandoffConfig(record.humanHandoff);
+
   return {
     tenantId,
     status: requireStatus(record.status, "status"),
@@ -208,6 +224,8 @@ function parseCommon(record: Record<string, unknown>, expectedTenantId?: string)
     tools: {
       allowed: requireStringArray(tools.allowed, "tools.allowed"),
     },
+    ...(security === undefined ? {} : { security }),
+    ...(humanHandoff === undefined ? {} : { humanHandoff }),
   };
 }
 

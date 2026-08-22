@@ -3,6 +3,20 @@ export type CallerSecurityEnv = {
   SUPABASE_SECRET_KEY: string;
 };
 
+export type CallerSecuritySignal = {
+  eventKey: string;
+  tenantId: string;
+  eventType: string;
+  severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  riskDelta: number;
+  highConfidence: boolean;
+  metadata?: Record<string, unknown>;
+};
+
+export type QueuedCallerSecuritySignal = CallerSecuritySignal & {
+  callerKey: string;
+};
+
 export type InboundSecurityDecision = {
   decision: "ALLOW" | "BLOCK";
   blocked_until: string | null;
@@ -111,6 +125,7 @@ export class CallerSecurityService {
         Accept: "application/json",
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(4_000),
     });
     const raw = await response.text();
     if (!response.ok) throw new Error(`${name} failed with HTTP ${response.status}: ${raw.slice(0, 300)}`);
@@ -143,6 +158,7 @@ export class CallerSecurityService {
   }
 
   async recordSignal(params: {
+    eventKey: string;
     tenantId: string;
     callerPhone: string;
     eventType: string;
@@ -152,16 +168,21 @@ export class CallerSecurityService {
     metadata?: Record<string, unknown>;
   }): Promise<SecuritySignalDecision> {
     const callerKey = await this.callerKey(params.tenantId, params.callerPhone);
-    const rows = await this.rpc<SecuritySignalDecision>("record_caller_security_signal", {
+    return this.recordSignalByCallerKey({ ...params, callerKey });
+  }
+
+  async recordSignalByCallerKey(params: QueuedCallerSecuritySignal): Promise<SecuritySignalDecision> {
+    const rows = await this.rpc<SecuritySignalDecision>("record_caller_security_signal_v2", {
+      p_event_key: requireString(params.eventKey, "eventKey"),
       p_tenant_id: params.tenantId,
-      p_caller_key: callerKey,
+      p_caller_key: requireString(params.callerKey, "callerKey"),
       p_event_type: params.eventType,
       p_severity: params.severity,
       p_risk_delta: params.riskDelta,
       p_metadata: params.metadata ?? {},
       p_high_confidence: params.highConfidence,
     });
-    if (!rows[0]) throw new Error("record_caller_security_signal returned empty payload");
+    if (!rows[0]) throw new Error("record_caller_security_signal_v2 returned empty payload");
     return rows[0];
   }
 }

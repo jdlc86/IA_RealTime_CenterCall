@@ -1,26 +1,11 @@
 import { CallSession as CallSessionV32 } from "./call-session-v32";
-import { CallerSecurityService, inspectCallerTranscript } from "./caller-security";
+import { inspectCallerTranscript } from "./caller-security";
+import { recordCallerSecuritySignalDurably } from "./caller-security-signal-delivery.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { adaptRealtimeProviderEvents } from "./realtime-provider-runtime.js";
 
 const BaseConstructor = CallSessionV32 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV32.prototype as any;
-
-type RealtimeEvent = {
-  type?: string;
-  transcript?: string;
-};
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
-
-function parseEvent(data: unknown): RealtimeEvent | null {
-  const text = readRealtimeText(data);
-  if (!text) return null;
-  try { return JSON.parse(text) as RealtimeEvent; } catch { return null; }
-}
 
 function usableTranscript(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -35,17 +20,9 @@ function usableTranscript(value: unknown): string | null {
  * set of high-confidence agent-manipulation/exfiltration patterns and records
  * weaker security indicators. High-confidence hostile transcripts are stopped
  * before older layers can pass them to Lucia, so malicious text cannot influence
- * model/tool selection before the call is closed.
+ * model/tool selection before lifecycle authority commits the close.
  */
 export class CallSession extends BaseConstructor {
-  private securityServiceV33(): CallerSecurityService {
-    const env = (this as any).env ?? {};
-    return new CallerSecurityService({
-      SUPABASE_URL: env.SUPABASE_URL,
-      SUPABASE_SECRET_KEY: env.SUPABASE_SECRET_KEY,
-    });
-  }
-
   private async recordFindingV33(transcript: string, finding: ReturnType<typeof inspectCallerTranscript>): Promise<void> {
     if (finding.level === "NONE" || !finding.eventType) return;
     const tenantId = (this as any).tenantId;
@@ -53,7 +30,7 @@ export class CallSession extends BaseConstructor {
     if (typeof tenantId !== "string" || !tenantId.trim() || typeof callerPhone !== "string" || !callerPhone.trim()) return;
 
     try {
-      const decision = await this.securityServiceV33().recordSignal({
+      const result = await recordCallerSecuritySignalDurably(this, {
         tenantId: tenantId.trim(),
         callerPhone: callerPhone.trim(),
         eventType: finding.eventType,
@@ -71,11 +48,12 @@ export class CallSession extends BaseConstructor {
         level: finding.level,
         event_type: finding.eventType,
         matched_rule: finding.matchedRule ?? null,
-        action: decision.action,
-        risk_score: decision.risk_score,
-        security_strikes: decision.security_strikes,
-        permanent_block: decision.permanent_block,
-        blocked_until: decision.blocked_until,
+        delivery: result.delivery,
+        action: result.decision?.action ?? "PENDING_RETRY",
+        risk_score: result.decision?.risk_score ?? null,
+        security_strikes: result.decision?.security_strikes ?? null,
+        permanent_block: result.decision?.permanent_block ?? null,
+        blocked_until: result.decision?.blocked_until ?? null,
         raw_transcript_stored: false,
       });
     } catch (error) {
@@ -93,27 +71,31 @@ export class CallSession extends BaseConstructor {
   }
 
   private closeForCybersecurityV33(finding: ReturnType<typeof inspectCallerTranscript>): void {
-    if ((this as any).state === "closing" || (this as any).hangupStarted) return;
     (this as any).diagnostics?.checkpoint?.("CALLER_CYBERSECURITY_CALL_TERMINATED_V33", {
       reason: finding.eventType ?? "CYBERSECURITY_HIGH_CONFIDENCE",
       matched_rule: finding.matchedRule ?? null,
       transcript_forwarded_to_lucia: false,
+      lifecycle_authority: "conversation_lifecycle_port",
     });
-    (this as any).beginClosing?.("cybersecurity_high_confidence_v33", "deterministic_security_monitor_v33");
+    conversationLifecyclePortFor(this).confirmEndCall(
+      "cybersecurity_high_confidence_v33",
+      "deterministic_security_monitor_v33",
+    );
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const event = parseEvent(data);
-    if (event?.type === "conversation.item.input_audio_transcription.completed") {
+    for (const event of adaptRealtimeProviderEvents(data)) {
+      if (event.type !== "CALLER_TRANSCRIPT_COMPLETED") continue;
       const transcript = usableTranscript(event.transcript);
-      if (transcript) {
-        const finding = inspectCallerTranscript(transcript);
-        if (finding.level !== "NONE") await this.recordFindingV33(transcript, finding);
-        if (finding.terminateCurrentCall) {
-          this.closeForCybersecurityV33(finding);
-          return;
-        }
+      if (!transcript) continue;
+
+      const finding = inspectCallerTranscript(transcript);
+      if (finding.terminateCurrentCall) {
+        this.closeForCybersecurityV33(finding);
+        await this.recordFindingV33(transcript, finding);
+        return;
       }
+      if (finding.level !== "NONE") await this.recordFindingV33(transcript, finding);
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);

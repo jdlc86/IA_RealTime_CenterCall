@@ -1,69 +1,55 @@
 import { CallSession as CallSessionV13 } from "./call-session-v13";
 import {
+  armClassifierTurn,
   consumeClassifierTurn,
-  initialUserTurnGateState,
-  markUserTurnStarted,
-  type UserTurnGateState,
-} from "./core-user-turn-gate";
+  initialClassifierTurnGateState,
+  type ClassifierTurnGateState,
+} from "./classifier-turn-gate";
+import {
+  adaptRealtimeProviderEvents,
+  realtimeCommandPortFor,
+} from "./realtime-provider-runtime.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const BaseConstructor = CallSessionV13 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV13.prototype as any;
 
-type RealtimeEvent = {
-  type?: string;
-  name?: string;
-  call_id?: string;
-};
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) {
-    return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  }
-  return null;
-}
-
 /**
- * User-turn boundary for the hierarchical classifier.
+ * One-shot authorization boundary for the hierarchical classifier.
  *
- * A global Realtime tool_choice=required can also produce a classifier call as a
- * side effect of assistant-originated responses such as the initial greeting.
- * Business routing must never accept those calls. Only input VAD activity from
- * the caller arms one classifier result; that result consumes the turn.
+ * This is deliberately not a conversation lifecycle. It carries only one fact:
+ * whether caller-originated speech has armed exactly one classifier result. It
+ * has no timers, presence decisions, response ownership or terminal authority.
+ * Provider wire translation is owned by the realtime provider runtime.
  */
 export class CallSession extends BaseConstructor {
-  private userTurnGateV14: UserTurnGateState = initialUserTurnGateState();
+  private classifierTurnGateV14: ClassifierTurnGateState = initialClassifierTurnGateState();
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) {
-      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
-    }
+    const providerEvents = adaptRealtimeProviderEvents(data);
 
-    if (event?.type === "input_audio_buffer.speech_started") {
-      this.userTurnGateV14 = markUserTurnStarted(this.userTurnGateV14);
+    if (providerEvents.some((event) => event.type === "CALLER_SPEECH_STARTED")) {
+      this.classifierTurnGateV14 = armClassifierTurn(this.classifierTurnGateV14);
       (this as any).diagnostics?.checkpoint?.("CORE_USER_TURN_ARMED", {
-        source: "input_audio_buffer.speech_started",
+        source: "provider_neutral_caller_speech_started",
+        authority_scope: "classifier_one_shot_only",
       });
       await BasePrototype.handleRealtimeMessage.call(this, data);
       return;
     }
 
-    if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
-      const decision = consumeClassifierTurn(this.userTurnGateV14);
-      this.userTurnGateV14 = decision.next;
+    const classifierEvent = providerEvents.find(
+      (event) => event.type === "SEMANTIC_TOOL_SELECTED" && event.name === CONVERSATION_INTENT,
+    );
+    if (classifierEvent?.type === "SEMANTIC_TOOL_SELECTED") {
+      const decision = consumeClassifierTurn(this.classifierTurnGateV14);
+      this.classifierTurnGateV14 = decision.next;
       if (!decision.allowed) {
-        if (event.call_id) {
-          (this as any).send({
-            type: "conversation.item.create",
-            item: {
-              type: "function_call_output",
-              call_id: event.call_id,
-              output: JSON.stringify({ ok: false, action: "ignored", reason: "NO_USER_TURN" }),
-            },
+        if (classifierEvent.callId) {
+          realtimeCommandPortFor(this as any).submitToolResult({
+            callId: classifierEvent.callId,
+            toolName: classifierEvent.name,
+            output: { ok: false, action: "ignored", reason: "NO_USER_TURN" },
           });
         }
         (this as any).diagnostics?.checkpoint?.("CORE_INTENT_IGNORED_NO_USER_TURN", {

@@ -9,9 +9,21 @@ import {
   parseReservationTurn,
   type ReservationDraft,
 } from "./reservation-orchestrator";
+import {
+  restaurantReservationPortFor,
+  type RestaurantAvailability,
+} from "./restaurant-reservation-port.js";
 import { parseSemanticDecision } from "./semantic-router";
-import { SupabaseAdapter, type RestaurantAvailability } from "./supabase-adapter";
 import { ToolGateway, requireObject, type ToolDefinition, type ToolRequest, type ToolResult } from "./tool-gateway";
+import { claimClassifierBootstrap, ownsClassifierBootstrap } from "./classifier-bootstrap-authority.js";
+import {
+  executeLegacyIntent,
+  LEGACY_INTENT_EXECUTOR,
+  type LegacyIntentSelection,
+} from "./legacy-intent-execution.js";
+import type { RealtimeFunctionToolDefinition } from "./realtime-provider-command-port.js";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 
 const CONVERSATION_INTENT = "conversation_intent";
 const CHECK_RESERVATION_AVAILABILITY = "check_reservation_availability";
@@ -20,13 +32,6 @@ const MANAGE_MARKETING_CONSENT = "manage_marketing_consent";
 
 const BaseConstructor = CallSessionV4 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV4.prototype as any;
-
-type RealtimeEvent = {
-  type?: string;
-  name?: string;
-  call_id?: string;
-  arguments?: string;
-};
 
 type AvailabilityArgs = {
   partySize: number;
@@ -49,13 +54,6 @@ type AvailabilityResult = {
   requested_candidates: AvailabilityOption[];
   alternatives: AvailabilityOption[];
 };
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
 
 function requireRuntimeString(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`Missing runtime configuration: ${name}`);
@@ -92,7 +90,7 @@ function currentMadridReference(): string {
   }).format(new Date());
 }
 
-function reservationAwareIntentTool(): Record<string, unknown> {
+function reservationAwareIntentTool(): RealtimeFunctionToolDefinition {
   return {
     type: "function",
     name: CONVERSATION_INTENT,
@@ -135,16 +133,14 @@ export class CallSession extends BaseConstructor {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const isStart = request.method === "POST" && url.pathname === "/start";
+    if (isStart) claimClassifierBootstrap(this, "RESERVATION_V5");
     const response = await super.fetch(request);
-    if (isStart && response.ok && !this.reservationSessionUpdateSent) {
+    if (isStart && response.ok && ownsClassifierBootstrap(this, "RESERVATION_V5") && !this.reservationSessionUpdateSent) {
       this.reservationSessionUpdateSent = true;
       try {
-        (this as any).send({
-          type: "session.update",
-          session: {
-            tools: [reservationAwareIntentTool()],
-            tool_choice: "required",
-          },
+        realtimeCommandPortFor(this as any).updateSessionPolicy({
+          tools: [reservationAwareIntentTool()],
+          toolChoice: "REQUIRED",
         });
         (this as any).diagnostics?.checkpoint?.("RESERVATION_CLASSIFIER_SCHEMA_UPDATED", { strategy: "backend_orchestrator_v1" });
       } catch (error) {
@@ -156,16 +152,14 @@ export class CallSession extends BaseConstructor {
     return response;
   }
 
-  private getSupabaseAdapterV5(): SupabaseAdapter {
-    return new SupabaseAdapter({
-      SUPABASE_URL: requireRuntimeString((this as any).env?.SUPABASE_URL, "SUPABASE_URL"),
-      SUPABASE_SECRET_KEY: requireRuntimeString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
-    });
-  }
-
   private async executeAvailability(args: AvailabilityArgs, tenantId: string): Promise<AvailabilityResult> {
-    const adapter = this.getSupabaseAdapterV5();
-    const exact = await adapter.checkRestaurantAvailability(tenantId, args.startsAt, args.partySize, args.durationMinutes);
+    const reservationPort = restaurantReservationPortFor(this as any);
+    const exact = await reservationPort.checkAvailability({
+      tenantId,
+      startsAt: args.startsAt,
+      partySize: args.partySize,
+      durationMinutes: args.durationMinutes,
+    });
     if (exact.length > 0) {
       return {
         requested_available: true,
@@ -180,7 +174,12 @@ export class CallSession extends BaseConstructor {
     const nearby = nearbyStartTimes(args.startsAt);
     const checked = await Promise.all(nearby.map(async (startsAt) => ({
       startsAt,
-      rows: await adapter.checkRestaurantAvailability(tenantId, startsAt, args.partySize, args.durationMinutes),
+      rows: await reservationPort.checkAvailability({
+        tenantId,
+        startsAt,
+        partySize: args.partySize,
+        durationMinutes: args.durationMinutes,
+      }),
     })));
     const alternatives: AvailabilityOption[] = [];
     for (const candidate of checked) {
@@ -218,12 +217,14 @@ export class CallSession extends BaseConstructor {
 
   private sendClassifierOutput(callId: string | undefined): void {
     if (!callId) return;
-    (this as any).send({
-      type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify({ ok: true, action: "continue", data_requirement: "RESERVATION", reservation_orchestrator: "backend_v1" }),
+    realtimeCommandPortFor(this as any).submitToolResult({
+      callId,
+      toolName: CONVERSATION_INTENT,
+      output: {
+        ok: true,
+        action: "continue",
+        data_requirement: "RESERVATION",
+        reservation_orchestrator: "backend_v1",
       },
     });
   }
@@ -249,21 +250,25 @@ export class CallSession extends BaseConstructor {
       arguments: args,
       context: { tenantId, callId },
     }) as Promise<ToolResult<AvailabilityResult>>;
-    void this.reservationAvailabilityPromise.then((result) => {
-      if (this.reservationAvailabilityKey !== key) return;
-      if (result.ok) {
-        (this as any).diagnostics?.checkpoint?.("RESERVATION_AVAILABILITY_COMPLETED", {
-          tool: CHECK_RESERVATION_AVAILABILITY,
-          elapsed_ms: Date.now() - startedAt,
-          requested_available: (result.result as AvailabilityResult).requested_available,
-        });
-      } else {
-        (this as any).diagnostics?.fail?.("RESERVATION_AVAILABILITY_FAILED", "TOOL_GATEWAY_RETURNED_ERROR", {
-          tool: CHECK_RESERVATION_AVAILABILITY,
-          error: result.error,
-          elapsed_ms: Date.now() - startedAt,
-        });
-      }
+    const availability = this.reservationAvailabilityPromise;
+    sessionTaskRuntimeFor(this).runInBackground("reservation_availability_observer", async () => {
+      const result = await availability;
+      sessionTaskRuntimeFor(this).enqueue("reservation_availability_completed", () => {
+        if (this.reservationAvailabilityKey !== key) return;
+        if (result.ok) {
+          (this as any).diagnostics?.checkpoint?.("RESERVATION_AVAILABILITY_COMPLETED", {
+            tool: CHECK_RESERVATION_AVAILABILITY,
+            elapsed_ms: Date.now() - startedAt,
+            requested_available: (result.result as AvailabilityResult).requested_available,
+          });
+        } else {
+          (this as any).diagnostics?.fail?.("RESERVATION_AVAILABILITY_FAILED", "TOOL_GATEWAY_RETURNED_ERROR", {
+            tool: CHECK_RESERVATION_AVAILABILITY,
+            error: result.error,
+            elapsed_ms: Date.now() - startedAt,
+          });
+        }
+      });
     });
     return this.reservationAvailabilityPromise;
   }
@@ -423,20 +428,25 @@ export class CallSession extends BaseConstructor {
     (this as any).createSpokenResponse(`Resume de forma natural y breve estos datos autorizados: ${JSON.stringify(result)}. Después pregunta de forma inequívoca si confirma la reserva. No digas que está reservada todavía.`);
   }
 
-  private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) {
-      try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; }
+  async [LEGACY_INTENT_EXECUTOR](selection: LegacyIntentSelection): Promise<void> {
+    const classification = parseSemanticDecision(selection.argumentsJson);
+    if (classification.intent === "CONTINUE" && classification.dataRequirement === "RESERVATION") {
+      (this as any).diagnostics?.checkpoint?.("INTENT_CLASSIFIED", { intent: classification.intent, data_requirement: "RESERVATION", orchestrator: "backend_v1" });
+      await this.handleReservationTurn(selection.argumentsJson, selection.callId);
+      return;
     }
 
-    if (event?.type === "response.function_call_arguments.done" && event.name === CONVERSATION_INTENT) {
-      const classification = parseSemanticDecision(event.arguments);
-      if (classification.intent === "CONTINUE" && classification.dataRequirement === "RESERVATION") {
-        (this as any).diagnostics?.checkpoint?.("INTENT_CLASSIFIED", { intent: classification.intent, data_requirement: "RESERVATION", orchestrator: "backend_v1" });
-        await this.handleReservationTurn(event.arguments, event.call_id);
-        return;
-      }
+    await executeLegacyIntent(BasePrototype, this, selection);
+  }
+
+  private async handleRealtimeMessage(data: unknown): Promise<void> {
+    const event = adaptRealtimeProviderEvents(data).find(
+      (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && candidate.name === CONVERSATION_INTENT,
+    );
+
+    if (event?.type === "SEMANTIC_TOOL_SELECTED") {
+      await this[LEGACY_INTENT_EXECUTOR]({ argumentsJson: event.arguments, callId: event.callId });
+      return;
     }
 
     await BasePrototype.handleRealtimeMessage.call(this, data);

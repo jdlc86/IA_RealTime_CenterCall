@@ -1,5 +1,12 @@
 import { CallSession as CallSessionV22 } from "./call-session-v22";
-import { SupabaseAdapter, type BookedReservationSummary } from "./supabase-adapter";
+import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import {
+  restaurantReservationPortFor,
+  type BookedReservationSummary,
+  type RestaurantTablePlanRow,
+} from "./restaurant-reservation-port.js";
+import { restaurantBusinessPortFor } from "./restaurant-business-port.js";
 
 const BaseConstructor = CallSessionV22 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV22.prototype as any;
@@ -13,7 +20,6 @@ const OUT_OF_SCOPE = "restaurant_out_of_scope";
 const DIRECT_TOOLS = new Set([QUERY, CANCEL, MODIFY, BUSINESS_INFO, END_CALL, OUT_OF_SCOPE]);
 const RESTAURANT_TIMEZONE = "Europe/Madrid";
 
-type RealtimeEvent = { type?: string; name?: string; call_id?: string; arguments?: string };
 type ModifyPatch = {
   party_size?: number;
   starts_at?: string;
@@ -23,24 +29,6 @@ type ModifyPatch = {
   separate_tables_acceptable?: boolean;
   tables_must_be_close?: boolean;
 };
-type TablePlanRow = {
-  allocation_mode: "SINGLE" | "MULTI_EXACT";
-  plan_order: number;
-  table_id: string;
-  table_code: string;
-  table_name: string;
-  min_capacity: number;
-  max_capacity: number;
-  starts_at: string;
-  ends_at: string;
-};
-
-function readRealtimeText(data: unknown): string | null {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-  return null;
-}
 function parseObject(raw: string | undefined): Record<string, unknown> {
   if (!raw?.trim()) return {};
   const parsed = JSON.parse(raw) as unknown;
@@ -101,36 +89,16 @@ export class CallSession extends BaseConstructor {
   private modifyPatchV23: ModifyPatch = {};
   private modifyProposalFingerprintV23: string | null = null;
 
-  private adapterV23(): SupabaseAdapter {
-    return new SupabaseAdapter({
-      SUPABASE_URL: requireString((this as any).env?.SUPABASE_URL, "SUPABASE_URL"),
-      SUPABASE_SECRET_KEY: requireString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY"),
-    });
-  }
-
-  private async rpcV23<T>(name: string, body: Record<string, unknown>): Promise<T[]> {
-    const baseUrl = requireString((this as any).env?.SUPABASE_URL, "SUPABASE_URL").replace(/\/+$/, "");
-    const key = requireString((this as any).env?.SUPABASE_SECRET_KEY, "SUPABASE_SECRET_KEY");
-    const response = await fetch(`${baseUrl}/rest/v1/rpc/${encodeURIComponent(name)}`, {
-      method: "POST",
-      headers: { apikey: key, "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(body),
-    });
-    const raw = await response.text();
-    if (!response.ok) throw new Error(`Supabase RPC ${name} failed with HTTP ${response.status}: ${raw.slice(0, 250)}`);
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) throw new Error(`Supabase RPC ${name} returned invalid payload`);
-    return parsed as T[];
-  }
-
   private sendOutputV23(callId: string | undefined, output: Record<string, unknown>, createResponse = true): void {
-    (this as any).send?.({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: JSON.stringify(output) } });
-    if (createResponse) (this as any).send?.({ type: "response.create" });
+    const port = realtimeCommandPortFor(this as any);
+    port.submitToolResult({ callId, output });
+    if (createResponse) port.createDefaultResponse();
   }
 
   private markDirectToolV23(tool: string): void {
-    (this as any).validateUserTurnV18?.("agent_tool");
-    (this as any).suspendForToolV18?.(tool);
+    const lifecycle = conversationLifecyclePortFor(this);
+    lifecycle.validateUserTurn("agent_tool");
+    lifecycle.suspendForTool(tool);
     (this as any).diagnostics?.checkpoint?.("LUCIA_AGENT_TOOL_SELECTED", { tool, compatibility_executor: "direct_restaurant_controller_v23" });
   }
 
@@ -144,7 +112,7 @@ export class CallSession extends BaseConstructor {
 
   private async executeQueryV23(callId: string | undefined): Promise<void> {
     const { tenantId, callerPhone } = this.contextV23();
-    const rows = await this.adapterV23().listBookedReservationsByPhone(tenantId, callerPhone);
+    const rows = await restaurantReservationPortFor(this).listBookedReservationsByPhone(tenantId, callerPhone);
     (this as any).diagnostics?.checkpoint?.("DIRECT_RESERVATION_QUERY_COMPLETED_V23", { result_count: rows.length, identity_source: "CALLER_ID" });
     this.sendOutputV23(callId, { ok: true, status: rows.length ? "FOUND" : "NONE", reservations: rows.map(publicReservation) });
   }
@@ -162,7 +130,8 @@ export class CallSession extends BaseConstructor {
 
   private async executeCancelV23(callId: string | undefined, args: Record<string, unknown>): Promise<void> {
     const { tenantId, callerPhone } = this.contextV23();
-    const rows = await this.adapterV23().listBookedReservationsByPhone(tenantId, callerPhone);
+    const reservationPort = restaurantReservationPortFor(this);
+    const rows = await reservationPort.listBookedReservationsByPhone(tenantId, callerPhone);
     if (!rows.length) {
       this.cancelPendingIdsV23 = null;
       this.sendOutputV23(callId, { ok: true, status: "NO_RESERVATIONS" });
@@ -199,7 +168,7 @@ export class CallSession extends BaseConstructor {
     const failed: Record<string, unknown>[] = [];
     for (const row of selected) {
       try {
-        const result = await this.adapterV23().cancelBookedReservation(tenantId, row.id, callerPhone);
+        const result = await reservationPort.cancelBookedReservation(tenantId, row.id, callerPhone);
         if (result) cancelled.push({ reservation_code: row.reservation_code, previous_status: "BOOKED", new_status: "CANCELLED" });
         else failed.push({ reservation_code: row.reservation_code, reason: "NOT_BOOKED_OR_NOT_OWNED" });
       } catch (error) {
@@ -234,7 +203,8 @@ export class CallSession extends BaseConstructor {
 
   private async executeModifyV23(callId: string | undefined, args: Record<string, unknown>): Promise<void> {
     const { tenantId, callerPhone } = this.contextV23();
-    const rows = await this.adapterV23().listBookedReservationsByPhone(tenantId, callerPhone);
+    const reservationPort = restaurantReservationPortFor(this);
+    const rows = await reservationPort.listBookedReservationsByPhone(tenantId, callerPhone);
     if (!rows.length) {
       this.resetModifyV23();
       this.sendOutputV23(callId, { ok: true, status: "NO_RESERVATIONS" });
@@ -277,12 +247,12 @@ export class CallSession extends BaseConstructor {
     const startsAt = this.modifyPatchV23.starts_at ?? current.starts_at;
     const duration = this.modifyPatchV23.duration_minutes ?? durationMinutes(current);
     const customerName = this.modifyPatchV23.customer_name ?? current.customer_name;
-    const plan = await this.rpcV23<TablePlanRow>("check_restaurant_table_plan", {
-      p_tenant_id: tenantId,
-      p_starts_at: startsAt,
-      p_party_size: partySize,
-      p_duration_minutes: duration,
-      p_exclude_reservation_id: current.id,
+    const plan: RestaurantTablePlanRow[] = await reservationPort.checkTablePlan({
+      tenantId,
+      startsAt,
+      partySize,
+      durationMinutes: duration,
+      excludeReservationId: current.id,
     });
     if (!plan.length) {
       this.modifyProposalFingerprintV23 = null;
@@ -321,15 +291,15 @@ export class CallSession extends BaseConstructor {
       return;
     }
 
-    const modified = await this.rpcV23<Record<string, unknown>>("modify_restaurant_reservation", {
-      p_tenant_id: tenantId,
-      p_reservation_id: current.id,
-      p_caller_phone: callerPhone,
-      p_party_size: partySize,
-      p_starts_at: startsAt,
-      p_duration_minutes: duration,
-      p_customer_name: customerName,
-      p_notes: this.modifyPatchV23.notes ?? null,
+    const modified = await reservationPort.modifyReservation({
+      tenantId,
+      reservationId: current.id,
+      callerPhone,
+      partySize,
+      startsAt,
+      durationMinutes: duration,
+      customerName,
+      notes: this.modifyPatchV23.notes ?? null,
     });
     if (!modified.length) throw new Error("modify_restaurant_reservation returned empty payload");
     (this as any).diagnostics?.checkpoint?.("DIRECT_RESERVATION_MODIFIED_V23", { reservation_code: current.reservation_code, table_count: modified.length, allocation_mode: modified[0]?.allocation_mode ?? null });
@@ -340,11 +310,11 @@ export class CallSession extends BaseConstructor {
   private async executeBusinessInfoV23(callId: string | undefined, args: Record<string, unknown>): Promise<void> {
     const tenantId = requireString((this as any).tenantId, "tenant_id");
     const topics = Array.isArray(args.topics) ? args.topics.filter((value): value is string => typeof value === "string") : [];
-    const adapter = this.adapterV23();
+    const businessPort = restaurantBusinessPortFor(this);
     const result: Record<string, unknown> = { official_facts: (this as any).businessFacts ?? {} };
-    if (topics.includes("MENU")) result.menu_items = await adapter.listMenuItems(tenantId);
-    if (topics.includes("HOURS")) result.business_hours = await adapter.listBusinessHours(tenantId);
-    if (topics.includes("SERVICES")) result.services = await adapter.listServices(tenantId);
+    if (topics.includes("MENU")) result.menu_items = await businessPort.listMenuItems(tenantId);
+    if (topics.includes("HOURS")) result.business_hours = await businessPort.listBusinessHours(tenantId);
+    if (topics.includes("SERVICES")) result.services = await businessPort.listServices(tenantId);
     (this as any).diagnostics?.checkpoint?.("DIRECT_BUSINESS_INFO_COMPLETED_V23", { topics });
     this.sendOutputV23(callId, { ok: true, status: "FOUND", topics, ...result });
   }
@@ -357,7 +327,7 @@ export class CallSession extends BaseConstructor {
     }
     this.sendOutputV23(callId, { ok: true, status: "CLOSING" }, false);
     (this as any).diagnostics?.checkpoint?.("DIRECT_END_CALL_CONFIRMED_V23", { source: "lucia_agent_tool" });
-    (this as any).beginClosing?.("agent_end_confirmed_v23", "lucia_agent_tool_v23");
+    conversationLifecyclePortFor(this).confirmEndCall("agent_end_confirmed_v23", "lucia_agent_tool_v23");
   }
 
   private executeOutOfScopeV23(callId: string | undefined): void {
@@ -365,29 +335,29 @@ export class CallSession extends BaseConstructor {
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
-    const text = readRealtimeText(data);
-    let event: RealtimeEvent | null = null;
-    if (text) { try { event = JSON.parse(text) as RealtimeEvent; } catch { event = null; } }
+    const event = adaptRealtimeProviderEvents(data).find(
+      (candidate) => candidate.type === "SEMANTIC_TOOL_SELECTED" && DIRECT_TOOLS.has(candidate.name),
+    );
 
-    if (event?.type === "response.function_call_arguments.done" && event.name && DIRECT_TOOLS.has(event.name)) {
+    if (event?.type === "SEMANTIC_TOOL_SELECTED" && DIRECT_TOOLS.has(event.name)) {
       let args: Record<string, unknown>;
       try { args = parseObject(event.arguments); }
       catch (error) {
-        this.sendOutputV23(event.call_id, { ok: false, status: "ERROR", error: "INVALID_ARGUMENTS", message: error instanceof Error ? error.message : String(error) });
+        this.sendOutputV23(event.callId, { ok: false, status: "ERROR", error: "INVALID_ARGUMENTS", message: error instanceof Error ? error.message : String(error) });
         return;
       }
 
       this.markDirectToolV23(event.name);
       try {
-        if (event.name === QUERY) await this.executeQueryV23(event.call_id);
-        else if (event.name === CANCEL) await this.executeCancelV23(event.call_id, args);
-        else if (event.name === MODIFY) await this.executeModifyV23(event.call_id, args);
-        else if (event.name === BUSINESS_INFO) await this.executeBusinessInfoV23(event.call_id, args);
-        else if (event.name === END_CALL) this.executeEndCallV23(event.call_id, args);
-        else if (event.name === OUT_OF_SCOPE) this.executeOutOfScopeV23(event.call_id);
+        if (event.name === QUERY) await this.executeQueryV23(event.callId);
+        else if (event.name === CANCEL) await this.executeCancelV23(event.callId, args);
+        else if (event.name === MODIFY) await this.executeModifyV23(event.callId, args);
+        else if (event.name === BUSINESS_INFO) await this.executeBusinessInfoV23(event.callId, args);
+        else if (event.name === END_CALL) this.executeEndCallV23(event.callId, args);
+        else if (event.name === OUT_OF_SCOPE) this.executeOutOfScopeV23(event.callId);
       } catch (error) {
         (this as any).diagnostics?.fail?.("DIRECT_AGENT_TOOL_FAILED_V23", "DIRECT_AGENT_TOOL_EXECUTION_FAILED", { tool: event.name, error: error instanceof Error ? error.message : String(error) });
-        this.sendOutputV23(event.call_id, { ok: false, status: "ERROR", error: "EXECUTION_FAILED", message: error instanceof Error ? error.message : String(error) });
+        this.sendOutputV23(event.callId, { ok: false, status: "ERROR", error: "EXECUTION_FAILED", message: error instanceof Error ? error.message : String(error) });
       }
       return;
     }
