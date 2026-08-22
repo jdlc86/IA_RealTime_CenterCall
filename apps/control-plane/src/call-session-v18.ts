@@ -8,15 +8,9 @@ import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 const BaseConstructor = CallSessionV17 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV17.prototype as any;
 
-// A real caller may need several seconds to think after a business result. The
-// former 8s deadline interrupted normal pauses observed in production calls.
 const FIRST_PRESENCE_CHECK_MS = 20_000;
 const MAX_UNANSWERED_WAIT_MS = 45_000;
 const MAX_CALL_DURATION_MS = 15 * 60_000;
-// output_audio_buffer.stopped only guarantees that the current provider's
-// server-side output buffer is drained. It is not an end-to-end PSTN playout
-// acknowledgement. Keep the transport drain isolated to terminal hangup so
-// normal Lucia turns receive no additional latency.
 const TERMINAL_TRANSPORT_DRAIN_MS = 750;
 type LifecycleAssistantSpeechKind = NonNullable<Extract<LifecycleEvent, { type: "assistant_audio_started" }>["kind"]>;
 
@@ -32,6 +26,7 @@ export class CallSession extends BaseConstructor {
   private assistantSpeechKindsByResponseIdV18 = new Map<string, AssistantSpeechKind>();
   private terminalPlaybackPendingV18 = false;
   private terminalPlaybackActiveV18 = false;
+  private terminalResponseIdV18: string | null = null;
 
   async fetch(request: Request): Promise<Response> {
     const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
@@ -60,6 +55,7 @@ export class CallSession extends BaseConstructor {
   protected observeRealtimeTransportClosedV18(reason: string): void {
     this.terminalPlaybackPendingV18 = false;
     this.terminalPlaybackActiveV18 = false;
+    this.terminalResponseIdV18 = null;
     this.dispatchLifecycleV18({ type: "transport_closed", reason });
   }
 
@@ -110,12 +106,7 @@ export class CallSession extends BaseConstructor {
 
   private issuePresenceCheckV18(): void {
     const lifecycleState = this.turnLifecycleV18.snapshot().state;
-    if (
-      !(this as any).socket
-      || lifecycleState === "TERMINAL_SPEAKING"
-      || lifecycleState === "HANDOFF"
-      || lifecycleState === "CLOSING"
-    ) return;
+    if (!(this as any).socket || lifecycleState === "TERMINAL_SPEAKING" || lifecycleState === "HANDOFF" || lifecycleState === "CLOSING") return;
     this.presenceRequestPendingV18 = true;
     this.presenceResponseIdV18 = null;
     (this as any).diagnostics?.checkpoint?.("USER_PRESENCE_RECOVERY_REQUESTED", {
@@ -147,10 +138,11 @@ export class CallSession extends BaseConstructor {
         this.clearTerminalDrainTimerV18();
         this.terminalPlaybackPendingV18 = true;
         this.terminalPlaybackActiveV18 = false;
+        this.terminalResponseIdV18 = null;
         (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_REQUESTED_V18", {
           reason: effect.reason,
-          terminal_playback_tracking: "pending",
-          provider_response_id_required: false,
+          terminal_playback_tracking: "pending_identity",
+          provider_response_id_required: true,
         });
         (this as any).beginClosing?.(effect.reason, "conversation_turn_lifecycle");
         break;
@@ -158,6 +150,7 @@ export class CallSession extends BaseConstructor {
         this.clearPresenceTimersV18();
         this.terminalPlaybackPendingV18 = false;
         this.terminalPlaybackActiveV18 = false;
+        this.terminalResponseIdV18 = null;
         this.clearTerminalDrainTimerV18();
         (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_DRAIN_ARMED_V18", {
           authority: "ConversationTurnLifecycle",
@@ -171,12 +164,10 @@ export class CallSession extends BaseConstructor {
           sessionTaskRuntimeFor(this).enqueue("terminal_transport_drain_v18", async () => {
             this.terminalDrainTimerV18 = null;
             (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_DRAIN_COMPLETED_V18", {
-              authority: "ConversationTurnLifecycle",
-              drain_ms: TERMINAL_TRANSPORT_DRAIN_MS,
+              authority: "ConversationTurnLifecycle", drain_ms: TERMINAL_TRANSPORT_DRAIN_MS,
             });
             (this as any).diagnostics?.checkpoint?.("LIFECYCLE_HANGUP_DISPATCHED_V18", {
-              authority: "ConversationTurnLifecycle",
-              transport_executor: "performHangup",
+              authority: "ConversationTurnLifecycle", transport_executor: "performHangup",
               trigger: "lifecycle_terminal_transport_drained",
             });
             await (this as any).performHangup?.("lifecycle_terminal_transport_drained");
@@ -205,67 +196,60 @@ export class CallSession extends BaseConstructor {
   private rememberAssistantSpeechKindV18(event: RealtimeProviderEvent): void {
     if (event.type !== "ASSISTANT_RESPONSE_STARTED" || !event.responseId) return;
     this.assistantSpeechKindsByResponseIdV18.set(event.responseId, event.kind);
+    if (this.terminalPlaybackPendingV18 && event.kind === "TERMINAL" && !this.terminalResponseIdV18) {
+      this.terminalResponseIdV18 = event.responseId;
+      (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_RESPONSE_BOUND_V18", {
+        response_id: event.responseId,
+        authority: "provider_response_identity",
+      });
+    }
     (this as any).diagnostics?.checkpoint?.("ASSISTANT_SPEECH_KIND_CORRELATED_V18", {
-      response_id: event.responseId,
-      kind: event.kind,
-      source: "assistant_response_started",
+      response_id: event.responseId, kind: event.kind, source: "assistant_response_started",
     });
   }
 
   private effectiveAssistantSpeechKindV18(event: RealtimeProviderEvent): AssistantSpeechKind | undefined {
-    if (
-      event.type !== "ASSISTANT_AUDIO_STARTED" &&
-      event.type !== "ASSISTANT_AUDIO_STOPPED" &&
-      event.type !== "ASSISTANT_AUDIO_CLEARED"
-    ) return undefined;
+    if (event.type !== "ASSISTANT_AUDIO_STARTED" && event.type !== "ASSISTANT_AUDIO_STOPPED" && event.type !== "ASSISTANT_AUDIO_CLEARED") return undefined;
     if (!event.responseId) return event.kind;
     return this.assistantSpeechKindsByResponseIdV18.get(event.responseId) ?? event.kind;
   }
 
-  private lifecycleAssistantSpeechKindV18(
-    event: RealtimeProviderEvent,
-    fallbackKind: LifecycleAssistantSpeechKind | undefined,
-  ): LifecycleAssistantSpeechKind | undefined {
+  private lifecycleAssistantSpeechKindV18(event: RealtimeProviderEvent, fallbackKind: LifecycleAssistantSpeechKind | undefined): LifecycleAssistantSpeechKind | undefined {
     const correlatedKind = this.effectiveAssistantSpeechKindV18(event) ?? fallbackKind;
     const lifecycleState = this.turnLifecycleV18.snapshot().state;
+    const matchesTerminalIdentity = Boolean(
+      event.responseId && this.terminalResponseIdV18 && event.responseId === this.terminalResponseIdV18,
+    );
 
-    if (
-      event.type === "ASSISTANT_AUDIO_STARTED" &&
-      lifecycleState === "TERMINAL_SPEAKING" &&
-      (this.terminalPlaybackPendingV18 || correlatedKind === "TERMINAL")
-    ) {
+    if (event.type === "ASSISTANT_AUDIO_STARTED" && lifecycleState === "TERMINAL_SPEAKING" && correlatedKind === "TERMINAL" && matchesTerminalIdentity) {
       this.terminalPlaybackPendingV18 = false;
       this.terminalPlaybackActiveV18 = true;
       (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_PLAYBACK_BOUND_V18", {
-        response_id: event.responseId ?? null,
+        response_id: event.responseId,
         provider_kind: event.kind,
-        correlated_kind: correlatedKind ?? null,
-        binding_source: correlatedKind === "TERMINAL" ? "provider_or_response_correlation" : "lifecycle_pending_terminal_playback",
+        correlated_kind: correlatedKind,
+        binding_source: "provider_response_identity",
       });
       return "TERMINAL";
     }
 
-    if (
-      event.type === "ASSISTANT_AUDIO_CLEARED" &&
-      lifecycleState === "TERMINAL_SPEAKING" &&
-      this.terminalPlaybackActiveV18
-    ) {
+    if (event.type === "ASSISTANT_AUDIO_CLEARED" && lifecycleState === "TERMINAL_SPEAKING" && this.terminalPlaybackActiveV18 && matchesTerminalIdentity) {
       this.terminalPlaybackActiveV18 = false;
       this.terminalPlaybackPendingV18 = true;
       (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_PLAYBACK_CLEARED_V18", {
-        response_id: event.responseId ?? null,
+        response_id: event.responseId,
         provider_kind: event.kind,
         correlated_kind: correlatedKind ?? null,
         authoritative_kind: "TERMINAL",
-        terminal_playback_tracking: "rearmed",
+        terminal_playback_tracking: "rearmed_same_identity",
       });
       return "TERMINAL";
     }
 
-    if (event.type === "ASSISTANT_AUDIO_STOPPED" && this.terminalPlaybackActiveV18) {
+    if (event.type === "ASSISTANT_AUDIO_STOPPED" && this.terminalPlaybackActiveV18 && matchesTerminalIdentity) {
       this.terminalPlaybackActiveV18 = false;
       (this as any).diagnostics?.checkpoint?.("LIFECYCLE_TERMINAL_PLAYBACK_STOPPED_V18", {
-        response_id: event.responseId ?? null,
+        response_id: event.responseId,
         provider_kind: event.kind,
         correlated_kind: correlatedKind ?? null,
         authoritative_kind: "TERMINAL",
@@ -282,6 +266,24 @@ export class CallSession extends BaseConstructor {
     }
   }
 
+  private shouldQuarantineNonTerminalCloseEventV18(event: RealtimeProviderEvent): boolean {
+    if (this.turnLifecycleV18.snapshot().state !== "TERMINAL_SPEAKING") return false;
+    if (
+      event.type !== "ASSISTANT_RESPONSE_STARTED" &&
+      event.type !== "ASSISTANT_AUDIO_STARTED" &&
+      event.type !== "ASSISTANT_AUDIO_STOPPED" &&
+      event.type !== "ASSISTANT_AUDIO_CLEARED"
+    ) return false;
+    if (event.kind === "TERMINAL") return false;
+    (this as any).diagnostics?.checkpoint?.("LIFECYCLE_NON_TERMINAL_EVENT_QUARANTINED_V18", {
+      event_type: event.type,
+      response_id: "responseId" in event ? event.responseId ?? null : null,
+      kind: "kind" in event ? event.kind : null,
+      terminal_response_id: this.terminalResponseIdV18,
+    });
+    return true;
+  }
+
   private async handleRealtimeMessage(data: unknown): Promise<void> {
     const providerEvents = adaptRealtimeProviderEvents(data);
     for (const providerEvent of providerEvents) {
@@ -293,28 +295,18 @@ export class CallSession extends BaseConstructor {
 
       const adapted = adaptRealtimeTurnEvent(providerEvent);
       for (const lifecycleEvent of adapted) {
-        if (
-          lifecycleEvent.type === "assistant_audio_started" ||
-          lifecycleEvent.type === "assistant_audio_stopped" ||
-          lifecycleEvent.type === "assistant_audio_cleared"
-        ) {
-          const isPresenceAudio =
-            Boolean(this.presenceResponseIdV18) &&
-            "responseId" in providerEvent &&
-            providerEvent.responseId === this.presenceResponseIdV18;
-          const authoritativeKind = isPresenceAudio
-            ? "PRESENCE"
-            : this.lifecycleAssistantSpeechKindV18(providerEvent, lifecycleEvent.kind);
-          this.dispatchLifecycleV18({
-            type: lifecycleEvent.type,
-            kind: authoritativeKind ?? lifecycleEvent.kind,
-          });
+        if (lifecycleEvent.type === "assistant_audio_started" || lifecycleEvent.type === "assistant_audio_stopped" || lifecycleEvent.type === "assistant_audio_cleared") {
+          const isPresenceAudio = Boolean(this.presenceResponseIdV18) && "responseId" in providerEvent && providerEvent.responseId === this.presenceResponseIdV18;
+          const authoritativeKind = isPresenceAudio ? "PRESENCE" : this.lifecycleAssistantSpeechKindV18(providerEvent, lifecycleEvent.kind);
+          this.dispatchLifecycleV18({ type: lifecycleEvent.type, kind: authoritativeKind ?? lifecycleEvent.kind });
         } else {
           this.dispatchLifecycleV18(lifecycleEvent);
         }
       }
       this.releaseAssistantSpeechKindV18(providerEvent);
     }
+
+    if (providerEvents.some((event) => this.shouldQuarantineNonTerminalCloseEventV18(event))) return;
 
     await BasePrototype.handleRealtimeMessage.call(this, data);
 
