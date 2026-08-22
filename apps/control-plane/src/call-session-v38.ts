@@ -1,8 +1,8 @@
 import { CallSession as CallSessionV37 } from "./call-session-v37";
-import { classifyHandoffFailure, encodeHumanHandoffClientState, parseHumanHandoffConfig } from "./human-handoff";
+import { classifyHandoffFailure, encodeHumanHandoffClientState } from "./human-handoff";
 import { humanHandoffPersistencePortFor } from "./human-handoff-persistence-port.js";
 import { humanHandoffSourceLegPortFor } from "./human-handoff-source-leg-port.js";
-import { tenantConfigurationKey, tenantConfigurationKeyV2 } from "./tenant-kv";
+import { KvTenantRepository } from "./tenant-kv";
 import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 
 const BaseConstructor = CallSessionV37 as unknown as new (...args: any[]) => any;
@@ -43,10 +43,8 @@ export class CallSession extends BaseConstructor {
   private async failureMessageV38(tenantId: string): Promise<string | null> {
     const kv = (this as any).env?.TENANT_CONFIG;
     if (!kv || typeof kv.get !== "function") return null;
-    const raw = await kv.get(tenantConfigurationKeyV2(tenantId), { cacheTtl: 30 })
-      ?? await kv.get(tenantConfigurationKey(tenantId), { cacheTtl: 30 });
-    if (!raw) return null;
-    const config = parseHumanHandoffConfig((JSON.parse(raw) as Record<string, unknown>).humanHandoff);
+    const tenantConfig = await new KvTenantRepository(kv).getTenantConfiguration(tenantId);
+    const config = tenantConfig?.humanHandoff;
     return config?.enabled ? config.failurePolicy.message : null;
   }
 

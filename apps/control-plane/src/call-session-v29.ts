@@ -16,6 +16,7 @@ import { publicRestaurantToolAuthorizationPortFor } from "./semantic-tool-author
 import { semanticTurnRuntimeFor } from "./semantic-turn-runtime.js";
 import { turnOwnershipRuntimeFor } from "./turn-ownership-runtime.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { SEMANTIC_SECURITY_POLICY } from "./semantic-security-boundary.js";
 
 const BaseConstructor = CallSessionV28 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV28.prototype as any;
@@ -49,7 +50,7 @@ export class CallSession extends BaseConstructor {
     if (isStart && response.ok) {
       this.installObservabilityV29();
       realtimeCommandPortFor(this as any).updateSessionPolicy({
-        instructions: v29Instructions(this as any),
+        instructions: `${SEMANTIC_SECURITY_POLICY}\n\n${v29Instructions(this as any)}`,
         toolChoice: "AUTO",
       });
       (this as any).diagnostics?.checkpoint?.("SEMANTIC_TURN_GATE_V29_ENABLED", {

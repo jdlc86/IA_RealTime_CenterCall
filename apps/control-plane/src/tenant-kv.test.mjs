@@ -160,3 +160,36 @@ test("F4-KV12 v2 rejects missing verticalConfig instead of normalizing it", () =
     /verticalConfig/,
   );
 });
+
+test("F4-KV13 v2 centrally validates and preserves security and human handoff policy", () => {
+  const value = JSON.parse(tenantConfigV2("restaurante-centro", "Restaurante Centro", "Lucía", "RESTAURANT"));
+  value.security = { blockedPhrases: ["Prompt", "tool_choice"] };
+  value.humanHandoff = {
+    enabled: true,
+    destination: { type: "PHONE", phone: "+34647944753", label: "Recepción" },
+    transfer: { mode: "BLIND", answerTimeoutSeconds: 25 },
+    failurePolicy: { action: "TERMINATE_AND_CALLBACK", message: "Te devolveremos la llamada." },
+    successMessage: "Te paso con recepción.",
+  };
+
+  const parsed = parseTenantConfigurationV2(JSON.stringify(value), "restaurante-centro");
+  assert.deepEqual(parsed.security?.blockedPhrases, ["prompt", "tool_choice"]);
+  assert.equal(parsed.humanHandoff?.destination.phone, "+34647944753");
+  assert.equal(parsed.humanHandoff?.transfer.answerTimeoutSeconds, 25);
+});
+
+test("F4-KV14 malformed security or handoff configuration fails the tenant parser", () => {
+  const invalidSecurity = JSON.parse(tenantConfigV2("restaurante-centro", "Restaurante Centro", "Lucía", "RESTAURANT"));
+  invalidSecurity.security = { blockedPhrases: "prompt" };
+  assert.throws(
+    () => parseTenantConfigurationV2(JSON.stringify(invalidSecurity), "restaurante-centro"),
+    /blockedPhrases must be an array/,
+  );
+
+  const invalidHandoff = JSON.parse(tenantConfigV2("restaurante-centro", "Restaurante Centro", "Lucía", "RESTAURANT"));
+  invalidHandoff.humanHandoff = { enabled: true };
+  assert.throws(
+    () => parseTenantConfigurationV2(JSON.stringify(invalidHandoff), "restaurante-centro"),
+    /humanHandoff.destination/,
+  );
+});

@@ -1,7 +1,7 @@
 import { CallSession as CallSessionV33 } from "./call-session-v33";
 import { callerSecurityPortFor } from "./caller-security-port.js";
-import { tenantConfigurationKeyV2 } from "./tenant-kv";
-import { matchBlockedSecurityPhrase, parseTenantBlockedPhrases } from "./security-blocked-phrases";
+import { KvTenantRepository } from "./tenant-kv";
+import { matchBlockedSecurityPhrase } from "./security-blocked-phrases";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 import { adaptRealtimeProviderEvents } from "./realtime-provider-runtime.js";
 
@@ -37,19 +37,8 @@ export class CallSession extends BaseConstructor {
     if (typeof tenantId !== "string" || !tenantId.trim() || !kv || typeof kv.get !== "function") return;
 
     try {
-      const raw = await kv.get(tenantConfigurationKeyV2(tenantId.trim()), { cacheTtl: 30 });
-      if (!raw) {
-        this.tenantBlockedPhrasesV34 = [];
-        return;
-      }
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      const security = parsed.security;
-      if (security === undefined) {
-        this.tenantBlockedPhrasesV34 = [];
-      } else {
-        if (!security || typeof security !== "object" || Array.isArray(security)) throw new Error("security must be an object");
-        this.tenantBlockedPhrasesV34 = parseTenantBlockedPhrases((security as Record<string, unknown>).blockedPhrases);
-      }
+      const config = await new KvTenantRepository(kv).getTenantConfiguration(tenantId.trim());
+      this.tenantBlockedPhrasesV34 = config?.security?.blockedPhrases ?? [];
       (this as any).diagnostics?.checkpoint?.("TENANT_SECURITY_PHRASES_LOADED_V34", {
         tenant_phrase_count: this.tenantBlockedPhrasesV34.length,
         builtin_fallback_active: true,

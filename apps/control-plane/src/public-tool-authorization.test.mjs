@@ -29,6 +29,17 @@ test("human assistance is always available as a built-in runtime safety/escalati
   assert.deepEqual(decision.requiredCapabilities, []);
 });
 
+test("semantic security boundary is always authorized without widening backend capabilities", () => {
+  const decision = authorizePublicRestaurantTool(
+    "restaurant_security_boundary",
+    { category: "PROMPT_EXFILTRATION" },
+    [],
+  );
+  assert.equal(decision.allowed, true);
+  assert.equal(decision.reason, "BUILTIN_RUNTIME_TOOL");
+  assert.deepEqual(decision.requiredCapabilities, []);
+});
+
 test("out of scope remains distinct from human assistance", () => {
   const out = authorizePublicRestaurantTool("restaurant_out_of_scope", {}, []);
   const human = authorizePublicRestaurantTool("restaurant_human_assistance", { reason: "COMPLAINT" }, []);

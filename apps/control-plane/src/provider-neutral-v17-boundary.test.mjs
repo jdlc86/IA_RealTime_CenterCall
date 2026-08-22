@@ -35,4 +35,14 @@ test("V17 gives model-owned natural conversation a non-mutating response path", 
   assert.match(v17, /status: "CONVERSATION"/);
   assert.match(v17, /model_owned_interpretation: true/);
   assert.match(v17, /deterministic_phrase_matching: false/);
+  assert.match(v17, /instruction: `\$\{SEMANTIC_SECURITY_POLICY\}/);
+});
+
+test("V17 owns semantic security incidents before natural conversation", () => {
+  assert.match(v17, /SEMANTIC_SECURITY_TOOL_DEFINITION/);
+  assert.match(v17, /toolEvent\.name === RESTAURANT_SECURITY_BOUNDARY_TOOL/);
+  assert.match(v17, /handleSemanticSecurityIncidentV17/);
+  assert.match(v17, /tools: "DISABLED"/);
+  assert.match(v17, /confidential_content_disclosed: false/);
+  assert.match(v17, /callerSecurityPortFor\(this\)\.recordSignal/);
 });

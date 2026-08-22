@@ -1,9 +1,8 @@
 import { CallSession as CallSessionV36 } from "./call-session-v36";
-import { tenantConfigurationKey, tenantConfigurationKeyV2 } from "./tenant-kv";
+import { KvTenantRepository } from "./tenant-kv";
 import {
   classifyHandoffFailure,
   encodeHumanHandoffClientState,
-  parseHumanHandoffConfig,
   type HandoffFailureStatus,
   type HumanHandoffConfig,
 } from "./human-handoff";
@@ -101,11 +100,8 @@ export class CallSession extends BaseConstructor {
     const kv = session.env?.TENANT_CONFIG;
     if (!kv || typeof kv.get !== "function") return;
     try {
-      const raw = await kv.get(tenantConfigurationKeyV2(tenantId), { cacheTtl: 30 })
-        ?? await kv.get(tenantConfigurationKey(tenantId), { cacheTtl: 30 });
-      if (!raw) return;
-      const record = JSON.parse(raw) as Record<string, unknown>;
-      const config = parseHumanHandoffConfig(record.humanHandoff);
+      const tenantConfig = await new KvTenantRepository(kv).getTenantConfiguration(tenantId);
+      const config = tenantConfig?.humanHandoff;
       runtime.setConfig(config);
       session.diagnostics?.checkpoint?.("HUMAN_HANDOFF_CONFIG_LOADED_V37", {
         configured: config !== undefined,

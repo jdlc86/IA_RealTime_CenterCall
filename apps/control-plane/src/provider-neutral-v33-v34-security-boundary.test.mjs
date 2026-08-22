@@ -25,7 +25,9 @@ test("v33 and v34 consume provider-neutral caller transcript events", () => {
   }
 });
 
-test("v34 keeps tenant configuration parsing separate from provider event parsing", () => {
-  assert.match(v34, /JSON\.parse\(raw\)/);
-  assert.match(v34, /parseTenantBlockedPhrases/);
+test("v34 consumes the centrally validated tenant security policy", () => {
+  assert.match(v34, /new KvTenantRepository\(kv\)\.getTenantConfiguration/);
+  assert.match(v34, /config\?\.security\?\.blockedPhrases/);
+  assert.doesNotMatch(v34, /JSON\.parse\(raw\)/);
+  assert.doesNotMatch(v34, /parseTenantBlockedPhrases/);
 });
