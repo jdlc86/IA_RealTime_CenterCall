@@ -9,18 +9,74 @@ function step(snapshot, event) {
   return reduceResponseOwner(snapshot, event);
 }
 
-test("confirmed barge-in does not wait for response.done", () => {
+test("confirmed barge-in waits for correlated response.done before replacement create", () => {
   let s = initialResponseOwnerSnapshot();
   ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
   ({ snapshot: s } = step(s, { type: "caller_speech_started" }));
+  const interrupted = step(s, { type: "barge_in_interrupt" });
+  assert.equal(interrupted.snapshot.state, "CALLER_TURN_READY");
+  assert.equal(interrupted.snapshot.callerResponsePending, true);
+  assert.equal(interrupted.snapshot.activeResponseId, "old");
+  assert.deepEqual(interrupted.effects, [
+    { type: "cancel_response", responseId: "old" },
+    { type: "clear_playback" },
+  ]);
+
+  const released = step(interrupted.snapshot, { type: "assistant_response_done", responseId: "old" });
+  assert.equal(released.snapshot.state, "CALLER_TURN_READY");
+  assert.equal(released.snapshot.activeResponseId, null);
+  assert.equal(released.snapshot.callerResponsePending, true);
+  assert.deepEqual(released.effects, [{ type: "create_caller_response" }]);
+});
+
+test("confirmed barge-in creates immediately when provider response already ended", () => {
+  let s = initialResponseOwnerSnapshot();
+  ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
+  ({ snapshot: s } = step(s, { type: "caller_speech_started" }));
+  ({ snapshot: s } = step(s, { type: "assistant_response_done", responseId: "old" }));
   const r = step(s, { type: "barge_in_interrupt" });
-  assert.equal(r.snapshot.state, "CALLER_TURN_READY");
+  assert.equal(r.snapshot.activeResponseId, null);
   assert.equal(r.snapshot.callerResponsePending, true);
   assert.deepEqual(r.effects, [
-    { type: "cancel_response", responseId: "old" },
     { type: "clear_playback" },
     { type: "create_caller_response" },
   ]);
+});
+
+test("stale response.done cannot release a pending caller response", () => {
+  let s = initialResponseOwnerSnapshot();
+  ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
+  ({ snapshot: s } = step(s, { type: "caller_speech_started" }));
+  ({ snapshot: s } = step(s, { type: "barge_in_interrupt" }));
+  const stale = step(s, { type: "assistant_response_done", responseId: "other" });
+  assert.equal(stale.snapshot.activeResponseId, "old");
+  assert.equal(stale.snapshot.callerResponsePending, true);
+  assert.deepEqual(stale.effects, []);
+});
+
+test("late response start preserves pending caller turn until its correlated done", () => {
+  let s = initialResponseOwnerSnapshot();
+  ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
+  ({ snapshot: s } = step(s, { type: "caller_speech_started" }));
+  ({ snapshot: s } = step(s, { type: "barge_in_interrupt" }));
+
+  const late = step(s, { type: "assistant_response_started", responseId: "provider-late" });
+  assert.equal(late.snapshot.state, "CALLER_TURN_READY");
+  assert.equal(late.snapshot.activeResponseId, "provider-late");
+  assert.equal(late.snapshot.callerResponsePending, true);
+  assert.deepEqual(late.effects, [{
+    type: "response_ownership_conflict",
+    previousResponseId: "old",
+    newResponseId: "provider-late",
+  }]);
+
+  const staleOldDone = step(late.snapshot, { type: "assistant_response_done", responseId: "old" });
+  assert.equal(staleOldDone.snapshot.activeResponseId, "provider-late");
+  assert.deepEqual(staleOldDone.effects, []);
+
+  const released = step(staleOldDone.snapshot, { type: "assistant_response_done", responseId: "provider-late" });
+  assert.equal(released.snapshot.activeResponseId, null);
+  assert.deepEqual(released.effects, [{ type: "create_caller_response" }]);
 });
 
 test("caller speech without assistant ownership is not classified as barge-in", () => {
@@ -49,7 +105,6 @@ test("SIP-cleared playback and active response are independent", () => {
   const r = step(s, { type: "barge_in_interrupt" });
   assert.deepEqual(r.effects, [
     { type: "cancel_response", responseId: "old" },
-    { type: "create_caller_response" },
   ]);
 });
 
@@ -94,18 +149,6 @@ test("ignored candidate without playback clear remains non-destructive", () => {
   assert.equal(ignored.snapshot.activeResponseId, "old");
   assert.equal(ignored.snapshot.playbackCleared, false);
   assert.deepEqual(ignored.effects, []);
-});
-
-test("late response.done only reconciles old response and never gates caller turn", () => {
-  let s = initialResponseOwnerSnapshot();
-  ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
-  ({ snapshot: s } = step(s, { type: "caller_speech_started" }));
-  ({ snapshot: s } = step(s, { type: "barge_in_interrupt" }));
-  const r = step(s, { type: "assistant_response_done", responseId: "old" });
-  assert.equal(r.snapshot.state, "CALLER_TURN_READY");
-  assert.equal(r.snapshot.activeResponseId, null);
-  assert.equal(r.snapshot.callerResponsePending, true);
-  assert.deepEqual(r.effects, []);
 });
 
 test("second response.created is reconciled deterministically and surfaces conflict", () => {
