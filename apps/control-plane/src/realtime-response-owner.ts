@@ -58,7 +58,8 @@ export function initialResponseOwnerSnapshot(): ResponseOwnerSnapshot {
  *   response when it matches the authoritative active response identity;
  * - if Realtime reports a second response while one is still active, the newest
  *   server-created response becomes authoritative and the conflict is surfaced;
- * - a late response start cannot destroy an already-valid barge-in classification;
+ * - a late response start cannot destroy an already-valid barge-in classification
+ *   or a caller turn already waiting for provider release;
  * - a late response.done for a superseded response can never clear the current one;
  * - terminal state is absorbing.
  */
@@ -89,11 +90,18 @@ export function reduceResponseOwner(
             newResponseId: event.responseId,
           }]
         : [];
+      const preservePendingCallerTurn = snapshot.state === "CALLER_TURN_READY" && snapshot.callerResponsePending;
       return {
         snapshot: {
-          state: snapshot.state === "BARGE_IN_CLASSIFYING" ? "BARGE_IN_CLASSIFYING" : "ASSISTANT_ACTIVE",
+          state: snapshot.state === "BARGE_IN_CLASSIFYING"
+            ? "BARGE_IN_CLASSIFYING"
+            : preservePendingCallerTurn
+              ? "CALLER_TURN_READY"
+              : "ASSISTANT_ACTIVE",
           activeResponseId: event.responseId,
-          playbackCleared: snapshot.state === "BARGE_IN_CLASSIFYING" ? snapshot.playbackCleared : false,
+          playbackCleared: snapshot.state === "BARGE_IN_CLASSIFYING" || preservePendingCallerTurn
+            ? snapshot.playbackCleared
+            : false,
           callerResponsePending: snapshot.callerResponsePending,
           resumeAfterActiveDone: snapshot.resumeAfterActiveDone,
         },
