@@ -25,22 +25,43 @@ test("confirmed barge-in waits for correlated response.done before replacement c
   const released = step(interrupted.snapshot, { type: "assistant_response_done", responseId: "old" });
   assert.equal(released.snapshot.state, "CALLER_TURN_READY");
   assert.equal(released.snapshot.activeResponseId, null);
-  assert.equal(released.snapshot.callerResponsePending, true);
+  assert.equal(released.snapshot.callerResponsePending, false);
   assert.deepEqual(released.effects, [{ type: "create_caller_response" }]);
 });
 
-test("confirmed barge-in creates immediately when provider response already ended", () => {
+test("confirmed barge-in creates immediately when provider response already ended and consumes pending authority", () => {
   let s = initialResponseOwnerSnapshot();
   ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
   ({ snapshot: s } = step(s, { type: "caller_speech_started" }));
   ({ snapshot: s } = step(s, { type: "assistant_response_done", responseId: "old" }));
   const r = step(s, { type: "barge_in_interrupt" });
   assert.equal(r.snapshot.activeResponseId, null);
-  assert.equal(r.snapshot.callerResponsePending, true);
+  assert.equal(r.snapshot.callerResponsePending, false);
   assert.deepEqual(r.effects, [
     { type: "clear_playback" },
     { type: "create_caller_response" },
   ]);
+});
+
+test("released caller response cannot self-loop on its own response.done", () => {
+  let s = initialResponseOwnerSnapshot();
+  ({ snapshot: s } = step(s, { type: "assistant_response_started", responseId: "old" }));
+  ({ snapshot: s } = step(s, { type: "caller_speech_started" }));
+  ({ snapshot: s } = step(s, { type: "barge_in_interrupt" }));
+
+  const released = step(s, { type: "assistant_response_done", responseId: "old" });
+  assert.equal(released.snapshot.callerResponsePending, false);
+  assert.deepEqual(released.effects, [{ type: "create_caller_response" }]);
+
+  const started = step(released.snapshot, { type: "assistant_response_started", responseId: "replacement" });
+  assert.equal(started.snapshot.state, "ASSISTANT_ACTIVE");
+  assert.equal(started.snapshot.callerResponsePending, false);
+  assert.equal(started.snapshot.activeResponseId, "replacement");
+
+  const done = step(started.snapshot, { type: "assistant_response_done", responseId: "replacement" });
+  assert.equal(done.snapshot.activeResponseId, null);
+  assert.equal(done.snapshot.callerResponsePending, false);
+  assert.deepEqual(done.effects, []);
 });
 
 test("stale response.done cannot release a pending caller response", () => {
@@ -76,6 +97,7 @@ test("late response start preserves pending caller turn until its correlated don
 
   const released = step(staleOldDone.snapshot, { type: "assistant_response_done", responseId: "provider-late" });
   assert.equal(released.snapshot.activeResponseId, null);
+  assert.equal(released.snapshot.callerResponsePending, false);
   assert.deepEqual(released.effects, [{ type: "create_caller_response" }]);
 });
 
