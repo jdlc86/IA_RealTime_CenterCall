@@ -109,6 +109,7 @@ export class CallSession extends BaseConstructor {
       latestCallerTranscript: timeRuntime.latestTurn(),
       authorizedStartsAt: timeRuntime.authorizedFor(toolEvent.name),
       pendingSlot: timeRuntime.pendingSlot(),
+      matchesBackendOfferedSlot: timeRuntime.matchesOfferedSlotAfterCallerTurn(startsAt),
     });
 
     if (decision.action === "BLOCK") {
@@ -117,11 +118,13 @@ export class CallSession extends BaseConstructor {
       return;
     }
 
-    if (decision.action === "ALLOW_NEW") {
+    if (decision.action === "ALLOW_NEW" || decision.action === "ALLOW_OFFERED") {
       const { resolvedPendingSlot } = timeRuntime.establish(toolEvent.name, startsAt);
       (this as any).diagnostics?.checkpoint?.("RESERVATION_TIME_AUTHORITY_ESTABLISHED_V53", {
         tool: toolEvent.name, starts_at: startsAt,
-        source: resolvedPendingSlot ? "PENDING_TIME_SLOT_CALLER_ANSWER" : "LATEST_CALLER_TRANSCRIPT",
+        source: decision.action === "ALLOW_OFFERED"
+          ? "SEMANTIC_SELECTION_OF_BACKEND_OFFERED_SLOT"
+          : resolvedPendingSlot ? "PENDING_TIME_SLOT_CALLER_ANSWER" : "LATEST_CALLER_TRANSCRIPT",
         pending_slot_resolved: resolvedPendingSlot, state_owner: "reservation_time_session_runtime",
       });
     } else {

@@ -102,3 +102,21 @@ test("numeric party-size answer still cannot authorize time even with time pendi
     pendingSlot: "starts_at_time",
   }), { action: "BLOCK", reason: "TIME_NOT_EXPLICIT_IN_LATEST_CALLER_TURN" });
 });
+
+test("semantic selection of an exact backend-offered slot is authoritative", () => {
+  assert.deepEqual(decideReservationTimeAuthority({
+    requestedStartsAt: "2026-09-15T21:00:00+02:00",
+    latestCallerTranscript: "La segunda opción me viene mejor.",
+    authorizedStartsAt: null,
+    matchesBackendOfferedSlot: true,
+  }), { action: "ALLOW_OFFERED" });
+});
+
+test("a model-invented slot remains blocked when it was not offered by the backend", () => {
+  assert.deepEqual(decideReservationTimeAuthority({
+    requestedStartsAt: "2026-09-15T22:00:00+02:00",
+    latestCallerTranscript: "La segunda opción me viene mejor.",
+    authorizedStartsAt: null,
+    matchesBackendOfferedSlot: false,
+  }), { action: "BLOCK", reason: "TIME_NOT_EXPLICIT_IN_LATEST_CALLER_TURN" });
+});

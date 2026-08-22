@@ -33,3 +33,11 @@ test("V53 consumes CREATE time only after the reservation runtime reports a new 
   assert.match(source, /RESERVATION_TIME_AUTHORITY_RETAINED_V53/);
   assert.match(source, /reason: "create_not_committed"/);
 });
+
+test("search results establish backend-offered slot authority without phrase matching", async () => {
+  const searchSource = await readFile(new URL("./call-session-v31.ts", import.meta.url), "utf8");
+  const authoritySource = await readFile(new URL("./call-session-v53-reservation-time-authority.ts", import.meta.url), "utf8");
+  assert.match(searchSource, /recordOfferedSlots\(authorizedRows\.map/);
+  assert.match(authoritySource, /matchesOfferedSlotAfterCallerTurn/);
+  assert.match(authoritySource, /SEMANTIC_SELECTION_OF_BACKEND_OFFERED_SLOT/);
+});

@@ -3,6 +3,7 @@ const TIMEZONE = "Europe/Madrid";
 export type ReservationTimeAuthorityDecision =
   | { action: "ALLOW_EXISTING" }
   | { action: "ALLOW_NEW" }
+  | { action: "ALLOW_OFFERED" }
   | { action: "BLOCK"; reason: "TIME_NOT_EXPLICIT_IN_LATEST_CALLER_TURN" | "INVALID_STARTS_AT" };
 
 const HOUR_WORDS: Record<string, number> = {
@@ -121,9 +122,11 @@ export function decideReservationTimeAuthority(input: {
   latestCallerTranscript: string | null;
   authorizedStartsAt: string | null;
   pendingSlot?: string | null;
+  matchesBackendOfferedSlot?: boolean;
 }): ReservationTimeAuthorityDecision {
   if (!localHourMinute(input.requestedStartsAt)) return { action: "BLOCK", reason: "INVALID_STARTS_AT" };
   if (input.authorizedStartsAt === input.requestedStartsAt) return { action: "ALLOW_EXISTING" };
+  if (input.matchesBackendOfferedSlot === true) return { action: "ALLOW_OFFERED" };
   if (callerTranscriptSupportsReservationTime(input.latestCallerTranscript, input.requestedStartsAt)) return { action: "ALLOW_NEW" };
   if (
     input.pendingSlot === "starts_at_time" &&

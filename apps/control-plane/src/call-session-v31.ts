@@ -17,6 +17,7 @@ import {
 } from "./reservation-business-hours";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import { reservationSessionRuntimeFor } from "./reservation-session-runtime.js";
+import { reservationTimeSessionRuntimeFor } from "./reservation-time-session-runtime.js";
 import { publicRestaurantToolAuthorizationPortFor } from "./semantic-tool-authorization-port.js";
 import { decideReservationSearchDateRange } from "./reservation-search-date-range-policy.js";
 import { formatMadridReservationSpeech } from "./reservation-search-output-localization.js";
@@ -488,6 +489,7 @@ export class CallSession extends BaseConstructor {
     const authorizedRows = callerAuthorizedRange
       ? rows
       : rows.filter((row) => sameBusinessLocalDate(row.starts_at, from, RESTAURANT_TIMEZONE));
+    reservationTimeSessionRuntimeFor(this).recordOfferedSlots(authorizedRows.map((row) => row.starts_at));
 
     (this as any).diagnostics?.checkpoint?.("RESERVATION_SLOT_SEARCH_COMPLETED_V31", {
       party_size: partySize,
