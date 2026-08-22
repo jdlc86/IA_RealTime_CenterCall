@@ -38,5 +38,5 @@ test("v29 delegates greetings and presence replies to contextual model interpret
 
 test("v29 installs the semantic confidentiality policy in the final active instructions", () => {
   assert.match(source, /import \{ SEMANTIC_SECURITY_POLICY \}/);
-  assert.match(source, /instructions: `\$\{SEMANTIC_SECURITY_POLICY\}\\n\\n\$\{v29Instructions\(this as any\)\}`/);
+  assert.match(source, /instructions: `\$\{SEMANTIC_SECURITY_POLICY\}\\n\\n\$\{v29Instructions\(this as any\)\}\\n\\n\$\{SEMANTIC_RESERVATION_TIME_EVIDENCE_POLICY\}`/);
 });

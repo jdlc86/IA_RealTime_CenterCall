@@ -59,7 +59,7 @@ export type DirectPostToolResponseDecision =
       missing: string[];
       collectSlot: ReservationCollectionSlot;
       instructions: string;
-      exactText: string;
+      exactText?: string;
     }
   | {
       action: "DEFAULT";
@@ -137,6 +137,18 @@ function collectMissingInformation(missing: string[]): DirectPostToolResponseDec
   };
 }
 
+function clarifyUnprovenReservationTime(missing: string[]): DirectPostToolResponseDecision {
+  return {
+    action: "COLLECT",
+    reason: "RESERVATION_MISSING_INFORMATION",
+    missing,
+    collectSlot: "starts_at_time",
+    instructions:
+      "Responde con naturalidad al significado del último turno. Explica brevemente que no has podido asociar con seguridad una hora concreta a la reserva y pide que la aclare. " +
+      "No uses una frase fija ni repitas mecánicamente la pregunta anterior. No llames herramientas en esta respuesta y espera un nuevo turno del cliente.",
+  };
+}
+
 export function decideDirectPostToolResponse(
   toolName: string,
   output: unknown,
@@ -181,6 +193,13 @@ export function decideDirectPostToolResponse(
   ) {
     const missing = stringArrayField(payload, "missing");
     if (missing.length > 0) return collectMissingInformation(missing);
+  }
+
+  if (
+    (toolName === "restaurant_reservation_create" || toolName === "restaurant_reservation_modify") &&
+    status === "TIME_EVIDENCE_REQUIRED"
+  ) {
+    return clarifyUnprovenReservationTime(["starts_at_time"]);
   }
 
   if (toolName === "restaurant_reservation_create" && stage === "BOOKED") {

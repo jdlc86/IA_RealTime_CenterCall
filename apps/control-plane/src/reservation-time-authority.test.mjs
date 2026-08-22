@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   callerTranscriptSupportsReservationTime,
+  callerSemanticTimeEvidenceMatchesLatestTurn,
   decideReservationTimeAuthority,
 } from "../.test-dist/reservation-time-authority.js";
 
@@ -118,5 +119,34 @@ test("a model-invented slot remains blocked when it was not offered by the backe
     latestCallerTranscript: "La segunda opción me viene mejor.",
     authorizedStartsAt: null,
     matchesBackendOfferedSlot: false,
+  }), { action: "BLOCK", reason: "TIME_NOT_EXPLICIT_IN_LATEST_CALLER_TURN" });
+});
+
+test("semantic time evidence accepts natural language without a closed phrase grammar", () => {
+  const transcript = "Pues me encaja al caer la tarde, sobre las nueve y veinte.";
+  assert.equal(callerSemanticTimeEvidenceMatchesLatestTurn(
+    transcript,
+    "al caer la tarde, sobre las nueve y veinte",
+  ), true);
+  assert.deepEqual(decideReservationTimeAuthority({
+    requestedStartsAt: "2026-09-15T21:20:00+02:00",
+    latestCallerTranscript: transcript,
+    authorizedStartsAt: null,
+    pendingSlot: "starts_at_time",
+    semanticEvidenceMatchesLatestTurn: true,
+  }), { action: "ALLOW_NEW" });
+});
+
+test("semantic time evidence rejects a quote not present in the latest caller turn", () => {
+  assert.equal(callerSemanticTimeEvidenceMatchesLatestTurn(
+    "Somos cuatro personas.",
+    "a las cuatro",
+  ), false);
+  assert.deepEqual(decideReservationTimeAuthority({
+    requestedStartsAt: "2026-09-15T16:00:00+02:00",
+    latestCallerTranscript: "Somos cuatro personas.",
+    authorizedStartsAt: null,
+    pendingSlot: "starts_at_time",
+    semanticEvidenceMatchesLatestTurn: false,
   }), { action: "BLOCK", reason: "TIME_NOT_EXPLICIT_IN_LATEST_CALLER_TURN" });
 });

@@ -35,6 +35,7 @@ const AGENT_TOOL_NAMES = new Set([
 const RESERVATION_PROPERTIES = {
   party_size: { type: "integer", minimum: 1, maximum: 100 },
   starts_at: { type: "string", description: "Fecha y hora ISO 8601. El controlador normaliza la zona local autorizada cuando procede." },
+  starts_at_source_text: { type: "string", description: "Fragmento literal del último turno del cliente que expresa la hora interpretada en starts_at. Inclúyelo al aportar o cambiar una hora; nunca lo inventes ni lo tomes de un turno anterior." },
   customer_name: { type: "string" },
   customer_phone: { type: "string", description: "Solo si el usuario proporciona explícitamente un contacto distinto." },
   use_caller_phone: { type: "boolean", description: "true cuando el usuario acepta usar el número llamante como contacto." },

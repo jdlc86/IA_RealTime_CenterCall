@@ -106,9 +106,18 @@ export class OpenAIRealtimeCommandAdapter implements RealtimeProviderCommandPort
       "[CONSOLIDATED_CALLER_TURN: authoritative transcript of one continuous caller utterance; " +
       "use all supplied data as one turn and do not treat this wrapper as a second caller turn]\n" +
       request.callerTurnText;
-    const response: Record<string, unknown> = {
-      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: authoritativeText }] }],
-    };
+    // Persist the consolidated turn in the default Conversation before asking
+    // for inference. Function calls produced from response-local `input` are
+    // not addressable later by a default-conversation function_call_output.
+    this.host.send({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: authoritativeText }],
+      },
+    });
+    const response: Record<string, unknown> = {};
     const metadata = responseMetadata(request);
     if (metadata) response.metadata = metadata;
     const event: Record<string, unknown> = { type: "response.create", response };

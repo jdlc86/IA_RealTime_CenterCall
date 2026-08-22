@@ -22,6 +22,8 @@ const BaseConstructor = CallSessionV28 as unknown as new (...args: any[]) => any
 const BasePrototype = CallSessionV28.prototype as any;
 const V26Prototype = CallSessionV26.prototype as any;
 const INPUT_IGNORED = "restaurant_input_ignored";
+const SEMANTIC_RESERVATION_TIME_EVIDENCE_POLICY =
+  "EVIDENCIA TEMPORAL SEMÁNTICA: cuando aportes o cambies starts_at, incluye también starts_at_source_text copiando literalmente solo el fragmento del último turno del cliente que expresa esa hora. Si el último turno no contiene esa evidencia, omite starts_at y acláralo conversando; nunca inventes ni reutilices un fragmento anterior.";
 
 type SemanticToolEventV29 = {
   name: string;
@@ -50,7 +52,7 @@ export class CallSession extends BaseConstructor {
     if (isStart && response.ok) {
       this.installObservabilityV29();
       realtimeCommandPortFor(this as any).updateSessionPolicy({
-        instructions: `${SEMANTIC_SECURITY_POLICY}\n\n${v29Instructions(this as any)}`,
+        instructions: `${SEMANTIC_SECURITY_POLICY}\n\n${v29Instructions(this as any)}\n\n${SEMANTIC_RESERVATION_TIME_EVIDENCE_POLICY}`,
         toolChoice: "AUTO",
       });
       (this as any).diagnostics?.checkpoint?.("SEMANTIC_TURN_GATE_V29_ENABLED", {

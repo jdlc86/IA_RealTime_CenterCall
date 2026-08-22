@@ -1,5 +1,8 @@
 import { CallSession as CallSessionV51 } from "./call-session-v51-malformed-tool-authority";
-import { decideReservationTimeAuthority } from "./reservation-time-authority.js";
+import {
+  callerSemanticTimeEvidenceMatchesLatestTurn,
+  decideReservationTimeAuthority,
+} from "./reservation-time-authority.js";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import { reservationSessionRuntimeFor } from "./reservation-session-runtime.js";
@@ -70,11 +73,11 @@ export class CallSession extends BaseConstructor {
       toolName: tool,
       output: {
         ok: true,
-        status: "MISSING_INFORMATION",
+        status: "TIME_EVIDENCE_REQUIRED",
         missing: ["starts_at_time"],
         time_authoritative: false,
         reservation_created: false,
-        instruction: "No asumas ninguna hora. Pregunta al cliente a qué hora quiere la reserva y espera un nuevo turno hablado antes de volver a intentar esta operación.",
+        instruction: "No asumas ninguna hora. Responde con naturalidad al último turno y pide que aclare la hora concreta; no repitas mecánicamente la pregunta anterior. Espera un nuevo turno hablado antes de volver a intentar esta operación.",
       },
     });
     realtime.createDefaultResponse();
@@ -104,12 +107,17 @@ export class CallSession extends BaseConstructor {
     if (!startsAt) { await BasePrototype.handleRealtimeMessage.call(this, data); return; }
 
     const timeRuntime = reservationTimeSessionRuntimeFor(this);
+    const semanticEvidenceMatchesLatestTurn = callerSemanticTimeEvidenceMatchesLatestTurn(
+      timeRuntime.latestTurn(),
+      text(args.starts_at_source_text),
+    );
     const decision = decideReservationTimeAuthority({
       requestedStartsAt: startsAt,
       latestCallerTranscript: timeRuntime.latestTurn(),
       authorizedStartsAt: timeRuntime.authorizedFor(toolEvent.name),
       pendingSlot: timeRuntime.pendingSlot(),
       matchesBackendOfferedSlot: timeRuntime.matchesOfferedSlotAfterCallerTurn(startsAt),
+      semanticEvidenceMatchesLatestTurn,
     });
 
     if (decision.action === "BLOCK") {
@@ -124,7 +132,9 @@ export class CallSession extends BaseConstructor {
         tool: toolEvent.name, starts_at: startsAt,
         source: decision.action === "ALLOW_OFFERED"
           ? "SEMANTIC_SELECTION_OF_BACKEND_OFFERED_SLOT"
-          : resolvedPendingSlot ? "PENDING_TIME_SLOT_CALLER_ANSWER" : "LATEST_CALLER_TRANSCRIPT",
+          : semanticEvidenceMatchesLatestTurn
+            ? "SEMANTIC_QUOTE_FROM_LATEST_CALLER_TURN"
+            : resolvedPendingSlot ? "PENDING_TIME_SLOT_CALLER_ANSWER" : "LATEST_CALLER_TRANSCRIPT",
         pending_slot_resolved: resolvedPendingSlot, state_owner: "reservation_time_session_runtime",
       });
     } else {

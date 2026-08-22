@@ -113,6 +113,33 @@ test("text-decision metadata is normalized through the same adapter boundary", (
   });
 });
 
+test("semantic caller turn is persisted before inference so tool outputs can reference its calls", () => {
+  const h = host();
+  const port = new OpenAIRealtimeCommandAdapter(h);
+  port.createSemanticResponse({
+    requestId: "semantic-1",
+    purpose: "consolidated_caller_turn",
+    callerTurnText: "a las nueve y media",
+    metadata: { consolidated_caller_turn: true },
+  });
+
+  assert.equal(h.events.length, 2);
+  assert.equal(h.events[0].type, "conversation.item.create");
+  assert.equal(h.events[0].item.type, "message");
+  assert.equal(h.events[0].item.role, "user");
+  assert.match(h.events[0].item.content[0].text, /a las nueve y media/);
+  assert.deepEqual(h.events[1], {
+    event_id: "semantic-1",
+    type: "response.create",
+    response: {
+      metadata: {
+        consolidated_caller_turn: "true",
+        purpose: "consolidated_caller_turn",
+      },
+    },
+  });
+});
+
 test("provider-neutral tool result preserves current OpenAI function output wire format", () => {
   const h = host();
   const port = new OpenAIRealtimeCommandAdapter(h);

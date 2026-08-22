@@ -84,6 +84,21 @@ export function callerTranscriptSupportsReservationTime(transcriptRaw: string | 
   return false;
 }
 
+/**
+ * Accept semantic interpretation without maintaining a closed grammar of all
+ * natural Spanish time expressions. The model must quote the exact evidence it
+ * used and the controller proves that quote belongs to the latest caller turn.
+ */
+export function callerSemanticTimeEvidenceMatchesLatestTurn(
+  transcriptRaw: string | null | undefined,
+  evidenceRaw: string | null | undefined,
+): boolean {
+  if (!transcriptRaw?.trim() || !evidenceRaw?.trim()) return false;
+  const transcript = normalize(transcriptRaw);
+  const evidence = normalize(evidenceRaw);
+  return evidence.length > 0 && transcript.includes(evidence);
+}
+
 function callerTranscriptSupportsPendingTimeAnswer(transcriptRaw: string | null | undefined, startsAt: string): boolean {
   if (!transcriptRaw?.trim()) return false;
   const target = localHourMinute(startsAt);
@@ -123,10 +138,12 @@ export function decideReservationTimeAuthority(input: {
   authorizedStartsAt: string | null;
   pendingSlot?: string | null;
   matchesBackendOfferedSlot?: boolean;
+  semanticEvidenceMatchesLatestTurn?: boolean;
 }): ReservationTimeAuthorityDecision {
   if (!localHourMinute(input.requestedStartsAt)) return { action: "BLOCK", reason: "INVALID_STARTS_AT" };
   if (input.authorizedStartsAt === input.requestedStartsAt) return { action: "ALLOW_EXISTING" };
   if (input.matchesBackendOfferedSlot === true) return { action: "ALLOW_OFFERED" };
+  if (input.semanticEvidenceMatchesLatestTurn === true) return { action: "ALLOW_NEW" };
   if (callerTranscriptSupportsReservationTime(input.latestCallerTranscript, input.requestedStartsAt)) return { action: "ALLOW_NEW" };
   if (
     input.pendingSlot === "starts_at_time" &&

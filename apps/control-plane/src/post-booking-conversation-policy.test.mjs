@@ -172,6 +172,20 @@ test("party size is collected when temporal slots are complete", () => {
   assert.equal(decision.exactText, "¿Para cuántas personas sería la reserva?");
 });
 
+test("unproven time asks for a semantic clarification instead of repeating a fixed question", () => {
+  const decision = decideDirectPostToolResponse("restaurant_reservation_create", {
+    ok: true,
+    status: "TIME_EVIDENCE_REQUIRED",
+    missing: ["starts_at_time"],
+    time_authoritative: false,
+  });
+  assert.equal(decision.action, "COLLECT");
+  assert.equal(decision.collectSlot, "starts_at_time");
+  assert.equal(decision.exactText, undefined);
+  assert.match(decision.instructions, /naturalidad/);
+  assert.match(decision.instructions, /No uses una frase fija/);
+});
+
 test("flexible search asks only for party size and remains in the search flow", () => {
   const decision = decideDirectPostToolResponse("restaurant_reservation_search", {
     ok: true,

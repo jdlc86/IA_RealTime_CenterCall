@@ -21,12 +21,13 @@ test("provider adapter gives one consolidated split turn to the semantic respons
     metadata: { fragment_count: 2 },
   });
 
-  assert.equal(h.events.length, 1);
-  assert.equal(h.events[0].type, "response.create");
-  const text = h.events[0].response.input[0].content[0].text;
+  assert.equal(h.events.length, 2);
+  assert.equal(h.events[0].type, "conversation.item.create");
+  const text = h.events[0].item.content[0].text;
   assert.match(text, /Quiero reservar mañana a las nueve para cinco personas/);
-  assert.equal(h.events[0].response.metadata.purpose, "consolidated_caller_turn");
-  assert.equal(h.events[0].response.metadata.fragment_count, "2");
+  assert.equal(h.events[1].type, "response.create");
+  assert.equal(h.events[1].response.metadata.purpose, "consolidated_caller_turn");
+  assert.equal(h.events[1].response.metadata.fragment_count, "2");
 });
 
 test("runtime consumes staged caller turn exactly once", () => {
@@ -36,10 +37,10 @@ test("runtime consumes staged caller turn exactly once", () => {
   port.createDefaultResponse();
   port.createDefaultResponse();
 
-  assert.equal(h.events.length, 2);
-  assert.equal(h.events[0].type, "response.create");
-  assert.ok(h.events[0].response?.input, "first response must carry consolidated input");
-  assert.deepEqual(h.events[1], { type: "response.create" });
+  assert.equal(h.events.length, 3);
+  assert.equal(h.events[0].type, "conversation.item.create");
+  assert.equal(h.events[1].type, "response.create");
+  assert.deepEqual(h.events[2], { type: "response.create" });
 });
 
 test("new caller speech can clear an unconsumed consolidated turn", () => {
