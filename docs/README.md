@@ -8,8 +8,9 @@ Para evitar que vuelva a perderse la referencia al documento maestro, el path pe
 
 1. [`MASTER_PROJECT_GUIDE.md`](./MASTER_PROJECT_GUIDE.md) — entrada estable; no se renombra ni se elimina.
 2. [`PROJECT_STATUS.md`](./PROJECT_STATUS.md) — estado operativo actual de fases.
-3. [`architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — arquitectura normativa y definición canónica del roadmap.
-4. [`architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — reglas no negociables de implementación.
+3. [`SESSION_HANDOFF_PROMPT_2026-08-22.md`](./SESSION_HANDOFF_PROMPT_2026-08-22.md) — relevo operativo y prompt integral más reciente para continuar en otra sesión.
+4. [`architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — arquitectura normativa y definición canónica del roadmap.
+5. [`architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — reglas no negociables de implementación.
 
 ## Orden de autoridad documental
 
@@ -34,16 +35,17 @@ tests/ + runbooks/ + DEVELOPMENT_LOG.md
 ## Lectura recomendada
 
 1. [`MASTER_PROJECT_GUIDE.md`](./MASTER_PROJECT_GUIDE.md) — entrada permanente al proyecto.
-2. [`PROJECT_STATUS.md`](./PROJECT_STATUS.md) — qué fase está cerrada y cuál está activa.
-3. [`SYSTEM_OVERVIEW.md`](./SYSTEM_OVERVIEW.md) — producto a alto nivel.
-4. [`architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — arquitectura y roadmap canónicos.
-5. [`architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — reglas arquitectónicas.
-6. [`implementation/PHASE_3_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_3_IMPLEMENTATION_GUIDE.md) — **implementación activa: F3 ToolGateway**.
-7. [`implementation/PHASE_1_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_1_IMPLEMENTATION_GUIDE.md) — F1 cerrada.
-8. [`implementation/PHASE_0_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_0_IMPLEMENTATION_GUIDE.md) — F0 cerrada.
-9. [`implementation/END_CALL_INTENT_V9.md`](./implementation/END_CALL_INTENT_V9.md) — cierre por intención semántica.
-10. [`tests/PHASE0.md`](./tests/PHASE0.md) y [`tests/PHASE1.md`](./tests/PHASE1.md) — evidencia de gates anteriores.
-11. [`DEVELOPMENT_LOG.md`](./DEVELOPMENT_LOG.md) — bitácora cronológica.
+2. [`SESSION_HANDOFF_PROMPT_2026-08-22.md`](./SESSION_HANDOFF_PROMPT_2026-08-22.md) — estado desplegado, incidentes E2E, restricciones y siguiente misión.
+3. [`PROJECT_STATUS.md`](./PROJECT_STATUS.md) — fases y contexto histórico; contrastar con el handoff más reciente.
+4. [`SYSTEM_OVERVIEW.md`](./SYSTEM_OVERVIEW.md) — producto a alto nivel.
+5. [`architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — arquitectura y roadmap canónicos.
+6. [`architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — reglas arquitectónicas.
+7. [`implementation/PHASE_3_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_3_IMPLEMENTATION_GUIDE.md) — **implementación activa: F3 ToolGateway**.
+8. [`implementation/PHASE_1_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_1_IMPLEMENTATION_GUIDE.md) — F1 cerrada.
+9. [`implementation/PHASE_0_IMPLEMENTATION_GUIDE.md`](./implementation/PHASE_0_IMPLEMENTATION_GUIDE.md) — F0 cerrada.
+10. [`implementation/END_CALL_INTENT_V9.md`](./implementation/END_CALL_INTENT_V9.md) — cierre por intención semántica.
+11. [`tests/PHASE0.md`](./tests/PHASE0.md) y [`tests/PHASE1.md`](./tests/PHASE1.md) — evidencia de gates anteriores.
+12. [`DEVELOPMENT_LOG.md`](./DEVELOPMENT_LOG.md) — bitácora cronológica.
 
 ## Roadmap vigente
 
