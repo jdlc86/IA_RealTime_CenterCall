@@ -20,7 +20,7 @@ type OpenAIRealtimeEvent = {
   call_id?: string;
   item_id?: string;
   response_id?: string;
-  response?: { id?: string; status?: string; metadata?: Record<string, unknown> | null };
+  response?: { id?: string; status?: string; instructions?: string; metadata?: Record<string, unknown> | null };
   session?: { audio?: { input?: { turn_detection?: OpenAITurnDetection } } };
   error?: { event_id?: string; code?: string; message?: string };
 };
@@ -44,6 +44,12 @@ function responseId(event: OpenAIRealtimeEvent): string | undefined {
   return event.response_id ?? event.response?.id;
 }
 
+function isLegacyTerminalFarewell(event: OpenAIRealtimeEvent): boolean {
+  const instructions = event.response?.instructions;
+  if (typeof instructions !== "string") return false;
+  return instructions.includes("Esta es la despedida final.");
+}
+
 function assistantKind(event: OpenAIRealtimeEvent): AssistantSpeechKind {
   const metadata = event.response?.metadata ?? {};
   const protectedKind = metadata.protected_speech_v35;
@@ -54,6 +60,10 @@ function assistantKind(event: OpenAIRealtimeEvent): AssistantSpeechKind {
   const purpose = metadata.purpose;
   if (purpose === "presence_recovery_v18" || purpose === "presence_check") return "PRESENCE";
   if (purpose === "terminal_farewell" || purpose === "repeated_ignored_input_close") return "TERMINAL";
+  // Compatibility for the v2 closing owner: response.created echoes the
+  // response-local farewell instructions, so terminal identity can be bound to
+  // the concrete response id instead of whichever audio happens to start next.
+  if (isLegacyTerminalFarewell(event)) return "TERMINAL";
   return "NORMAL";
 }
 
