@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
+import { createAuthoritativeCallerTranscriptionPort } from "../.test-dist/authoritative-caller-transcription-port.js";
 import { GeminiAuthorizedBargeInCommitAdapter } from "../.test-dist/gemini-authorized-barge-in-commit-adapter.js";
 import { GeminiDeferredBargeInCandidateOwner } from "../.test-dist/gemini-deferred-barge-in-candidate-owner.js";
 
@@ -25,11 +26,16 @@ function interruptingSetup() {
   };
 }
 
-function confirmedCandidate(payloads = [Buffer.from([0x00, 0x01]).toString("base64")]) {
+async function confirmedCandidate(payloads = [Buffer.from([0x00, 0x01]).toString("base64")]) {
   const owner = new GeminiDeferredBargeInCandidateOwner();
   const started = owner.beginCandidate();
   for (const payload of payloads) owner.bufferTelnyxMedia(payload);
-  owner.completeCandidate("espera un momento");
+  const port = createAuthoritativeCallerTranscriptionPort({
+    async transcribe(input) {
+      return { itemId: input.itemId, transcript: "espera un momento" };
+    },
+  });
+  owner.completeCandidate(await port.transcribe(owner.transcriptionRequest()));
   return owner.confirmInterruption(started.itemId);
 }
 
@@ -53,10 +59,10 @@ test("authorized commit requires explicit interrupting manual activity bootstrap
   assert.deepEqual(h.sent, []);
 });
 
-test("confirmed candidate alone emits activityStart then retained audio then activityEnd", () => {
+test("confirmed candidate alone emits activityStart then retained audio then activityEnd", async () => {
   const h = host();
   const adapter = new GeminiAuthorizedBargeInCommitAdapter(h, interruptingSetup());
-  const candidate = confirmedCandidate([
+  const candidate = await confirmedCandidate([
     Buffer.from([0x00, 0x01]).toString("base64"),
     Buffer.from([0x00, 0x02]).toString("base64"),
   ]);
@@ -91,17 +97,17 @@ test("shape-compatible but unauthorized candidate fails before any provider writ
   assert.deepEqual(h.sent, []);
 });
 
-test("same confirmed candidate cannot be committed twice", () => {
+test("same confirmed candidate cannot be committed twice", async () => {
   const h = host();
   const adapter = new GeminiAuthorizedBargeInCommitAdapter(h, interruptingSetup());
-  const candidate = confirmedCandidate();
+  const candidate = await confirmedCandidate();
   adapter.commit(candidate);
   const before = h.sent.length;
   assert.throws(() => adapter.commit(candidate), /already committed/);
   assert.equal(h.sent.length, before);
 });
 
-test("wire failure makes partial replay terminal for this adapter instead of retrying duplicate audio", () => {
+test("wire failure makes partial replay terminal for this adapter instead of retrying duplicate audio", async () => {
   let mediaWrites = 0;
   const h = host({
     failOn(message) {
@@ -113,7 +119,7 @@ test("wire failure makes partial replay terminal for this adapter instead of ret
     },
   });
   const adapter = new GeminiAuthorizedBargeInCommitAdapter(h, interruptingSetup());
-  const candidate = confirmedCandidate();
+  const candidate = await confirmedCandidate();
 
   assert.throws(() => adapter.commit(candidate), /wire failed/);
   assert.deepEqual(adapter.snapshot(), {
