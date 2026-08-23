@@ -24,11 +24,6 @@ export type GeminiMediaEdgeCredentialConsumer = (
   notAfterEpochMs: number,
 ) => Promise<boolean> | boolean;
 
-export type GeminiMediaEdgeCredentialExpectation = Readonly<{
-  binding: GeminiMediaEdgeSessionBinding;
-  nowEpochMs: number;
-}>;
-
 export type GeminiMediaEdgeAuthorizedCredential = Readonly<{
   credentialId: string;
   binding: GeminiMediaEdgeSessionBinding;
@@ -46,42 +41,52 @@ function safeEpoch(value: unknown, field: string): number {
   return value;
 }
 
-function sameBinding(
-  verified: GeminiMediaEdgeVerifiedCredential,
-  expected: GeminiMediaEdgeSessionBinding,
-): boolean {
-  return verified.provider === "GEMINI"
-    && verified.tenantId === expected.tenantId
-    && verified.callControlId === expected.callControlId
-    && verified.edgeUrl === expected.edgeUrl
-    && verified.targetLegs === expected.targetLegs
-    && verified.notAfterEpochMs === expected.notAfterEpochMs;
+function targetLegs(value: unknown): GeminiMediaEdgeSessionBinding["targetLegs"] {
+  if (!(["self", "opposite", "both"] as const).includes(value as GeminiMediaEdgeSessionBinding["targetLegs"])) {
+    throw new Error("Gemini media edge credential target legs are invalid");
+  }
+  return value as GeminiMediaEdgeSessionBinding["targetLegs"];
+}
+
+function secureEdgeUrl(value: unknown, rawCredential: string): string {
+  const normalized = required(value, "Gemini media edge credential edge URL");
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error("Gemini media edge credential edge URL is invalid");
+  }
+  if (parsed.protocol !== "wss:") throw new Error("Gemini media edge credential edge URL must use wss://");
+  if (parsed.username || parsed.password) throw new Error("Gemini media edge credential edge URL must not contain credentials");
+  if (normalized.includes(rawCredential) || parsed.href.includes(encodeURIComponent(rawCredential))) {
+    throw new Error("Gemini media edge credential must not be embedded in the edge URL");
+  }
+  return parsed.toString();
+}
+
+function requireUnexpired(notAfterEpochMs: number, nowEpochMs: number): void {
+  if (nowEpochMs >= notAfterEpochMs) throw new Error("Gemini media edge credential expired");
 }
 
 /**
- * Verifies and consumes one externally-presented Gemini media-edge credential.
+ * Cryptographically verifies/resolves an externally-presented media-edge credential
+ * and turns its authenticated claims into the session binding authority.
  *
- * Cryptographic verification and durable replay protection are injected ports so
- * this boundary does not pretend a hosting/key/storage choice has already been made.
- * The authoritative time is also supplied explicitly; Date.now() is intentionally
- * not a hidden authority here.
+ * There is intentionally no caller-supplied expected tenant/call binding here. The
+ * future verifier may validate a self-contained signed token or resolve an opaque
+ * token from shared storage; in either case its authenticated claims are the source
+ * of the binding later checked against Telnyx's `start.call_control_id`.
  *
- * Ordering is security-sensitive: signature/claim verification, exact call binding
- * and expiry are checked before the atomic consume mutation. A token for another
- * call/tenant therefore cannot burn the legitimate call's one-shot credential.
- *
- * Raw credentials are never returned and verifier failures are deliberately wrapped
- * so an upstream library cannot accidentally place the secret into an observable
- * error message.
+ * The raw credential is never returned, and verifier errors are redacted so a crypto
+ * or storage library cannot leak the presented secret through an observable error.
  */
-export async function requireGeminiMediaEdgeCredentialOnce(
+export async function verifyGeminiMediaEdgeCredential(
   rawCredential: string,
-  expectation: GeminiMediaEdgeCredentialExpectation,
+  nowEpochMs: number,
   verifyCredential: GeminiMediaEdgeCredentialVerifier,
-  consumeCredentialOnce: GeminiMediaEdgeCredentialConsumer,
 ): Promise<GeminiMediaEdgeAuthorizedCredential> {
   const credential = required(rawCredential, "Gemini media edge credential");
-  const nowEpochMs = safeEpoch(expectation.nowEpochMs, "Gemini media edge nowEpochMs");
+  const now = safeEpoch(nowEpochMs, "Gemini media edge nowEpochMs");
 
   let verified: GeminiMediaEdgeVerifiedCredential;
   try {
@@ -92,24 +97,43 @@ export async function requireGeminiMediaEdgeCredentialOnce(
 
   const credentialId = required(verified?.credentialId, "Gemini media edge credential id");
   if (credentialId.length > 256) throw new Error("Gemini media edge credential id exceeds 256 characters");
-  if (!sameBinding(verified, expectation.binding)) {
-    throw new Error("Gemini media edge credential binding mismatch");
-  }
+  if (verified.provider !== "GEMINI") throw new Error("Gemini media edge credential provider must be GEMINI");
+
   const notAfterEpochMs = safeEpoch(verified.notAfterEpochMs, "Gemini media edge credential notAfterEpochMs");
-  if (nowEpochMs >= notAfterEpochMs) {
-    throw new Error("Gemini media edge credential expired");
-  }
+  requireUnexpired(notAfterEpochMs, now);
+
+  const binding: GeminiMediaEdgeSessionBinding = Object.freeze({
+    provider: "GEMINI" as const,
+    tenantId: required(verified.tenantId, "Gemini media edge credential tenant_id"),
+    callControlId: required(verified.callControlId, "Gemini media edge credential call_control_id"),
+    edgeUrl: secureEdgeUrl(verified.edgeUrl, credential),
+    targetLegs: targetLegs(verified.targetLegs),
+    notAfterEpochMs,
+  });
+
+  return Object.freeze({ credentialId, binding });
+}
+
+/**
+ * Atomically consumes an already-verified credential immediately before media is
+ * accepted. Expiry is checked again using an explicit authoritative timestamp so a
+ * credential cannot become valid at upgrade time and remain usable indefinitely
+ * while waiting for the Telnyx identity frame.
+ */
+export async function consumeGeminiMediaEdgeCredentialOnce(
+  authorized: GeminiMediaEdgeAuthorizedCredential,
+  nowEpochMs: number,
+  consumeCredentialOnce: GeminiMediaEdgeCredentialConsumer,
+): Promise<GeminiMediaEdgeAuthorizedCredential> {
+  const now = safeEpoch(nowEpochMs, "Gemini media edge consume nowEpochMs");
+  requireUnexpired(authorized.binding.notAfterEpochMs, now);
 
   let consumed: boolean;
   try {
-    consumed = await consumeCredentialOnce(credentialId, notAfterEpochMs);
+    consumed = await consumeCredentialOnce(authorized.credentialId, authorized.binding.notAfterEpochMs);
   } catch {
     throw new Error("Gemini media edge credential consumption failed");
   }
   if (consumed !== true) throw new Error("Gemini media edge credential already consumed");
-
-  return Object.freeze({
-    credentialId,
-    binding: Object.freeze({ ...expectation.binding }),
-  });
+  return authorized;
 }
