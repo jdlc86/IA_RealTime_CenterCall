@@ -45,7 +45,11 @@ function completedResponseId(events: readonly RealtimeProviderEvent[]): string |
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
     if (event?.type === "ASSISTANT_RESPONSE_COMPLETED" && event.status === "completed") {
-      return event.responseId;
+      const responseId = event.responseId;
+      if (typeof responseId !== "string" || !responseId.trim()) {
+        throw new Error("Gemini completed response requires owned responseId");
+      }
+      return responseId;
     }
   }
   return null;
