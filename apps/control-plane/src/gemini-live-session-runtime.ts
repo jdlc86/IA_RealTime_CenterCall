@@ -35,6 +35,8 @@ export type GeminiLiveCallerActivityBoundary = Readonly<{
 }>;
 
 class OwnedGeminiCommandPort implements RealtimeProviderCommandPort {
+  private providerOwnedContinuationPending = false;
+
   constructor(
     private readonly delegate: GeminiLiveCommandAdapter,
     private readonly owner: GeminiLiveSessionOwner,
@@ -49,11 +51,23 @@ class OwnedGeminiCommandPort implements RealtimeProviderCommandPort {
     this.owner.assertPendingToolCall(request.callId);
     this.delegate.submitToolResult(request);
     this.owner.noteToolResponseSubmitted(request.callId);
+    this.providerOwnedContinuationPending = true;
   }
 
   updateSessionPolicy(update: RealtimeSessionPolicyUpdate): void { this.delegate.updateSessionPolicy(update); }
   setSemanticToolGate(armed: boolean): void { this.delegate.setSemanticToolGate(armed); }
-  createDefaultResponse(): void { this.delegate.createDefaultResponse(); }
+
+  createDefaultResponse(): void {
+    if (this.providerOwnedContinuationPending) {
+      const snapshot = this.owner.snapshot();
+      if (snapshot.state === "TOOL_WAIT" || snapshot.state === "GENERATING") {
+        if (snapshot.pendingToolCallIds.length === 0) this.providerOwnedContinuationPending = false;
+        return;
+      }
+    }
+    this.delegate.createDefaultResponse();
+  }
+
   cancelResponse(_responseId: string): void { this.delegate.cancelResponse(); }
   clearPlayback(): void { this.delegate.clearPlayback(); }
   clearInput(): void { this.delegate.clearInput(); }

@@ -84,6 +84,37 @@ test("owned command port writes a correlated FunctionResponse then advances tool
   assert.deepEqual(runtime.snapshot().pendingToolCallIds, []);
 });
 
+test("post-tool default response is consumed exactly once by Gemini provider-owned continuation", () => {
+  const { runtime, h } = startedRuntime();
+  runtime.observe(wire({ toolCall: { functionCalls: [{ id: "fc-continue", name: "reservation_search" }] } }));
+  runtime.commandPort.submitToolResult({
+    callId: "fc-continue",
+    toolName: "reservation_search",
+    output: { ok: true, slots: ["20:00"] },
+  });
+  const afterToolResponse = h.sent.length;
+
+  runtime.commandPort.createDefaultResponse();
+
+  assert.equal(h.sent.length, afterToolResponse);
+  assert.equal(runtime.snapshot().state, "GENERATING");
+  assert.throws(
+    () => runtime.commandPort.createDefaultResponse(),
+    /default response creation has no proven neutral mapping/,
+  );
+  assert.equal(h.sent.length, afterToolResponse);
+});
+
+test("default response without a preceding FunctionResponse still fails closed", () => {
+  const { runtime, h } = startedRuntime();
+  const before = h.sent.length;
+  assert.throws(
+    () => runtime.commandPort.createDefaultResponse(),
+    /default response creation has no proven neutral mapping/,
+  );
+  assert.equal(h.sent.length, before);
+});
+
 test("stale or cancelled tool results fail before any FunctionResponse is emitted", () => {
   const { runtime, h } = startedRuntime();
   runtime.observe(wire({ toolCall: { functionCalls: [{ id: "fc-cancel", name: "reservation_create" }] } }));
