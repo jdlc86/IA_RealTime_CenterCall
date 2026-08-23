@@ -158,6 +158,13 @@ export class OpenAIRealtimeCommandAdapter implements RealtimeProviderCommandPort
     this.host.send({ type: "session.update", session });
   }
 
+  setSemanticToolGate(armed: boolean): void {
+    this.host.send({
+      type: "session.update",
+      session: { type: "realtime", tool_choice: armed ? "required" : "auto" },
+    });
+  }
+
   createDefaultResponse(): void { this.host.send({ type: "response.create" }); }
   cancelResponse(responseId: string): void { this.host.send({ type: "response.cancel", response_id: responseId }); }
   clearPlayback(): void { this.host.send({ type: "output_audio_buffer.clear" }); }
