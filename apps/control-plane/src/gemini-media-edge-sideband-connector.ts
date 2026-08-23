@@ -8,6 +8,10 @@ import {
   installCallerTurnDispositionPort,
   removeCallerTurnDispositionPort,
 } from "./caller-turn-disposition-runtime.js";
+import {
+  installExternalRealtimeProviderCommandPort,
+  removeExternalRealtimeProviderCommandPort,
+} from "./realtime-provider-external-command-runtime.js";
 
 export type GeminiMediaEdgeSidebandConnectionInput = Readonly<{
   edgeUrl: string;
@@ -52,8 +56,9 @@ export function geminiMediaEdgeControlUrl(input: Pick<GeminiMediaEdgeSidebandCon
  * Authentication remains in the Authorization header; no token is placed in the
  * URL. Provider audio never traverses this connection.
  *
- * When capabilityHost is supplied, this connector also owns the session-scoped
- * neutral caller-turn disposition capability for exactly this sideband lifetime.
+ * When capabilityHost is supplied, this connector owns both session-scoped
+ * provider capabilities for exactly this sideband lifetime: the neutral caller
+ * disposition effect boundary and the Gemini provider command port.
  */
 export async function connectGeminiMediaEdgeSideband(
   input: GeminiMediaEdgeSidebandConnectionInput,
@@ -79,13 +84,42 @@ export async function connectGeminiMediaEdgeSideband(
   const dispositionPort = input.capabilityHost
     ? createGeminiMediaEdgeCallerTurnDispositionPort(runtime)
     : null;
-  if (input.capabilityHost && dispositionPort) installCallerTurnDispositionPort(input.capabilityHost, dispositionPort);
+
+  let commandCapabilityInstalled = false;
+  let dispositionCapabilityInstalled = false;
+  if (input.capabilityHost) {
+    try {
+      installExternalRealtimeProviderCommandPort(input.capabilityHost, "GEMINI", runtime.commandPort);
+      commandCapabilityInstalled = true;
+      if (dispositionPort) {
+        installCallerTurnDispositionPort(input.capabilityHost, dispositionPort);
+        dispositionCapabilityInstalled = true;
+      }
+    } catch (error) {
+      if (dispositionCapabilityInstalled && dispositionPort) {
+        removeCallerTurnDispositionPort(input.capabilityHost, dispositionPort);
+      }
+      if (commandCapabilityInstalled) {
+        removeExternalRealtimeProviderCommandPort(input.capabilityHost, "GEMINI", runtime.commandPort);
+      }
+      runtime.close();
+      try { socket.close(1011, "capability installation failed"); } catch {}
+      throw error;
+    }
+  }
 
   let closed = false;
   const release = () => {
     if (closed) return;
     closed = true;
-    if (input.capabilityHost && dispositionPort) removeCallerTurnDispositionPort(input.capabilityHost, dispositionPort);
+    if (input.capabilityHost && dispositionCapabilityInstalled && dispositionPort) {
+      removeCallerTurnDispositionPort(input.capabilityHost, dispositionPort);
+      dispositionCapabilityInstalled = false;
+    }
+    if (input.capabilityHost && commandCapabilityInstalled) {
+      removeExternalRealtimeProviderCommandPort(input.capabilityHost, "GEMINI", runtime.commandPort);
+      commandCapabilityInstalled = false;
+    }
     runtime.close();
   };
 
