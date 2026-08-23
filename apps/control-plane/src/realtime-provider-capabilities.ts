@@ -1,12 +1,11 @@
-import type { RealtimeProviderName } from "./realtime-provider-selector.js";
+import type { RealtimeProviderName } from "./realtime-provider-types.js";
 
 /**
  * Explicit provider feature contract.
  *
- * Gate C intentionally describes the capabilities required/used by the current
- * realtime architecture without assuming feature parity between providers.
- * Adding a provider to the selector must not imply that it supports every
- * capability in this contract.
+ * Capabilities describe features implemented and validated by this product, not
+ * merely features advertised by a vendor. A registered provider can therefore
+ * expose false capabilities while its adapter/media gates are still incomplete.
  */
 export type ProviderCapabilities = Readonly<{
   audioInput: boolean;
@@ -30,8 +29,20 @@ const OPENAI_CAPABILITIES = Object.freeze({
   directSip: true,
 } satisfies ProviderCapabilities);
 
+const GEMINI_CAPABILITIES = Object.freeze({
+  audioInput: false,
+  audioOutput: false,
+  vad: false,
+  interruption: false,
+  functionCalling: false,
+  inputTranscription: false,
+  outputTranscription: false,
+  directSip: false,
+} satisfies ProviderCapabilities);
+
 const CAPABILITIES_BY_PROVIDER: Readonly<Record<RealtimeProviderName, ProviderCapabilities>> = Object.freeze({
   OPENAI: OPENAI_CAPABILITIES,
+  GEMINI: GEMINI_CAPABILITIES,
 });
 
 export function realtimeProviderCapabilities(provider: RealtimeProviderName): ProviderCapabilities {
