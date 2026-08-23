@@ -7,7 +7,8 @@ import type { RealtimeProviderName } from "./realtime-provider-types.js";
  *
  * The core owns whether the gate is armed. This port owns only how the selected
  * provider enforces that requirement. OpenAI currently implements the gate via
- * response/session tool choice; Gemini must not inherit that wire assumption.
+ * its provider-specific session tool choice; Gemini must not inherit that wire
+ * assumption through the generic session-policy update path.
  */
 export interface SemanticToolGatePort {
   arm(): void;
@@ -22,12 +23,12 @@ class RealtimeBackedSemanticToolGatePort implements SemanticToolGatePort {
 
   arm(): void {
     requireRealtimeProviderCapabilities(this.provider, ["semanticToolGate"]);
-    this.realtime.updateSessionPolicy({ toolChoice: "REQUIRED" });
+    this.realtime.setSemanticToolGate(true);
   }
 
   release(): void {
     requireRealtimeProviderCapabilities(this.provider, ["semanticToolGate"]);
-    this.realtime.updateSessionPolicy({ toolChoice: "AUTO" });
+    this.realtime.setSemanticToolGate(false);
   }
 }
 
