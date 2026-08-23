@@ -25,7 +25,7 @@ function runtimeFor(h, manualActivityDetection = true) {
   return runtime;
 }
 
-test("Gemini immutable setup preserves semantic barge-in authority when media edge owns activity boundaries", () => {
+test("Gemini immutable setup preserves semantic barge-in authority by default", () => {
   assert.deepEqual(buildGeminiLiveInitialSetup({
     model: "models/gemini-live-test",
     manualActivityDetection: true,
@@ -38,6 +38,29 @@ test("Gemini immutable setup preserves semantic barge-in authority when media ed
       },
     },
   });
+});
+
+test("interrupting manual activity must be requested explicitly at immutable bootstrap", () => {
+  assert.deepEqual(buildGeminiLiveInitialSetup({
+    model: "models/gemini-live-test",
+    manualActivityDetection: true,
+    manualActivityHandling: "START_OF_ACTIVITY_INTERRUPTS",
+  }), {
+    setup: {
+      model: "models/gemini-live-test",
+      realtimeInputConfig: {
+        automaticActivityDetection: { disabled: true },
+        activityHandling: "START_OF_ACTIVITY_INTERRUPTS",
+      },
+    },
+  });
+  assert.throws(
+    () => buildGeminiLiveInitialSetup({
+      model: "models/gemini-live-test",
+      manualActivityHandling: "START_OF_ACTIVITY_INTERRUPTS",
+    }),
+    /requires manualActivityDetection/,
+  );
 });
 
 test("manual activity writes exact Gemini realtimeInput boundaries and emits neutral item identity", () => {
