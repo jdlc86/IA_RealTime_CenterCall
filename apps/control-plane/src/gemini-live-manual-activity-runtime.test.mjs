@@ -25,7 +25,7 @@ function runtimeFor(h, manualActivityDetection = true) {
   return runtime;
 }
 
-test("Gemini immutable setup disables server VAD when media edge owns activity boundaries", () => {
+test("Gemini immutable setup disables server VAD and pins barge-in when media edge owns activity boundaries", () => {
   assert.deepEqual(buildGeminiLiveInitialSetup({
     model: "models/gemini-live-test",
     manualActivityDetection: true,
@@ -34,6 +34,7 @@ test("Gemini immutable setup disables server VAD when media edge owns activity b
       model: "models/gemini-live-test",
       realtimeInputConfig: {
         automaticActivityDetection: { disabled: true },
+        activityHandling: "START_OF_ACTIVITY_INTERRUPTS",
       },
     },
   });
