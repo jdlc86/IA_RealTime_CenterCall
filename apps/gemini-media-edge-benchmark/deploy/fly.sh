@@ -19,6 +19,10 @@ if [[ "${BENCHMARK_UPSTREAM_WSS}" != wss://* ]]; then
   exit 2
 fi
 
+# App creation is intentionally separate: this script must not silently create
+# provider resources or accept Fly's first-deploy redundancy defaults.
+flyctl status --app "${FLY_APP}" >/dev/null
+
 flyctl secrets set \
   --app "${FLY_APP}" \
   "BENCHMARK_AUTH_TOKEN=${BENCHMARK_AUTH_TOKEN}" \
