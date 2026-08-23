@@ -2,18 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { adaptGeminiLiveEvent } from "./gemini-live-event-adapter.ts";
 
-test("Gemini Live normalizes completed input and output transcripts independently", () => {
-  assert.deepEqual(adaptGeminiLiveEvent(JSON.stringify({
-    serverContent: {
-      inputTranscription: { text: "Quiero reservar mañana", finished: true },
-      outputTranscription: { text: "Claro", finished: true },
-    },
-  })), [
-    { type: "CALLER_TRANSCRIPT_COMPLETED", transcript: "Quiero reservar mañana" },
-    { type: "ASSISTANT_TRANSCRIPT_COMPLETED", transcript: "Claro" },
-  ]);
-});
-
 test("Gemini Live preserves function-call identity and structured arguments", () => {
   assert.deepEqual(adaptGeminiLiveEvent(JSON.stringify({
     toolCall: {
@@ -27,10 +15,23 @@ test("Gemini Live preserves function-call identity and structured arguments", ()
   }]);
 });
 
-test("Gemini Live ignores partial transcripts until provider marks them finished", () => {
+test("Gemini Live transcript chunks are not promoted to completed core transcripts", () => {
   assert.deepEqual(adaptGeminiLiveEvent(JSON.stringify({
-    serverContent: { inputTranscription: { text: "parcial", finished: false } },
+    serverContent: {
+      inputTranscription: { text: "Quiero reservar mañana" },
+      outputTranscription: { text: "Claro" },
+    },
   })), []);
+});
+
+test("Gemini Live generation lifecycle remains edge evidence until stateful correlation exists", () => {
+  assert.deepEqual(adaptGeminiLiveEvent(JSON.stringify({
+    serverContent: { generationComplete: true, turnComplete: true, interrupted: true },
+  })), []);
+});
+
+test("Gemini Live tool cancellation is not misreported as semantic completion", () => {
+  assert.deepEqual(adaptGeminiLiveEvent(JSON.stringify({ toolCallCancellation: { ids: ["fc_123"] } })), []);
 });
 
 test("Gemini Live normalizes provider errors without exposing wire to core", () => {
