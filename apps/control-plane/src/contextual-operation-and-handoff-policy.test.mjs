@@ -21,13 +21,13 @@ test("pending handoff state is injected as semantic context without enumerating 
 });
 
 test("semantic policy keeps multi-turn reservations in the reservation tool", async () => {
-  const [v17, v29] = await Promise.all([
-    source("call-session-v17.ts"),
+  const [bootstrap, v29] = await Promise.all([
+    source("direct-agent-realtime-bootstrap.ts"),
     source("call-session-v29.ts"),
   ]);
 
-  assert.match(v17, /reserva multivuelta/);
-  assert.match(v17, /no la elijas por inferencia propia/);
+  assert.match(bootstrap, /reserva multivuelta/);
+  assert.match(bootstrap, /no la elijas por inferencia propia/);
   assert.match(v29, /restaurant_conversation no es memoria operativa/);
   assert.match(v29, /fecha exacta usa restaurant_reservation_create desde que exista esa intención/);
   assert.match(v29, /no escales una reserva ordinaria por el tamaño del grupo/);
@@ -36,16 +36,16 @@ test("semantic policy keeps multi-turn reservations in the reservation tool", as
 });
 
 test("inclusive accommodation needs stay in restaurant scope and receive respectful human confirmation", async () => {
-  const [v17, v29, v43] = await Promise.all([
-    source("call-session-v17.ts"),
+  const [bootstrap, v29, v43] = await Promise.all([
+    source("direct-agent-realtime-bootstrap.ts"),
     source("call-session-v29.ts"),
     source("call-session-v43-handoff-authorization.ts"),
   ]);
 
-  assert.match(v17, /"ACCESSIBILITY_ARRANGEMENT"/);
-  assert.match(v17, /"CHILD_OR_INFANT_ACCOMMODATION"/);
-  assert.match(v17, /incluso antes de iniciar una reserva/);
-  assert.match(v17, /nunca están fuera de ámbito/);
+  assert.match(bootstrap, /"ACCESSIBILITY_ARRANGEMENT"/);
+  assert.match(bootstrap, /"CHILD_OR_INFANT_ACCOMMODATION"/);
+  assert.match(bootstrap, /incluso antes de iniciar una reserva/);
+  assert.match(bootstrap, /nunca están fuera de ámbito/);
   assert.match(v29, /ATENCIÓN INCLUSIVA Y ADAPTACIONES/);
   assert.match(v29, /aunque aún no haya una reserva activa/);
   assert.match(v29, /No prometas ni niegues que una adaptación esté disponible/);
@@ -60,7 +60,7 @@ test("inclusive accommodation needs stay in restaurant scope and receive respect
   assert.match(v43, /no presentes a la persona ni su necesidad como un problema/);
   assert.match(confirmationBoundary, /handoffOfferInstructions\(event\)/);
   assert.doesNotMatch(confirmationBoundary, /exactText:/);
-  assert.doesNotMatch(`${v17}\n${v29}\n${v43}`, /ando en silla de ruedas/i);
+  assert.doesNotMatch(`${bootstrap}\n${v29}\n${v43}`, /ando en silla de ruedas/i);
 });
 
 test("v43 composes pending-offer context at the provider-neutral policy boundary", async () => {
