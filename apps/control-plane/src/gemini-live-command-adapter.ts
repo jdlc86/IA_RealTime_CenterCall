@@ -100,6 +100,10 @@ export class GeminiLiveCommandAdapter implements RealtimeProviderCommandPort {
     unsupported("dynamic session policy update", "immutable setup composition");
   }
 
+  setSemanticToolGate(_armed: boolean): void {
+    unsupported("semantic tool gate", "provider-specific semantic gate conformance");
+  }
+
   createDefaultResponse(): void {
     unsupported("default response creation", "G3/G4 turn continuation conformance");
   }
