@@ -17,7 +17,9 @@ test("inbound security store failure rejects instead of transferring the call", 
   const catchBody = source.slice(source.indexOf('event: "caller_security_inbound_check_failed_closed"'));
   assert.match(catchBody, /rejectSecurityBlockedCall/);
   assert.match(catchBody, /action: "security_unavailable_reject"/);
-  assert.ok(catchBody.indexOf("security_unavailable_reject") < catchBody.indexOf("transferToRealtime"));
+  const rejectIndex = catchBody.indexOf("security_unavailable_reject");
+  const transferIndex = catchBody.indexOf("transferToOpenAIRealtime(");
+  assert.ok(rejectIndex >= 0 && transferIndex >= 0 && rejectIndex < transferIndex);
   assert.doesNotMatch(source, /caller_security_inbound_check_failed_open|Fail open/);
 });
 
