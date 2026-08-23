@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { semanticDecisionPortFor } from "../.test-dist/semantic-decision-runtime.js";
+import {
+  installSemanticDecisionPort,
+  removeSemanticDecisionPort,
+  semanticDecisionPortFor,
+} from "../.test-dist/semantic-decision-runtime.js";
 
 function host() {
   const events = [];
@@ -40,4 +44,41 @@ test("current OpenAI baseline preserves isolated decision wire behavior through 
     role: "user",
     content: [{ type: "input_text", text: "No, gracias" }],
   }]);
+});
+
+test("an external isolated decision port overrides the realtime-backed fallback only for its session", () => {
+  const h = host();
+  const requests = [];
+  const external = { request(request) { requests.push(request); } };
+
+  const fallback = semanticDecisionPortFor(h);
+  installSemanticDecisionPort(h, external);
+  assert.equal(semanticDecisionPortFor(h), external);
+
+  const request = {
+    instructions: "Return INTERRUPT or IGNORE only",
+    inputText: "perdona",
+    requestId: "decision-runtime-external-1",
+    purpose: "barge_in",
+    maxOutputTokens: 8,
+  };
+  semanticDecisionPortFor(h).request(request);
+  assert.deepEqual(requests, [request]);
+  assert.deepEqual(h.events, []);
+
+  removeSemanticDecisionPort(h, external);
+  assert.equal(semanticDecisionPortFor(h), fallback);
+});
+
+test("external semantic decision ownership is fail-closed", () => {
+  const h = host();
+  const first = { request() {} };
+  const second = { request() {} };
+
+  installSemanticDecisionPort(h, first);
+  assert.doesNotThrow(() => installSemanticDecisionPort(h, first));
+  assert.throws(() => installSemanticDecisionPort(h, second), /already installed/);
+  assert.throws(() => removeSemanticDecisionPort(h, second), /ownership mismatch/);
+  assert.equal(semanticDecisionPortFor(h), first);
+  removeSemanticDecisionPort(h, first);
 });
