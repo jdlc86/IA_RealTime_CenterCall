@@ -14,6 +14,7 @@ import {
   type GeminiLiveCommandHost,
   type GeminiLiveInitialSetup,
 } from "./gemini-live-command-adapter.js";
+import { GeminiLiveCallerActivityOwner } from "./gemini-live-caller-activity-owner.js";
 import { adaptGeminiLiveEvent } from "./gemini-live-event-adapter.js";
 import {
   GeminiLiveSessionOwner,
@@ -26,6 +27,11 @@ export type GeminiLiveSessionRuntimeObservation = Readonly<{
   transcriptionChunks: GeminiLiveOwnerObservation["transcriptionChunks"];
   cancelledToolCallIds: readonly string[];
   snapshot: GeminiLiveSessionSnapshot;
+}>;
+
+export type GeminiLiveCallerActivityBoundary = Readonly<{
+  event: RealtimeProviderEvent;
+  itemId: string;
 }>;
 
 class OwnedGeminiCommandPort implements RealtimeProviderCommandPort {
@@ -62,14 +68,15 @@ class OwnedGeminiCommandPort implements RealtimeProviderCommandPort {
 }
 
 /**
- * Single Gemini Live edge composition authority for G2.
+ * Single Gemini Live edge composition authority for G2/G3 conformance.
  *
- * It owns immutable setup, stateful lifecycle correlation and the command port.
- * Gemini remains traffic-disabled; this runtime is a conformance boundary only
- * until media and voice gates are proven.
+ * It owns immutable setup, stateful response lifecycle, caller activity identity
+ * and the command port. Provider identity is selected outside this runtime once
+ * per call and never changes during the session.
  */
 export class GeminiLiveSessionRuntime {
   private readonly owner = new GeminiLiveSessionOwner();
+  private readonly callerActivity = new GeminiLiveCallerActivityOwner();
   private readonly adapter: GeminiLiveCommandAdapter;
   readonly commandPort: RealtimeProviderCommandPort;
 
@@ -90,6 +97,33 @@ export class GeminiLiveSessionRuntime {
       this.owner.close();
       throw error;
     }
+  }
+
+  beginCallerActivity(): GeminiLiveCallerActivityBoundary {
+    if (!this.initialSetup.manualActivityDetection) {
+      throw new Error("Gemini Live caller activity boundaries require manualActivityDetection setup");
+    }
+    if (this.callerActivity.active()) {
+      throw new Error(`Gemini caller activity already active: ${this.callerActivity.active()}`);
+    }
+    this.host.send({ realtimeInput: { activityStart: {} } });
+    const started = this.callerActivity.begin();
+    const itemId = "itemId" in started.event && typeof started.event.itemId === "string"
+      ? started.event.itemId
+      : "";
+    if (!itemId) throw new Error("Gemini caller activity owner failed to create item identity");
+    return Object.freeze({ event: started.event, itemId });
+  }
+
+  endCallerActivity(): GeminiLiveCallerActivityBoundary {
+    if (!this.initialSetup.manualActivityDetection) {
+      throw new Error("Gemini Live caller activity boundaries require manualActivityDetection setup");
+    }
+    const itemId = this.callerActivity.active();
+    if (!itemId) throw new Error("Gemini caller activity cannot end without an active item");
+    this.host.send({ realtimeInput: { activityEnd: {} } });
+    const stopped = this.callerActivity.end();
+    return Object.freeze({ event: stopped.event, itemId: stopped.itemId });
   }
 
   observe(data: unknown): GeminiLiveSessionRuntimeObservation {
