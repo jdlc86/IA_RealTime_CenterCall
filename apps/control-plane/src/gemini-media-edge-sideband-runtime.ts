@@ -5,17 +5,16 @@ import {
   type GeminiLiveSessionRuntimeObservation,
 } from "./gemini-live-session-runtime.js";
 
+export type GeminiMediaEdgeCallerDecision = "NORMAL" | "INTERRUPT" | "IGNORE";
+
 export type GeminiMediaEdgeSidebandOutbound =
   | Readonly<{ type: "TOOL_RESULT"; callId: string; toolName: string; output: unknown }>
   | Readonly<{ type: "PLAYBACK_BINDING"; responseId: string; kind: "NORMAL" }>
-  | Readonly<{ type: "PLAYBACK_DRAIN"; responseId: string }>;
+  | Readonly<{ type: "PLAYBACK_DRAIN"; responseId: string }>
+  | Readonly<{ type: "CALLER_TURN_DECISION"; itemId: string; decision: GeminiMediaEdgeCallerDecision; responseId: string | null }>;
 
 export type GeminiMediaEdgeSidebandSend = (message: GeminiMediaEdgeSidebandOutbound) => void;
-
-export type GeminiMediaEdgeCallerContext = Readonly<{
-  itemId: string;
-  playbackResponseIdAtStart: string | null;
-}>;
+export type GeminiMediaEdgeCallerContext = Readonly<{ itemId: string; playbackResponseIdAtStart: string | null }>;
 
 function object(value: unknown, field: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field} is invalid`);
@@ -29,7 +28,6 @@ function optionalId(value: unknown, field: string): string | null {
   if (value == null) return null;
   return required(value, field);
 }
-
 function outboundToolResult(message: Record<string, unknown>): GeminiMediaEdgeSidebandOutbound {
   const toolResponse = object(message.toolResponse, "Gemini sideband toolResponse");
   const responses = toolResponse.functionResponses;
@@ -37,14 +35,8 @@ function outboundToolResult(message: Record<string, unknown>): GeminiMediaEdgeSi
   const response = object(responses[0], "Gemini sideband FunctionResponse");
   const body = object(response.response, "Gemini sideband FunctionResponse response");
   if (!("result" in body)) throw new Error("Gemini sideband FunctionResponse result is required");
-  return Object.freeze({
-    type: "TOOL_RESULT",
-    callId: required(response.id, "Gemini sideband FunctionResponse id"),
-    toolName: required(response.name, "Gemini sideband FunctionResponse name"),
-    output: structuredClone(body.result),
-  });
+  return Object.freeze({ type: "TOOL_RESULT", callId: required(response.id, "Gemini sideband FunctionResponse id"), toolName: required(response.name, "Gemini sideband FunctionResponse name"), output: structuredClone(body.result) });
 }
-
 function playbackBinding(events: readonly RealtimeProviderEvent[]): GeminiMediaEdgeSidebandOutbound | null {
   const started = events.filter((event): event is Extract<RealtimeProviderEvent, { type: "ASSISTANT_RESPONSE_STARTED" }> => event.type === "ASSISTANT_RESPONSE_STARTED");
   if (started.length === 0) return null;
@@ -93,6 +85,28 @@ export class GeminiMediaEdgeSidebandRuntime {
     return this.callerContexts.get(required(itemId, "Gemini sideband caller item id")) ?? null;
   }
 
+  /** Provider-effect boundary. Semantic authority must decide before calling this. */
+  resolveCallerTurn(itemId: string, decision: GeminiMediaEdgeCallerDecision): GeminiMediaEdgeCallerContext {
+    const id = required(itemId, "Gemini sideband caller item id");
+    const context = this.callerContexts.get(id);
+    if (!context) throw new Error(`Gemini sideband caller context is not active: ${id}`);
+    if (!["NORMAL", "INTERRUPT", "IGNORE"].includes(decision)) throw new Error("Gemini sideband caller decision is invalid");
+    if (decision === "NORMAL" && context.playbackResponseIdAtStart) {
+      throw new Error(`Gemini normal caller turn cannot own playback ${context.playbackResponseIdAtStart}`);
+    }
+    if (decision === "INTERRUPT") {
+      const responseId = context.playbackResponseIdAtStart;
+      if (!responseId) throw new Error("Gemini interruption requires caller playback identity");
+      if (this.activePlaybackResponseId !== responseId) {
+        throw new Error(`Gemini interruption playback identity mismatch: expected ${this.activePlaybackResponseId ?? "<none>"}`);
+      }
+    }
+    const responseId = decision === "INTERRUPT" ? context.playbackResponseIdAtStart : null;
+    this.send(Object.freeze({ type: "CALLER_TURN_DECISION", itemId: id, decision, responseId }));
+    this.callerContexts.delete(id);
+    return context;
+  }
+
   consumeCallerContext(itemId: string): GeminiMediaEdgeCallerContext {
     const id = required(itemId, "Gemini sideband caller item id");
     const context = this.callerContexts.get(id);
@@ -136,16 +150,12 @@ export class GeminiMediaEdgeSidebandRuntime {
     const responseId = required(edge.responseId, "Gemini media edge playback response id");
     if (edge.kind !== "NORMAL") throw new Error("Gemini media edge playback kind is unsupported");
     if (type === "ASSISTANT_AUDIO_STARTED") {
-      if (this.activePlaybackResponseId && this.activePlaybackResponseId !== responseId) {
-        throw new Error(`Gemini sideband playback already owned by ${this.activePlaybackResponseId}`);
-      }
+      if (this.activePlaybackResponseId && this.activePlaybackResponseId !== responseId) throw new Error(`Gemini sideband playback already owned by ${this.activePlaybackResponseId}`);
       this.activePlaybackResponseId = responseId;
       return this.edgeObservation({ type: "ASSISTANT_AUDIO_STARTED", kind: "NORMAL", responseId });
     }
     if (type === "ASSISTANT_AUDIO_STOPPED" || type === "ASSISTANT_AUDIO_CLEARED") {
-      if (this.activePlaybackResponseId !== responseId) {
-        throw new Error(`Gemini sideband playback completion identity mismatch: expected ${this.activePlaybackResponseId ?? "<none>"}`);
-      }
+      if (this.activePlaybackResponseId !== responseId) throw new Error(`Gemini sideband playback completion identity mismatch: expected ${this.activePlaybackResponseId ?? "<none>"}`);
       this.activePlaybackResponseId = null;
       return this.edgeObservation({ type, kind: "NORMAL", responseId } as RealtimeProviderEvent);
     }
@@ -153,11 +163,6 @@ export class GeminiMediaEdgeSidebandRuntime {
   }
 
   private edgeObservation(event: RealtimeProviderEvent): GeminiLiveSessionRuntimeObservation {
-    return Object.freeze({
-      events: Object.freeze([event]),
-      transcriptionChunks: Object.freeze([]),
-      cancelledToolCallIds: Object.freeze([]),
-      snapshot: this.runtime.snapshot(),
-    });
+    return Object.freeze({ events: Object.freeze([event]), transcriptionChunks: Object.freeze([]), cancelledToolCallIds: Object.freeze([]), snapshot: this.runtime.snapshot() });
   }
 }
