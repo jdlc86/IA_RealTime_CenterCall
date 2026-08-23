@@ -40,8 +40,6 @@ class OwnedGeminiCommandPort implements RealtimeProviderCommandPort {
 
   submitToolResult(request: RealtimeToolResultRequest): void {
     if (!request.callId) throw new Error("Gemini Live owned tool response requires callId");
-    // Fail closed before writing stale/unknown results, but only advance owner
-    // state after the FunctionResponse was successfully written to the wire.
     this.owner.assertPendingToolCall(request.callId);
     this.delegate.submitToolResult(request);
     this.owner.noteToolResponseSubmitted(request.callId);
@@ -49,16 +47,16 @@ class OwnedGeminiCommandPort implements RealtimeProviderCommandPort {
 
   updateSessionPolicy(update: RealtimeSessionPolicyUpdate): void { this.delegate.updateSessionPolicy(update); }
   createDefaultResponse(): void { this.delegate.createDefaultResponse(); }
-  cancelResponse(responseId: string): void { this.delegate.cancelResponse(responseId); }
+  cancelResponse(_responseId: string): void { this.delegate.cancelResponse(); }
   clearPlayback(): void { this.delegate.clearPlayback(); }
   clearInput(): void { this.delegate.clearInput(); }
-  discardInputItem(itemId: string): void { this.delegate.discardInputItem(itemId); }
+  discardInputItem(_itemId: string): void { this.delegate.discardInputItem(); }
   suspendInputDetection(): void { this.delegate.suspendInputDetection(); }
-  beginNonInterruptingListening(settings?: RealtimeInputDetectionSettings): void {
-    this.delegate.beginNonInterruptingListening(settings);
+  beginNonInterruptingListening(_settings?: RealtimeInputDetectionSettings): void {
+    this.delegate.beginNonInterruptingListening();
   }
-  restoreInputDetection(settings?: RealtimeInputDetectionSettings): void {
-    this.delegate.restoreInputDetection(settings);
+  restoreInputDetection(_settings?: RealtimeInputDetectionSettings): void {
+    this.delegate.restoreInputDetection();
   }
 }
 
