@@ -16,6 +16,10 @@ export type GeminiMediaEdgeSidebandOutbound =
       type: "PLAYBACK_BINDING";
       responseId: string;
       kind: "NORMAL";
+    }>
+  | Readonly<{
+      type: "PLAYBACK_DRAIN";
+      responseId: string;
     }>;
 
 export type GeminiMediaEdgeSidebandInbound = Readonly<{
@@ -69,6 +73,19 @@ function playbackBinding(events: readonly RealtimeProviderEvent[]): GeminiMediaE
   return Object.freeze({ type: "PLAYBACK_BINDING", responseId, kind: "NORMAL" });
 }
 
+function playbackDrain(events: readonly RealtimeProviderEvent[]): GeminiMediaEdgeSidebandOutbound | null {
+  const completed = events.filter(
+    (event): event is Extract<RealtimeProviderEvent, { type: "ASSISTANT_RESPONSE_COMPLETED" }> =>
+      event.type === "ASSISTANT_RESPONSE_COMPLETED" && event.status === "completed",
+  );
+  if (completed.length === 0) return null;
+  if (completed.length !== 1) throw new Error("Gemini sideband observation produced multiple completed responses");
+  return Object.freeze({
+    type: "PLAYBACK_DRAIN",
+    responseId: required(completed[0].responseId, "Gemini sideband completed response id"),
+  });
+}
+
 /**
  * Provider-specific control-plane composition for an external Gemini media edge.
  *
@@ -76,7 +93,8 @@ function playbackBinding(events: readonly RealtimeProviderEvent[]): GeminiMediaE
  * already-sent setup and keeps GeminiLiveSessionOwner as the sole semantic owner
  * for response ids, pending tools, interruption and turn completion. Whenever the
  * owner mints a response id, that identity is returned to the edge before the edge
- * is allowed to release correlated PCM to Telnyx.
+ * is allowed to release correlated PCM to Telnyx. Normal response completion asks
+ * the edge for a Telnyx drain mark; playback is not considered stopped here.
  */
 export class GeminiMediaEdgeSidebandRuntime {
   private readonly runtime: GeminiLiveSessionRuntime;
@@ -103,6 +121,8 @@ export class GeminiMediaEdgeSidebandRuntime {
     const observation = this.runtime.observe(JSON.stringify(envelope.message));
     const binding = playbackBinding(observation.events);
     if (binding) this.send(binding);
+    const drain = playbackDrain(observation.events);
+    if (drain) this.send(drain);
     return observation;
   }
 
