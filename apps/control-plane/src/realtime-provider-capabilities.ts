@@ -66,7 +66,7 @@ const GEMINI_CAPABILITIES = Object.freeze({
   authoritativeTemporalContext: false,
   runtimeInstructionPolicyUpdate: false,
   runtimeToolCatalogUpdate: false,
-  correlatedResponseLifecycle: false,
+  correlatedResponseLifecycle: true,
   directSip: false,
 } satisfies ProviderCapabilities);
 
