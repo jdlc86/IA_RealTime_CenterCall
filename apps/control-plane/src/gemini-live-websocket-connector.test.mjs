@@ -51,8 +51,8 @@ test("connector resolves only after websocket open", async () => {
 
 test("connector errors never echo provider credentials", async () => {
   const apiKey = "very-secret-provider-key";
-  await assert.rejects(
-    connectGeminiLiveWebSocket(apiKey, () => { throw new Error(`failed ${apiKey}`); }),
+  assert.throws(
+    () => connectGeminiLiveWebSocket(apiKey, () => { throw new Error(`failed ${apiKey}`); }),
     (error) => error instanceof Error && !error.message.includes(apiKey) && /construction failed/.test(error.message),
   );
 
