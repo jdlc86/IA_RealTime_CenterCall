@@ -49,6 +49,35 @@ test("Gemini playback binding is immutable while a response owns playback", () =
   assert.throws(() => gate.bind("gemini-response-2"), /already owned/);
 });
 
+test("normal playback remains owned until the exact Telnyx drain mark returns", () => {
+  const gate = new BoundPlaybackGate(64 * 1024);
+  gate.bind("gemini-response-1");
+  gate.queue(Buffer.from([0x01, 0x00]));
+  const [chunk] = gate.flush();
+  gate.noteQueued(chunk.responseId);
+  const mark = gate.finish("gemini-response-1");
+  assert.match(mark, /^ia-gemini-playback:drain:/);
+  assert.equal(gate.activeResponseId(), "gemini-response-1");
+  assert.equal(gate.observeReturnedMark("unrelated-mark"), null);
+  assert.equal(gate.activeResponseId(), "gemini-response-1");
+  assert.deepEqual(gate.observeReturnedMark(mark), {
+    type: "ASSISTANT_AUDIO_STOPPED",
+    responseId: "gemini-response-1",
+    kind: "NORMAL",
+  });
+  assert.equal(gate.activeResponseId(), null);
+  assert.equal(gate.snapshot().binding, null);
+  gate.bind("gemini-response-2");
+});
+
+test("response with no queued audio releases binding without inventing playback stop", () => {
+  const gate = new BoundPlaybackGate(64 * 1024);
+  gate.bind("gemini-response-1");
+  assert.equal(gate.finish("gemini-response-1"), null);
+  assert.equal(gate.activeResponseId(), null);
+  assert.equal(gate.snapshot().binding, null);
+});
+
 test("Gemini playback binding buffer is bounded", () => {
   const gate = new BoundPlaybackGate(4);
   gate.queue(Buffer.from([0, 0, 0, 0]));
