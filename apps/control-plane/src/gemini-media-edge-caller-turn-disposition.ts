@@ -1,6 +1,7 @@
 import {
   requireCallerTurnDispositionRequest,
   type CallerTurnDispositionPort,
+  type CallerTurnDispositionRequest,
 } from "./caller-turn-disposition-port.js";
 import { GeminiMediaEdgeSidebandRuntime } from "./gemini-media-edge-sideband-runtime.js";
 
@@ -12,7 +13,7 @@ export function createGeminiMediaEdgeCallerTurnDispositionPort(
     throw new Error("Gemini media edge sideband runtime is required");
   }
   return Object.freeze({
-    resolve(value) {
+    resolve(value: CallerTurnDispositionRequest) {
       const request = requireCallerTurnDispositionRequest(value);
       sideband.resolveCallerTurn(request.itemId, request.disposition);
     },
