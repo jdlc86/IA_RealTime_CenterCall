@@ -46,6 +46,7 @@ class OwnedGeminiCommandPort implements RealtimeProviderCommandPort {
   }
 
   updateSessionPolicy(update: RealtimeSessionPolicyUpdate): void { this.delegate.updateSessionPolicy(update); }
+  setSemanticToolGate(armed: boolean): void { this.delegate.setSemanticToolGate(armed); }
   createDefaultResponse(): void { this.delegate.createDefaultResponse(); }
   cancelResponse(_responseId: string): void { this.delegate.cancelResponse(); }
   clearPlayback(): void { this.delegate.clearPlayback(); }
