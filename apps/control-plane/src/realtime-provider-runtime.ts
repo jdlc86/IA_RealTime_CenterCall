@@ -17,6 +17,7 @@ import {
 import {
   DEFAULT_REALTIME_PROVIDER,
   isRegisteredRealtimeProvider,
+  requireEnabledRealtimeProvider,
   type RealtimeProviderName,
 } from "./realtime-provider-selector.js";
 
@@ -151,12 +152,21 @@ const PROVIDER_BY_HOST = new WeakMap<object, RealtimeProviderName>();
 function createProviderCommandPort(provider: RealtimeProviderName, host: RealtimeProviderHost): RealtimeProviderCommandPort {
   switch (provider) {
     case "OPENAI": return openAIRealtimeCommandPortFor(host);
+    case "GEMINI": throw new Error("Realtime provider adapter is not enabled for traffic: GEMINI");
   }
 }
 
 export function bindRealtimeProvider(host: RealtimeProviderHost, provider: RealtimeProviderName): void {
   if (!isRegisteredRealtimeProvider(provider)) throw new Error(`Realtime provider is not registered: ${String(provider)}`);
+
+  const existingProvider = PROVIDER_BY_HOST.get(host);
+  if (existingProvider && existingProvider !== provider) {
+    throw new Error(`Realtime provider already bound as ${existingProvider}`);
+  }
+
+  requireEnabledRealtimeProvider(provider);
   realtimeProviderCapabilities(provider);
+
   const runtime = RUNTIME_BY_HOST.get(host);
   if (runtime && runtime.provider !== provider) throw new Error(`Realtime provider already initialized as ${runtime.provider}`);
   PROVIDER_BY_HOST.set(host, provider);
@@ -174,6 +184,7 @@ function commandRuntimeFor(host: RealtimeProviderHost): RealtimeProviderCommandR
   let runtime = RUNTIME_BY_HOST.get(host);
   if (!runtime) {
     const provider = realtimeProviderFor(host);
+    requireEnabledRealtimeProvider(provider);
     runtime = new RealtimeProviderCommandRuntime(provider, createProviderCommandPort(provider, host));
     RUNTIME_BY_HOST.set(host, runtime);
   }
@@ -191,4 +202,5 @@ export function installRealtimeSessionPolicyTransform(host: RealtimeProviderHost
 export function observeRealtimeAssistantResponseStarted(host: RealtimeProviderHost, responseId?: string): void { commandRuntimeFor(host).observeAssistantResponseStarted(responseId); }
 export function observeRealtimeAssistantResponseCompleted(host: RealtimeProviderHost, responseId?: string): void { commandRuntimeFor(host).observeAssistantResponseCompleted(responseId); }
 
+/** G1 remains OpenAI-only at the wire edge; Gemini event adaptation is introduced in G2 before traffic enablement. */
 export function adaptRealtimeProviderEvents(data: unknown): RealtimeProviderEvent[] { return adaptOpenAIRealtimeEvent(data); }
