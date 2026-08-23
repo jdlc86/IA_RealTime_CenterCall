@@ -29,6 +29,12 @@ export function canonicalBootstrap(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Gemini media edge bootstrap is invalid");
   }
+  if (value.manualActivityDetection !== true) {
+    throw new Error("Gemini media edge bootstrap requires manual activity detection");
+  }
+  if (value.manualActivityHandling !== "START_OF_ACTIVITY_INTERRUPTS") {
+    throw new Error("Gemini media edge bootstrap requires START_OF_ACTIVITY_INTERRUPTS");
+  }
   return Object.freeze({
     credentialId: required(value.credentialId, "Gemini media edge bootstrap credential id"),
     tenantId: required(value.tenantId, "Gemini media edge bootstrap tenant_id"),
@@ -36,6 +42,8 @@ export function canonicalBootstrap(value) {
     notAfterEpochMs: safeEpoch(value.notAfterEpochMs, "Gemini media edge bootstrap notAfterEpochMs"),
     instructions: required(value.instructions, "Gemini media edge bootstrap instructions"),
     tools: canonicalTools(value.tools),
+    manualActivityDetection: true,
+    manualActivityHandling: "START_OF_ACTIVITY_INTERRUPTS",
   });
 }
 
@@ -56,7 +64,7 @@ export function buildGeminiInitialSetup(bootstrap, model) {
       outputAudioTranscription: {},
       realtimeInputConfig: {
         automaticActivityDetection: { disabled: true },
-        activityHandling: "NO_INTERRUPTION",
+        activityHandling: value.manualActivityHandling,
       },
     },
   });
@@ -67,11 +75,7 @@ export function isGeminiSetupComplete(message) {
     && (message.setupComplete !== undefined || message.setup_complete !== undefined));
 }
 
-/**
- * Single-instance bootstrap store used by the first Cloud Run canary topology.
- * Bootstrap is registered by the control plane before Telnyx streaming_start and
- * consumed exactly once after the signed media credential proves call identity.
- */
+/** Single-instance bootstrap store used by the first Cloud Run canary topology. */
 export class InMemoryBootstrapRegistry {
   constructor() { this.entries = new Map(); }
 
