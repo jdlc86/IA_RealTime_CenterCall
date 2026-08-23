@@ -48,7 +48,12 @@ export type RealtimeFunctionToolDefinition = {
 
 export type RealtimeSessionPolicyUpdate = {
   instructions?: string;
-  toolChoice?: "AUTO" | "NONE" | "REQUIRED";
+  /**
+   * Transitional bootstrap/default tool selection only.
+   * Semantic one-tool enforcement must use setSemanticToolGate so the core does
+   * not depend on any provider's session-level tool_choice representation.
+   */
+  toolChoice?: "AUTO" | "NONE";
   tools?: RealtimeFunctionToolDefinition[];
 };
 
@@ -59,6 +64,7 @@ export interface RealtimeProviderCommandPort {
   createSemanticResponse(request: RealtimeSemanticResponseRequest): void;
   submitToolResult(request: RealtimeToolResultRequest): void;
   updateSessionPolicy(update: RealtimeSessionPolicyUpdate): void;
+  setSemanticToolGate(armed: boolean): void;
   createDefaultResponse(): void;
   cancelResponse(responseId: string): void;
   clearPlayback(): void;
