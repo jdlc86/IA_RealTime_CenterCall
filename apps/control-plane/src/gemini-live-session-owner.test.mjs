@@ -91,6 +91,14 @@ test("tool wait preserves call ids and submitting results releases protocol wait
   assert.equal(released.activeResponseId, "gemini-response-1");
 });
 
+test("function calls without correlation ids fail closed", () => {
+  const owner = readyOwner();
+  assert.throws(
+    () => owner.observe(wire({ toolCall: { functionCalls: [{ name: "search_reservation" }] } })),
+    /missing required correlation id/,
+  );
+});
+
 test("interruption completes the active neutral response once and cancellation is evidence, not rollback", () => {
   const owner = readyOwner();
   owner.observe(wire({ toolCall: { functionCalls: [{ id: "fc-9", name: "create_reservation" }] } }));
@@ -112,11 +120,13 @@ test("interruption completes the active neutral response once and cancellation i
   assert.equal(cancelled.snapshot.state, "READY");
 });
 
-test("turnComplete after a tool call does not pretend the session is ready while calls are unresolved", () => {
+test("turnComplete cannot release response ownership while tool calls are unresolved", () => {
   const owner = readyOwner();
   owner.observe(wire({ toolCall: { functionCalls: [{ id: "fc-pending", name: "search" }] } }));
   const done = owner.observe(wire({ serverContent: { turnComplete: true } }));
+  assert.deepEqual(done.events, []);
   assert.equal(done.snapshot.state, "TOOL_WAIT");
+  assert.equal(done.snapshot.activeResponseId, "gemini-response-1");
   assert.deepEqual(done.snapshot.pendingToolCallIds, ["fc-pending"]);
 });
 
