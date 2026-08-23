@@ -21,30 +21,58 @@ export function canonicalControlCommand(value) {
   return Object.freeze({ type: "TOOL_RESULT", callId, toolName, output: structuredClone(message.output) });
 }
 
-export function geminiControlEvents(message) {
+/**
+ * Remove Gemini audio bytes while preserving protocol evidence needed by the
+ * single GeminiLiveSessionOwner in the control plane. The edge does not invent
+ * response ids, transcript completion, interruption completion or tool lifecycle.
+ */
+export function sanitizeGeminiControlMessage(message) {
   const value = object(message, "Gemini Live control message");
-  const events = [];
-  for (const call of value.toolCall?.functionCalls ?? value.tool_call?.function_calls ?? []) {
-    if (!call || typeof call !== "object" || Array.isArray(call)) continue;
-    if (typeof call.id !== "string" || !call.id.trim() || typeof call.name !== "string" || !call.name.trim()) {
-      throw new Error("Gemini Live function call requires id and name");
-    }
-    events.push(Object.freeze({ type: "TOOL_CALL", callId: call.id.trim(), toolName: call.name.trim(), arguments: structuredClone(call.args ?? {}) }));
+  const sanitized = {};
+  if (value.setupComplete !== undefined || value.setup_complete !== undefined) sanitized.setupComplete = {};
+
+  const calls = value.toolCall?.functionCalls ?? value.tool_call?.function_calls;
+  if (Array.isArray(calls) && calls.length) {
+    sanitized.toolCall = { functionCalls: calls.map((call) => {
+      if (!call || typeof call !== "object" || Array.isArray(call)) throw new Error("Gemini Live function call is invalid");
+      return {
+        id: required(call.id, "Gemini Live function call id"),
+        name: required(call.name, "Gemini Live function call name"),
+        ...(call.args === undefined ? {} : { args: structuredClone(call.args) }),
+      };
+    }) };
   }
+
+  const cancellationIds = value.toolCallCancellation?.ids ?? value.tool_call_cancellation?.ids;
+  if (Array.isArray(cancellationIds) && cancellationIds.length) {
+    sanitized.toolCallCancellation = { ids: cancellationIds.map((id) => required(id, "Gemini Live cancelled tool call id")) };
+  }
+
   const server = value.serverContent ?? value.server_content;
-  const input = server?.inputTranscription ?? server?.input_transcription;
-  const output = server?.outputTranscription ?? server?.output_transcription;
-  if (typeof input?.text === "string" && input.text) events.push(Object.freeze({ type: "INPUT_TRANSCRIPTION", text: input.text }));
-  if (typeof output?.text === "string" && output.text) events.push(Object.freeze({ type: "OUTPUT_TRANSCRIPTION", text: output.text }));
-  if (server?.interrupted === true) events.push(Object.freeze({ type: "INTERRUPTED" }));
-  if ((server?.turnComplete ?? server?.turn_complete) === true) events.push(Object.freeze({ type: "TURN_COMPLETE" }));
-  for (const id of value.toolCallCancellation?.ids ?? value.tool_call_cancellation?.ids ?? []) {
-    if (typeof id === "string" && id.trim()) events.push(Object.freeze({ type: "TOOL_CALL_CANCELLED", callId: id.trim() }));
+  if (server && typeof server === "object" && !Array.isArray(server)) {
+    const content = {};
+    if (server.modelTurn !== undefined || server.model_turn !== undefined) content.modelTurn = {};
+    const input = server.inputTranscription ?? server.input_transcription;
+    const output = server.outputTranscription ?? server.output_transcription;
+    if (typeof input?.text === "string") content.inputTranscription = { text: input.text };
+    if (typeof output?.text === "string") content.outputTranscription = { text: output.text };
+    if ((server.generationComplete ?? server.generation_complete) === true) content.generationComplete = true;
+    if ((server.turnComplete ?? server.turn_complete) === true) content.turnComplete = true;
+    if (server.interrupted === true) content.interrupted = true;
+    if (Object.keys(content).length) sanitized.serverContent = content;
   }
-  if (value.error && typeof value.error === "object") {
-    events.push(Object.freeze({ type: "PROVIDER_ERROR", code: value.error.code == null ? null : String(value.error.code), message: typeof value.error.message === "string" ? value.error.message : null }));
+
+  if (value.error && typeof value.error === "object" && !Array.isArray(value.error)) {
+    sanitized.error = {
+      ...(value.error.code === undefined ? {} : { code: String(value.error.code) }),
+      ...(typeof value.error.message === "string" ? { message: value.error.message } : {}),
+    };
   }
-  return Object.freeze(events);
+  return Object.freeze(sanitized);
+}
+
+export function geminiControlEnvelope(message) {
+  return Object.freeze({ type: "GEMINI_EVENT", message: sanitizeGeminiControlMessage(message) });
 }
 
 export class InMemoryControlSidebandRegistry {
@@ -56,14 +84,16 @@ export class InMemoryControlSidebandRegistry {
     if (this.sessions.has(key)) throw new Error("Gemini media edge control sideband already attached");
     const session = { claims, send, commandSink: null };
     this.sessions.set(key, session);
-    return Object.freeze({
-      bindCommandSink: (sink) => {
-        if (typeof sink !== "function") throw new Error("Gemini media edge control command sink is required");
-        if (session.commandSink && session.commandSink !== sink) throw new Error("Gemini media edge control command sink already bound");
-        session.commandSink = sink;
-      },
-      detach: () => { if (this.sessions.get(key) === session) this.sessions.delete(key); },
-    });
+    return Object.freeze({ detach: () => { if (this.sessions.get(key) === session) this.sessions.delete(key); } });
+  }
+
+  bindCommandSink(claims, sink) {
+    if (typeof sink !== "function") throw new Error("Gemini media edge control command sink is required");
+    const session = this.sessions.get(controlSessionKey(claims));
+    if (!session) return false;
+    if (session.commandSink && session.commandSink !== sink) throw new Error("Gemini media edge control command sink already bound");
+    session.commandSink = sink;
+    return true;
   }
 
   emit(claims, event) {
