@@ -34,13 +34,37 @@ test("control command only admits correlated tool results", () => {
   assert.throws(() => canonicalControlCommand({ type: "SPEAK" }), /unsupported/);
 });
 
-test("sideband registry binds one control socket and active command sink", () => {
+test("control socket may attach before Gemini session command sink", () => {
   const events = []; const commands = []; const registry = new InMemoryControlSidebandRegistry();
-  const attached = registry.attach(claims, (event) => events.push(event));
-  assert.equal(registry.bindCommandSink(claims, (command) => commands.push(command)), true);
+  const socketAttachment = registry.attach(claims, (event) => events.push(event));
+  const commandAttachment = registry.bindCommandSink(claims, (command) => commands.push(command));
   assert.equal(registry.emit(claims, { type: "GEMINI_EVENT", message: { setupComplete: {} } }), true);
   registry.command(claims, { type: "TOOL_RESULT", callId: "fc1", toolName: "x", output: { ok: true } });
-  assert.deepEqual(events, [{ type: "GEMINI_EVENT", message: { setupComplete: {} } }]); assert.equal(commands[0].callId, "fc1");
+  assert.equal(commands[0].callId, "fc1");
+  socketAttachment.detach(); commandAttachment.detach(); assert.equal(registry.size(), 0);
+});
+
+test("Gemini session command sink may bind before control socket", () => {
+  const events = []; const commands = []; const registry = new InMemoryControlSidebandRegistry();
+  const commandAttachment = registry.bindCommandSink(claims, (command) => commands.push(command));
+  assert.equal(registry.emit(claims, { type: "GEMINI_EVENT", message: { setupComplete: {} } }), false);
+  const socketAttachment = registry.attach(claims, (event) => events.push(event));
+  assert.equal(registry.emit(claims, { type: "GEMINI_EVENT", message: { setupComplete: {} } }), true);
+  registry.command(claims, { type: "TOOL_RESULT", callId: "fc2", toolName: "x", output: { ok: true } });
+  assert.deepEqual(events, [{ type: "GEMINI_EVENT", message: { setupComplete: {} } }]);
+  assert.equal(commands[0].callId, "fc2");
+  socketAttachment.detach();
+  assert.equal(registry.size(), 1);
+  commandAttachment.detach();
+  assert.equal(registry.size(), 0);
+});
+
+test("duplicate control socket and duplicate command sink fail closed", () => {
+  const registry = new InMemoryControlSidebandRegistry();
+  const socket = registry.attach(claims, () => {});
+  const sink = () => {};
+  const command = registry.bindCommandSink(claims, sink);
   assert.throws(() => registry.attach(claims, () => {}), /already attached/);
-  attached.detach(); assert.equal(registry.size(), 0);
+  assert.throws(() => registry.bindCommandSink(claims, () => {}), /already bound/);
+  socket.detach(); command.detach();
 });
