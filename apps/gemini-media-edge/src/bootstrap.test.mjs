@@ -9,6 +9,8 @@ const bootstrap = Object.freeze({
   notAfterEpochMs: 2_000,
   instructions: "Eres Lucía.",
   tools: [{ type: "function", name: "restaurant_conversation", description: "Conversación", parameters: { type: "object", properties: {}, additionalProperties: false } }],
+  manualActivityDetection: true,
+  manualActivityHandling: "START_OF_ACTIVITY_INTERRUPTS",
 });
 
 const claims = Object.freeze({
@@ -18,7 +20,7 @@ const claims = Object.freeze({
   notAfterEpochMs: 2_000,
 });
 
-test("immutable setup carries system instruction, tools and manual activity configuration", () => {
+test("immutable setup carries system instruction, tools and deferred manual activity configuration", () => {
   assert.deepEqual(buildGeminiInitialSetup(bootstrap, "gemini-live-model"), {
     setup: {
       model: "gemini-live-model",
@@ -29,10 +31,15 @@ test("immutable setup carries system instruction, tools and manual activity conf
       outputAudioTranscription: {},
       realtimeInputConfig: {
         automaticActivityDetection: { disabled: true },
-        activityHandling: "NO_INTERRUPTION",
+        activityHandling: "START_OF_ACTIVITY_INTERRUPTS",
       },
     },
   });
+});
+
+test("bootstrap rejects activity policies that would bypass deferred semantic authorization", () => {
+  assert.throws(() => buildGeminiInitialSetup({ ...bootstrap, manualActivityHandling: "NO_INTERRUPTION" }, "gemini-live-model"), /START_OF_ACTIVITY_INTERRUPTS/);
+  assert.throws(() => buildGeminiInitialSetup({ ...bootstrap, manualActivityDetection: false }, "gemini-live-model"), /manual activity detection/);
 });
 
 test("bootstrap registry binds policy to exact credential, tenant, call and expiry and consumes once", () => {
