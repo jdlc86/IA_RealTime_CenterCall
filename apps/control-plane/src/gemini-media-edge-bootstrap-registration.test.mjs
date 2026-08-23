@@ -12,7 +12,7 @@ const binding = Object.freeze({
   notAfterEpochMs: 2_000_000_000_000,
 });
 
-test("registration sends the canonical agent bootstrap outside the stream credential", async () => {
+test("registration sends canonical bootstrap and deferred activity policy outside stream credential", async () => {
   const calls = [];
   const context = { assistantName: "Lucía", businessName: "Casa A" };
   const canonical = directAgentRealtimeBootstrapPolicy(context);
@@ -36,6 +36,8 @@ test("registration sends the canonical agent bootstrap outside the stream creden
   assert.equal(body.notAfterEpochMs, binding.notAfterEpochMs);
   assert.equal(body.instructions, canonical.instructions);
   assert.deepEqual(body.tools, canonical.tools);
+  assert.equal(body.manualActivityDetection, true);
+  assert.equal(body.manualActivityHandling, "START_OF_ACTIVITY_INTERRUPTS");
   assert.equal(JSON.stringify(body).includes("control-token-placeholder"), false);
 });
 
