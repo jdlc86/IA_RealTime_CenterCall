@@ -18,6 +18,7 @@ export type GeminiLiveInitialSetup = {
   responseModalities?: readonly ("AUDIO" | "TEXT")[];
   enableInputTranscription?: boolean;
   enableOutputTranscription?: boolean;
+  manualActivityDetection?: boolean;
 };
 
 function functionDeclarations(tools: RealtimeSessionPolicyUpdate["tools"]): Record<string, unknown>[] | undefined {
@@ -47,6 +48,11 @@ export function buildGeminiLiveInitialSetup(request: GeminiLiveInitialSetup): Re
   }
   if (request.enableInputTranscription) setup.inputAudioTranscription = {};
   if (request.enableOutputTranscription) setup.outputAudioTranscription = {};
+  if (request.manualActivityDetection) {
+    setup.realtimeInputConfig = {
+      automaticActivityDetection: { disabled: true },
+    };
+  }
   return { setup };
 }
 
