@@ -8,7 +8,7 @@ import { InMemoryControlSidebandRegistry } from "./control-sideband.mjs";
 import { createCloudRunAccessTokenProvider, createGoogleSpeechV2Transcriber } from "./google-speech.mjs";
 
 function required(value, field) { if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`); return value.trim(); }
-function positiveNumber(value, field, options = {}) { const number = Number(value); if (!Number.isFinite(number) || number <= (options.allowZero ? -1 : 0)) throw new Error(`${field} must be a valid number`); return number; }
+function positiveNumber(value, field, options = {}) { const number = Number(value); if (!Number.isFinite(number) || (options.allowZero ? number < 0 : number <= 0)) throw new Error(`${field} must be a valid number`); return number; }
 function secureTokenEqual(actual, expected) { const left = Buffer.from(actual ?? "", "utf8"); const right = Buffer.from(expected, "utf8"); return left.length === right.length && timingSafeEqual(left, right); }
 async function readJsonBody(request, maxBytes = 262_144) { const chunks = []; let total = 0; for await (const chunk of request) { total += chunk.length; if (total > maxBytes) throw new Error("Gemini media edge bootstrap body is too large"); chunks.push(chunk); } try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new Error("Gemini media edge bootstrap body is invalid JSON"); } }
 function controlAuthorization(request, expected) { const authorization = typeof request.headers.authorization === "string" ? request.headers.authorization.trim() : ""; const supplied = authorization.replace(/^Bearer\s+/i, ""); return /^Bearer\s+/i.test(authorization) && secureTokenEqual(supplied, expected); }
