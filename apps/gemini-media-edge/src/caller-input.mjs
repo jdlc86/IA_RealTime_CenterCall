@@ -106,19 +106,45 @@ export class AuthoritativeCallerInputOwner {
     this.sequence = 0;
     this.active = null;
     this.transcriptionInFlight = null;
+    this.provisionalPlaybackResponseId = undefined;
   }
 
   async observe(payload, playbackResponseId = null) {
+    const before = this.vad.snapshot();
     const acoustic = this.vad.observe(payload);
+    const after = acoustic.snapshot;
     const events = [];
+
+    if (
+      before.state === "SILENCE"
+      && before.candidateSpeechSamples === 0
+      && this.provisionalPlaybackResponseId === undefined
+      && (after.candidateSpeechSamples > 0 || acoustic.boundary?.type === "SPEECH_START")
+    ) {
+      this.provisionalPlaybackResponseId = playbackResponseId || null;
+    }
+
     if (acoustic.boundary?.type === "SPEECH_START") {
       if (this.active) throw new Error(`Gemini caller candidate already active: ${this.active.itemId}`);
       this.sequence += 1;
-      this.active = { itemId: `gemini-candidate-${this.sequence}`, payloads: [], payloadChars: 0, transcript: null, playbackResponseIdAtStart: playbackResponseId || null };
+      this.active = {
+        itemId: `gemini-candidate-${this.sequence}`,
+        payloads: [],
+        payloadChars: 0,
+        transcript: null,
+        playbackResponseIdAtStart: this.provisionalPlaybackResponseId === undefined ? (playbackResponseId || null) : this.provisionalPlaybackResponseId,
+      };
+      this.provisionalPlaybackResponseId = undefined;
       events.push(Object.freeze({ type: "CALLER_SPEECH_STARTED", itemId: this.active.itemId, playbackResponseIdAtStart: this.active.playbackResponseIdAtStart }));
       for (const onset of acoustic.boundary.replayPayloads) this.buffer(onset);
     } else if (acoustic.shouldBufferPayload && this.active) {
       this.buffer(payload);
+    } else if (
+      after.state === "SILENCE"
+      && after.candidateSpeechSamples === 0
+      && !this.active
+    ) {
+      this.provisionalPlaybackResponseId = undefined;
     }
 
     if (acoustic.boundary?.type === "SPEECH_END") {
@@ -136,6 +162,7 @@ export class AuthoritativeCallerInputOwner {
         events.push(Object.freeze({ type: "CALLER_TRANSCRIPT_COMPLETED", itemId: candidate.itemId, transcript, playbackResponseIdAtStart: candidate.playbackResponseIdAtStart }));
       } catch (error) {
         if (this.active?.itemId === candidate.itemId) this.active = null;
+        this.provisionalPlaybackResponseId = undefined;
         this.vad.reset();
         throw error;
       } finally {
@@ -151,6 +178,7 @@ export class AuthoritativeCallerInputOwner {
     if (!["NORMAL", "INTERRUPT", "IGNORE"].includes(decision)) throw new Error("Gemini caller decision is invalid");
     const result = Object.freeze({ itemId: candidate.itemId, transcript: candidate.transcript, mediaPayloads: Object.freeze([...candidate.payloads]), playbackResponseIdAtStart: candidate.playbackResponseIdAtStart, decision });
     this.active = null;
+    this.provisionalPlaybackResponseId = undefined;
     this.vad.reset();
     return result;
   }
@@ -168,5 +196,5 @@ export class AuthoritativeCallerInputOwner {
 
   requireActive() { if (!this.active) throw new Error("Gemini caller candidate is not active"); return this.active; }
   requireMatching(itemId) { const candidate = this.requireActive(); const normalized = required(itemId, "Gemini caller item id"); if (normalized !== candidate.itemId) throw new Error(`Gemini caller candidate identity mismatch: expected ${candidate.itemId}`); return candidate; }
-  snapshot() { return Object.freeze({ activeItemId: this.active?.itemId ?? null, sequence: this.sequence, bufferedChunks: this.active?.payloads.length ?? 0, bufferedPayloadChars: this.active?.payloadChars ?? 0, transcriptReady: Boolean(this.active?.transcript), transcriptionInFlightItemId: this.transcriptionInFlight }); }
+  snapshot() { return Object.freeze({ activeItemId: this.active?.itemId ?? null, sequence: this.sequence, bufferedChunks: this.active?.payloads.length ?? 0, bufferedPayloadChars: this.active?.payloadChars ?? 0, transcriptReady: Boolean(this.active?.transcript), transcriptionInFlightItemId: this.transcriptionInFlight, provisionalPlaybackResponseId: this.provisionalPlaybackResponseId ?? null }); }
 }
