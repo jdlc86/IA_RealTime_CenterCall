@@ -1,0 +1,17 @@
+{
+  "name": "@ia-realtime-centercall/gemini-media-edge-benchmark",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test src/*.test.mjs",
+    "check": "node --check src/relay.mjs && node --check src/server.mjs"
+  },
+  "dependencies": {
+    "ws": "8.18.3"
+  }
+}
