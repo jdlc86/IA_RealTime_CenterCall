@@ -107,6 +107,19 @@ export class GeminiTelnyxSessionBridge {
     return this.session.endCallerActivity();
   }
 
+  activeResponseId(): string | null {
+    return this.session.snapshot().activeResponseId;
+  }
+
+  clearActivePlayback(responseId: string): string | null {
+    const normalized = responseId.trim();
+    const activeResponseId = this.session.snapshot().activeResponseId;
+    if (!normalized || !activeResponseId || normalized !== activeResponseId) {
+      throw new Error(`Gemini playback clear requires active owned response ${normalized || "<empty>"}`);
+    }
+    return this.media.clearPlayback(normalized);
+  }
+
   observeGemini(
     data: unknown,
     kind: AssistantSpeechKind = "NORMAL",
