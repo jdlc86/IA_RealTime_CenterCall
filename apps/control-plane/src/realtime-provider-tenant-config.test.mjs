@@ -30,7 +30,7 @@ test("tenant V2 accepts OpenAI provider selection", () => {
   const parsed = parseTenantConfigurationV2(JSON.stringify({
     schemaVersion: 2,
     ...common("openai"),
-    businessType: "restaurant",
+    businessType: "RESTAURANT",
     verticalConfig: {},
   }), "tenant-a");
   assert.equal(parsed.realtime.provider, "OPENAI");
