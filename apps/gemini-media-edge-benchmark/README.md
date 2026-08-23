@@ -46,7 +46,7 @@ bash deploy/cloud-run.sh
 
 The Cloud Run script fixes Paris `europe-west9`, 1 vCPU, 2 GiB, concurrency 25, exactly one warm instance and a 3600-second request timeout. `BENCHMARK_AUTH_TOKEN` is read from Secret Manager using `BENCHMARK_SECRET_NAME` (default `BENCHMARK_AUTH_TOKEN`).
 
-Fly:
+Fly requires an already-created app. App creation is intentionally outside the deploy script so a benchmark run cannot silently inherit first-deploy topology defaults. After creating the empty Fly app once, run:
 
 ```bash
 FLY_APP=... \
@@ -56,7 +56,7 @@ BENCHMARK_AUTH_TOKEN=... \
 bash deploy/fly.sh
 ```
 
-The Fly script deploys with `fly.toml.example`, provisions the runtime values as Fly secrets, and fixes the Machine count to one in Paris `cdg`. The config fixes `performance-1x`, 2 GB RAM and connection concurrency 25.
+The Fly script verifies the app exists, deploys with `fly.toml.example`, provisions the runtime values as Fly secrets, and fixes the Machine count to one in Paris `cdg`. The config fixes `performance-1x`, 2 GB RAM and connection concurrency 25.
 
 The Fly CLI can create two Machines by default for some first deployments, so the explicit final `flyctl scale count 1 --region cdg` is part of the benchmark contract rather than an optional optimization.
 
