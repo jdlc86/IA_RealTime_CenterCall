@@ -12,7 +12,7 @@ function request(overrides = {}) {
   return {
     itemId: "gemini-candidate-1",
     audio: {
-      encoding: "L16",
+      encoding: "PCM16_BE",
       sampleRateHz: 16000,
       channels: 1,
       payloads: ["AAE=", "AAI="],
@@ -21,7 +21,7 @@ function request(overrides = {}) {
   };
 }
 
-test("transcription port freezes canonical candidate audio and returns it in verified evidence", async () => {
+test("transcription port freezes canonical big-endian candidate audio and returns it in verified evidence", async () => {
   let observed = null;
   const port = createAuthoritativeCallerTranscriptionPort({
     async transcribe(input) {
@@ -32,7 +32,7 @@ test("transcription port freezes canonical candidate audio and returns it in ver
 
   const evidence = await port.transcribe(request());
   const expectedAudio = {
-    encoding: "L16",
+    encoding: "PCM16_BE",
     sampleRateHz: 16000,
     channels: 1,
     payloads: ["AAE=", "AAI="],
@@ -72,12 +72,27 @@ test("empty or malformed audio fails before external transcription", async () =>
   });
 
   await assert.rejects(
-    () => port.transcribe(request({ audio: { encoding: "L16", sampleRateHz: 16000, channels: 1, payloads: [] } })),
+    () => port.transcribe(request({ audio: { encoding: "PCM16_BE", sampleRateHz: 16000, channels: 1, payloads: [] } })),
     /requires buffered audio/,
   );
   await assert.rejects(
-    () => port.transcribe(request({ audio: { encoding: "L16", sampleRateHz: 16000, channels: 1, payloads: [" "] } })),
+    () => port.transcribe(request({ audio: { encoding: "PCM16_BE", sampleRateHz: 16000, channels: 1, payloads: [" "] } })),
     /rejects empty audio payloads/,
+  );
+  assert.equal(calls, 0);
+});
+
+test("wrong source endianness contract fails before external transcription", async () => {
+  let calls = 0;
+  const port = createAuthoritativeCallerTranscriptionPort({
+    async transcribe(input) {
+      calls += 1;
+      return { itemId: input.itemId, transcript: "hola" };
+    },
+  });
+  await assert.rejects(
+    () => port.transcribe(request({ audio: { encoding: "LINEAR16", sampleRateHz: 16000, channels: 1, payloads: ["AAE="] } })),
+    /requires mono PCM16 big-endian/,
   );
   assert.equal(calls, 0);
 });
@@ -97,7 +112,7 @@ test("shape-compatible transcript cannot bypass the authoritative boundary", () 
       itemId: "gemini-candidate-1",
       transcript: "hola",
       audio: {
-        encoding: "L16",
+        encoding: "PCM16_BE",
         sampleRateHz: 16000,
         channels: 1,
         payloads: ["AAE="],
