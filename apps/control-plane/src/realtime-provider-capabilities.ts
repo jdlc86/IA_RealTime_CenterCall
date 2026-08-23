@@ -21,6 +21,7 @@ export type ProviderCapabilities = Readonly<{
   semanticToolGate: boolean;
   initialInstructionBootstrap: boolean;
   toolCatalogBootstrap: boolean;
+  authoritativeTemporalContext: boolean;
   runtimeInstructionPolicyUpdate: boolean;
   runtimeToolCatalogUpdate: boolean;
   correlatedResponseLifecycle: boolean;
@@ -41,6 +42,7 @@ const OPENAI_CAPABILITIES = Object.freeze({
   semanticToolGate: true,
   initialInstructionBootstrap: true,
   toolCatalogBootstrap: true,
+  authoritativeTemporalContext: true,
   runtimeInstructionPolicyUpdate: true,
   runtimeToolCatalogUpdate: true,
   correlatedResponseLifecycle: true,
@@ -61,6 +63,7 @@ const GEMINI_CAPABILITIES = Object.freeze({
   semanticToolGate: false,
   initialInstructionBootstrap: true,
   toolCatalogBootstrap: true,
+  authoritativeTemporalContext: false,
   runtimeInstructionPolicyUpdate: false,
   runtimeToolCatalogUpdate: false,
   correlatedResponseLifecycle: false,
@@ -82,12 +85,12 @@ const CAPABILITIES_BY_PROVIDER: Readonly<Record<RealtimeProviderName, ProviderCa
  * Initial instructions and the tool catalog are bootstrap concerns. They may be
  * composed into an immutable provider session before the call runtime becomes ready,
  * so live traffic requires bootstrap support rather than runtime mutation support.
- * Runtime tool-catalog mutation remains an optional provider capability.
+ * Runtime instruction/tool-catalog mutation remain optional provider capabilities.
  *
- * Runtime instruction updates remain required today because V48 refreshes the
- * authoritative Madrid clock at caller-turn boundaries. That gate can only be
- * removed after temporal grounding is expressed through a provider-neutral runtime
- * context capability with equivalent semantics.
+ * Authoritative time grounding is required as a semantic capability. The current
+ * OpenAI implementation uses a session instruction update, but another provider may
+ * satisfy the same contract through a different edge-specific mechanism without
+ * exposing that mechanism to V48 or changing provider during a call.
  */
 export const REALTIME_TRAFFIC_REQUIRED_CAPABILITIES = Object.freeze([
   "audioInput",
@@ -102,7 +105,7 @@ export const REALTIME_TRAFFIC_REQUIRED_CAPABILITIES = Object.freeze([
   "semanticToolGate",
   "initialInstructionBootstrap",
   "toolCatalogBootstrap",
-  "runtimeInstructionPolicyUpdate",
+  "authoritativeTemporalContext",
   "correlatedResponseLifecycle",
 ] as const satisfies readonly (keyof ProviderCapabilities)[]);
 
