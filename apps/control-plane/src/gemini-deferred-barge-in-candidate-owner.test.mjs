@@ -39,7 +39,7 @@ test("acoustic candidate emits neutral identity without any Gemini wire operatio
   assert.doesNotMatch(source, /setTimeout\s*\(|\bsleep\s*\(/);
 });
 
-test("transcription request is minted from the exact buffered candidate audio", () => {
+test("transcription request is minted from the exact buffered big-endian candidate audio", () => {
   const owner = new GeminiDeferredBargeInCandidateOwner();
   owner.beginCandidate();
   owner.bufferTelnyxMedia("AAEC");
@@ -48,7 +48,7 @@ test("transcription request is minted from the exact buffered candidate audio", 
   assert.deepEqual(request, {
     itemId: "gemini-candidate-1",
     audio: {
-      encoding: "L16",
+      encoding: "PCM16_BE",
       sampleRateHz: 16000,
       channels: 1,
       payloads: ["AAEC", "AwQF"],
