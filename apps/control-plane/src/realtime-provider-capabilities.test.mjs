@@ -26,6 +26,7 @@ const plannedCapabilities = [
   "semanticToolGate",
   "initialInstructionBootstrap",
   "toolCatalogBootstrap",
+  "authoritativeTemporalContext",
   "runtimeInstructionPolicyUpdate",
   "runtimeToolCatalogUpdate",
   "correlatedResponseLifecycle",
@@ -47,6 +48,7 @@ test("OpenAI capabilities describe product-validated semantics rather than vendo
   assert.equal(openai.semanticToolGate, true);
   assert.equal(openai.initialInstructionBootstrap, true);
   assert.equal(openai.toolCatalogBootstrap, true);
+  assert.equal(openai.authoritativeTemporalContext, true);
   assert.equal(openai.runtimeInstructionPolicyUpdate, true);
   assert.equal(openai.runtimeToolCatalogUpdate, true);
   assert.equal(openai.correlatedResponseLifecycle, true);
@@ -64,7 +66,7 @@ test("Gemini claims only immutable bootstrap semantics already proven by its set
   }
 });
 
-test("traffic readiness requires bootstrap semantics but not runtime tool-catalog mutation", () => {
+test("traffic readiness requires semantic temporal grounding, not provider-shaped session mutation", () => {
   const required = new Set(REALTIME_TRAFFIC_REQUIRED_CAPABILITIES);
   for (const capability of [
     "audioInput",
@@ -79,21 +81,23 @@ test("traffic readiness requires bootstrap semantics but not runtime tool-catalo
     "semanticToolGate",
     "initialInstructionBootstrap",
     "toolCatalogBootstrap",
-    "runtimeInstructionPolicyUpdate",
+    "authoritativeTemporalContext",
     "correlatedResponseLifecycle",
   ]) {
     assert.equal(required.has(capability), true, `${capability} is required for live traffic`);
   }
+  assert.equal(required.has("runtimeInstructionPolicyUpdate"), false, "temporal grounding may use a provider-specific strategy");
   assert.equal(required.has("runtimeToolCatalogUpdate"), false, "immutable setup may own the tool catalog");
   assert.equal(required.has("directSip"), false, "a media bridge may replace direct SIP");
   assert.equal(required.has("toolCallCancellation"), false, "tool cancellation is optional evidence, not rollback authority");
 });
 
-test("session readiness does not collapse bootstrap and runtime mutation into one vendor-shaped flag", () => {
+test("session readiness does not collapse bootstrap, temporal semantics and runtime mutation into one vendor flag", () => {
   const required = new Set(REALTIME_TRAFFIC_REQUIRED_CAPABILITIES);
   assert.equal(required.has("initialInstructionBootstrap"), true);
   assert.equal(required.has("toolCatalogBootstrap"), true);
-  assert.equal(required.has("runtimeInstructionPolicyUpdate"), true);
+  assert.equal(required.has("authoritativeTemporalContext"), true);
+  assert.equal(required.has("runtimeInstructionPolicyUpdate"), false);
   assert.equal(required.has("runtimeToolCatalogUpdate"), false);
   assert.equal(required.has("dynamicSessionPolicy"), false);
 });
@@ -114,7 +118,7 @@ test("OpenAI is traffic-ready under the current validated baseline", () => {
 test("Gemini traffic readiness remains closed after bootstrap proof", () => {
   assert.throws(
     () => requireRealtimeProviderTrafficReadiness("GEMINI"),
-    /lacks required capabilities: audioInput, audioOutput, vad, interruption, functionCalling, inputTranscription, outputTranscription, governedSpeech, isolatedTextDecision, semanticToolGate, runtimeInstructionPolicyUpdate, correlatedResponseLifecycle/,
+    /lacks required capabilities: audioInput, audioOutput, vad, interruption, functionCalling, inputTranscription, outputTranscription, governedSpeech, isolatedTextDecision, semanticToolGate, authoritativeTemporalContext, correlatedResponseLifecycle/,
   );
 });
 
@@ -126,8 +130,8 @@ test("runtime binding requires both provider enablement and traffic readiness", 
 
 test("capability requirements fail closed until Gemini runtime gates are implemented", () => {
   assert.throws(
-    () => requireRealtimeProviderCapabilities("GEMINI", ["audioInput", "functionCalling", "semanticToolGate", "correlatedResponseLifecycle"]),
-    /lacks required capabilities: audioInput, functionCalling, semanticToolGate, correlatedResponseLifecycle/,
+    () => requireRealtimeProviderCapabilities("GEMINI", ["audioInput", "functionCalling", "semanticToolGate", "authoritativeTemporalContext", "correlatedResponseLifecycle"]),
+    /lacks required capabilities: audioInput, functionCalling, semanticToolGate, authoritativeTemporalContext, correlatedResponseLifecycle/,
   );
   assert.doesNotThrow(
     () => requireRealtimeProviderCapabilities("GEMINI", ["initialInstructionBootstrap", "toolCatalogBootstrap"]),
