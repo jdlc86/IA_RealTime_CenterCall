@@ -30,9 +30,10 @@ function registrationEndpoint(edgeUrl: string): string {
  * edge session. The policy is produced only by directAgentRealtimeBootstrapPolicy;
  * this adapter never owns or duplicates instruction/tool content.
  *
- * Callers must keep this effect behind realtime traffic admission. Registration is
- * intentionally separate from the Telnyx stream credential because the public tool
- * catalog is too large to turn the stream_auth_token into a policy transport.
+ * Caller audio is deferred until authoritative STT and semantic ownership decide
+ * whether the completed candidate is NORMAL, INTERRUPT or IGNORE. Therefore the
+ * immutable Gemini setup must use manual activity detection with the only handling
+ * mode that lets an explicitly authorized activityStart interrupt active generation.
  */
 export async function registerGeminiMediaEdgeBootstrapForAdmittedSession(
   input: GeminiMediaEdgeBootstrapRegistrationInput,
@@ -49,6 +50,8 @@ export async function registerGeminiMediaEdgeBootstrapForAdmittedSession(
     notAfterEpochMs: input.binding.notAfterEpochMs,
     instructions: policy.instructions,
     tools: policy.tools,
+    manualActivityDetection: true,
+    manualActivityHandling: "START_OF_ACTIVITY_INTERRUPTS",
   };
 
   let response: Response;
