@@ -1,6 +1,6 @@
 # IA_RealTime_CenterCall — Design Rules
 
-> **Versión:** 2.2
+> **Versión:** 2.3
 > **Estado:** vigente y normativo
 > **Última revisión:** 2026-08-23
 
@@ -47,6 +47,10 @@ Estas reglas son obligatorias salvo ADR que las modifique explícitamente.
 - **RA-039 — Identidad neutral obligatoria.** Cuando un provider no ofrezca equivalentes directos de `response_id`, `item_id` u otras identidades necesarias, su adapter genera/mapea identidades neutrales estables. El core nunca depende de identificadores propietarios de OpenAI o Gemini.
 - **RA-040 — Media plane por provider es una capacidad explícita.** OpenAI puede conservar SIP/RTP directo con Telnyx. Si Gemini Live requiere streaming/codec/resampling o un media bridge distinto, ese transporte se implementa como edge/media adapter separado; no se introduce audio continuo en `CallSession` ni se contamina el camino OpenAI.
 - **RA-041 — Activación de provider por gates.** Registrar Gemini no implica habilitar tráfico. La secuencia mínima es: contrato/capabilities → conformance text/tools → media → invariantes de voz → tenant canary. OpenAI permanece disponible y sin cambios funcionales durante la incorporación de Gemini.
+- **RA-042 — Setup Live inmutable y propiedad de sesión.** Un provider cuyo protocolo configure la sesión únicamente al abrir conexión se compone antes de iniciar tráfico y se configura una sola vez. En Gemini Live, `setup` es el primer y único mensaje de configuración y el edge espera `setupComplete`; `updateSessionPolicy` no puede fingir una mutación dinámica enviando un segundo `setup`.
+- **RA-043 — No falsificar roles para obtener paridad.** Una orden del sistema/asistente, una decisión aislada o una continuación post-tool nunca se implementan inyectándolas como input del caller/usuario solo porque el provider carezca de un equivalente directo. Si la capacidad no existe con semántica demostrada, falla cerrada o se compone mediante otro port apropiado.
+- **RA-044 — Evidencia de transcript/lifecycle debe existir realmente.** Un adapter no inventa flags de finalización ni promociona chunks parciales a `*_TRANSCRIPT_COMPLETED`. Si el provider entrega transcripción, generación e interrupción con ordering distinto, un owner stateful de borde correlaciona por eventos/identidad antes de emitir evidencia neutral; no se usan timers para inferir completion.
+- **RA-045 — Capabilities describen semántica validada.** `functionCalling`, `governedSpeech`, `isolatedTextDecision`, `dynamicSessionPolicy`, `correlatedResponseLifecycle`, cancelación y media se habilitan de forma independiente. Que el vendor anuncie una feature o que una prueba sintáctica pase no autoriza marcar paridad funcional en el producto.
 
 ## Definition of Done arquitectónica
 
