@@ -12,6 +12,10 @@ import {
   installExternalRealtimeProviderCommandPort,
   removeExternalRealtimeProviderCommandPort,
 } from "./realtime-provider-external-command-runtime.js";
+import {
+  deliverRealtimeProviderEvents,
+  requireRealtimeProviderEventIngress,
+} from "./realtime-provider-event-ingress-runtime.js";
 
 export type GeminiMediaEdgeSidebandConnectionInput = Readonly<{
   edgeUrl: string;
@@ -49,6 +53,10 @@ export function geminiMediaEdgeControlUrl(input: Pick<GeminiMediaEdgeSidebandCon
   edge.searchParams.set("call_control_id", required(input.callControlId, "Gemini media edge call_control_id"));
   edge.hash = "";
   return edge.toString();
+}
+
+function closeForObservationFailure(socket: WebSocket): void {
+  try { socket.close(1008, "invalid sideband event"); } catch {}
 }
 
 /**
@@ -129,9 +137,9 @@ export async function connectGeminiMediaEdgeSideband(
       const text = typeof event.data === "string" ? event.data : "";
       if (!text) throw new Error("Gemini media edge sideband requires text frames");
       const observation = runtime.observe(JSON.parse(text));
-      void observe(observation);
+      Promise.resolve(observe(observation)).catch(() => closeForObservationFailure(socket));
     } catch {
-      try { socket.close(1008, "invalid sideband event"); } catch {}
+      closeForObservationFailure(socket);
     }
   });
   socket.addEventListener("close", release);
@@ -145,4 +153,24 @@ export async function connectGeminiMediaEdgeSideband(
       try { socket.close(1000, "control session closed"); } catch {}
     },
   });
+}
+
+/**
+ * Production composition boundary for a Gemini CallSession host. The normalized
+ * event ingress must already be installed before any network or provider effect.
+ */
+export async function connectGeminiMediaEdgeSidebandToProviderHost(
+  input: GeminiMediaEdgeSidebandConnectionInput & Readonly<{ capabilityHost: object }>,
+  fetcher: typeof fetch = fetch,
+): Promise<GeminiMediaEdgeSidebandConnection> {
+  requireRealtimeProviderEventIngress(input.capabilityHost);
+  return connectGeminiMediaEdgeSideband(
+    input,
+    async (observation) => {
+      if (observation.events.length) {
+        await deliverRealtimeProviderEvents(input.capabilityHost, observation.events);
+      }
+    },
+    fetcher,
+  );
 }
