@@ -90,13 +90,14 @@ test("comparison requires at least two distinct candidates", () => {
   );
 });
 
-test("comparison rejects workload, region, duration and concurrency drift", () => {
+test("comparison rejects workload, region, duration, concurrency and call-volume drift", () => {
   const baseline = evidence();
   const variants = [
     [evidence({ candidateId: "candidate-b", workloadFingerprint: OTHER_WORKLOAD_SHA }), /workloads are not comparable/],
     [evidence({ candidateId: "candidate-b", referenceRegion: "us-reference" }), /reference regions are not comparable/],
     [evidence({ candidateId: "candidate-b", durationSeconds: 900 }), /durations are not comparable/],
     [evidence({ candidateId: "candidate-b", concurrency: 50 }), /concurrency is not comparable/],
+    [evidence({ candidateId: "candidate-b", completedCalls: 24, failedCalls: 0 }), /attempted call volumes are not comparable/],
   ];
 
   for (const [candidate, pattern] of variants) {
@@ -117,4 +118,5 @@ test("provider-specific region names may differ when reference region and worklo
   assert.equal(comparable.candidates.length, 2);
   assert.equal(comparable.referenceRegion, "eu-west-reference");
   assert.equal(comparable.workloadFingerprint, WORKLOAD_SHA);
+  assert.equal(comparable.attemptedCalls, 25);
 });
