@@ -21,7 +21,7 @@ function request(overrides = {}) {
   };
 }
 
-test("transcription port freezes canonical candidate audio before delegate execution", async () => {
+test("transcription port freezes canonical candidate audio and returns it in verified evidence", async () => {
   let observed = null;
   const port = createAuthoritativeCallerTranscriptionPort({
     async transcribe(input) {
@@ -31,14 +31,15 @@ test("transcription port freezes canonical candidate audio before delegate execu
   });
 
   const evidence = await port.transcribe(request());
+  const expectedAudio = {
+    encoding: "L16",
+    sampleRateHz: 16000,
+    channels: 1,
+    payloads: ["AAE=", "AAI="],
+  };
   assert.deepEqual(observed, {
     itemId: "gemini-candidate-1",
-    audio: {
-      encoding: "L16",
-      sampleRateHz: 16000,
-      channels: 1,
-      payloads: ["AAE=", "AAI="],
-    },
+    audio: expectedAudio,
   });
   assert.equal(Object.isFrozen(observed), true);
   assert.equal(Object.isFrozen(observed.audio), true);
@@ -46,7 +47,9 @@ test("transcription port freezes canonical candidate audio before delegate execu
   assert.deepEqual(evidence, {
     itemId: "gemini-candidate-1",
     transcript: "quiero una mesa",
+    audio: expectedAudio,
   });
+  assert.equal(evidence.audio, observed.audio, "evidence must retain the exact canonical audio object sent to STT");
   assert.equal(requireAuthoritativeCallerTranscriptEvidence(evidence), evidence);
 });
 
@@ -93,6 +96,12 @@ test("shape-compatible transcript cannot bypass the authoritative boundary", () 
     () => requireAuthoritativeCallerTranscriptEvidence({
       itemId: "gemini-candidate-1",
       transcript: "hola",
+      audio: {
+        encoding: "L16",
+        sampleRateHz: 16000,
+        channels: 1,
+        payloads: ["AAE="],
+      },
     }),
     /not authoritative transcription evidence/,
   );
