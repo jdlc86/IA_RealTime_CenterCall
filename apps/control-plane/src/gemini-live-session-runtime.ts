@@ -99,6 +99,15 @@ export class GeminiLiveSessionRuntime {
     }
   }
 
+  /**
+   * Adopt a session whose immutable setup was emitted by the external media edge.
+   * No provider wire message is sent here. This preserves GeminiLiveSessionOwner
+   * as the single lifecycle authority while keeping setup ownership at the edge.
+   */
+  adoptExternalSetupSent(): GeminiLiveSessionSnapshot {
+    return this.owner.markSetupSent();
+  }
+
   beginCallerActivity(): GeminiLiveCallerActivityBoundary {
     if (!this.initialSetup.manualActivityDetection) {
       throw new Error("Gemini Live caller activity boundaries require manualActivityDetection setup");
