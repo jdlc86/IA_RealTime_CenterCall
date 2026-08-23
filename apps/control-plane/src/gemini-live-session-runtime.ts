@@ -40,10 +40,11 @@ class OwnedGeminiCommandPort implements RealtimeProviderCommandPort {
 
   submitToolResult(request: RealtimeToolResultRequest): void {
     if (!request.callId) throw new Error("Gemini Live owned tool response requires callId");
-    // Verify ownership before writing to the wire. If the call is stale, unknown
-    // or already cancelled, no FunctionResponse is emitted.
-    this.owner.noteToolResponseSubmitted(request.callId);
+    // Fail closed before writing stale/unknown results, but only advance owner
+    // state after the FunctionResponse was successfully written to the wire.
+    this.owner.assertPendingToolCall(request.callId);
     this.delegate.submitToolResult(request);
+    this.owner.noteToolResponseSubmitted(request.callId);
   }
 
   updateSessionPolicy(update: RealtimeSessionPolicyUpdate): void { this.delegate.updateSessionPolicy(update); }
