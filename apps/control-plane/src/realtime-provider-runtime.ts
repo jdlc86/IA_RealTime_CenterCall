@@ -76,6 +76,8 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
     this.delegate.updateSessionPolicy(governed);
   }
 
+  setSemanticToolGate(armed: boolean): void { this.delegate.setSemanticToolGate(armed); }
+
   createDefaultResponse(): void {
     const replacement = this.pendingDefaultResponseReplacement;
     this.pendingDefaultResponseReplacement = null;
