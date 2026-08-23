@@ -163,7 +163,10 @@ export class GeminiDeferredBargeInCandidateOwner {
   }
 
   releaseNormalTurn(itemId: string): GeminiDeferredCallerTurn {
-    const active = this.requireCompletedMatching(itemId, "normal turn");
+    const active = this.requireMatching(itemId);
+    if (active.transcript === null) {
+      throw new Error(`Gemini deferred candidate ${active.itemId} cannot release normal turn before transcript completion`);
+    }
     const released = this.materialize(active);
     RELEASED_NORMAL_TURNS.add(released);
     this.active = null;
@@ -171,7 +174,10 @@ export class GeminiDeferredBargeInCandidateOwner {
   }
 
   confirmInterruption(itemId: string): GeminiDeferredBargeInCandidate {
-    const active = this.requireCompletedMatching(itemId, "interruption");
+    const active = this.requireMatching(itemId);
+    if (active.transcript === null) {
+      throw new Error(`Gemini deferred candidate ${active.itemId} cannot commit before transcript completion`);
+    }
     const committed = this.materialize(active);
     CONFIRMED_CANDIDATES.add(committed);
     this.active = null;
@@ -205,14 +211,6 @@ export class GeminiDeferredBargeInCandidateOwner {
   private requireActive(): ActiveCandidate {
     if (!this.active) throw new Error("Gemini deferred candidate is not active");
     return this.active;
-  }
-
-  private requireCompletedMatching(itemId: string, purpose: string): ActiveCandidate {
-    const active = this.requireMatching(itemId);
-    if (active.transcript === null) {
-      throw new Error(`Gemini deferred candidate ${active.itemId} cannot release ${purpose} before transcript completion`);
-    }
-    return active;
   }
 
   private requireMatching(itemId: string): ActiveCandidate {
