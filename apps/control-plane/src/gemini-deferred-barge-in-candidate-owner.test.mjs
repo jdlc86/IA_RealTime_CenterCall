@@ -20,7 +20,9 @@ test("acoustic candidate emits neutral identity without any Gemini wire operatio
     transcriptReady: false,
   });
 
-  assert.doesNotMatch(source, /activityStart|clientContent|realtimeInput/);
+  assert.doesNotMatch(source, /\.send\s*\(/);
+  assert.doesNotMatch(source, /GeminiLiveCommandHost/);
+  assert.doesNotMatch(source, /telnyxL16PayloadToGeminiRealtimeInput/);
   assert.doesNotMatch(source, /setTimeout\s*\(|\bsleep\s*\(/);
 });
 
