@@ -1,6 +1,8 @@
+import type { GeminiMediaEdgeCredentialClaims, GeminiMediaEdgeCredentialIssuer } from "./gemini-media-edge-admission-composition.js";
 import type { GeminiMediaEdgeVerifiedCredential } from "./gemini-media-edge-credential-consumption.js";
 
 export type GeminiMediaEdgeHmacCredentialIssuerInput = GeminiMediaEdgeVerifiedCredential;
+export type GeminiMediaEdgeCredentialIdFactory = () => string;
 
 function required(value: unknown, field: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`);
@@ -84,4 +86,24 @@ export async function issueGeminiMediaEdgeHmacCredential(
   );
   const signature = new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(signingInput)));
   return `${signingInput}.${base64Url(signature)}`;
+}
+
+/**
+ * Adapter used directly by requireGeminiMediaEdgeProvisioningReady. Credential id
+ * creation is injected so tests and future durable issuance can own identity, while
+ * the default remains a cryptographically strong random UUID in Workers.
+ */
+export function createGeminiMediaEdgeHmacCredentialIssuer(
+  signingSecret: string,
+  createCredentialId: GeminiMediaEdgeCredentialIdFactory = () => crypto.randomUUID(),
+): GeminiMediaEdgeCredentialIssuer {
+  const secret = required(signingSecret, "Gemini media edge credential signing secret");
+  return async (claims: GeminiMediaEdgeCredentialClaims) => {
+    const credentialId = required(createCredentialId(), "Gemini media edge credential id");
+    const streamAuthToken = await issueGeminiMediaEdgeHmacCredential(
+      Object.freeze({ credentialId, ...claims }),
+      secret,
+    );
+    return Object.freeze({ streamAuthToken });
+  };
 }
