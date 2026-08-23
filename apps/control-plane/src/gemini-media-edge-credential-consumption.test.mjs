@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { requireGeminiMediaEdgeCredentialOnce } from "../.test-dist/gemini-media-edge-credential-consumption.js";
+import {
+  consumeGeminiMediaEdgeCredentialOnce,
+  verifyGeminiMediaEdgeCredential,
+} from "../.test-dist/gemini-media-edge-credential-consumption.js";
 
 const binding = Object.freeze({
   provider: "GEMINI",
@@ -19,100 +22,97 @@ function claims(overrides = {}) {
   });
 }
 
-test("valid Gemini media edge credential is verified, bound and atomically consumed once", async () => {
+test("verified credential derives its binding from authenticated claims without exposing the raw secret", async () => {
+  const authorized = await verifyGeminiMediaEdgeCredential(
+    "opaque-secret",
+    1_500,
+    async () => claims(),
+  );
+
+  assert.deepEqual(authorized, { credentialId: "cred-1", binding });
+  assert.equal(JSON.stringify(authorized).includes("opaque-secret"), false);
+});
+
+test("provider, identity, target legs and secure edge URL fail closed during verification", async () => {
+  const cases = [
+    [claims({ provider: "OPENAI" }), /provider must be GEMINI/],
+    [claims({ tenantId: " " }), /tenant_id is required/],
+    [claims({ callControlId: " " }), /call_control_id is required/],
+    [claims({ targetLegs: "caller" }), /target legs are invalid/],
+    [claims({ edgeUrl: "ws://media.example.test/telnyx/gemini" }), /must use wss:\/\//],
+  ];
+
+  for (const [verified, pattern] of cases) {
+    await assert.rejects(
+      verifyGeminiMediaEdgeCredential("opaque-secret", 1_500, async () => verified),
+      pattern,
+    );
+  }
+});
+
+test("credential cannot be embedded in its signed edge URL", async () => {
+  await assert.rejects(
+    verifyGeminiMediaEdgeCredential(
+      "opaque-secret",
+      1_500,
+      async () => claims({ edgeUrl: "wss://media.example.test/telnyx/gemini?auth=opaque-secret" }),
+    ),
+    /must not be embedded/,
+  );
+});
+
+test("expired credential fails during verification", async () => {
+  for (const nowEpochMs of [2_000, 2_001]) {
+    await assert.rejects(
+      verifyGeminiMediaEdgeCredential("opaque-secret", nowEpochMs, async () => claims()),
+      /credential expired/,
+    );
+  }
+});
+
+test("verified credential is rechecked for expiry and atomically consumed once", async () => {
+  const authorized = await verifyGeminiMediaEdgeCredential("opaque-secret", 1_500, async () => claims());
   const consumed = new Set();
-  const consumeCalls = [];
-  const verifier = async () => claims();
+  const calls = [];
   const consumer = async (credentialId, notAfterEpochMs) => {
-    consumeCalls.push({ credentialId, notAfterEpochMs });
+    calls.push({ credentialId, notAfterEpochMs });
     if (consumed.has(credentialId)) return false;
     consumed.add(credentialId);
     return true;
   };
 
-  const authorized = await requireGeminiMediaEdgeCredentialOnce(
-    "opaque-secret",
-    { binding, nowEpochMs: 1_500 },
-    verifier,
-    consumer,
-  );
-
-  assert.deepEqual(authorized, { credentialId: "cred-1", binding });
-  assert.deepEqual(consumeCalls, [{ credentialId: "cred-1", notAfterEpochMs: 2_000 }]);
-  assert.equal(JSON.stringify(authorized).includes("opaque-secret"), false);
+  assert.equal(await consumeGeminiMediaEdgeCredentialOnce(authorized, 1_900, consumer), authorized);
+  assert.deepEqual(calls, [{ credentialId: "cred-1", notAfterEpochMs: 2_000 }]);
 
   await assert.rejects(
-    requireGeminiMediaEdgeCredentialOnce(
-      "opaque-secret",
-      { binding, nowEpochMs: 1_501 },
-      verifier,
-      consumer,
-    ),
+    consumeGeminiMediaEdgeCredentialOnce(authorized, 1_901, consumer),
     /already consumed/,
   );
 });
 
-test("binding mismatch fails before replay state is mutated", async () => {
+test("credential expiring while waiting for Telnyx start is not consumed", async () => {
+  const authorized = await verifyGeminiMediaEdgeCredential("opaque-secret", 1_999, async () => claims());
   let consumeCalls = 0;
+
   await assert.rejects(
-    requireGeminiMediaEdgeCredentialOnce(
-      "opaque-secret",
-      { binding, nowEpochMs: 1_500 },
-      async () => claims({ callControlId: "other-call" }),
+    consumeGeminiMediaEdgeCredentialOnce(
+      authorized,
+      2_000,
       async () => { consumeCalls += 1; return true; },
     ),
-    /binding mismatch/,
+    /credential expired/,
   );
   assert.equal(consumeCalls, 0);
-});
-
-test("tenant, provider and media-edge binding are exact", async () => {
-  for (const override of [
-    { tenantId: "tenant-b" },
-    { provider: "OPENAI" },
-    { edgeUrl: "wss://other.example.test/telnyx/gemini" },
-    { targetLegs: "both" },
-    { notAfterEpochMs: 2_001 },
-  ]) {
-    let consumed = false;
-    await assert.rejects(
-      requireGeminiMediaEdgeCredentialOnce(
-        "opaque-secret",
-        { binding, nowEpochMs: 1_500 },
-        async () => claims(override),
-        async () => { consumed = true; return true; },
-      ),
-      /binding mismatch/,
-    );
-    assert.equal(consumed, false);
-  }
-});
-
-test("expired credential fails before consume and expiry boundary is exclusive", async () => {
-  for (const nowEpochMs of [2_000, 2_001]) {
-    let consumeCalls = 0;
-    await assert.rejects(
-      requireGeminiMediaEdgeCredentialOnce(
-        "opaque-secret",
-        { binding, nowEpochMs },
-        async () => claims(),
-        async () => { consumeCalls += 1; return true; },
-      ),
-      /credential expired/,
-    );
-    assert.equal(consumeCalls, 0);
-  }
 });
 
 test("verifier and consumer errors are redacted and never propagate the raw credential", async () => {
   const rawCredential = "super-secret-token";
 
   await assert.rejects(
-    requireGeminiMediaEdgeCredentialOnce(
+    verifyGeminiMediaEdgeCredential(
       rawCredential,
-      { binding, nowEpochMs: 1_500 },
+      1_500,
       async () => { throw new Error(`bad signature for ${rawCredential}`); },
-      async () => true,
     ),
     (error) => {
       assert.equal(error.message, "Gemini media edge credential verification failed");
@@ -121,11 +121,11 @@ test("verifier and consumer errors are redacted and never propagate the raw cred
     },
   );
 
+  const authorized = await verifyGeminiMediaEdgeCredential(rawCredential, 1_500, async () => claims());
   await assert.rejects(
-    requireGeminiMediaEdgeCredentialOnce(
-      rawCredential,
-      { binding, nowEpochMs: 1_500 },
-      async () => claims(),
+    consumeGeminiMediaEdgeCredentialOnce(
+      authorized,
+      1_600,
       async () => { throw new Error(`storage failure ${rawCredential}`); },
     ),
     (error) => {
@@ -137,12 +137,13 @@ test("verifier and consumer errors are redacted and never propagate the raw cred
 });
 
 test("atomic consumer false is authoritative replay rejection", async () => {
+  const authorized = await verifyGeminiMediaEdgeCredential("opaque-secret", 1_500, async () => claims());
   let consumeCalls = 0;
+
   await assert.rejects(
-    requireGeminiMediaEdgeCredentialOnce(
-      "opaque-secret",
-      { binding, nowEpochMs: 1_999 },
-      async () => claims(),
+    consumeGeminiMediaEdgeCredentialOnce(
+      authorized,
+      1_999,
       async () => { consumeCalls += 1; return false; },
     ),
     /already consumed/,
