@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import {
+  REALTIME_TRAFFIC_REQUIRED_CAPABILITIES,
   realtimeProviderCapabilities,
   requireRealtimeProviderCapabilities,
+  requireRealtimeProviderTrafficReadiness,
 } from "../.test-dist/realtime-provider-capabilities.js";
 
 const source = readFileSync(new URL("./realtime-provider-capabilities.ts", import.meta.url), "utf8");
@@ -50,8 +52,42 @@ test("Gemini remains registered without claiming any unvalidated parity", () => 
   }
 });
 
-test("runtime binding requires a capability registration", () => {
-  assert.match(runtime, /realtimeProviderCapabilities\(provider\);/);
+test("traffic readiness names product invariants instead of transport topology", () => {
+  const required = new Set(REALTIME_TRAFFIC_REQUIRED_CAPABILITIES);
+  for (const capability of [
+    "audioInput",
+    "audioOutput",
+    "vad",
+    "interruption",
+    "functionCalling",
+    "inputTranscription",
+    "outputTranscription",
+    "governedSpeech",
+    "isolatedTextDecision",
+    "semanticToolGate",
+    "dynamicSessionPolicy",
+    "correlatedResponseLifecycle",
+  ]) {
+    assert.equal(required.has(capability), true, `${capability} is required for live traffic`);
+  }
+  assert.equal(required.has("directSip"), false, "a media bridge may replace direct SIP");
+  assert.equal(required.has("toolCallCancellation"), false, "tool cancellation is optional evidence, not rollback authority");
+});
+
+test("OpenAI is traffic-ready under the current validated baseline", () => {
+  assert.equal(requireRealtimeProviderTrafficReadiness("OPENAI"), realtimeProviderCapabilities("OPENAI"));
+});
+
+test("Gemini traffic readiness fails closed with the complete missing capability set", () => {
+  assert.throws(
+    () => requireRealtimeProviderTrafficReadiness("GEMINI"),
+    /lacks required capabilities: audioInput, audioOutput, vad, interruption, functionCalling, inputTranscription, outputTranscription, governedSpeech, isolatedTextDecision, semanticToolGate, dynamicSessionPolicy, correlatedResponseLifecycle/,
+  );
+});
+
+test("runtime binding requires both provider enablement and traffic readiness", () => {
+  assert.match(runtime, /requireEnabledRealtimeProvider\(provider\);/);
+  assert.match(runtime, /requireRealtimeProviderTrafficReadiness\(provider\);/);
   assert.match(runtime, /export function realtimeCapabilitiesFor/);
 });
 
