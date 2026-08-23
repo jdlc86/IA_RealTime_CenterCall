@@ -31,41 +31,34 @@ Required environment:
 
 Never put `BENCHMARK_AUTH_TOKEN` in a URL, committed file or log.
 
-## Cloud Run baseline
+## Reproducible deployment
 
-Use the same built container image as Fly. The steady-state comparison uses one warm instance so cold-start variance does not become a hidden candidate-specific advantage.
+The deployment scripts under `deploy/` deliberately reject mutable image tags. `BENCHMARK_IMAGE` must use an immutable `@sha256:...` digest, and the **same digest** must be supplied to both candidates.
 
-Example deployment shape (replace project/image/service/secret identifiers):
-
-```bash
-gcloud run deploy gemini-media-edge-benchmark \
-  --image europe-west9-docker.pkg.dev/PROJECT/REPO/IMAGE:SHA \
-  --region europe-west9 \
-  --cpu 1 \
-  --memory 2Gi \
-  --concurrency 25 \
-  --min 1 \
-  --max 1 \
-  --timeout 3600 \
-  --set-env-vars BENCHMARK_MODE=relay,BENCHMARK_UPSTREAM_WSS=wss://REFERENCE-SINK/ws \
-  --set-secrets BENCHMARK_AUTH_TOKEN=BENCHMARK_AUTH_TOKEN:latest
-```
-
-Cloud Run WebSockets remain subject to the service request timeout. The baseline uses `3600` seconds; the canonical 120-second call workload is intentionally well below that ceiling.
-
-## Fly baseline
-
-Copy `fly.toml.example` to `fly.toml`, set a unique app name, and keep the Paris `cdg` region, one `performance-1x` Machine with 2 GB RAM, and connection concurrency 25.
-
-Set secrets separately:
+Cloud Run:
 
 ```bash
-fly secrets set BENCHMARK_AUTH_TOKEN=... BENCHMARK_UPSTREAM_WSS=wss://REFERENCE-SINK/ws
-fly deploy
-fly scale count 1 --region cdg
+GCP_PROJECT=... \
+BENCHMARK_IMAGE=europe-west9-docker.pkg.dev/PROJECT/REPO/IMAGE@sha256:... \
+BENCHMARK_UPSTREAM_WSS=wss://REFERENCE-SINK/ws \
+bash deploy/cloud-run.sh
 ```
 
-`BENCHMARK_UPSTREAM_WSS` is not itself a credential, but setting it alongside secrets avoids accidental divergence between benchmark revisions.
+The Cloud Run script fixes Paris `europe-west9`, 1 vCPU, 2 GiB, concurrency 25, exactly one warm instance and a 3600-second request timeout. `BENCHMARK_AUTH_TOKEN` is read from Secret Manager using `BENCHMARK_SECRET_NAME` (default `BENCHMARK_AUTH_TOKEN`).
+
+Fly:
+
+```bash
+FLY_APP=... \
+BENCHMARK_IMAGE=registry.example/IMAGE@sha256:... \
+BENCHMARK_UPSTREAM_WSS=wss://REFERENCE-SINK/ws \
+BENCHMARK_AUTH_TOKEN=... \
+bash deploy/fly.sh
+```
+
+The Fly script deploys with `fly.toml.example`, provisions the runtime values as Fly secrets, and fixes the Machine count to one in Paris `cdg`. The config fixes `performance-1x`, 2 GB RAM and connection concurrency 25.
+
+The Fly CLI can create two Machines by default for some first deployments, so the explicit final `flyctl scale count 1 --region cdg` is part of the benchmark contract rather than an optional optimization.
 
 ## Valid run requirements
 
