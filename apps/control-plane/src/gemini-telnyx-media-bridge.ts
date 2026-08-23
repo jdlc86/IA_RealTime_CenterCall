@@ -38,17 +38,22 @@ function readJson(data: unknown): GeminiMediaMessage | null {
   return value as GeminiMediaMessage;
 }
 
+function readInlineAudio(part: GeminiInlinePart): { data: unknown; mime: unknown } | null {
+  if (part.inlineData) return { data: part.inlineData.data, mime: part.inlineData.mimeType };
+  if (part.inline_data) return { data: part.inline_data.data, mime: part.inline_data.mime_type };
+  return null;
+}
+
 function outputAudioPayloads(data: unknown): string[] {
   const message = readJson(data);
   if (!message) return [];
   const parts = message.serverContent?.modelTurn?.parts ?? message.server_content?.model_turn?.parts ?? [];
   const payloads: string[] = [];
   for (const part of parts) {
-    const inline = part.inlineData ?? part.inline_data;
-    const payload = inline?.data;
-    const mime = inline && "mimeType" in inline ? inline.mimeType : inline?.mime_type;
-    if (typeof payload === "string" && payload && typeof mime === "string" && /^audio\/pcm(?:;|$)/i.test(mime)) {
-      payloads.push(payload);
+    const inline = readInlineAudio(part);
+    if (!inline) continue;
+    if (typeof inline.data === "string" && inline.data && typeof inline.mime === "string" && /^audio\/pcm(?:;|$)/i.test(inline.mime)) {
+      payloads.push(inline.data);
     }
   }
   return payloads;
