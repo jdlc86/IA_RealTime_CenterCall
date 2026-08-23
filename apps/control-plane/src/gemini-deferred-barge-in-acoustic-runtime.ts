@@ -1,5 +1,6 @@
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import type { AuthoritativeCallerTranscriptionPort } from "./authoritative-caller-transcription-port.js";
+import type { GeminiDeferredCallerTurn } from "./gemini-deferred-barge-in-candidate-owner.js";
 import {
   GeminiDeferredBargeInTranscriptionRuntime,
   type GeminiDeferredBargeInTranscriptionSnapshot,
@@ -74,6 +75,10 @@ export class GeminiDeferredBargeInAcousticRuntime {
       events: Object.freeze(events),
       snapshot: this.snapshot(),
     });
+  }
+
+  releaseNormalTurn(itemId: string): GeminiDeferredCallerTurn {
+    return this.transcription.releaseNormalTurn(itemId);
   }
 
   confirmInterruption(itemId: string) {
