@@ -149,7 +149,49 @@ test("authorized effect order is arm then cancel_response then clear_playback", 
   ]);
 });
 
-test("cancel_response must match the session-owned active response identity", async () => {
+test("authorized barge-in survives provider response release while the same Telnyx playback is active", async () => {
+  const { runtime, bridge, gemini, telnyx } = readyRuntime();
+  runtime.arm(await confirmedCandidate());
+  const interrupted = bridge.observeGemini(JSON.stringify({ serverContent: { interrupted: true } }));
+  assert.equal(interrupted.events[0]?.type, "ASSISTANT_RESPONSE_COMPLETED");
+  assert.equal(bridge.activeResponseId(), null);
+  assert.equal(bridge.activePlaybackResponseId(), "gemini-response-1");
+
+  const geminiBefore = gemini.sent.length;
+  const telnyxBefore = telnyx.sent.length;
+  const cancelled = runtime.cancelResponse("gemini-response-1");
+  assert.equal(cancelled.cancelledResponseId, "gemini-response-1");
+  assert.equal(cancelled.committedInterruptions, 1);
+  assert.deepEqual(gemini.sent.slice(geminiBefore).map((message) => (
+    message.realtimeInput?.activityStart ? "start"
+      : message.realtimeInput?.audio ? "audio"
+        : message.realtimeInput?.activityEnd ? "end"
+          : "other"
+  )), ["start", "audio", "end"]);
+
+  const cleared = runtime.clearPlayback();
+  assert.ok(cleared.mark);
+  assert.deepEqual(telnyx.sent.slice(telnyxBefore), [
+    { event: "clear" },
+    { event: "mark", mark: { name: cleared.mark } },
+  ]);
+});
+
+test("different active response fails closed even if an older playback identity could match", async () => {
+  const { runtime, bridge } = readyRuntime();
+  runtime.arm(await confirmedCandidate());
+  bridge.observeGemini(JSON.stringify({ serverContent: { interrupted: true } }));
+  bridge.observeGemini(JSON.stringify({ toolCall: { functionCalls: [{ id: "fc-new", name: "search" }] } }));
+  assert.equal(bridge.activeResponseId(), "gemini-response-2");
+  assert.equal(bridge.activePlaybackResponseId(), "gemini-response-1");
+  assert.throws(
+    () => runtime.cancelResponse("gemini-response-1"),
+    /identity mismatch/,
+  );
+  assert.equal(runtime.snapshot().state, "FAILED");
+});
+
+test("cancel_response must match current response or playback ownership", async () => {
   const { runtime, gemini, telnyx } = readyRuntime();
   runtime.arm(await confirmedCandidate());
   const geminiBefore = gemini.sent.length;
