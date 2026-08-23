@@ -15,6 +15,8 @@ export type TelnyxMediaCommandHost = {
   send(message: Record<string, unknown>): void;
 };
 
+export type GeminiTelnyxInboundAudioMode = "FORWARD" | "DEFER";
+
 export type GeminiTelnyxMediaBridgeSnapshot = Readonly<{
   state: "ACTIVE" | "FAILED" | "STOPPED";
   inboundChunksForwarded: number;
@@ -74,8 +76,12 @@ function outputAudioPayloads(data: unknown): string[] {
 /**
  * Isolated G3/G4 media composition. This component owns telephony/provider audio
  * framing, ordering and playback evidence only. It owns no conversation, tool or
- * provider-selection state. Provider affinity is fixed before construction and
- * there is no cross-provider fallback path.
+ * provider-selection state. Provider affinity and inbound forwarding mode are fixed
+ * before construction and there is no cross-provider fallback path.
+ *
+ * FORWARD preserves the original media path. DEFER keeps ordered Telnyx payloads in
+ * the returned observation without writing them to Gemini; a higher edge authority
+ * can then perform VAD/STT/semantic authorization before any provider commit.
  */
 export class GeminiTelnyxMediaBridge {
   private readonly telnyxOwner = new TelnyxGeminiMediaStreamOwner();
@@ -88,16 +94,23 @@ export class GeminiTelnyxMediaBridge {
   constructor(
     private readonly geminiHost: GeminiLiveCommandHost,
     private readonly telnyxHost: TelnyxMediaCommandHost,
-  ) {}
+    private readonly inboundAudioMode: GeminiTelnyxInboundAudioMode = "FORWARD",
+  ) {
+    if (inboundAudioMode !== "FORWARD" && inboundAudioMode !== "DEFER") {
+      throw new Error(`Gemini Telnyx media bridge invalid inbound audio mode: ${String(inboundAudioMode)}`);
+    }
+  }
 
   observeTelnyx(data: unknown): GeminiTelnyxInboundObservation {
     this.assertActive();
     try {
       const observation = this.telnyxOwner.observe(data);
       const playbackEvents: RealtimeProviderEvent[] = [];
-      for (const payload of observation.mediaPayloads) {
-        this.geminiHost.send(telnyxL16PayloadToGeminiRealtimeInput(payload));
-        this.inboundChunksForwarded += 1;
+      if (this.inboundAudioMode === "FORWARD") {
+        for (const payload of observation.mediaPayloads) {
+          this.geminiHost.send(telnyxL16PayloadToGeminiRealtimeInput(payload));
+          this.inboundChunksForwarded += 1;
+        }
       }
       for (const mark of observation.returnedMarks) {
         playbackEvents.push(...this.playbackOwner.observeReturnedMark(mark));
