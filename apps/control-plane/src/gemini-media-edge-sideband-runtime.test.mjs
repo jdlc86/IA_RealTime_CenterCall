@@ -27,7 +27,7 @@ test("sideband returns owner response binding and completion drain", () => {
   ]);
 });
 
-test("normal caller decision is allowed only for an item that began without playback", () => {
+test("normal caller decision requires current response and playback to be idle", () => {
   const { runtime, sent } = runtimeHarness(); ready(runtime);
   runtime.observe({ type: "CALLER_EVENT", event: { type: "CALLER_SPEECH_STARTED", itemId: "gemini-candidate-1", playbackResponseIdAtStart: null } });
   runtime.observe({ type: "CALLER_EVENT", event: { type: "CALLER_SPEECH_STOPPED", itemId: "gemini-candidate-1" } });
@@ -43,19 +43,33 @@ test("interrupt decision requires the exact playback identity captured at speech
   runtime.observe({ type: "PLAYBACK_EVENT", event: { type: "ASSISTANT_AUDIO_STARTED", kind: "NORMAL", responseId: "gemini-response-1" } });
   runtime.observe({ type: "CALLER_EVENT", event: { type: "CALLER_SPEECH_STARTED", itemId: "gemini-candidate-1", playbackResponseIdAtStart: "gemini-response-1" } });
   runtime.observe({ type: "CALLER_EVENT", event: { type: "CALLER_TRANSCRIPT_COMPLETED", itemId: "gemini-candidate-1", transcript: "Espera" } });
-  assert.throws(() => runtime.resolveCallerTurn("gemini-candidate-1", "NORMAL"), /cannot own playback/);
+  assert.throws(() => runtime.resolveCallerTurn("gemini-candidate-1", "NORMAL"), /requires idle response and playback/);
   assert.deepEqual(runtime.resolveCallerTurn("gemini-candidate-1", "INTERRUPT"), { itemId: "gemini-candidate-1", playbackResponseIdAtStart: "gemini-response-1" });
   assert.deepEqual(sent.at(-1), { type: "CALLER_TURN_DECISION", itemId: "gemini-candidate-1", decision: "INTERRUPT", responseId: "gemini-response-1" });
 });
 
-test("interrupt fails closed after the captured playback identity has been released", () => {
+test("interrupt becomes a normal turn when the captured response and playback fully drained before decision", () => {
+  const { runtime, sent } = runtimeHarness(); ready(runtime);
+  runtime.observe({ type: "GEMINI_EVENT", message: { serverContent: { modelTurn: {} } } });
+  runtime.observe({ type: "PLAYBACK_EVENT", event: { type: "ASSISTANT_AUDIO_STARTED", kind: "NORMAL", responseId: "gemini-response-1" } });
+  runtime.observe({ type: "CALLER_EVENT", event: { type: "CALLER_SPEECH_STARTED", itemId: "gemini-candidate-1", playbackResponseIdAtStart: "gemini-response-1" } });
+  runtime.observe({ type: "CALLER_EVENT", event: { type: "CALLER_TRANSCRIPT_COMPLETED", itemId: "gemini-candidate-1", transcript: "Espera" } });
+  runtime.observe({ type: "GEMINI_EVENT", message: { serverContent: { turnComplete: true } } });
+  runtime.observe({ type: "PLAYBACK_EVENT", event: { type: "ASSISTANT_AUDIO_STOPPED", kind: "NORMAL", responseId: "gemini-response-1" } });
+  assert.deepEqual(runtime.resolveCallerTurn("gemini-candidate-1", "INTERRUPT"), { itemId: "gemini-candidate-1", playbackResponseIdAtStart: "gemini-response-1" });
+  assert.deepEqual(sent.at(-1), { type: "CALLER_TURN_DECISION", itemId: "gemini-candidate-1", decision: "NORMAL", responseId: null });
+});
+
+test("interrupt fails closed if a newer response supersedes the captured playback target", () => {
   const { runtime } = runtimeHarness(); ready(runtime);
   runtime.observe({ type: "GEMINI_EVENT", message: { serverContent: { modelTurn: {} } } });
   runtime.observe({ type: "PLAYBACK_EVENT", event: { type: "ASSISTANT_AUDIO_STARTED", kind: "NORMAL", responseId: "gemini-response-1" } });
   runtime.observe({ type: "CALLER_EVENT", event: { type: "CALLER_SPEECH_STARTED", itemId: "gemini-candidate-1", playbackResponseIdAtStart: "gemini-response-1" } });
   runtime.observe({ type: "CALLER_EVENT", event: { type: "CALLER_TRANSCRIPT_COMPLETED", itemId: "gemini-candidate-1", transcript: "Espera" } });
+  runtime.observe({ type: "GEMINI_EVENT", message: { serverContent: { turnComplete: true } } });
   runtime.observe({ type: "PLAYBACK_EVENT", event: { type: "ASSISTANT_AUDIO_STOPPED", kind: "NORMAL", responseId: "gemini-response-1" } });
-  assert.throws(() => runtime.resolveCallerTurn("gemini-candidate-1", "INTERRUPT"), /playback identity mismatch/);
+  runtime.observe({ type: "GEMINI_EVENT", message: { serverContent: { modelTurn: {} } } });
+  assert.throws(() => runtime.resolveCallerTurn("gemini-candidate-1", "INTERRUPT"), /superseded by active response gemini-response-2/);
 });
 
 test("ignore discards either normal or overlapping caller candidates without provider effects", () => {
