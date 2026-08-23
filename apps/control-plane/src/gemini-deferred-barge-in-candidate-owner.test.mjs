@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import { GeminiDeferredBargeInCandidateOwner } from "../.test-dist/gemini-deferred-barge-in-candidate-owner.js";
+import {
+  GeminiDeferredBargeInCandidateOwner,
+  requireConfirmedGeminiDeferredBargeInCandidate,
+} from "../.test-dist/gemini-deferred-barge-in-candidate-owner.js";
 
 const source = readFileSync(new URL("./gemini-deferred-barge-in-candidate-owner.ts", import.meta.url), "utf8");
 
@@ -44,7 +47,13 @@ test("authoritative transcript completes the same neutral candidate before seman
   assert.throws(() => owner.bufferTelnyxMedia("BgcI"), /already completed/);
 });
 
-test("confirmed interruption releases an immutable replay candidate only after transcript completion", () => {
+test("candidate cannot complete without replayable buffered audio", () => {
+  const owner = new GeminiDeferredBargeInCandidateOwner();
+  owner.beginCandidate();
+  assert.throws(() => owner.completeCandidate("hola"), /without buffered audio/);
+});
+
+test("confirmed interruption releases an authenticated immutable replay candidate only after transcript completion", () => {
   const owner = new GeminiDeferredBargeInCandidateOwner();
   const started = owner.beginCandidate();
   owner.bufferTelnyxMedia("AQID");
@@ -60,9 +69,21 @@ test("confirmed interruption releases an immutable replay candidate only after t
     transcript: "sí, espera",
     mediaPayloads: ["AQID"],
   });
+  assert.equal(requireConfirmedGeminiDeferredBargeInCandidate(committed), committed);
   assert.equal(Object.isFrozen(committed), true);
   assert.equal(Object.isFrozen(committed.mediaPayloads), true);
   assert.equal(owner.snapshot().activeItemId, null);
+});
+
+test("shape-compatible fabricated candidate is not semantically authorized", () => {
+  assert.throws(
+    () => requireConfirmedGeminiDeferredBargeInCandidate({
+      itemId: "gemini-candidate-1",
+      transcript: "hola",
+      mediaPayloads: ["AQID"],
+    }),
+    /not semantically authorized/,
+  );
 });
 
 test("ignored candidate is discarded without exposing buffered audio for provider replay", () => {
@@ -85,6 +106,7 @@ test("candidate identity is one-shot and mismatches fail closed", () => {
   const first = owner.beginCandidate();
   assert.throws(() => owner.beginCandidate(), /already active/);
   assert.throws(() => owner.ignoreCandidate("gemini-candidate-999"), /identity mismatch/);
+  owner.bufferTelnyxMedia("AQID");
   owner.completeCandidate("hola");
   owner.ignoreCandidate(first.itemId);
   assert.equal(owner.beginCandidate().itemId, "gemini-candidate-2");
