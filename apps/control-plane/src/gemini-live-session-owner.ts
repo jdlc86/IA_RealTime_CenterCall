@@ -90,6 +90,9 @@ export class GeminiLiveSessionOwner {
 
   noteToolResponseSubmitted(callId: string): GeminiLiveSessionSnapshot {
     if (!callId) throw new Error("Gemini Live tool response requires callId");
+    if (!this.pendingToolCalls.has(callId)) {
+      throw new Error(`Gemini Live tool response does not match a pending call: ${callId}`);
+    }
     this.pendingToolCalls.delete(callId);
     if (this.state === "TOOL_WAIT" && this.pendingToolCalls.size === 0) {
       this.state = this.activeResponseId ? "GENERATING" : "READY";
