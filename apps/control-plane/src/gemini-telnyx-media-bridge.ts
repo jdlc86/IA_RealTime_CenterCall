@@ -154,6 +154,10 @@ export class GeminiTelnyxMediaBridge {
     }
   }
 
+  activePlaybackResponseId(): string | null {
+    return this.playbackOwner.snapshot().responseId;
+  }
+
   finishPlayback(responseId: string): string | null {
     this.assertActive();
     if (this.playbackOwner.snapshot().responseId !== responseId) return null;
