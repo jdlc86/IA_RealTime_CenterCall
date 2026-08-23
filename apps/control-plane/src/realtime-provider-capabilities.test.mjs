@@ -20,6 +20,7 @@ const plannedCapabilities = [
   "outputTranscription",
   "governedSpeech",
   "isolatedTextDecision",
+  "semanticToolGate",
   "dynamicSessionPolicy",
   "correlatedResponseLifecycle",
   "directSip",
@@ -36,6 +37,7 @@ test("OpenAI capabilities describe product-validated semantics rather than vendo
   assert.equal(openai.directSip, true);
   assert.equal(openai.governedSpeech, true);
   assert.equal(openai.isolatedTextDecision, true);
+  assert.equal(openai.semanticToolGate, true);
   assert.equal(openai.dynamicSessionPolicy, true);
   assert.equal(openai.correlatedResponseLifecycle, true);
   assert.equal(openai.toolCallCancellation, false);
@@ -55,8 +57,8 @@ test("runtime binding requires a capability registration", () => {
 
 test("capability requirements fail closed until Gemini gates are implemented", () => {
   assert.throws(
-    () => requireRealtimeProviderCapabilities("GEMINI", ["audioInput", "functionCalling", "correlatedResponseLifecycle"]),
-    /lacks required capabilities: audioInput, functionCalling, correlatedResponseLifecycle/,
+    () => requireRealtimeProviderCapabilities("GEMINI", ["audioInput", "functionCalling", "semanticToolGate", "correlatedResponseLifecycle"]),
+    /lacks required capabilities: audioInput, functionCalling, semanticToolGate, correlatedResponseLifecycle/,
   );
   assert.match(source, /if \(!capabilities\) throw new Error/);
 });
