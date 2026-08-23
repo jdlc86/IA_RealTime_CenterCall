@@ -12,13 +12,16 @@ test("v48 consumes caller transcripts through the provider-neutral event boundar
   assert.doesNotMatch(source, /event\.item_id/);
 });
 
-test("v48 publishes authoritative clock context only through neutral session policy", () => {
+test("v48 refreshes authoritative time through a semantic temporal-context capability", () => {
   assert.match(source, /installRealtimeSessionPolicyTransform/);
-  assert.match(source, /updateSessionPolicy/);
+  assert.match(source, /authoritativeTemporalContextPortFor/);
+  assert.match(source, /\.refresh\(\{/);
   assert.match(source, /AUTHORITATIVE_CLOCK_INJECTED_V48/);
   assert.match(source, /AUTHORITATIVE_CLOCK_REFRESHED_FOR_CALLER_TURN_V48/);
   assert.match(source, /conversationLifecyclePortFor/);
   assert.match(source, /\.isTerminal\(\)/);
+  assert.doesNotMatch(source, /realtimeCommandPortFor/);
+  assert.doesNotMatch(source, /updateSessionPolicy/);
   assert.doesNotMatch(source, /Compatibility fallback for historical layers/);
   assert.doesNotMatch(source, /originalSendV48/);
   assert.doesNotMatch(source, /session\.send\s*=/);
