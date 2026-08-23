@@ -7,6 +7,7 @@ import {
   directAgentRealtimeBootstrapPolicy,
 } from "../.test-dist/direct-agent-realtime-bootstrap.js";
 import { buildGeminiLiveInitialSetup } from "../.test-dist/gemini-live-command-adapter.js";
+import { SEMANTIC_SECURITY_POLICY } from "../.test-dist/semantic-security-boundary.js";
 
 const v17Source = readFileSync(new URL("./call-session-v17.ts", import.meta.url), "utf8");
 
@@ -22,6 +23,20 @@ test("direct-agent bootstrap owns one canonical instruction and tool catalog sou
     new Set(policy.tools.map((tool) => tool.name)),
     DIRECT_AGENT_TOOL_NAMES,
   );
+});
+
+test("canonical bootstrap carries the final semantic and temporal invariants before transport opens", () => {
+  const policy = directAgentRealtimeBootstrapPolicy({
+    assistantName: "Lucía",
+    businessName: "Milenium",
+  });
+
+  assert.ok(policy.instructions.includes(SEMANTIC_SECURITY_POLICY));
+  assert.match(policy.instructions, /CONTEXTO MULTIVUELTA:/);
+  assert.match(policy.instructions, /no conviertas por ello un turno comunicativo dirigido en silencio/);
+  assert.match(policy.instructions, /date_scope=CALLER_AUTHORIZED_RANGE/);
+  assert.match(policy.instructions, /starts_at_source_text/);
+  assert.match(policy.instructions, /nunca inventes ni reutilices un fragmento anterior/);
 });
 
 test("V17 consumes the shared bootstrap instead of owning a duplicate catalog", () => {
