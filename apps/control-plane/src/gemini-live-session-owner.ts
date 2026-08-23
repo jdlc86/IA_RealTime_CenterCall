@@ -62,12 +62,17 @@ function parseWireMessage(data: unknown): GeminiLiveMessage | null {
   try { return JSON.parse(text) as GeminiLiveMessage; } catch { return null; }
 }
 
+function normalizeTranscriptChunk(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
 /** Stateful authority for Gemini Live protocol/session evidence. */
 export class GeminiLiveSessionOwner {
   private state: GeminiLiveSessionState = "NEW";
   private activeResponseId: string | null = null;
   private responseSequence = 0;
   private readonly pendingToolCalls = new Set<string>();
+  private outputTranscriptParts: string[] = [];
 
   markSetupSent(): GeminiLiveSessionSnapshot {
     if (this.state !== "NEW") {
@@ -97,6 +102,7 @@ export class GeminiLiveSessionOwner {
     this.state = "CLOSED";
     this.activeResponseId = null;
     this.pendingToolCalls.clear();
+    this.outputTranscriptParts = [];
     return this.snapshot();
   }
 
@@ -121,7 +127,12 @@ export class GeminiLiveSessionOwner {
       transcriptionChunks.push({ direction: "INPUT", text: serverContent.inputTranscription.text });
     }
     if (serverContent?.outputTranscription && typeof serverContent.outputTranscription.text === "string") {
+      this.requireReadyForServerTurn("outputTranscription");
+      this.ensureResponseStarted(events, "output_transcription");
+      const normalized = normalizeTranscriptChunk(serverContent.outputTranscription.text);
+      if (normalized) this.outputTranscriptParts.push(normalized);
       transcriptionChunks.push({ direction: "OUTPUT", text: serverContent.outputTranscription.text });
+      if (this.pendingToolCalls.size === 0) this.state = "GENERATING";
     }
 
     const calls = message.toolCall?.functionCalls ?? [];
@@ -152,6 +163,7 @@ export class GeminiLiveSessionOwner {
         });
         this.activeResponseId = null;
       }
+      this.outputTranscriptParts = [];
       // Normal barge-in has no tool cancellation to wait for. Only retain the
       // interrupted state while unresolved calls still require ownership cleanup.
       this.state = this.pendingToolCalls.size === 0 ? "READY" : "INTERRUPTED";
@@ -169,6 +181,14 @@ export class GeminiLiveSessionOwner {
         this.state = "TOOL_WAIT";
       } else {
         if (this.activeResponseId) {
+          const transcript = this.outputTranscriptParts.join(" ").replace(/\s+/g, " ").trim();
+          if (transcript) {
+            events.push({
+              type: "ASSISTANT_TRANSCRIPT_COMPLETED",
+              transcript,
+              responseId: this.activeResponseId,
+            });
+          }
           events.push({
             type: "ASSISTANT_RESPONSE_COMPLETED",
             kind: "NORMAL",
@@ -177,6 +197,7 @@ export class GeminiLiveSessionOwner {
           });
           this.activeResponseId = null;
         }
+        this.outputTranscriptParts = [];
         this.state = "READY";
       }
     } else if (this.state === "INTERRUPTED" && this.pendingToolCalls.size === 0 && cancelledToolCallIds.length > 0) {
@@ -205,6 +226,7 @@ export class GeminiLiveSessionOwner {
     if (this.activeResponseId) return;
     this.responseSequence += 1;
     this.activeResponseId = `gemini-response-${this.responseSequence}`;
+    this.outputTranscriptParts = [];
     events.push({
       type: "ASSISTANT_RESPONSE_STARTED",
       kind: "NORMAL",
