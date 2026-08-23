@@ -74,7 +74,10 @@ export function createGeminiMediaEdgeRuntime(options) {
         if (command.decision === "NORMAL") {
           if (state.playback.activeResponseId()) throw new Error("Gemini normal caller turn requires idle playback");
           const turn = state.callerInput.resolve(command.itemId, "NORMAL");
-          if (turn.playbackResponseIdAtStart) throw new Error("Gemini normal caller turn began during playback");
+          // A candidate may have begun while an older playback was active and be
+          // downgraded to NORMAL after that exact playback fully drained. The
+          // authenticated control plane owns that temporal decision; only current
+          // physical playback must be idle here.
           commitDeferredCallerTurn(state.gemini, turn, assertBackpressure);
           return;
         }
