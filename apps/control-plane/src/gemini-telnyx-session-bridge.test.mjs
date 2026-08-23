@@ -73,6 +73,7 @@ test("session-owned response identity is the only identity used for Gemini audio
   assert.equal(observation.emittedAudioChunks, 1);
   assert.equal(observation.snapshot.session.activeResponseId, "gemini-response-1");
   assert.equal(bridge.activeResponseId(), "gemini-response-1");
+  assert.equal(bridge.activePlaybackResponseId(), "gemini-response-1");
   assert.equal(telnyx.sent.at(-1).event, "media");
 });
 
@@ -108,6 +109,7 @@ test("normal generation completion drains the exact owned response through a Tel
   assert.deepEqual(drained.events, [
     { type: "ASSISTANT_AUDIO_STOPPED", kind: "NORMAL", responseId: "gemini-response-1" },
   ]);
+  assert.equal(bridge.activePlaybackResponseId(), null);
 });
 
 test("audio and turnComplete in one Gemini message preserve start-audio-complete causal order", () => {
@@ -150,16 +152,18 @@ test("provider interruption completes lifecycle but never clears Telnyx playback
   }]);
   assert.equal(interrupted.drainMark, null);
   assert.equal(telnyx.sent.length, before);
+  assert.equal(bridge.activeResponseId(), null);
+  assert.equal(bridge.activePlaybackResponseId(), "gemini-response-1");
 });
 
-test("authorized playback clear requires exact active response identity and Telnyx mark evidence", () => {
+test("authorized playback clear requires exact playback identity and Telnyx mark evidence", () => {
   const { bridge, telnyx } = readyBridge();
   bridge.observeGemini(geminiAudio([0, 3000, 6000, 9000]));
   const before = telnyx.sent.length;
 
   assert.throws(
     () => bridge.clearActivePlayback("gemini-response-999"),
-    /requires active owned response/,
+    /requires active owned playback/,
   );
   assert.equal(telnyx.sent.length, before);
 
@@ -178,20 +182,30 @@ test("authorized playback clear requires exact active response identity and Teln
   assert.deepEqual(cleared.events, [
     { type: "ASSISTANT_AUDIO_CLEARED", kind: "NORMAL", responseId: "gemini-response-1" },
   ]);
+  assert.equal(bridge.activePlaybackResponseId(), null);
 });
 
-test("playback clear cannot use stale response identity after Gemini lifecycle release", () => {
+test("playback can be cleared after Gemini lifecycle release while Telnyx still owns it", () => {
   const { bridge, telnyx } = readyBridge();
   bridge.observeGemini(geminiAudio([0, 3000, 6000, 9000]));
   bridge.observeGemini(JSON.stringify({ serverContent: { interrupted: true } }));
   const before = telnyx.sent.length;
 
   assert.equal(bridge.activeResponseId(), null);
-  assert.throws(
-    () => bridge.clearActivePlayback("gemini-response-1"),
-    /requires active owned response/,
-  );
-  assert.equal(telnyx.sent.length, before);
+  assert.equal(bridge.activePlaybackResponseId(), "gemini-response-1");
+  const clearMark = bridge.clearActivePlayback("gemini-response-1");
+  assert.ok(clearMark);
+  assert.deepEqual(telnyx.sent.slice(before), [
+    { event: "clear" },
+    { event: "mark", mark: { name: clearMark } },
+  ]);
+  const cleared = bridge.observeTelnyx(JSON.stringify({
+    event: "mark",
+    stream_id: "s1",
+    mark: { name: clearMark },
+  }));
+  assert.equal(cleared.events[0]?.type, "ASSISTANT_AUDIO_CLEARED");
+  assert.equal(bridge.activePlaybackResponseId(), null);
 });
 
 test("input transcription remains evidence-only through the composed edge", () => {
