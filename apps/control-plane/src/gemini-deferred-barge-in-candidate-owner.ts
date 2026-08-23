@@ -50,12 +50,12 @@ export function requireConfirmedGeminiDeferredBargeInCandidate(
  * and cannot interrupt the active model response before semantic authorization.
  *
  * A separate authoritative transcription boundary may complete the candidate.
- * The STT request is minted from this owner's exact buffered L16 payloads and the
- * returned evidence must carry those same payloads before transcript completion is
- * accepted. Only after the core confirms interruption may the returned immutable
- * candidate be committed to a provider-specific interrupting activity transport.
- * Ignored candidates are discarded without provider side effects. No timers or
- * arrival windows are used.
+ * The STT request is minted from this owner's exact buffered Telnyx PCM16
+ * big-endian payloads and the returned evidence must carry those same payloads
+ * before transcript completion is accepted. Only after the core confirms
+ * interruption may the returned immutable candidate be committed to a
+ * provider-specific interrupting activity transport. Ignored candidates are
+ * discarded without provider side effects. No timers or arrival windows are used.
  */
 export class GeminiDeferredBargeInCandidateOwner {
   private sequence = 0;
@@ -118,7 +118,7 @@ export class GeminiDeferredBargeInCandidateOwner {
     return Object.freeze({
       itemId: active.itemId,
       audio: Object.freeze({
-        encoding: "L16" as const,
+        encoding: "PCM16_BE" as const,
         sampleRateHz: 16_000 as const,
         channels: 1 as const,
         payloads: Object.freeze([...active.mediaPayloads]),
@@ -136,7 +136,7 @@ export class GeminiDeferredBargeInCandidateOwner {
       throw new Error(`Gemini deferred candidate transcript identity mismatch: expected ${active.itemId}`);
     }
     if (
-      evidence.audio.encoding !== "L16"
+      evidence.audio.encoding !== "PCM16_BE"
       || evidence.audio.sampleRateHz !== 16_000
       || evidence.audio.channels !== 1
       || evidence.audio.payloads.length !== active.mediaPayloads.length
