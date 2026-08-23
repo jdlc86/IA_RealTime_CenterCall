@@ -152,7 +152,9 @@ export class GeminiLiveSessionOwner {
         });
         this.activeResponseId = null;
       }
-      this.state = "INTERRUPTED";
+      // Normal barge-in has no tool cancellation to wait for. Only retain the
+      // interrupted state while unresolved calls still require ownership cleanup.
+      this.state = this.pendingToolCalls.size === 0 ? "READY" : "INTERRUPTED";
     }
 
     for (const id of message.toolCallCancellation?.ids ?? []) {
