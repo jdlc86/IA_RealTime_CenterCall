@@ -11,6 +11,7 @@ import {
   parseBargeInDecision,
 } from "./barge-in-confirmation";
 import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { semanticDecisionPortFor } from "./semantic-decision-runtime.js";
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import { responseCoordinatorFor } from "./response-coordinator.js";
 import { turnOwnershipRuntimeFor } from "./turn-ownership-runtime.js";
@@ -195,10 +196,10 @@ export class CallSession extends BaseConstructor {
     }
     const pending: PendingBargeIn = { itemId, transcript, originalData: data };
     this.pendingBargeInV40 = pending;
-    realtimeCommandPortFor(this as any).requestTextDecision(buildBargeInClassifierRequest(transcript, itemId));
+    semanticDecisionPortFor(this as any).request(buildBargeInClassifierRequest(transcript, itemId));
     (this as any).diagnostics?.checkpoint?.("BARGE_IN_CLASSIFIER_REQUESTED_V40_REBUILD", {
       item_id: itemId, transcript_length: transcript.length,
-      active_response_id: owner.activeResponseId, playback_cleared: owner.playbackCleared, provider_command_port: true,
+      active_response_id: owner.activeResponseId, playback_cleared: owner.playbackCleared, semantic_decision_port: true,
     });
     return true;
   }
