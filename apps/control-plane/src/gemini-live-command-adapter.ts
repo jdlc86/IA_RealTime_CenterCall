@@ -11,27 +11,56 @@ export type GeminiLiveCommandHost = {
   send(message: Record<string, unknown>): void;
 };
 
-function functionDeclarations(update: RealtimeSessionPolicyUpdate): Record<string, unknown>[] | undefined {
-  if (update.tools === undefined) return undefined;
-  return update.tools.map((tool) => ({
+export type GeminiLiveInitialSetup = {
+  model: string;
+  instructions?: string;
+  tools?: RealtimeSessionPolicyUpdate["tools"];
+  responseModalities?: readonly ("AUDIO" | "TEXT")[];
+  enableInputTranscription?: boolean;
+  enableOutputTranscription?: boolean;
+};
+
+function functionDeclarations(tools: RealtimeSessionPolicyUpdate["tools"]): Record<string, unknown>[] | undefined {
+  if (tools === undefined) return undefined;
+  return tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
     parameters: tool.parameters,
   }));
 }
 
-function textTurn(text: string): Record<string, unknown> {
-  return {
-    realtimeInput: {
-      text,
-    },
-  };
+/**
+ * Build the one immutable Gemini Live setup message.
+ *
+ * The Live protocol accepts setup only as the first client message. Runtime
+ * session policy mutations are therefore deliberately NOT translated here.
+ */
+export function buildGeminiLiveInitialSetup(request: GeminiLiveInitialSetup): Record<string, unknown> {
+  const setup: Record<string, unknown> = { model: request.model };
+  if (request.instructions !== undefined) {
+    setup.systemInstruction = { parts: [{ text: request.instructions }] };
+  }
+  const declarations = functionDeclarations(request.tools);
+  if (declarations !== undefined) setup.tools = [{ functionDeclarations: declarations }];
+  if (request.responseModalities !== undefined) {
+    setup.generationConfig = { responseModalities: [...request.responseModalities] };
+  }
+  if (request.enableInputTranscription) setup.inputAudioTranscription = {};
+  if (request.enableOutputTranscription) setup.outputAudioTranscription = {};
+  return { setup };
+}
+
+function unsupported(operation: string, gate: string): never {
+  throw new Error(`Gemini Live ${operation} has no proven neutral mapping before ${gate}`);
 }
 
 /**
- * Gemini Live translation for G2 text/session/tool conformance.
- * Audio/VAD/playback commands intentionally fail closed until G3/G4 provide
- * provider-specific evidence instead of pretending OpenAI wire semantics exist.
+ * G2 edge adapter for protocol operations whose semantics are already proven.
+ *
+ * Only function responses are enabled here. OpenAI response-local speech,
+ * isolated text decisions, dynamic session updates and response.create-style
+ * continuation do not have equivalent Gemini Live semantics and therefore fail
+ * closed instead of being disguised as realtime user input.
  */
 export class GeminiLiveCommandAdapter implements RealtimeProviderCommandPort {
   private readonly host: GeminiLiveCommandHost;
@@ -40,63 +69,46 @@ export class GeminiLiveCommandAdapter implements RealtimeProviderCommandPort {
     this.host = host;
   }
 
-  speak(request: RealtimeSpeechRequest): void {
-    const exact = request.exactText
-      ? `\n\nTu salida completa debe ser exactamente ${JSON.stringify(request.exactText)}. No añadas nada.`
-      : "";
-    this.host.send(textTurn(`${request.instructions}${exact}`));
+  speak(_request: RealtimeSpeechRequest): void {
+    unsupported("governed speech", "G3/G4 response lifecycle conformance");
   }
 
-  requestTextDecision(request: RealtimeTextDecisionRequest): void {
-    this.host.send(textTurn(`${request.instructions}\n\nEntrada:\n${request.inputText}`));
+  requestTextDecision(_request: RealtimeTextDecisionRequest): void {
+    unsupported("isolated text decision", "a dedicated semantic-decision capability");
   }
 
-  createSemanticResponse(request: RealtimeSemanticResponseRequest): void {
-    this.host.send(textTurn(request.callerTurnText));
+  createSemanticResponse(_request: RealtimeSemanticResponseRequest): void {
+    unsupported("synthetic semantic response", "G3 caller-input ownership conformance");
   }
 
   submitToolResult(request: RealtimeToolResultRequest): void {
     if (!request.callId || !request.toolName) {
       throw new Error("Gemini Live tool responses require callId and toolName");
     }
-    const response = { result: request.output };
     this.host.send({
       toolResponse: {
         functionResponses: [{
           id: request.callId,
           name: request.toolName,
-          response,
+          response: { result: request.output },
         }],
       },
     });
   }
 
-  updateSessionPolicy(update: RealtimeSessionPolicyUpdate): void {
-    const setup: Record<string, unknown> = {};
-    if (update.instructions !== undefined) {
-      setup.systemInstruction = { parts: [{ text: update.instructions }] };
-    }
-    const declarations = functionDeclarations(update);
-    if (declarations !== undefined) setup.tools = [{ functionDeclarations: declarations }];
-    if (update.toolChoice !== undefined) {
-      setup.toolConfig = {
-        functionCallingConfig: {
-          mode: update.toolChoice === "NONE" ? "NONE" : update.toolChoice === "REQUIRED" ? "ANY" : "AUTO",
-        },
-      };
-    }
-    this.host.send({ setup });
+  updateSessionPolicy(_update: RealtimeSessionPolicyUpdate): void {
+    unsupported("dynamic session policy update", "immutable setup composition");
   }
 
   createDefaultResponse(): void {
-    this.host.send(textTurn("Continúa la conversación de forma natural según el contexto actual."));
+    unsupported("default response creation", "G3/G4 turn continuation conformance");
   }
 
-  cancelResponse(): void { throw new Error("Gemini Live response cancellation requires G3/G4 media integration"); }
-  clearPlayback(): void { throw new Error("Gemini Live playback clearing requires G3 media integration"); }
-  clearInput(): void { throw new Error("Gemini Live input clearing requires G3 media integration"); }
-  discardInputItem(): void { throw new Error("Gemini Live item deletion has no G2 conformance mapping"); }
-  suspendInputDetection(): void { throw new Error("Gemini Live input detection control requires G4 conformance"); }
-  beginNonInterruptingListening(): void { throw new Error("Gemini Live input detection control requires G4 conformance"); }
-  restoreInputDetection(): void { throw new Error("Gemini Live input detection control requires G4 conformance"); }
+  cancelResponse(): void { unsupported("response cancellation", "G3/G4 media integration"); }
+  clearPlayback(): void { unsupported("playback clearing", "G3 media integration"); }
+  clearInput(): void { unsupported("input clearing", "G3 media integration"); }
+  discardInputItem(): void { unsupported("item deletion", "G3/G4 conversation ownership conformance"); }
+  suspendInputDetection(): void { unsupported("input detection control", "G4 conformance"); }
+  beginNonInterruptingListening(): void { unsupported("input detection control", "G4 conformance"); }
+  restoreInputDetection(): void { unsupported("input detection control", "G4 conformance"); }
 }
