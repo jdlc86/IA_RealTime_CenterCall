@@ -10,6 +10,7 @@ import { buildGeminiLiveInitialSetup } from "../.test-dist/gemini-live-command-a
 import { SEMANTIC_SECURITY_POLICY } from "../.test-dist/semantic-security-boundary.js";
 
 const v17Source = readFileSync(new URL("./call-session-v17.ts", import.meta.url), "utf8");
+const v29Source = readFileSync(new URL("./call-session-v29.ts", import.meta.url), "utf8");
 
 test("direct-agent bootstrap owns one canonical instruction and tool catalog source", () => {
   const policy = directAgentRealtimeBootstrapPolicy({
@@ -43,6 +44,13 @@ test("V17 consumes the shared bootstrap instead of owning a duplicate catalog", 
   assert.match(v17Source, /directAgentRealtimeBootstrapPolicy/);
   assert.doesNotMatch(v17Source, /const\s+AGENT_TOOLS\s*:/);
   assert.doesNotMatch(v17Source, /function\s+agentInstructions\s*\(/);
+});
+
+test("V29 runtime policy reuses the canonical direct-agent instructions", () => {
+  assert.match(v29Source, /import\s*{\s*directAgentInstructions\s*}\s*from\s*["']\.\/direct-agent-realtime-bootstrap\.js["']/);
+  assert.match(v29Source, /instructions:\s*directAgentInstructions\(this as any\)/);
+  assert.doesNotMatch(v29Source, /function\s+v29Instructions\s*\(/);
+  assert.doesNotMatch(v29Source, /SEMANTIC_RESERVATION_TIME_EVIDENCE_POLICY/);
 });
 
 test("the canonical direct-agent bootstrap translates into Gemini immutable setup", () => {
