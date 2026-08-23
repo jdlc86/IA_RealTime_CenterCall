@@ -43,7 +43,7 @@ function geminiAudio(values) {
   });
 }
 
-test("ordered Telnyx L16 reaches only the Gemini media wire", () => {
+test("ordered Telnyx L16 reaches only the Gemini media wire in FORWARD mode", () => {
   const gemini = host();
   const telnyx = host();
   const bridge = new GeminiTelnyxMediaBridge(gemini, telnyx);
@@ -59,6 +59,19 @@ test("ordered Telnyx L16 reaches only the Gemini media wire", () => {
   assert.deepEqual([...Buffer.from(gemini.sent[1].realtimeInput.audio.data, "base64")], [0x02, 0x00]);
   assert.equal(telnyx.sent.length, 0);
   assert.equal(bridge.snapshot().inboundChunksForwarded, 2);
+});
+
+test("DEFER preserves ordered Telnyx media evidence without writing caller audio to Gemini", () => {
+  const gemini = host();
+  const bridge = new GeminiTelnyxMediaBridge(gemini, host(), "DEFER");
+  bridge.observeTelnyx(start());
+
+  const second = bridge.observeTelnyx(media(2, b64([0x00, 0x02])));
+  assert.deepEqual(second.telnyx.mediaPayloads, []);
+  const ordered = bridge.observeTelnyx(media(1, b64([0x00, 0x01])));
+  assert.deepEqual(ordered.telnyx.mediaPayloads, [b64([0x00, 0x01]), b64([0x00, 0x02])]);
+  assert.deepEqual(gemini.sent, []);
+  assert.equal(bridge.snapshot().inboundChunksForwarded, 0);
 });
 
 test("Gemini audio output is correlated to playback start only after Telnyx write", () => {
