@@ -53,16 +53,55 @@ test("model turn receives a stable neutral response id until turnComplete", () =
   assert.equal(done.snapshot.activeResponseId, null);
 });
 
-test("independent transcription chunks are evidence only, never fabricated completion events", () => {
+test("input transcription remains evidence only and never fabricates caller completion", () => {
   const owner = readyOwner();
   const input = owner.observe(wire({ serverContent: { inputTranscription: { text: "quiero mesa" } } }));
   assert.deepEqual(input.events, []);
   assert.deepEqual(input.transcriptionChunks, [{ direction: "INPUT", text: "quiero mesa" }]);
   assert.equal(input.snapshot.state, "READY");
+});
 
-  const output = owner.observe(wire({ serverContent: { outputTranscription: { text: "claro" } } }));
-  assert.deepEqual(output.events, []);
-  assert.deepEqual(output.transcriptionChunks, [{ direction: "OUTPUT", text: "claro" }]);
+test("output transcription chunks finalize once under the owned response on turnComplete", () => {
+  const owner = readyOwner();
+  const first = owner.observe(wire({ serverContent: { outputTranscription: { text: " claro " } } }));
+  assert.deepEqual(first.events, [{
+    type: "ASSISTANT_RESPONSE_STARTED",
+    kind: "NORMAL",
+    responseId: "gemini-response-1",
+    purpose: "output_transcription",
+  }]);
+  assert.deepEqual(first.transcriptionChunks, [{ direction: "OUTPUT", text: " claro " }]);
+  assert.equal(first.snapshot.activeResponseId, "gemini-response-1");
+
+  const second = owner.observe(wire({ serverContent: { outputTranscription: { text: "que sí" } } }));
+  assert.deepEqual(second.events, []);
+  assert.deepEqual(second.transcriptionChunks, [{ direction: "OUTPUT", text: "que sí" }]);
+
+  const done = owner.observe(wire({ serverContent: { turnComplete: true } }));
+  assert.deepEqual(done.events, [
+    {
+      type: "ASSISTANT_TRANSCRIPT_COMPLETED",
+      transcript: "claro que sí",
+      responseId: "gemini-response-1",
+    },
+    {
+      type: "ASSISTANT_RESPONSE_COMPLETED",
+      kind: "NORMAL",
+      responseId: "gemini-response-1",
+      status: "completed",
+    },
+  ]);
+  assert.equal(done.snapshot.activeResponseId, null);
+});
+
+test("output transcript completion preserves response identity when model audio already owns the turn", () => {
+  const owner = readyOwner();
+  owner.observe(wire({ serverContent: { modelTurn: { parts: [{ text: "ignored wire shape" }] } } }));
+  owner.observe(wire({ serverContent: { outputTranscription: { text: "hola" } } }));
+  const done = owner.observe(wire({ serverContent: { turnComplete: true } }));
+  assert.equal(done.events[0]?.type, "ASSISTANT_TRANSCRIPT_COMPLETED");
+  assert.equal(done.events[0]?.responseId, "gemini-response-1");
+  assert.equal(done.events[1]?.responseId, "gemini-response-1");
 });
 
 test("tool wait preserves call ids and submitting results releases protocol wait without creating a response", () => {
@@ -99,9 +138,10 @@ test("function calls without correlation ids fail closed", () => {
   );
 });
 
-test("normal interruption completes active response and returns directly to READY", () => {
+test("normal interruption completes active response, discards partial output transcript and returns directly to READY", () => {
   const owner = readyOwner();
   owner.observe(wire({ serverContent: { modelTurn: { parts: [{ text: "hola" }] } } }));
+  owner.observe(wire({ serverContent: { outputTranscription: { text: "transcript parcial" } } }));
 
   const interrupted = owner.observe(wire({ serverContent: { interrupted: true } }));
   assert.deepEqual(interrupted.events, [{
@@ -110,6 +150,7 @@ test("normal interruption completes active response and returns directly to READ
     responseId: "gemini-response-1",
     status: "interrupted",
   }]);
+  assert.equal(interrupted.events.some((event) => event.type === "ASSISTANT_TRANSCRIPT_COMPLETED"), false);
   assert.equal(interrupted.snapshot.activeResponseId, null);
   assert.deepEqual(interrupted.snapshot.pendingToolCallIds, []);
   assert.equal(interrupted.snapshot.state, "READY");
@@ -117,6 +158,8 @@ test("normal interruption completes active response and returns directly to READ
   const next = owner.observe(wire({ serverContent: { modelTurn: { parts: [{ text: "siguiente" }] } } }));
   assert.equal(next.events[0]?.responseId, "gemini-response-2");
   assert.equal(next.snapshot.state, "GENERATING");
+  const nextDone = owner.observe(wire({ serverContent: { turnComplete: true } }));
+  assert.equal(nextDone.events.some((event) => event.type === "ASSISTANT_TRANSCRIPT_COMPLETED"), false);
 });
 
 test("interruption completes the active neutral response once and cancellation is evidence, not rollback", () => {
@@ -140,9 +183,10 @@ test("interruption completes the active neutral response once and cancellation i
   assert.equal(cancelled.snapshot.state, "READY");
 });
 
-test("turnComplete cannot release response ownership while tool calls are unresolved", () => {
+test("turnComplete cannot release response ownership or transcript while tool calls are unresolved", () => {
   const owner = readyOwner();
   owner.observe(wire({ toolCall: { functionCalls: [{ id: "fc-pending", name: "search" }] } }));
+  owner.observe(wire({ serverContent: { outputTranscription: { text: "espera" } } }));
   const done = owner.observe(wire({ serverContent: { turnComplete: true } }));
   assert.deepEqual(done.events, []);
   assert.equal(done.snapshot.state, "TOOL_WAIT");
@@ -153,6 +197,7 @@ test("turnComplete cannot release response ownership while tool calls are unreso
 test("closed owner rejects later wire evidence and clears transient ownership", () => {
   const owner = readyOwner();
   owner.observe(wire({ serverContent: { modelTurn: { parts: [{ text: "hola" }] } } }));
+  owner.observe(wire({ serverContent: { outputTranscription: { text: "hola" } } }));
   const closed = owner.close();
   assert.equal(closed.state, "CLOSED");
   assert.equal(closed.activeResponseId, null);
