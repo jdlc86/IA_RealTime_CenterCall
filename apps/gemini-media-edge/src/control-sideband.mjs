@@ -78,27 +78,51 @@ export function geminiControlEnvelope(message) {
 export class InMemoryControlSidebandRegistry {
   constructor() { this.sessions = new Map(); }
 
+  entry(claims) {
+    const key = controlSessionKey(claims);
+    let session = this.sessions.get(key);
+    if (!session) {
+      session = { claims, send: null, commandSink: null };
+      this.sessions.set(key, session);
+    }
+    return { key, session };
+  }
+
+  cleanup(key, session) {
+    if (this.sessions.get(key) === session && !session.send && !session.commandSink) this.sessions.delete(key);
+  }
+
   attach(claims, send) {
     if (typeof send !== "function") throw new Error("Gemini media edge control sender is required");
-    const key = controlSessionKey(claims);
-    if (this.sessions.has(key)) throw new Error("Gemini media edge control sideband already attached");
-    const session = { claims, send, commandSink: null };
-    this.sessions.set(key, session);
-    return Object.freeze({ detach: () => { if (this.sessions.get(key) === session) this.sessions.delete(key); } });
+    const { key, session } = this.entry(claims);
+    if (session.send) throw new Error("Gemini media edge control sideband already attached");
+    session.send = send;
+    return Object.freeze({
+      detach: () => {
+        if (this.sessions.get(key) !== session) return;
+        session.send = null;
+        this.cleanup(key, session);
+      },
+    });
   }
 
   bindCommandSink(claims, sink) {
     if (typeof sink !== "function") throw new Error("Gemini media edge control command sink is required");
-    const session = this.sessions.get(controlSessionKey(claims));
-    if (!session) return false;
+    const { key, session } = this.entry(claims);
     if (session.commandSink && session.commandSink !== sink) throw new Error("Gemini media edge control command sink already bound");
     session.commandSink = sink;
-    return true;
+    return Object.freeze({
+      detach: () => {
+        if (this.sessions.get(key) !== session || session.commandSink !== sink) return;
+        session.commandSink = null;
+        this.cleanup(key, session);
+      },
+    });
   }
 
   emit(claims, event) {
     const session = this.sessions.get(controlSessionKey(claims));
-    if (!session) return false;
+    if (!session?.send) return false;
     session.send(event);
     return true;
   }
