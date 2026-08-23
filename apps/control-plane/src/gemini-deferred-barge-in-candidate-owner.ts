@@ -4,11 +4,14 @@ import {
   type AuthoritativeCallerTranscriptionRequest,
 } from "./authoritative-caller-transcription-port.js";
 
-export type GeminiDeferredBargeInCandidate = Readonly<{
+type GeminiDeferredCompletedCallerAudio = Readonly<{
   itemId: string;
   transcript: string;
   mediaPayloads: readonly string[];
 }>;
+
+export type GeminiDeferredCallerTurn = GeminiDeferredCompletedCallerAudio;
+export type GeminiDeferredBargeInCandidate = GeminiDeferredCompletedCallerAudio;
 
 export type GeminiDeferredBargeInCandidateSnapshot = Readonly<{
   activeItemId: string | null;
@@ -25,7 +28,17 @@ type ActiveCandidate = {
   transcript: string | null;
 };
 
+const RELEASED_NORMAL_TURNS = new WeakSet<object>();
 const CONFIRMED_CANDIDATES = new WeakSet<object>();
+
+export function requireReleasedGeminiDeferredCallerTurn(
+  value: unknown,
+): GeminiDeferredCallerTurn {
+  if (!value || typeof value !== "object" || !RELEASED_NORMAL_TURNS.has(value)) {
+    throw new Error("Gemini deferred caller turn is not released as a normal turn");
+  }
+  return value as GeminiDeferredCallerTurn;
+}
 
 /**
  * Runtime authorization check used by the later provider commit adapter.
@@ -42,20 +55,18 @@ export function requireConfirmedGeminiDeferredBargeInCandidate(
 }
 
 /**
- * Owns a caller acoustic candidate while an assistant response is still protected
- * by the semantic barge-in gate.
+ * Owns one caller acoustic candidate until authoritative STT completes and the
+ * caller turn is classified as either normal or barge-in.
  *
  * This owner deliberately has no Gemini command host. Starting an acoustic
  * candidate therefore cannot send activityStart, audio or clientContent to Gemini
- * and cannot interrupt the active model response before semantic authorization.
+ * and cannot interrupt an active model response before semantic authorization.
  *
- * A separate authoritative transcription boundary may complete the candidate.
  * The STT request is minted from this owner's exact buffered Telnyx PCM16
- * big-endian payloads and the returned evidence must carry those same payloads
- * before transcript completion is accepted. Only after the core confirms
- * interruption may the returned immutable candidate be committed to a
- * provider-specific interrupting activity transport. Ignored candidates are
- * discarded without provider side effects. No timers or arrival windows are used.
+ * big-endian payloads and the returned evidence must carry those same payloads.
+ * After transcript completion, releaseNormalTurn() and confirmInterruption() mint
+ * distinct runtime-authenticated objects; neither path can be forged by shape and
+ * each consumes the candidate exactly once. No timers or arrival windows are used.
  */
 export class GeminiDeferredBargeInCandidateOwner {
   private sequence = 0;
@@ -151,16 +162,17 @@ export class GeminiDeferredBargeInCandidateOwner {
     ]);
   }
 
+  releaseNormalTurn(itemId: string): GeminiDeferredCallerTurn {
+    const active = this.requireCompletedMatching(itemId, "normal turn");
+    const released = this.materialize(active);
+    RELEASED_NORMAL_TURNS.add(released);
+    this.active = null;
+    return released;
+  }
+
   confirmInterruption(itemId: string): GeminiDeferredBargeInCandidate {
-    const active = this.requireMatching(itemId);
-    if (active.transcript === null) {
-      throw new Error(`Gemini deferred candidate ${active.itemId} cannot commit before transcript completion`);
-    }
-    const committed = Object.freeze({
-      itemId: active.itemId,
-      transcript: active.transcript,
-      mediaPayloads: Object.freeze([...active.mediaPayloads]),
-    });
+    const active = this.requireCompletedMatching(itemId, "interruption");
+    const committed = this.materialize(active);
     CONFIRMED_CANDIDATES.add(committed);
     this.active = null;
     return committed;
@@ -182,9 +194,25 @@ export class GeminiDeferredBargeInCandidateOwner {
     });
   }
 
+  private materialize(active: ActiveCandidate): GeminiDeferredCompletedCallerAudio {
+    return Object.freeze({
+      itemId: active.itemId,
+      transcript: active.transcript!,
+      mediaPayloads: Object.freeze([...active.mediaPayloads]),
+    });
+  }
+
   private requireActive(): ActiveCandidate {
     if (!this.active) throw new Error("Gemini deferred candidate is not active");
     return this.active;
+  }
+
+  private requireCompletedMatching(itemId: string, purpose: string): ActiveCandidate {
+    const active = this.requireMatching(itemId);
+    if (active.transcript === null) {
+      throw new Error(`Gemini deferred candidate ${active.itemId} cannot release ${purpose} before transcript completion`);
+    }
+    return active;
   }
 
   private requireMatching(itemId: string): ActiveCandidate {
