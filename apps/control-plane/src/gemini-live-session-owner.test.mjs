@@ -99,6 +99,26 @@ test("function calls without correlation ids fail closed", () => {
   );
 });
 
+test("normal interruption completes active response and returns directly to READY", () => {
+  const owner = readyOwner();
+  owner.observe(wire({ serverContent: { modelTurn: { parts: [{ text: "hola" }] } } }));
+
+  const interrupted = owner.observe(wire({ serverContent: { interrupted: true } }));
+  assert.deepEqual(interrupted.events, [{
+    type: "ASSISTANT_RESPONSE_COMPLETED",
+    kind: "NORMAL",
+    responseId: "gemini-response-1",
+    status: "interrupted",
+  }]);
+  assert.equal(interrupted.snapshot.activeResponseId, null);
+  assert.deepEqual(interrupted.snapshot.pendingToolCallIds, []);
+  assert.equal(interrupted.snapshot.state, "READY");
+
+  const next = owner.observe(wire({ serverContent: { modelTurn: { parts: [{ text: "siguiente" }] } } }));
+  assert.equal(next.events[0]?.responseId, "gemini-response-2");
+  assert.equal(next.snapshot.state, "GENERATING");
+});
+
 test("interruption completes the active neutral response once and cancellation is evidence, not rollback", () => {
   const owner = readyOwner();
   owner.observe(wire({ toolCall: { functionCalls: [{ id: "fc-9", name: "create_reservation" }] } }));
