@@ -19,7 +19,8 @@ export type ProviderCapabilities = Readonly<{
   governedSpeech: boolean;
   isolatedTextDecision: boolean;
   semanticToolGate: boolean;
-  dynamicSessionPolicy: boolean;
+  runtimeInstructionPolicyUpdate: boolean;
+  runtimeToolCatalogUpdate: boolean;
   correlatedResponseLifecycle: boolean;
   directSip: boolean;
 }>;
@@ -36,7 +37,8 @@ const OPENAI_CAPABILITIES = Object.freeze({
   governedSpeech: true,
   isolatedTextDecision: true,
   semanticToolGate: true,
-  dynamicSessionPolicy: true,
+  runtimeInstructionPolicyUpdate: true,
+  runtimeToolCatalogUpdate: true,
   correlatedResponseLifecycle: true,
   directSip: true,
 } satisfies ProviderCapabilities);
@@ -53,7 +55,8 @@ const GEMINI_CAPABILITIES = Object.freeze({
   governedSpeech: false,
   isolatedTextDecision: false,
   semanticToolGate: false,
-  dynamicSessionPolicy: false,
+  runtimeInstructionPolicyUpdate: false,
+  runtimeToolCatalogUpdate: false,
   correlatedResponseLifecycle: false,
   directSip: false,
 } satisfies ProviderCapabilities);
@@ -69,6 +72,12 @@ const CAPABILITIES_BY_PROVIDER: Readonly<Record<RealtimeProviderName, ProviderCa
  * directSip is intentionally absent: a provider may satisfy media transport through
  * a bridge. toolCallCancellation is also optional because the core can safely treat
  * cancellation as evidence while preserving ToolGateway ownership.
+ *
+ * The two runtime session-policy capabilities are intentionally separate. Today the
+ * active call runtime still mutates both instructions and the tool catalog after the
+ * provider session exists. A future provider may instead compose either concern into
+ * immutable bootstrap; that architecture must be proven before either runtime gate is
+ * removed from traffic readiness.
  */
 export const REALTIME_TRAFFIC_REQUIRED_CAPABILITIES = Object.freeze([
   "audioInput",
@@ -81,7 +90,8 @@ export const REALTIME_TRAFFIC_REQUIRED_CAPABILITIES = Object.freeze([
   "governedSpeech",
   "isolatedTextDecision",
   "semanticToolGate",
-  "dynamicSessionPolicy",
+  "runtimeInstructionPolicyUpdate",
+  "runtimeToolCatalogUpdate",
   "correlatedResponseLifecycle",
 ] as const satisfies readonly (keyof ProviderCapabilities)[]);
 
