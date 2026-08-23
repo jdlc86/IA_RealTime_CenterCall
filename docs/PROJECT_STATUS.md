@@ -76,6 +76,17 @@ Criterio de aislamiento: un fallo, desconexión o peculiaridad de Gemini no debe
 - `ResponseCoordinator`: `callerResponsePending` es autorización one-shot; una respuesta liberada no puede autoencadenar respuestas indefinidamente.
 - La prueba con `gpt-realtime-2.1-mini` mostró compatibilidad funcional pero calidad de voz no preferida; se restauró el baseline `gpt-realtime + marin`. Esto no cambia el diseño multi-provider.
 
+## Siguiente validación
+
+Comenzar Gate G1 sin habilitar tráfico Gemini:
+
+1. auditar el registry/capabilities realtime actuales y localizar el punto único de binding por tenant;
+2. formalizar `TenantConfiguration.realtime_provider` como `OPENAI | GEMINI` sin condicionales dispersos en dominio/lifecycle;
+3. registrar Gemini como provider conocido pero no seleccionable para tráfico hasta disponer de adapter/conformance;
+4. añadir pruebas de selección por tenant, binding inmutable durante la llamada y rechazo de provider no registrado/no habilitado;
+5. añadir guard estructural que impida referencias Gemini en capas neutrales;
+6. mantener OpenAI sin cambios funcionales y ejecutar `npm run docs:check`, `npm test` y `npm run check` antes de avanzar a G2.
+
 ## Restricciones vigentes
 
 - No añadir `CallSession` V55+ ni reactivar V47/V52.
