@@ -73,7 +73,12 @@ function latency(values: readonly number[], field: string): GeminiMediaEdgeLaten
 }
 
 function peak(values: readonly number[], field: string): number {
-  return Math.max(...finiteSamples(values, field));
+  const samples = finiteSamples(values, field);
+  let maximum = 0;
+  for (const sample of samples) {
+    if (sample > maximum) maximum = sample;
+  }
+  return maximum;
 }
 
 /**
