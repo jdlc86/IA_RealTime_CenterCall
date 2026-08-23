@@ -34,7 +34,11 @@ function textTurn(text: string): Record<string, unknown> {
  * provider-specific evidence instead of pretending OpenAI wire semantics exist.
  */
 export class GeminiLiveCommandAdapter implements RealtimeProviderCommandPort {
-  constructor(private readonly host: GeminiLiveCommandHost) {}
+  private readonly host: GeminiLiveCommandHost;
+
+  constructor(host: GeminiLiveCommandHost) {
+    this.host = host;
+  }
 
   speak(request: RealtimeSpeechRequest): void {
     const exact = request.exactText
@@ -55,7 +59,7 @@ export class GeminiLiveCommandAdapter implements RealtimeProviderCommandPort {
     if (!request.callId || !request.toolName) {
       throw new Error("Gemini Live tool responses require callId and toolName");
     }
-    const response = typeof request.output === "string" ? { result: request.output } : { result: request.output };
+    const response = { result: request.output };
     this.host.send({
       toolResponse: {
         functionResponses: [{
