@@ -51,8 +51,9 @@ const OPENAI_CAPABILITIES = Object.freeze({
 
 const GEMINI_CAPABILITIES = Object.freeze({
   // G3 media bridge proves ordered Telnyx L16 -> Gemini realtime input and
-  // correlated Gemini PCM -> Telnyx playback. These capabilities describe the
-  // validated edge semantics only; traffic remains blocked by the gates below.
+  // correlated Gemini PCM -> Telnyx playback. The session owner also correlates
+  // output-transcription chunks to its active response and finalizes them only on
+  // turnComplete. Traffic remains blocked by the semantic/runtime gates below.
   audioInput: true,
   audioOutput: true,
   vad: false,
@@ -60,7 +61,7 @@ const GEMINI_CAPABILITIES = Object.freeze({
   functionCalling: true,
   toolCallCancellation: false,
   inputTranscription: false,
-  outputTranscription: false,
+  outputTranscription: true,
   governedSpeech: false,
   isolatedTextDecision: false,
   semanticToolGate: false,
