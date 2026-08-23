@@ -5,6 +5,7 @@ import {
   geminiMediaEdgeControlUrl,
 } from "../.test-dist/gemini-media-edge-sideband-connector.js";
 import { callerTurnDispositionPortFor } from "../.test-dist/caller-turn-disposition-runtime.js";
+import { externalRealtimeProviderCommandPortFor } from "../.test-dist/realtime-provider-external-command-runtime.js";
 
 class FakeSocket {
   constructor() { this.readyState = 1; this.sent = []; this.listeners = new Map(); this.accepted = false; this.closed = null; }
@@ -45,18 +46,21 @@ test("connector authenticates in header and feeds provider plus edge evidence in
   connection.close();
 });
 
-test("connector owns neutral caller disposition capability for exactly its socket lifetime", async () => {
+test("connector owns neutral caller disposition and provider command capabilities for exactly its socket lifetime", async () => {
   const socket = new FakeSocket(); const host = {};
   const connection = await connectGeminiMediaEdgeSideband({ ...input, capabilityHost: host }, () => {}, async () => ({ status: 101, webSocket: socket }));
-  const port = callerTurnDispositionPortFor(host);
-  assert.ok(port);
+  const dispositionPort = callerTurnDispositionPortFor(host);
+  const commandPort = externalRealtimeProviderCommandPortFor(host, "GEMINI");
+  assert.ok(dispositionPort);
+  assert.equal(commandPort, connection.runtime.commandPort);
   socket.emit("message", JSON.stringify({ type: "GEMINI_EVENT", message: { setupComplete: {} } }));
   socket.emit("message", JSON.stringify({ type: "CALLER_EVENT", event: { type: "CALLER_SPEECH_STARTED", itemId: "gemini-candidate-1", playbackResponseIdAtStart: null } }));
   socket.emit("message", JSON.stringify({ type: "CALLER_EVENT", event: { type: "CALLER_TRANSCRIPT_COMPLETED", itemId: "gemini-candidate-1", transcript: "Hola" } }));
-  port.resolve({ itemId: "gemini-candidate-1", disposition: "NORMAL" });
+  dispositionPort.resolve({ itemId: "gemini-candidate-1", disposition: "NORMAL" });
   assert.deepEqual(JSON.parse(socket.sent.at(-1)), { type: "CALLER_TURN_DECISION", itemId: "gemini-candidate-1", decision: "NORMAL", responseId: null });
   connection.close();
   assert.equal(callerTurnDispositionPortFor(host), null);
+  assert.equal(externalRealtimeProviderCommandPortFor(host, "GEMINI"), null);
 });
 
 test("connector fails closed when upgrade does not return a WebSocket", async () => {
