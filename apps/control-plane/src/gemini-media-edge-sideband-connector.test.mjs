@@ -2,10 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   connectGeminiMediaEdgeSideband,
+  connectGeminiMediaEdgeSidebandToProviderHost,
   geminiMediaEdgeControlUrl,
 } from "../.test-dist/gemini-media-edge-sideband-connector.js";
 import { callerTurnDispositionPortFor } from "../.test-dist/caller-turn-disposition-runtime.js";
 import { externalRealtimeProviderCommandPortFor } from "../.test-dist/realtime-provider-external-command-runtime.js";
+import {
+  installRealtimeProviderEventIngress,
+  removeRealtimeProviderEventIngress,
+} from "../.test-dist/realtime-provider-event-ingress-runtime.js";
 
 class FakeSocket {
   constructor() { this.readyState = 1; this.sent = []; this.listeners = new Map(); this.accepted = false; this.closed = null; }
@@ -61,6 +66,36 @@ test("connector owns neutral caller disposition and provider command capabilitie
   connection.close();
   assert.equal(callerTurnDispositionPortFor(host), null);
   assert.equal(externalRealtimeProviderCommandPortFor(host, "GEMINI"), null);
+});
+
+test("host-aware connector fails before network effects when event ingress is absent", async () => {
+  const host = {};
+  let fetchCalls = 0;
+  await assert.rejects(
+    connectGeminiMediaEdgeSidebandToProviderHost(
+      { ...input, capabilityHost: host },
+      async () => { fetchCalls += 1; return { status: 101, webSocket: new FakeSocket() }; },
+    ),
+    /event ingress is not installed/,
+  );
+  assert.equal(fetchCalls, 0);
+});
+
+test("host-aware connector routes one normalized Gemini event through the installed ingress", async () => {
+  const socket = new FakeSocket();
+  const host = {};
+  const received = [];
+  const ingress = async (events) => { received.push(...events); };
+  installRealtimeProviderEventIngress(host, ingress);
+  const connection = await connectGeminiMediaEdgeSidebandToProviderHost(
+    { ...input, capabilityHost: host },
+    async () => ({ status: 101, webSocket: socket }),
+  );
+  socket.emit("message", JSON.stringify({ type: "CALLER_EVENT", event: { type: "CALLER_SPEECH_STARTED", itemId: "gemini-candidate-9", playbackResponseIdAtStart: null } }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(received, [{ type: "CALLER_SPEECH_STARTED", itemId: "gemini-candidate-9" }]);
+  connection.close();
+  removeRealtimeProviderEventIngress(host, ingress);
 });
 
 test("connector fails closed when upgrade does not return a WebSocket", async () => {
