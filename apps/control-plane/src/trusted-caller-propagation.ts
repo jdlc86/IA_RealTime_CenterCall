@@ -1,3 +1,8 @@
+import {
+  realtimeProviderAffinityHeaders,
+  type RealtimeProviderAffinity,
+} from "./realtime-provider-affinity.js";
+
 function extractE164(value: string | null | undefined): string | null {
   if (!value) return null;
   const match = value.match(/\+[1-9]\d{7,14}/);
@@ -18,6 +23,7 @@ export function buildTrustedCallerTransferHeaders(
   calledNumber: string,
   routingSource: string,
   telnyxCallControlId?: string,
+  realtimeProviderAffinity?: RealtimeProviderAffinity,
 ): Array<{ name: string; value: string }> {
   return [
     { name: "X-IA-Tenant-ID", value: tenantId },
@@ -27,5 +33,6 @@ export function buildTrustedCallerTransferHeaders(
     ...(telnyxCallControlId?.trim()
       ? [{ name: "X-IA-Telnyx-Call-Control-ID", value: telnyxCallControlId.trim() }]
       : []),
+    ...(realtimeProviderAffinity ? realtimeProviderAffinityHeaders(realtimeProviderAffinity) : []),
   ];
 }
