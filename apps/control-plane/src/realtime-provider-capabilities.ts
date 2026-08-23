@@ -51,17 +51,18 @@ const OPENAI_CAPABILITIES = Object.freeze({
 
 const GEMINI_CAPABILITIES = Object.freeze({
   // G3 media bridge proves ordered Telnyx L16 -> Gemini realtime input and
-  // correlated Gemini PCM -> Telnyx playback. Caller input transcription is
-  // product-owned rather than Gemini-owned: the edge buffers the exact Telnyx
-  // candidate, finalizes it only at authoritative VAD SPEECH_END, sends that
-  // immutable audio to Google Speech-to-Text v2, and rejects any transcript
-  // whose item identity differs from the captured candidate. The session owner
-  // also correlates output-transcription chunks to its active response and
-  // finalizes them only on turnComplete. Traffic remains blocked by the
-  // semantic/runtime gates below.
+  // correlated Gemini PCM -> Telnyx playback. Caller VAD is product-owned: a
+  // deterministic sample-count detector identifies onset/offset from media
+  // samples, retains onset frames, and closes only after configured silence.
+  // Caller input transcription is likewise product-owned: the edge freezes the
+  // exact detected candidate, sends it to Google Speech-to-Text v2, and rejects
+  // any transcript whose item identity differs from the captured candidate. The
+  // session owner also correlates output-transcription chunks to its active
+  // response and finalizes them only on turnComplete. Traffic remains blocked by
+  // the semantic/runtime gates below.
   audioInput: true,
   audioOutput: true,
-  vad: false,
+  vad: true,
   interruption: false,
   functionCalling: true,
   toolCallCancellation: false,
