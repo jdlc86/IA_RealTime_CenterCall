@@ -7,6 +7,7 @@ import {
   requireRealtimeProviderCapabilities,
   requireRealtimeProviderTrafficReadiness,
 } from "../.test-dist/realtime-provider-capabilities.js";
+import { ENABLED_REALTIME_PROVIDERS } from "../.test-dist/realtime-provider-types.js";
 
 const source = readFileSync(new URL("./realtime-provider-capabilities.ts", import.meta.url), "utf8");
 const runtime = readFileSync(new URL("./realtime-provider-runtime.ts", import.meta.url), "utf8");
@@ -72,6 +73,15 @@ test("traffic readiness names product invariants instead of transport topology",
   }
   assert.equal(required.has("directSip"), false, "a media bridge may replace direct SIP");
   assert.equal(required.has("toolCallCancellation"), false, "tool cancellation is optional evidence, not rollback authority");
+});
+
+test("every enabled realtime provider is already traffic-ready", () => {
+  for (const provider of ENABLED_REALTIME_PROVIDERS) {
+    assert.doesNotThrow(
+      () => requireRealtimeProviderTrafficReadiness(provider),
+      `${provider} must not enter ENABLED_REALTIME_PROVIDERS before all traffic gates pass`,
+    );
+  }
 });
 
 test("OpenAI is traffic-ready under the current validated baseline", () => {
