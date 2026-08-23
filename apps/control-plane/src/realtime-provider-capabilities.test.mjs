@@ -55,14 +55,18 @@ test("OpenAI capabilities describe product-validated semantics rather than vendo
   assert.equal(openai.toolCallCancellation, false);
 });
 
-test("Gemini claims only semantics proven by immutable setup, function calls and owned lifecycle", () => {
+test("Gemini claims only semantics proven by immutable setup, media bridge, function calls and owned lifecycle", () => {
   const gemini = realtimeProviderCapabilities("GEMINI");
+  assert.equal(gemini.audioInput, true);
+  assert.equal(gemini.audioOutput, true);
   assert.equal(gemini.initialInstructionBootstrap, true);
   assert.equal(gemini.toolCatalogBootstrap, true);
   assert.equal(gemini.functionCalling, true);
   assert.equal(gemini.correlatedResponseLifecycle, true);
   for (const capability of plannedCapabilities.filter(
     (name) => ![
+      "audioInput",
+      "audioOutput",
       "initialInstructionBootstrap",
       "toolCatalogBootstrap",
       "functionCalling",
@@ -122,10 +126,10 @@ test("OpenAI is traffic-ready under the current validated baseline", () => {
   assert.equal(requireRealtimeProviderTrafficReadiness("OPENAI"), realtimeProviderCapabilities("OPENAI"));
 });
 
-test("Gemini traffic readiness remains closed after bootstrap, function-calling and lifecycle proof", () => {
+test("Gemini traffic readiness remains closed after media, bootstrap, function-calling and lifecycle proof", () => {
   assert.throws(
     () => requireRealtimeProviderTrafficReadiness("GEMINI"),
-    /lacks required capabilities: audioInput, audioOutput, vad, interruption, inputTranscription, outputTranscription, governedSpeech, isolatedTextDecision, semanticToolGate, authoritativeTemporalContext/,
+    /lacks required capabilities: vad, interruption, inputTranscription, outputTranscription, governedSpeech, isolatedTextDecision, semanticToolGate, authoritativeTemporalContext/,
   );
 });
 
@@ -137,11 +141,13 @@ test("runtime binding requires both provider enablement and traffic readiness", 
 
 test("capability requirements fail closed until remaining Gemini runtime gates are implemented", () => {
   assert.throws(
-    () => requireRealtimeProviderCapabilities("GEMINI", ["audioInput", "semanticToolGate", "authoritativeTemporalContext"]),
-    /lacks required capabilities: audioInput, semanticToolGate, authoritativeTemporalContext/,
+    () => requireRealtimeProviderCapabilities("GEMINI", ["vad", "semanticToolGate", "authoritativeTemporalContext"]),
+    /lacks required capabilities: vad, semanticToolGate, authoritativeTemporalContext/,
   );
   assert.doesNotThrow(
     () => requireRealtimeProviderCapabilities("GEMINI", [
+      "audioInput",
+      "audioOutput",
       "initialInstructionBootstrap",
       "toolCatalogBootstrap",
       "functionCalling",
