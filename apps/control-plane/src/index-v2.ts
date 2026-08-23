@@ -5,6 +5,12 @@ import {
   type TenantKvNamespace,
   type TenantResolutionV1,
 } from "./tenant-kv";
+import {
+  parseRealtimeProviderAffinity,
+  REALTIME_PROVIDER_HEADER,
+  REALTIME_PROVIDER_SOURCE_HEADER,
+  type RealtimeProviderAffinity,
+} from "./realtime-provider-affinity.js";
 export { CallSession } from "./call-session";
 
 type WorkerEnv = {
@@ -273,7 +279,12 @@ async function acceptRealtimeCall(callId: string, configuration: RealtimeSession
   }
 }
 
-async function startCallSession(callId: string, tenantConfig: TenantConfigurationV1, env: WorkerEnv): Promise<void> {
+async function startCallSession(
+  callId: string,
+  tenantConfig: TenantConfigurationV1,
+  affinity: RealtimeProviderAffinity,
+  env: WorkerEnv,
+): Promise<void> {
   const id = env.CALL_SESSIONS.idFromName(callId);
   const stub = env.CALL_SESSIONS.get(id);
   const response = await stub.fetch("https://call-session.internal/start", {
@@ -287,6 +298,8 @@ async function startCallSession(callId: string, tenantConfig: TenantConfiguratio
       initial_greeting: tenantConfig.assistant.greeting,
       allowed_tools: tenantConfig.tools.allowed,
       business_facts: tenantConfig.business.facts,
+      realtime_provider: affinity.provider,
+      realtime_provider_source: affinity.source,
     }),
   });
   if (!response.ok) throw new Error(`CallSession start failed with HTTP ${response.status}`);
@@ -312,7 +325,31 @@ async function handleOpenAIWebhook(request: Request, env: WorkerEnv): Promise<Re
   const tenantId = getSipHeader(incoming.data.sip_headers, TENANT_HEADER);
   const calledNumber = getSipHeader(incoming.data.sip_headers, CALLED_NUMBER_HEADER);
   const routingSource = getSipHeader(incoming.data.sip_headers, ROUTING_SOURCE_HEADER);
+  const providerHeader = getSipHeader(incoming.data.sip_headers, REALTIME_PROVIDER_HEADER);
+  const providerSourceHeader = getSipHeader(incoming.data.sip_headers, REALTIME_PROVIDER_SOURCE_HEADER);
   if (!tenantId || !calledNumber || routingSource !== "called_number") return json({ ok: false, error: "tenant_binding_missing" }, 409);
+
+  let affinity: RealtimeProviderAffinity;
+  try {
+    affinity = parseRealtimeProviderAffinity(providerHeader, providerSourceHeader);
+  } catch (error) {
+    log("error", "realtime_provider_affinity_invalid", {
+      call_id: callId,
+      tenant_id: tenantId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return json({ ok: false, error: "realtime_provider_affinity_missing_or_invalid" }, 409);
+  }
+  if (affinity.provider !== "OPENAI") {
+    log("error", "realtime_provider_transport_mismatch", {
+      call_id: callId,
+      tenant_id: tenantId,
+      provider: affinity.provider,
+      expected_transport_provider: "OPENAI",
+      fallback_provider_used: false,
+    });
+    return json({ ok: false, error: "realtime_provider_transport_mismatch", provider: affinity.provider, fallback_provider_used: false }, 409);
+  }
 
   let tenantConfig: TenantConfigurationV1 | null = null;
   try {
@@ -342,10 +379,10 @@ async function handleOpenAIWebhook(request: Request, env: WorkerEnv): Promise<Re
 
   let callSessionStarted = false;
   try {
-    await startCallSession(callId, tenantConfig, env);
+    await startCallSession(callId, tenantConfig, affinity, env);
     callSessionStarted = true;
   } catch (error) {
-    log("error", "call_session_start_failed", { call_id: callId, tenant_id: tenantId, error: error instanceof Error ? error.message : String(error) });
+    log("error", "call_session_start_failed", { call_id: callId, tenant_id: tenantId, provider: affinity.provider, error: error instanceof Error ? error.message : String(error) });
   }
 
   return json({
@@ -357,6 +394,10 @@ async function handleOpenAIWebhook(request: Request, env: WorkerEnv): Promise<Re
     assistant_name: tenantConfig.assistant.name,
     allowed_tools: tenantConfig.tools.allowed,
     tenant_config_source: "kv",
+    realtime_provider: affinity.provider,
+    realtime_provider_source: affinity.source,
+    immutable_provider_affinity: true,
+    fallback_provider_used: false,
     business_data_provider: "supabase",
     semantic_data_router: false,
     call_session_started: callSessionStarted,
