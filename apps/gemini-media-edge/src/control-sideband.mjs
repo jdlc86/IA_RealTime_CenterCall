@@ -17,6 +17,11 @@ export function canonicalControlCommand(value) {
     if (!("output" in message)) throw new Error("Gemini media edge control tool output is required");
     return Object.freeze({ type: "TOOL_RESULT", callId, toolName, output: structuredClone(message.output) });
   }
+  if (message.type === "PLAYBACK_BINDING") {
+    const responseId = required(message.responseId, "Gemini media edge playback response id");
+    if (message.kind !== "NORMAL") throw new Error("Gemini media edge playback kind is unsupported");
+    return Object.freeze({ type: "PLAYBACK_BINDING", responseId, kind: "NORMAL" });
+  }
   if (message.type === "CALLER_TURN_DECISION") {
     const itemId = required(message.itemId, "Gemini media edge caller item id");
     if (!["NORMAL", "INTERRUPT", "IGNORE"].includes(message.decision)) throw new Error("Gemini media edge caller decision is invalid");
