@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { issueGeminiMediaEdgeHmacCredential } from "../.test-dist/gemini-media-edge-hmac-credential-issuer.js";
+import {
+  createGeminiMediaEdgeHmacCredentialIssuer,
+  issueGeminiMediaEdgeHmacCredential,
+} from "../.test-dist/gemini-media-edge-hmac-credential-issuer.js";
 
 const secret = "x".repeat(32);
 const input = Object.freeze({
@@ -42,6 +45,23 @@ test("issuer creates v1 credential with only the authenticated edge binding", as
     new TextEncoder().encode(`${version}.${payload}`),
   );
   assert.equal(verified, true);
+});
+
+test("provisioning adapter injects a unique credential id and returns only stream auth", async () => {
+  const issue = createGeminiMediaEdgeHmacCredentialIssuer(secret, () => "cred-provisioned-1");
+  const result = await issue({
+    provider: "GEMINI",
+    tenantId: "tenant-a",
+    callControlId: "call-a",
+    edgeUrl: "wss://media.example.test/telnyx/gemini",
+    targetLegs: "self",
+    notAfterEpochMs: 2_000_000_000_000,
+  });
+  assert.deepEqual(Object.keys(result), ["streamAuthToken"]);
+  const [, payload] = result.streamAuthToken.split(".");
+  const decoded = JSON.parse(decodeBase64Url(payload).toString("utf8"));
+  assert.equal(decoded.credentialId, "cred-provisioned-1");
+  assert.equal(decoded.callControlId, "call-a");
 });
 
 test("issuer fails closed on weak secrets or invalid binding", async () => {
