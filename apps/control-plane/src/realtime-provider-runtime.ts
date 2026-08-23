@@ -11,6 +11,7 @@ import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import { realtimeCommandPortFor as openAIRealtimeCommandPortFor } from "./openai-realtime-command-adapter.js";
 import { adaptOpenAIRealtimeEvent } from "./openai-realtime-event-adapter.js";
 import { externalRealtimeProviderCommandPortFor } from "./realtime-provider-external-command-runtime.js";
+import { realtimeProviderEventsFromTrustedBatch } from "./realtime-provider-event-ingress-runtime.js";
 import {
   realtimeProviderCapabilities,
   requireRealtimeProviderTrafficReadiness,
@@ -211,5 +212,11 @@ export function installRealtimeSessionPolicyTransform(host: RealtimeProviderHost
 export function observeRealtimeAssistantResponseStarted(host: RealtimeProviderHost, responseId?: string): void { commandRuntimeFor(host).observeAssistantResponseStarted(responseId); }
 export function observeRealtimeAssistantResponseCompleted(host: RealtimeProviderHost, responseId?: string): void { commandRuntimeFor(host).observeAssistantResponseCompleted(responseId); }
 
-/** G1 remains OpenAI-only at the wire edge; Gemini event adaptation is introduced in G2 before traffic enablement. */
-export function adaptRealtimeProviderEvents(data: unknown): RealtimeProviderEvent[] { return adaptOpenAIRealtimeEvent(data); }
+/**
+ * Provider-neutral inbound boundary. Sideband runtimes may deliver only trusted,
+ * already-normalized event batches; all ordinary external input keeps the exact
+ * validated OpenAI wire parser until another raw wire adapter is explicitly proven.
+ */
+export function adaptRealtimeProviderEvents(data: unknown): RealtimeProviderEvent[] {
+  return realtimeProviderEventsFromTrustedBatch(data) ?? adaptOpenAIRealtimeEvent(data);
+}
