@@ -11,6 +11,8 @@ export type GeminiLiveCommandHost = {
   send(message: Record<string, unknown>): void;
 };
 
+export type GeminiManualActivityHandling = "NO_INTERRUPTION" | "START_OF_ACTIVITY_INTERRUPTS";
+
 export type GeminiLiveInitialSetup = {
   model: string;
   instructions?: string;
@@ -19,6 +21,7 @@ export type GeminiLiveInitialSetup = {
   enableInputTranscription?: boolean;
   enableOutputTranscription?: boolean;
   manualActivityDetection?: boolean;
+  manualActivityHandling?: GeminiManualActivityHandling;
 };
 
 function functionDeclarations(tools: RealtimeSessionPolicyUpdate["tools"]): Record<string, unknown>[] | undefined {
@@ -37,6 +40,9 @@ function functionDeclarations(tools: RealtimeSessionPolicyUpdate["tools"]): Reco
  * session policy mutations are therefore deliberately NOT translated here.
  */
 export function buildGeminiLiveInitialSetup(request: GeminiLiveInitialSetup): Record<string, unknown> {
+  if (request.manualActivityHandling !== undefined && request.manualActivityDetection !== true) {
+    throw new Error("Gemini manual activity handling requires manualActivityDetection");
+  }
   const setup: Record<string, unknown> = { model: request.model };
   if (request.instructions !== undefined) {
     setup.systemInstruction = { parts: [{ text: request.instructions }] };
@@ -51,7 +57,7 @@ export function buildGeminiLiveInitialSetup(request: GeminiLiveInitialSetup): Re
   if (request.manualActivityDetection) {
     setup.realtimeInputConfig = {
       automaticActivityDetection: { disabled: true },
-      activityHandling: "NO_INTERRUPTION",
+      activityHandling: request.manualActivityHandling ?? "NO_INTERRUPTION",
     };
   }
   return { setup };
