@@ -8,16 +8,16 @@ Los datos de GitHub y Cloudflare deben verificarse de nuevo al comenzar otra ses
 ## Baseline actual
 
 ```text
-rama              rebuild/v39-stable-baseline
-PR                 #85, OPEN / DRAFT / MERGEABLE
-HEAD G1 código      f85e3e70433457ca807e7a128bbc4088c384aa02
-CI                 Control Plane CI #888 — SUCCESS
-realtime baseline   gpt-realtime + marin
+rama                rebuild/v39-stable-baseline
+PR                   #85, OPEN / DRAFT / MERGEABLE
+HEAD G2 audit código  23d642f1fa8184943ba643f666c0e3148e26d3a3
+CI                   Control Plane CI #900 — SUCCESS
+realtime baseline     gpt-realtime + marin
 ```
 
-El HEAD documental será posterior a `f85e3e70`; nunca uses este snapshot como sustituto de `git log`, PR/CI o estado efectivo de Cloudflare.
+El HEAD documental será posterior a `23d642f1`; nunca uses este snapshot como sustituto de `git log`, PR/CI o estado efectivo de Cloudflare.
 
-La versión productiva exacta y su porcentaje de tráfico deben verificarse antes de declarar un deploy actual. Gemini permanece deshabilitado para tráfico; G1 no autoriza por sí solo un media path Gemini.
+La versión productiva exacta y su porcentaje de tráfico deben verificarse antes de declarar un deploy actual. Gemini permanece deshabilitado para tráfico y no se despliega como provider activo durante G2.
 
 ## Estado por preocupación
 
@@ -32,82 +32,66 @@ La versión productiva exacta y su porcentaje de tráfico deben verificarse ante
 | Saludo protegido frente a voz/ruido | ✅ | ✅ | ✅ | exigir paridad de invariante a Gemini |
 | ResponseCoordinator: autorización pendiente one-shot | ✅ | ✅ (#871) | por verificar versión efectiva | repetir E2E de barge-in/tool sin bucle |
 | OpenAI realtime | ✅ | ✅ | baseline activo | `gpt-realtime + marin` |
-| Gemini G1: catálogo/tenant/binding/aislamiento | ✅ | ✅ (#888) | ❌ tráfico deshabilitado | G2 text/tools antes de habilitar |
+| Gemini G1: catálogo/tenant/binding/aislamiento | ✅ | ✅ (#888) | ❌ tráfico deshabilitado | cerrado |
+| Gemini G2: protocolo text/tools y capabilities | 🟡 endurecido, no completo | ✅ (#900) | ❌ | falta session owner + lifecycle + semantic decision strategy |
 | Gemini Live media/voz | ❌ | — | ❌ | G3/G4 pendientes |
 
 ## Decisión: OpenAI + Gemini Live por tenant
 
-El producto soportará dos realtime providers seleccionables por tenant mediante:
+El producto soportará dos realtime providers seleccionables por tenant mediante `TenantConfiguration.realtime.provider`: `OPENAI` conserva el edge OpenAI actual y `GEMINI` tendrá un edge Gemini Live independiente. La selección se resuelve durante bootstrap/tenant binding y queda fijada durante toda la llamada.
 
-```text
-TenantConfiguration.realtime.provider
-  ├─ OPENAI → OpenAI realtime adapter/media path
-  └─ GEMINI → Gemini Live adapter/media path
-```
-
-La selección se resuelve durante bootstrap/tenant binding y queda fijada durante toda la llamada. No habrá mezcla de sockets, eventos, buffers, SDK types ni estado entre providers, y no habrá failover entre OpenAI y Gemini a mitad de llamada en la primera integración.
-
-El core compartido sigue siendo autoridad de negocio y lifecycle:
-
-```text
-Tenant/Domain/Tools/Security
-          ↓
-TurnOwnership + ResponseCoordinator + ConversationLifecycle
-          ↓
-provider-neutral realtime ports
-        ↙       ↘
- OpenAI edge   Gemini edge
-```
-
-OpenAI debe permanecer funcional y sin cambios semánticos mientras se incorpora Gemini. Las diferencias de Gemini Live —wire protocol, audio, VAD, interruption, tool calls, identidades o transporte— se absorben en adapters de borde.
+El core compartido sigue siendo autoridad de negocio y lifecycle. No habrá mezcla de sockets, eventos, buffers, SDK types ni estado entre providers, ni failover OpenAI↔Gemini a mitad de llamada en esta primera integración.
 
 ### G1 completado
 
 - `OPENAI` y `GEMINI` forman el catálogo neutral de providers registrados.
-- Solo `OPENAI` está habilitado para tráfico; seleccionar `GEMINI` falla cerrado con 503 en composición y nunca cae silenciosamente en OpenAI.
-- Los tenants existentes sin `realtime.provider` conservan `OPENAI` como default.
-- `realtime.provider` acepta `OPENAI | GEMINI`; el override operacional KV conserva precedencia sobre la configuración del tenant.
-- El binding por host/llamada es inmutable incluso antes de crear el command runtime.
-- Las capacidades Gemini están declaradas conservadoramente como no implementadas/no validadas en G1; registrar el provider no implica paridad funcional.
-- `CallSession V31–V54` tiene guard estructural contra branches literales `GEMINI`; la selección vive en composición, no en dominio/lifecycle.
-- El wire/event adapter sigue siendo OpenAI-only mientras Gemini no está habilitado; G2 debe resolver esa frontera antes de cualquier tráfico Gemini.
+- Solo `OPENAI` está habilitado para tráfico; seleccionar `GEMINI` falla cerrado y nunca cae silenciosamente en OpenAI.
+- Los tenants existentes sin `realtime.provider` conservan `OPENAI` como default; el override KV conserva precedencia.
+- El binding por host/llamada es inmutable.
+- `CallSession V31–V54` tiene guard estructural contra branches literales `GEMINI`.
+
+### Auditoría exhaustiva G2
+
+La primera implementación sintética G2 pasó compilación, pero la revisión contra el protocolo Live real detectó equivalencias incorrectas que ya fueron eliminadas antes de conectar tráfico:
+
+- `setup` no puede reutilizarse como equivalente de `session.update`: Gemini Live configura la sesión una vez al inicio y requiere esperar `setupComplete`.
+- `speak`, decisiones aisladas y continuaciones no pueden simularse enviando `realtimeInput.text`, porque eso representa input del usuario y alteraría turn ownership/contexto.
+- La transcripción Gemini no aporta un flag `finished` equivalente al supuesto inicialmente; los chunks no se promocionan a `*_TRANSCRIPT_COMPLETED` hasta disponer de correlación stateful real.
+- `generationComplete`, `turnComplete`, `interrupted` y `toolCallCancellation` permanecen como evidencia del edge hasta que un owner Gemini pueda traducirlos sin inventar identidades ni ordering.
+- El mapeo de function response por `id` + nombre se mantiene como operación G2 demostrada.
+- La matriz de capabilities ahora distingue además `governedSpeech`, `isolatedTextDecision`, `dynamicSessionPolicy`, `correlatedResponseLifecycle` y `toolCallCancellation`. Gemini conserva todas las capabilities en `false` hasta demostrar cada gate.
+
+El resultado de esta auditoría es intencionalmente conservador: G2 todavía NO está cerrado aunque CI esté verde. `CI verde` aquí significa que las fronteras fallan cerradas y no degradan OpenAI, no que Gemini esté listo para producción.
 
 ## Plan Gemini Live por gates
 
-1. **G1 — contrato y selección: COMPLETO.** Catálogo, `TenantConfiguration.realtime.provider`, override, binding inmutable, capabilities conservadoras, fail-closed y guard estructural; CI #888 verde.
-2. **G2 — conformance text/tools: EN CURSO.** Implementar adapter Gemini para sesión, eventos, comandos y function calling usando contratos neutrales; tests compartidos con OpenAI. No habilitar tráfico.
+1. **G1 — contrato y selección: COMPLETO.** Catálogo, tenant selection, override, binding inmutable, capabilities conservadoras y fail-closed.
+2. **G2 — conformance de sesión/eventos/tools: EN CURSO.** Construir un session owner Gemini que envíe setup una vez, espere `setupComplete`, preserve tool identities y traduzca lifecycle/transcripción mediante evidencia real. Resolver la capacidad de decisión semántica aislada sin contaminar la conversación Live.
 3. **G3 — media:** diseñar/implementar el media path Gemini necesario para Telnyx, con benchmark de codec/resampling, latencia, backpressure y playback evidence. ADR obligatorio antes de ampliar media plane.
 4. **G4 — invariantes de voz:** saludo protegido, VAD/input detection, barge-in, one-shot response authorization, tools, silencio, cierre, handoff y liveness.
-5. **G5 — tenant canary:** habilitar Gemini solo para un tenant de prueba; OpenAI continúa seleccionable para cualquier otro tenant. Solo después ampliar disponibilidad.
-
-Criterio de aislamiento: un fallo, desconexión o peculiaridad de Gemini no debe modificar el runtime OpenAI de otra llamada. Cada llamada posee un único provider binding inmutable.
-
-## Incidentes recientes que deben permanecer corregidos
-
-- Protección del saludo: durante habla protegida se suspende input detection, se descarta audio solapado y solo playback realmente detenido libera el turno.
-- `ResponseCoordinator`: `callerResponsePending` es autorización one-shot; una respuesta liberada no puede autoencadenar respuestas indefinidamente.
-- La prueba con `gpt-realtime-2.1-mini` mostró compatibilidad funcional pero calidad de voz no preferida; se restauró el baseline `gpt-realtime + marin`. Esto no cambia el diseño multi-provider.
+5. **G5 — tenant canary:** habilitar Gemini solo para un tenant de prueba; OpenAI continúa seleccionable para cualquier otro tenant.
 
 ## Siguiente validación
 
-Continuar Gate G2 sin habilitar tráfico Gemini:
+Continuar G2 antes de G3:
 
-1. definir traducción Gemini Live para los comandos neutrales sin copiar conceptos wire de OpenAI;
-2. adaptar `toolCall.functionCalls`/tool responses al contrato `SEMANTIC_TOOL_SELECTED` y `RealtimeToolResultRequest` preservando `id`;
-3. mapear transcripción, turn completion e interruption teniendo en cuenta que Gemini no garantiza orden entre transcripciones y `serverContent`;
-4. demostrar con tests de conformance compartidos que una misma intención neutral produce semántica equivalente en ambos adapters;
-5. mantener Gemini fuera de `ENABLED_REALTIME_PROVIDERS` hasta completar G2 y antes de cualquier trabajo de media G3;
-6. no modelar `response.create`, `response_id` o eventos OpenAI como si fueran primitives de Gemini; generar identidades neutrales donde sea necesario.
+1. crear un owner de sesión Gemini de borde: `setup → setupComplete → runtime`, sin segunda configuración;
+2. definir cómo se obtiene `isolatedTextDecision` para el bundle Gemini sin inyectarla como caller input; si Live no ofrece la semántica requerida, componer una capacidad de decisión separada;
+3. modelar lifecycle Gemini (`generationComplete`, `turnComplete`, `interrupted`) con identidades neutrales propias y correlación por evento, no tiempo;
+4. diseñar tratamiento de `toolCallCancellation`: nunca deshacer una mutación ya confirmada por backend; cancelar solo trabajo aún no comprometido cuando exista ownership demostrable;
+5. establecer estrategia de transcripción stateful y ordering antes de emitir `CALLER_TRANSCRIPT_COMPLETED` o `ASSISTANT_TRANSCRIPT_COMPLETED`;
+6. mantener `GEMINI` fuera de `ENABLED_REALTIME_PROVIDERS` hasta completar G2/G3/G4.
 
 ## Restricciones vigentes
 
 - No añadir `CallSession` V55+ ni reactivar V47/V52.
-- No implementar Gemini mediante `if provider === GEMINI` dispersos en dominio/lifecycle.
+- No implementar Gemini mediante branches dispersos en dominio/lifecycle.
 - No compartir sockets, buffers, wire events o estado privado OpenAI↔Gemini.
-- No cambiar el media path de OpenAI para acomodar Gemini si puede mantenerse aislado.
+- No cambiar el media path OpenAI para acomodar Gemini si puede mantenerse aislado.
 - No habilitar tráfico Gemini antes de completar los gates correspondientes.
 - No implementar failover de provider a mitad de llamada en esta fase.
 - No añadir timers/sleeps para emular ordering; usar identidad y evidencia.
+- No tratar una feature anunciada por el vendor como capability validada del producto.
 - No confundir implementación, CI, deploy y E2E.
 
 Historial detallado: [`SESSION_HANDOFF.md`](./SESSION_HANDOFF.md), [`SESSION_HANDOFF_PROMPT_2026-08-22.md`](./SESSION_HANDOFF_PROMPT_2026-08-22.md) y [`DEVELOPMENT_LOG.md`](./DEVELOPMENT_LOG.md).
