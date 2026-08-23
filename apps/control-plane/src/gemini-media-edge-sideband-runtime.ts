@@ -6,28 +6,17 @@ import {
 } from "./gemini-live-session-runtime.js";
 
 export type GeminiMediaEdgeCallerDecision = "NORMAL" | "INTERRUPT" | "IGNORE";
-
 export type GeminiMediaEdgeSidebandOutbound =
   | Readonly<{ type: "TOOL_RESULT"; callId: string; toolName: string; output: unknown }>
   | Readonly<{ type: "PLAYBACK_BINDING"; responseId: string; kind: "NORMAL" }>
   | Readonly<{ type: "PLAYBACK_DRAIN"; responseId: string }>
   | Readonly<{ type: "CALLER_TURN_DECISION"; itemId: string; decision: GeminiMediaEdgeCallerDecision; responseId: string | null }>;
-
 export type GeminiMediaEdgeSidebandSend = (message: GeminiMediaEdgeSidebandOutbound) => void;
 export type GeminiMediaEdgeCallerContext = Readonly<{ itemId: string; playbackResponseIdAtStart: string | null }>;
 
-function object(value: unknown, field: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field} is invalid`);
-  return value as Record<string, unknown>;
-}
-function required(value: unknown, field: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`);
-  return value.trim();
-}
-function optionalId(value: unknown, field: string): string | null {
-  if (value == null) return null;
-  return required(value, field);
-}
+function object(value: unknown, field: string): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field} is invalid`); return value as Record<string, unknown>; }
+function required(value: unknown, field: string): string { if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`); return value.trim(); }
+function optionalId(value: unknown, field: string): string | null { if (value == null) return null; return required(value, field); }
 function outboundToolResult(message: Record<string, unknown>): GeminiMediaEdgeSidebandOutbound {
   const toolResponse = object(message.toolResponse, "Gemini sideband toolResponse");
   const responses = toolResponse.functionResponses;
@@ -39,18 +28,17 @@ function outboundToolResult(message: Record<string, unknown>): GeminiMediaEdgeSi
 }
 function playbackBinding(events: readonly RealtimeProviderEvent[]): GeminiMediaEdgeSidebandOutbound | null {
   const started = events.filter((event): event is Extract<RealtimeProviderEvent, { type: "ASSISTANT_RESPONSE_STARTED" }> => event.type === "ASSISTANT_RESPONSE_STARTED");
-  if (started.length === 0) return null;
+  if (!started.length) return null;
   if (started.length !== 1) throw new Error("Gemini sideband observation produced multiple response starts");
   return Object.freeze({ type: "PLAYBACK_BINDING", responseId: required(started[0].responseId, "Gemini sideband playback response id"), kind: "NORMAL" });
 }
 function playbackDrain(events: readonly RealtimeProviderEvent[]): GeminiMediaEdgeSidebandOutbound | null {
   const completed = events.filter((event): event is Extract<RealtimeProviderEvent, { type: "ASSISTANT_RESPONSE_COMPLETED" }> => event.type === "ASSISTANT_RESPONSE_COMPLETED" && event.status === "completed");
-  if (completed.length === 0) return null;
+  if (!completed.length) return null;
   if (completed.length !== 1) throw new Error("Gemini sideband observation produced multiple completed responses");
   return Object.freeze({ type: "PLAYBACK_DRAIN", responseId: required(completed[0].responseId, "Gemini sideband completed response id") });
 }
 
-/** Control-plane authority for provider wire plus neutral evidence emitted by the media edge. */
 export class GeminiMediaEdgeSidebandRuntime {
   private readonly runtime: GeminiLiveSessionRuntime;
   private readonly send: GeminiMediaEdgeSidebandSend;
@@ -70,10 +58,8 @@ export class GeminiMediaEdgeSidebandRuntime {
     const frame = object(frameValue, "Gemini media edge sideband frame");
     if (frame.type === "GEMINI_EVENT") {
       const observation = this.runtime.observe(JSON.stringify(structuredClone(frame.message)));
-      const binding = playbackBinding(observation.events);
-      if (binding) this.send(binding);
-      const drain = playbackDrain(observation.events);
-      if (drain) this.send(drain);
+      const binding = playbackBinding(observation.events); if (binding) this.send(binding);
+      const drain = playbackDrain(observation.events); if (drain) this.send(drain);
       return observation;
     }
     if (frame.type === "CALLER_EVENT") return this.observeCallerEvent(frame.event);
@@ -81,9 +67,7 @@ export class GeminiMediaEdgeSidebandRuntime {
     throw new Error("Gemini media edge sideband frame type is unsupported");
   }
 
-  callerContext(itemId: string): GeminiMediaEdgeCallerContext | null {
-    return this.callerContexts.get(required(itemId, "Gemini sideband caller item id")) ?? null;
-  }
+  callerContext(itemId: string): GeminiMediaEdgeCallerContext | null { return this.callerContexts.get(required(itemId, "Gemini sideband caller item id")) ?? null; }
 
   /** Provider-effect boundary. Semantic authority must decide before calling this. */
   resolveCallerTurn(itemId: string, decision: GeminiMediaEdgeCallerDecision): GeminiMediaEdgeCallerContext {
@@ -91,18 +75,29 @@ export class GeminiMediaEdgeSidebandRuntime {
     const context = this.callerContexts.get(id);
     if (!context) throw new Error(`Gemini sideband caller context is not active: ${id}`);
     if (!["NORMAL", "INTERRUPT", "IGNORE"].includes(decision)) throw new Error("Gemini sideband caller decision is invalid");
-    if (decision === "NORMAL" && context.playbackResponseIdAtStart) {
-      throw new Error(`Gemini normal caller turn cannot own playback ${context.playbackResponseIdAtStart}`);
-    }
-    if (decision === "INTERRUPT") {
-      const responseId = context.playbackResponseIdAtStart;
-      if (!responseId) throw new Error("Gemini interruption requires caller playback identity");
-      if (this.activePlaybackResponseId !== responseId) {
-        throw new Error(`Gemini interruption playback identity mismatch: expected ${this.activePlaybackResponseId ?? "<none>"}`);
+
+    let wireDecision: GeminiMediaEdgeCallerDecision = decision;
+    let responseId: string | null = null;
+    const target = context.playbackResponseIdAtStart;
+    const activeResponseId = this.runtime.snapshot().activeResponseId;
+    const activePlaybackResponseId = this.activePlaybackResponseId;
+
+    if (decision === "NORMAL") {
+      if (activeResponseId || activePlaybackResponseId) throw new Error("Gemini normal caller turn requires idle response and playback");
+    } else if (decision === "INTERRUPT") {
+      if (!target) throw new Error("Gemini interruption requires caller playback identity");
+      if (activeResponseId && activeResponseId !== target) throw new Error(`Gemini interruption target superseded by active response ${activeResponseId}`);
+      if (activePlaybackResponseId && activePlaybackResponseId !== target) throw new Error(`Gemini interruption playback identity mismatch: expected ${activePlaybackResponseId}`);
+      if (!activeResponseId && !activePlaybackResponseId) {
+        // Match the validated deferred-input coordinator: once the captured target
+        // fully drains and nothing supersedes it, preserve speech as a normal turn.
+        wireDecision = "NORMAL";
+      } else {
+        responseId = target;
       }
     }
-    const responseId = decision === "INTERRUPT" ? context.playbackResponseIdAtStart : null;
-    this.send(Object.freeze({ type: "CALLER_TURN_DECISION", itemId: id, decision, responseId }));
+
+    this.send(Object.freeze({ type: "CALLER_TURN_DECISION", itemId: id, decision: wireDecision, responseId }));
     this.callerContexts.delete(id);
     return context;
   }
@@ -114,7 +109,6 @@ export class GeminiMediaEdgeSidebandRuntime {
     this.callerContexts.delete(id);
     return context;
   }
-
   snapshot() { return this.runtime.snapshot(); }
   close() { this.callerContexts.clear(); this.activePlaybackResponseId = null; return this.runtime.close(); }
 
@@ -125,9 +119,7 @@ export class GeminiMediaEdgeSidebandRuntime {
       const itemId = required(edge.itemId, "Gemini media edge caller item id");
       if (this.callerContexts.has(itemId)) throw new Error(`Gemini sideband caller item already active: ${itemId}`);
       const playbackResponseIdAtStart = optionalId(edge.playbackResponseIdAtStart, "Gemini media edge caller playback response id");
-      if (playbackResponseIdAtStart && playbackResponseIdAtStart !== this.activePlaybackResponseId) {
-        throw new Error(`Gemini sideband caller playback identity mismatch: expected ${this.activePlaybackResponseId ?? "<none>"}`);
-      }
+      if (playbackResponseIdAtStart && playbackResponseIdAtStart !== this.activePlaybackResponseId) throw new Error(`Gemini sideband caller playback identity mismatch: expected ${this.activePlaybackResponseId ?? "<none>"}`);
       this.callerContexts.set(itemId, Object.freeze({ itemId, playbackResponseIdAtStart }));
       return this.edgeObservation({ type: "CALLER_SPEECH_STARTED", itemId });
     }
