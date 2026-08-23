@@ -54,7 +54,7 @@ const GEMINI_CAPABILITIES = Object.freeze({
   audioOutput: false,
   vad: false,
   interruption: false,
-  functionCalling: false,
+  functionCalling: true,
   toolCallCancellation: false,
   inputTranscription: false,
   outputTranscription: false,
