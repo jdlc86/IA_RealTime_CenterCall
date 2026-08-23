@@ -132,14 +132,16 @@ export type GeminiMediaEdgeComparableBenchmarkSet = Readonly<{
   workloadFingerprint: string;
   durationSeconds: number;
   concurrency: number;
+  attemptedCalls: number;
   candidates: readonly GeminiMediaEdgeBenchmarkEvidence[];
 }>;
 
 /**
  * Requires at least two distinct candidates measured under the same workload,
- * reference region, duration and concurrency. Candidate deployment regions may have
- * provider-specific names, so comparability is anchored to referenceRegion rather
- * than requiring identical region strings from unrelated platforms.
+ * reference region, duration, concurrency and attempted call volume. Candidate
+ * deployment regions may have provider-specific names, so comparability is anchored
+ * to referenceRegion rather than requiring identical region strings from unrelated
+ * platforms.
  */
 export function requireComparableGeminiMediaEdgeBenchmarks(
   evidence: readonly GeminiMediaEdgeBenchmarkEvidence[],
@@ -149,6 +151,7 @@ export function requireComparableGeminiMediaEdgeBenchmarks(
   }
   const validated = evidence.map(validateGeminiMediaEdgeBenchmarkEvidence);
   const first = validated[0];
+  const attemptedCalls = first.completedCalls + first.failedCalls;
   const candidateIds = new Set(validated.map((item) => item.candidateId));
   if (candidateIds.size < 2) throw new Error("Gemini media edge benchmark requires at least two distinct candidates");
 
@@ -157,6 +160,7 @@ export function requireComparableGeminiMediaEdgeBenchmarks(
     if (item.workloadFingerprint !== first.workloadFingerprint) throw new Error("Gemini media edge benchmark workloads are not comparable");
     if (item.durationSeconds !== first.durationSeconds) throw new Error("Gemini media edge benchmark durations are not comparable");
     if (item.concurrency !== first.concurrency) throw new Error("Gemini media edge benchmark concurrency is not comparable");
+    if (item.completedCalls + item.failedCalls !== attemptedCalls) throw new Error("Gemini media edge benchmark attempted call volumes are not comparable");
   }
 
   return Object.freeze({
@@ -164,6 +168,7 @@ export function requireComparableGeminiMediaEdgeBenchmarks(
     workloadFingerprint: first.workloadFingerprint,
     durationSeconds: first.durationSeconds,
     concurrency: first.concurrency,
+    attemptedCalls,
     candidates: Object.freeze(validated.slice()),
   });
 }
