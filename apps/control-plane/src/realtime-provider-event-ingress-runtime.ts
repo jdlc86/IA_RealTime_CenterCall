@@ -24,6 +24,13 @@ export function installRealtimeProviderEventIngress(host: object, ingress: Realt
   INGRESS_BY_HOST.set(host, ingress);
 }
 
+export function requireRealtimeProviderEventIngress(host: object): RealtimeProviderEventIngress {
+  requireHost(host);
+  const ingress = INGRESS_BY_HOST.get(host);
+  if (!ingress) throw new Error("Realtime provider event ingress is not installed");
+  return ingress;
+}
+
 export function removeRealtimeProviderEventIngress(host: object, ingress?: RealtimeProviderEventIngress): void {
   requireHost(host);
   const existing = INGRESS_BY_HOST.get(host);
@@ -36,9 +43,7 @@ export async function deliverRealtimeProviderEvents(
   host: object,
   events: readonly RealtimeProviderEvent[],
 ): Promise<void> {
-  requireHost(host);
-  const ingress = INGRESS_BY_HOST.get(host);
-  if (!ingress) throw new Error("Realtime provider event ingress is not installed");
+  const ingress = requireRealtimeProviderEventIngress(host);
   for (const event of events) await ingress(Object.freeze([event]));
 }
 
