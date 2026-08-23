@@ -21,6 +21,22 @@ type ActiveCandidate = {
   transcript: string | null;
 };
 
+const CONFIRMED_CANDIDATES = new WeakSet<object>();
+
+/**
+ * Runtime authorization check used by the later provider commit adapter.
+ * Shape-compatible objects are not sufficient: only confirmInterruption() can
+ * register a candidate in this module-scoped capability set.
+ */
+export function requireConfirmedGeminiDeferredBargeInCandidate(
+  value: unknown,
+): GeminiDeferredBargeInCandidate {
+  if (!value || typeof value !== "object" || !CONFIRMED_CANDIDATES.has(value)) {
+    throw new Error("Gemini deferred barge-in candidate is not semantically authorized");
+  }
+  return value as GeminiDeferredBargeInCandidate;
+}
+
 /**
  * Owns a caller acoustic candidate while an assistant response is still protected
  * by the semantic barge-in gate.
@@ -90,6 +106,9 @@ export class GeminiDeferredBargeInCandidateOwner {
     if (active.transcript !== null) {
       throw new Error(`Gemini deferred candidate ${active.itemId} is already completed`);
     }
+    if (active.mediaPayloads.length === 0) {
+      throw new Error(`Gemini deferred candidate ${active.itemId} cannot complete without buffered audio`);
+    }
     const normalized = transcript.replace(/\s+/g, " ").trim();
     if (!normalized) throw new Error("Gemini deferred candidate requires authoritative transcript text");
     active.transcript = normalized;
@@ -109,6 +128,7 @@ export class GeminiDeferredBargeInCandidateOwner {
       transcript: active.transcript,
       mediaPayloads: Object.freeze([...active.mediaPayloads]),
     });
+    CONFIRMED_CANDIDATES.add(committed);
     this.active = null;
     return committed;
   }
