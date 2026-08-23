@@ -23,7 +23,20 @@ export class TelnyxPlaybackOwner {
   }
 
   requestDrainMark(responseId) { return this.createMark(responseId, "DRAIN"); }
-  requestClearMark(responseId) { return this.createMark(responseId, "CLEAR"); }
+
+  requestClearMark(responseId) {
+    const id = required(responseId, "Gemini playback response id");
+    if (this.responseId !== id || !this.started) throw new Error(`Gemini playback clear mark requires active response ${id}`);
+    if (this.pendingMark && this.pendingPurpose !== "DRAIN") {
+      throw new Error(`Gemini playback already awaits mark ${this.pendingMark}`);
+    }
+    // An authorized interruption may arrive after generation completed but before
+    // Telnyx returned the normal drain mark. Clear becomes the new physical
+    // authority; any later echo of the old drain mark is stale by mark identity.
+    this.pendingMark = null;
+    this.pendingPurpose = null;
+    return this.createMark(id, "CLEAR");
+  }
 
   observeReturnedMark(name) {
     const normalized = required(name, "Telnyx playback returned mark");
