@@ -131,9 +131,9 @@ export class GeminiTelnyxSessionBridge {
 
   clearActivePlayback(responseId: string): string | null {
     const normalized = responseId.trim();
-    const activeResponseId = this.session.snapshot().activeResponseId;
-    if (!normalized || !activeResponseId || normalized !== activeResponseId) {
-      throw new Error(`Gemini playback clear requires active owned response ${normalized || "<empty>"}`);
+    const activePlaybackResponseId = this.media.activePlaybackResponseId();
+    if (!normalized || !activePlaybackResponseId || normalized !== activePlaybackResponseId) {
+      throw new Error(`Gemini playback clear requires active owned playback ${normalized || "<empty>"}`);
     }
     return this.media.clearPlayback(normalized);
   }
