@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { registerGeminiMediaEdgeBootstrapForAdmittedSession } from "../.test-dist/gemini-media-edge-bootstrap-registration.js";
 import { directAgentRealtimeBootstrapPolicy } from "../.test-dist/direct-agent-realtime-bootstrap.js";
+import { withAuthoritativeNowContext } from "../.test-dist/temporal-grounding.js";
 
 const binding = Object.freeze({
   provider: "GEMINI",
@@ -12,10 +13,11 @@ const binding = Object.freeze({
   notAfterEpochMs: 2_000_000_000_000,
 });
 
-test("registration sends canonical bootstrap and deferred activity policy outside stream credential", async () => {
+test("registration sends canonical bootstrap with immutable authoritative time and deferred activity policy", async () => {
   const calls = [];
   const context = { assistantName: "Lucía", businessName: "Casa A" };
   const canonical = directAgentRealtimeBootstrapPolicy(context);
+  const fixedNow = new Date("2026-08-23T21:57:00Z");
 
   await registerGeminiMediaEdgeBootstrapForAdmittedSession({
     credentialId: "cred-a",
@@ -25,7 +27,7 @@ test("registration sends canonical bootstrap and deferred activity policy outsid
   }, async (url, init) => {
     calls.push({ url, init });
     return new Response("{}", { status: 201 });
-  });
+  }, () => fixedNow);
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "https://media.example.test/internal/bootstrap");
@@ -34,7 +36,10 @@ test("registration sends canonical bootstrap and deferred activity policy outsid
   assert.equal(body.tenantId, binding.tenantId);
   assert.equal(body.callControlId, binding.callControlId);
   assert.equal(body.notAfterEpochMs, binding.notAfterEpochMs);
-  assert.equal(body.instructions, canonical.instructions);
+  assert.equal(body.instructions, withAuthoritativeNowContext(canonical.instructions, fixedNow));
+  assert.match(body.instructions, /\[AUTHORITATIVE_NOW_V48\]/);
+  assert.match(body.instructions, /Europe\/Madrid/);
+  assert.match(body.instructions, /2026-08-23T23:57:00\+02:00/);
   assert.deepEqual(body.tools, canonical.tools);
   assert.equal(body.manualActivityDetection, true);
   assert.equal(body.manualActivityHandling, "START_OF_ACTIVITY_INTERRUPTS");

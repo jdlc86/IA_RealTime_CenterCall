@@ -1,5 +1,6 @@
 import { directAgentRealtimeBootstrapPolicy, type DirectAgentRealtimeBootstrapContext } from "./direct-agent-realtime-bootstrap.js";
 import type { GeminiMediaEdgeSessionBinding } from "./gemini-media-edge-session-contract.js";
+import { withAuthoritativeNowContext } from "./temporal-grounding.js";
 
 export type GeminiMediaEdgeBootstrapRegistrationInput = Readonly<{
   credentialId: string;
@@ -28,7 +29,9 @@ function registrationEndpoint(edgeUrl: string): string {
 /**
  * Registers the canonical immutable agent bootstrap with an already-admitted media
  * edge session. The policy is produced only by directAgentRealtimeBootstrapPolicy;
- * this adapter never owns or duplicates instruction/tool content.
+ * this adapter never owns or duplicates instruction/tool content. The backend-owned
+ * Europe/Madrid clock snapshot is added before Gemini setup opens because Live setup
+ * is immutable after the first client message.
  *
  * Caller audio is deferred until authoritative STT and semantic ownership decide
  * whether the completed candidate is NORMAL, INTERRUPT or IGNORE. Therefore the
@@ -38,17 +41,19 @@ function registrationEndpoint(edgeUrl: string): string {
 export async function registerGeminiMediaEdgeBootstrapForAdmittedSession(
   input: GeminiMediaEdgeBootstrapRegistrationInput,
   fetcher: typeof fetch = fetch,
+  now: () => Date = () => new Date(),
 ): Promise<void> {
   if (input.binding.provider !== "GEMINI") throw new Error("Gemini media edge bootstrap requires GEMINI affinity");
   const credentialId = required(input.credentialId, "Gemini media edge credential id");
   const controlPlaneToken = required(input.controlPlaneToken, "Gemini media edge control-plane token");
   const policy = directAgentRealtimeBootstrapPolicy(input.context);
+  const instructions = withAuthoritativeNowContext(policy.instructions, now());
   const body = {
     credentialId,
     tenantId: required(input.binding.tenantId, "Gemini media edge tenant_id"),
     callControlId: required(input.binding.callControlId, "Gemini media edge call_control_id"),
     notAfterEpochMs: input.binding.notAfterEpochMs,
-    instructions: policy.instructions,
+    instructions,
     tools: policy.tools,
     manualActivityDetection: true,
     manualActivityHandling: "START_OF_ACTIVITY_INTERRUPTS",
