@@ -18,6 +18,7 @@ export type ProviderCapabilities = Readonly<{
   outputTranscription: boolean;
   governedSpeech: boolean;
   isolatedTextDecision: boolean;
+  semanticToolGate: boolean;
   dynamicSessionPolicy: boolean;
   correlatedResponseLifecycle: boolean;
   directSip: boolean;
@@ -34,6 +35,7 @@ const OPENAI_CAPABILITIES = Object.freeze({
   outputTranscription: true,
   governedSpeech: true,
   isolatedTextDecision: true,
+  semanticToolGate: true,
   dynamicSessionPolicy: true,
   correlatedResponseLifecycle: true,
   directSip: true,
@@ -50,6 +52,7 @@ const GEMINI_CAPABILITIES = Object.freeze({
   outputTranscription: false,
   governedSpeech: false,
   isolatedTextDecision: false,
+  semanticToolGate: false,
   dynamicSessionPolicy: false,
   correlatedResponseLifecycle: false,
   directSip: false,
