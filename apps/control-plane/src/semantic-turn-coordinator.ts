@@ -1,5 +1,6 @@
 import { isPublicRestaurantTool } from "./public-tool-authorization.js";
 import { realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import { semanticToolGatePortFor } from "./semantic-tool-gate-runtime.js";
 import { semanticTurnRuntimeFor } from "./semantic-turn-runtime.js";
 
 const INPUT_IGNORED = "restaurant_input_ignored";
@@ -9,10 +10,6 @@ export type SemanticToolAuthorityEvent = {
   call_id?: string;
   arguments?: string;
 };
-
-function updateToolChoice(session: object, toolChoice: "AUTO" | "REQUIRED"): void {
-  realtimeCommandPortFor(session as any).updateSessionPolicy({ toolChoice });
-}
 
 export function beginSemanticTurnFromAcousticEvidence(
   session: object,
@@ -49,7 +46,7 @@ export function armCallerDirectedSemanticAuthority(
 export function armSemanticGate(session: object, transcript: string, itemId: string | null): boolean {
   const runtime = semanticTurnRuntimeFor(session);
   if (!runtime.armGate(itemId)) return false;
-  updateToolChoice(session, "REQUIRED");
+  semanticToolGatePortFor(session as any).arm();
   const snapshot = runtime.snapshot();
   (session as any).diagnostics?.checkpoint?.("RESTAURANT_SEMANTIC_TOOL_GATE_ARMED_V29", {
     source: "completed_transcription",
@@ -57,18 +54,18 @@ export function armSemanticGate(session: object, transcript: string, itemId: str
     item_id: itemId,
     caller_directed_authority: Boolean(itemId && itemId === snapshot.directedItemId),
     owner: "semantic_turn_runtime",
-    provider_command_boundary: "realtime_command_port",
+    provider_capability_boundary: "semantic_tool_gate_port",
   });
   return true;
 }
 
 export function releaseSemanticGate(session: object, tool: string): boolean {
   if (!semanticTurnRuntimeFor(session).releaseGate()) return false;
-  updateToolChoice(session, "AUTO");
+  semanticToolGatePortFor(session as any).release();
   (session as any).diagnostics?.checkpoint?.("RESTAURANT_SEMANTIC_TOOL_GATE_RELEASED_V29", {
     tool,
     owner: "semantic_turn_runtime",
-    provider_command_boundary: "realtime_command_port",
+    provider_capability_boundary: "semantic_tool_gate_port",
   });
   return true;
 }
