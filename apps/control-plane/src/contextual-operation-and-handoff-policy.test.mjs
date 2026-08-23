@@ -28,11 +28,13 @@ test("semantic policy keeps multi-turn reservations in the reservation tool", as
 
   assert.match(bootstrap, /reserva multivuelta/);
   assert.match(bootstrap, /no la elijas por inferencia propia/);
-  assert.match(v29, /restaurant_conversation no es memoria operativa/);
-  assert.match(v29, /fecha exacta usa restaurant_reservation_create desde que exista esa intención/);
-  assert.match(v29, /no escales una reserva ordinaria por el tamaño del grupo/);
-  assert.match(v29, /pregunta, objeción o petición de explicación/);
-  assert.match(v29, /no conviertas por ello un turno comunicativo dirigido en silencio/);
+  assert.match(bootstrap, /restaurant_conversation no es memoria operativa/);
+  assert.match(bootstrap, /fecha exacta usa restaurant_reservation_create desde que exista esa intención/);
+  assert.match(bootstrap, /no escales una reserva ordinaria por el tamaño del grupo/);
+  assert.match(bootstrap, /pregunta, objeción o petición de explicación/);
+  assert.match(bootstrap, /no conviertas por ello un turno comunicativo dirigido en silencio/);
+  assert.match(v29, /directAgentInstructions/);
+  assert.match(v29, /instructions:\s*directAgentInstructions\(this as any\)/);
 });
 
 test("inclusive accommodation needs stay in restaurant scope and receive respectful human confirmation", async () => {
@@ -46,11 +48,12 @@ test("inclusive accommodation needs stay in restaurant scope and receive respect
   assert.match(bootstrap, /"CHILD_OR_INFANT_ACCOMMODATION"/);
   assert.match(bootstrap, /incluso antes de iniciar una reserva/);
   assert.match(bootstrap, /nunca están fuera de ámbito/);
-  assert.match(v29, /ATENCIÓN INCLUSIVA Y ADAPTACIONES/);
-  assert.match(v29, /aunque aún no haya una reserva activa/);
-  assert.match(v29, /No prometas ni niegues que una adaptación esté disponible/);
-  assert.match(v29, /nunca de la persona como un problema/);
-  assert.match(v29, /consentimiento explícito/);
+  assert.match(bootstrap, /ATENCIÓN INCLUSIVA Y ADAPTACIONES/);
+  assert.match(bootstrap, /aunque aún no haya una reserva activa/);
+  assert.match(bootstrap, /No prometas ni niegues que una adaptación esté disponible/);
+  assert.match(bootstrap, /nunca de la persona como un problema/);
+  assert.match(bootstrap, /consentimiento explícito/);
+  assert.match(v29, /directAgentInstructions/);
 
   const confirmationStart = v43.indexOf('"HUMAN_HANDOFF_CONFIRMATION_REQUIRED"');
   const confirmationEnd = v43.indexOf("} else if (!this.handoffClarificationIssuedV43)", confirmationStart);

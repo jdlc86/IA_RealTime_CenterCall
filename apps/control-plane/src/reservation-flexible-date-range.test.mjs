@@ -55,9 +55,10 @@ test("active policy routes flexible dates to range search without phrase catalog
   assert.match(bootstrap, /no elijas un día representativo/);
   assert.doesNotMatch(bootstrap, /required: \["party_size"\]/);
   assert.match(v26, /"restaurant_reservation_search"/);
-  assert.match(v29, /una hora aportada después se aplica como preferencia horaria dentro del rango/);
-  assert.match(v29, /aunque todavía falte el número de personas/);
-  assert.match(v29, /día de la semana, la fecha y la hora exactos/);
+  assert.match(bootstrap, /una hora aportada después se aplica como preferencia horaria dentro del rango/);
+  assert.match(bootstrap, /aunque todavía falte el número de personas/);
+  assert.match(bootstrap, /día de la semana, la fecha y la hora exactos/);
+  assert.match(v29, /directAgentInstructions/);
   assert.match(v31, /search_criteria/);
   assert.match(v31, /no materialices una fecha concreta/);
   assert.match(v31, /normalizeReservationSearchBoundary\(fromRaw/);

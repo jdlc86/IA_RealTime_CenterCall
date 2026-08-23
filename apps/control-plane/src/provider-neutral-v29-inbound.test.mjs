@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const source = readFileSync(new URL("./call-session-v29.ts", import.meta.url), "utf8");
+const bootstrapSource = readFileSync(new URL("./direct-agent-realtime-bootstrap.ts", import.meta.url), "utf8");
 
 test("v29 consumes inbound realtime facts only through provider-neutral events", () => {
   assert.match(source, /adaptRealtimeProviderEvents/);
@@ -28,15 +29,20 @@ test("v29 preserves lower compatibility dispatch after neutral event adaptation"
 });
 
 test("v29 delegates greetings and presence replies to contextual model interpretation", () => {
-  assert.match(source, /usa restaurant_conversation/);
-  assert.match(source, /No existe una lista cerrada de frases/);
+  assert.match(source, /directAgentInstructions/);
+  assert.match(source, /instructions:\s*directAgentInstructions\(this as any\)/);
+  assert.match(bootstrapSource, /usa restaurant_conversation/);
+  assert.match(bootstrapSource, /No existe una lista cerrada de frases/);
   assert.doesNotMatch(source, /isPureGreetingTurn/);
   assert.doesNotMatch(source, /isPresenceAcknowledgementTurn/);
   assert.doesNotMatch(source, /DETERMINISTIC_GREETING/);
   assert.doesNotMatch(source, /DETERMINISTIC_PRESENCE_ACKNOWLEDGEMENT/);
 });
 
-test("v29 installs the semantic confidentiality policy in the final active instructions", () => {
-  assert.match(source, /import \{ SEMANTIC_SECURITY_POLICY \}/);
-  assert.match(source, /instructions: `\$\{SEMANTIC_SECURITY_POLICY\}\\n\\n\$\{v29Instructions\(this as any\)\}\\n\\n\$\{SEMANTIC_RESERVATION_TIME_EVIDENCE_POLICY\}`/);
+test("v29 installs the canonical semantic confidentiality policy in the final active instructions", () => {
+  assert.match(source, /import\s*{\s*directAgentInstructions\s*}\s*from\s*["']\.\/direct-agent-realtime-bootstrap\.js["']/);
+  assert.match(source, /instructions:\s*directAgentInstructions\(this as any\)/);
+  assert.match(bootstrapSource, /SEMANTIC_SECURITY_POLICY/);
+  assert.match(bootstrapSource, /return `\$\{SEMANTIC_SECURITY_POLICY\}/);
+  assert.doesNotMatch(source, /function\s+v29Instructions\s*\(/);
 });
