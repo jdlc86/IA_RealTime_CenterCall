@@ -125,6 +125,10 @@ export class GeminiTelnyxSessionBridge {
     return this.session.snapshot().activeResponseId;
   }
 
+  activePlaybackResponseId(): string | null {
+    return this.media.activePlaybackResponseId();
+  }
+
   clearActivePlayback(responseId: string): string | null {
     const normalized = responseId.trim();
     const activeResponseId = this.session.snapshot().activeResponseId;
