@@ -1,5 +1,5 @@
 export type AuthoritativeCallerAudio = Readonly<{
-  encoding: "L16";
+  encoding: "PCM16_BE";
   sampleRateHz: 16_000;
   channels: 1;
   payloads: readonly string[];
@@ -32,8 +32,8 @@ const VERIFIED_TRANSCRIPTS = new WeakSet<object>();
 function normalizeRequest(request: AuthoritativeCallerTranscriptionRequest): AuthoritativeCallerTranscriptionRequest {
   const itemId = request.itemId.trim();
   if (!itemId) throw new Error("Authoritative caller transcription requires itemId");
-  if (request.audio.encoding !== "L16" || request.audio.sampleRateHz !== 16_000 || request.audio.channels !== 1) {
-    throw new Error("Authoritative caller transcription requires mono L16 at 16000 Hz");
+  if (request.audio.encoding !== "PCM16_BE" || request.audio.sampleRateHz !== 16_000 || request.audio.channels !== 1) {
+    throw new Error("Authoritative caller transcription requires mono PCM16 big-endian at 16000 Hz");
   }
   if (!Array.isArray(request.audio.payloads) || request.audio.payloads.length === 0) {
     throw new Error("Authoritative caller transcription requires buffered audio");
@@ -45,7 +45,7 @@ function normalizeRequest(request: AuthoritativeCallerTranscriptionRequest): Aut
   return Object.freeze({
     itemId,
     audio: Object.freeze({
-      encoding: "L16" as const,
+      encoding: "PCM16_BE" as const,
       sampleRateHz: 16_000 as const,
       channels: 1 as const,
       payloads: Object.freeze(payloads),
@@ -57,12 +57,16 @@ function normalizeRequest(request: AuthoritativeCallerTranscriptionRequest): Aut
  * Validate one external STT boundary without embedding a vendor in the core.
  *
  * The delegate is the only place allowed to contact an eventual transcription
- * provider. This wrapper enforces exact candidate identity, non-empty transcript
- * evidence, immutable audio input and one explicit PCM contract. The resulting
- * evidence carries the exact canonical audio that was submitted, so downstream
- * ownership can prove the transcript belongs to the buffered candidate rather
- * than merely sharing its item id. It uses no Gemini Live transcript chunks,
- * timers or model turn-completion signals.
+ * provider. The source audio contract is explicit raw signed PCM16 big-endian at
+ * 16 kHz mono because Telnyx L16 media uses network byte order. A concrete STT
+ * adapter must convert endianness if its provider expects another representation.
+ *
+ * This wrapper enforces exact candidate identity, non-empty transcript evidence,
+ * immutable audio input and exact audio provenance. The resulting evidence carries
+ * the canonical audio that was submitted, so downstream ownership can prove the
+ * transcript belongs to the buffered candidate rather than merely sharing its item
+ * id. It uses no Gemini Live transcript chunks, timers or model turn-completion
+ * signals.
  */
 export function createAuthoritativeCallerTranscriptionPort(
   delegate: AuthoritativeCallerTranscriptionDelegate,
