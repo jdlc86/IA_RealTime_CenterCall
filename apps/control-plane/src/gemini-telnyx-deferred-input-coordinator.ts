@@ -6,11 +6,11 @@ import { GeminiAuthorizedBargeInEffectRuntime } from "./gemini-authorized-barge-
 import { GeminiDeferredBargeInAcousticRuntime } from "./gemini-deferred-barge-in-acoustic-runtime.js";
 import { GeminiNormalCallerTurnCommitAdapter } from "./gemini-normal-caller-turn-commit-adapter.js";
 import type { GeminiTelnyxAcousticVadConfig } from "./gemini-telnyx-acoustic-vad.js";
+import type { TelnyxMediaCommandHost } from "./gemini-telnyx-media-bridge.js";
 import {
   GeminiTelnyxSessionBridge,
   type GeminiTelnyxGeminiObservation,
   type GeminiTelnyxSessionSnapshot,
-  type TelnyxMediaCommandHost,
 } from "./gemini-telnyx-session-bridge.js";
 
 export type GeminiDeferredInputDecision = "INTERRUPT" | "IGNORE";
