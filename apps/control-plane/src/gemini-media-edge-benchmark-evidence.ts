@@ -36,6 +36,14 @@ function required(value: unknown, field: string): string {
   return value.trim();
 }
 
+function workloadFingerprint(value: unknown): string {
+  const normalized = required(value, "benchmark workloadFingerprint").toLowerCase();
+  if (!/^sha256:[0-9a-f]{64}$/.test(normalized)) {
+    throw new Error("benchmark workloadFingerprint must be sha256:<64 lowercase hex characters>");
+  }
+  return normalized;
+}
+
 function finiteNonNegative(value: unknown, field: string): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
     throw new Error(`${field} must be a finite non-negative number`);
@@ -76,19 +84,30 @@ export function validateGeminiMediaEdgeBenchmarkEvidence(
   if (evidence.schemaVersion !== 1) throw new Error("Unsupported Gemini media edge benchmark schema version");
   const startedAt = required(evidence.startedAt, "benchmark startedAt");
   if (!Number.isFinite(Date.parse(startedAt))) throw new Error("benchmark startedAt must be an ISO-compatible timestamp");
+  const completedCalls = nonNegativeInteger(evidence.completedCalls, "benchmark completedCalls");
+  const failedCalls = nonNegativeInteger(evidence.failedCalls, "benchmark failedCalls");
+  if (completedCalls + failedCalls === 0) throw new Error("benchmark must contain at least one attempted call");
+  const concurrency = positiveInteger(evidence.concurrency, "benchmark concurrency");
+  const stableConcurrentConnections = nonNegativeInteger(
+    evidence.stableConcurrentConnections,
+    "benchmark stableConcurrentConnections",
+  );
+  if (stableConcurrentConnections > concurrency) {
+    throw new Error("benchmark stableConcurrentConnections cannot exceed configured concurrency");
+  }
 
   return Object.freeze({
     schemaVersion: 1 as const,
     candidateId: required(evidence.candidateId, "benchmark candidateId"),
     candidateRegion: required(evidence.candidateRegion, "benchmark candidateRegion"),
     referenceRegion: required(evidence.referenceRegion, "benchmark referenceRegion"),
-    workloadFingerprint: required(evidence.workloadFingerprint, "benchmark workloadFingerprint"),
+    workloadFingerprint: workloadFingerprint(evidence.workloadFingerprint),
     runId: required(evidence.runId, "benchmark runId"),
     startedAt,
     durationSeconds: positiveInteger(evidence.durationSeconds, "benchmark durationSeconds"),
-    concurrency: positiveInteger(evidence.concurrency, "benchmark concurrency"),
-    completedCalls: nonNegativeInteger(evidence.completedCalls, "benchmark completedCalls"),
-    failedCalls: nonNegativeInteger(evidence.failedCalls, "benchmark failedCalls"),
+    concurrency,
+    completedCalls,
+    failedCalls,
     telnyxToGemini: latency(evidence.telnyxToGemini, "benchmark telnyxToGemini"),
     geminiToTelnyx: latency(evidence.geminiToTelnyx, "benchmark geminiToTelnyx"),
     telnyxSocketEstablishment: latency(evidence.telnyxSocketEstablishment, "benchmark telnyxSocketEstablishment"),
@@ -98,7 +117,7 @@ export function validateGeminiMediaEdgeBenchmarkEvidence(
     droppedFrames: nonNegativeInteger(evidence.droppedFrames, "benchmark droppedFrames"),
     peakCpuPercent: finiteNonNegative(evidence.peakCpuPercent, "benchmark peakCpuPercent"),
     peakMemoryMiB: finiteNonNegative(evidence.peakMemoryMiB, "benchmark peakMemoryMiB"),
-    stableConcurrentConnections: nonNegativeInteger(evidence.stableConcurrentConnections, "benchmark stableConcurrentConnections"),
+    stableConcurrentConnections,
     slowPeerClosures: nonNegativeInteger(evidence.slowPeerClosures, "benchmark slowPeerClosures"),
     orphanedSessions: nonNegativeInteger(evidence.orphanedSessions, "benchmark orphanedSessions"),
     estimatedCostPer1000CallMinutesUsd: finiteNonNegative(
