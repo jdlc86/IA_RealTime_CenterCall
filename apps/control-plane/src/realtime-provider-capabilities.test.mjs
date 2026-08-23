@@ -24,7 +24,8 @@ const plannedCapabilities = [
   "governedSpeech",
   "isolatedTextDecision",
   "semanticToolGate",
-  "dynamicSessionPolicy",
+  "runtimeInstructionPolicyUpdate",
+  "runtimeToolCatalogUpdate",
   "correlatedResponseLifecycle",
   "directSip",
 ];
@@ -33,6 +34,7 @@ test("G1/G2 declares every planned provider capability explicitly", () => {
   for (const capability of plannedCapabilities) {
     assert.match(source, new RegExp(`\\b${capability}\\s*:`));
   }
+  assert.doesNotMatch(source, /\bdynamicSessionPolicy\s*:/);
 });
 
 test("OpenAI capabilities describe product-validated semantics rather than vendor marketing", () => {
@@ -41,7 +43,8 @@ test("OpenAI capabilities describe product-validated semantics rather than vendo
   assert.equal(openai.governedSpeech, true);
   assert.equal(openai.isolatedTextDecision, true);
   assert.equal(openai.semanticToolGate, true);
-  assert.equal(openai.dynamicSessionPolicy, true);
+  assert.equal(openai.runtimeInstructionPolicyUpdate, true);
+  assert.equal(openai.runtimeToolCatalogUpdate, true);
   assert.equal(openai.correlatedResponseLifecycle, true);
   assert.equal(openai.toolCallCancellation, false);
 });
@@ -66,13 +69,21 @@ test("traffic readiness names product invariants instead of transport topology",
     "governedSpeech",
     "isolatedTextDecision",
     "semanticToolGate",
-    "dynamicSessionPolicy",
+    "runtimeInstructionPolicyUpdate",
+    "runtimeToolCatalogUpdate",
     "correlatedResponseLifecycle",
   ]) {
     assert.equal(required.has(capability), true, `${capability} is required for live traffic`);
   }
   assert.equal(required.has("directSip"), false, "a media bridge may replace direct SIP");
   assert.equal(required.has("toolCallCancellation"), false, "tool cancellation is optional evidence, not rollback authority");
+});
+
+test("session readiness does not collapse instruction and tool-catalog mutation into one vendor-shaped flag", () => {
+  const required = new Set(REALTIME_TRAFFIC_REQUIRED_CAPABILITIES);
+  assert.equal(required.has("runtimeInstructionPolicyUpdate"), true);
+  assert.equal(required.has("runtimeToolCatalogUpdate"), true);
+  assert.equal(required.has("dynamicSessionPolicy"), false);
 });
 
 test("every enabled realtime provider is already traffic-ready", () => {
@@ -91,7 +102,7 @@ test("OpenAI is traffic-ready under the current validated baseline", () => {
 test("Gemini traffic readiness fails closed with the complete missing capability set", () => {
   assert.throws(
     () => requireRealtimeProviderTrafficReadiness("GEMINI"),
-    /lacks required capabilities: audioInput, audioOutput, vad, interruption, functionCalling, inputTranscription, outputTranscription, governedSpeech, isolatedTextDecision, semanticToolGate, dynamicSessionPolicy, correlatedResponseLifecycle/,
+    /lacks required capabilities: audioInput, audioOutput, vad, interruption, functionCalling, inputTranscription, outputTranscription, governedSpeech, isolatedTextDecision, semanticToolGate, runtimeInstructionPolicyUpdate, runtimeToolCatalogUpdate, correlatedResponseLifecycle/,
   );
 });
 
