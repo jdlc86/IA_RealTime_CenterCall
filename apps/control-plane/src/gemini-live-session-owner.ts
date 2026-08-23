@@ -142,9 +142,12 @@ export class GeminiLiveSessionOwner {
       this.requireReadyForServerTurn("toolCall");
       this.ensureResponseStarted(events, "tool_call");
       for (const call of calls) {
-        if (call.id) this.pendingToolCalls.add(call.id);
+        if (!call.id) {
+          throw new Error("Gemini Live function call is missing required correlation id");
+        }
+        this.pendingToolCalls.add(call.id);
       }
-      if (this.pendingToolCalls.size > 0) this.state = "TOOL_WAIT";
+      this.state = "TOOL_WAIT";
     }
 
     if (serverContent?.modelTurn !== undefined || serverContent?.generationComplete === true) {
@@ -175,16 +178,23 @@ export class GeminiLiveSessionOwner {
 
     if (serverContent?.turnComplete === true) {
       this.requireReadyForServerTurn("turnComplete");
-      if (this.activeResponseId) {
-        events.push({
-          type: "ASSISTANT_RESPONSE_COMPLETED",
-          kind: "NORMAL",
-          responseId: this.activeResponseId,
-          status: "completed",
-        });
-        this.activeResponseId = null;
+      if (this.pendingToolCalls.size > 0) {
+        // A model turn cannot release response ownership while externally
+        // requested business work is unresolved. The tool result/cancellation
+        // must settle that protocol wait first.
+        this.state = "TOOL_WAIT";
+      } else {
+        if (this.activeResponseId) {
+          events.push({
+            type: "ASSISTANT_RESPONSE_COMPLETED",
+            kind: "NORMAL",
+            responseId: this.activeResponseId,
+            status: "completed",
+          });
+          this.activeResponseId = null;
+        }
+        this.state = "READY";
       }
-      this.state = this.pendingToolCalls.size > 0 ? "TOOL_WAIT" : "READY";
     } else if (this.state === "INTERRUPTED" && this.pendingToolCalls.size === 0 && cancelledToolCallIds.length > 0) {
       // Cancellation evidence closes only the protocol wait. It does not roll
       // back business effects and it does not manufacture a new model turn.
