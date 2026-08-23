@@ -3,9 +3,9 @@ import type { RealtimeProviderName } from "./realtime-provider-types.js";
 /**
  * Explicit provider feature contract.
  *
- * Capabilities describe features implemented and validated by this product, not
- * merely features advertised by a vendor. A registered provider can therefore
- * expose false capabilities while its adapter/media gates are still incomplete.
+ * Capabilities describe semantics implemented and validated by this product,
+ * not merely features advertised by a vendor. A registered provider can expose
+ * false capabilities while adapter/media/lifecycle gates are still incomplete.
  */
 export type ProviderCapabilities = Readonly<{
   audioInput: boolean;
@@ -13,8 +13,13 @@ export type ProviderCapabilities = Readonly<{
   vad: boolean;
   interruption: boolean;
   functionCalling: boolean;
+  toolCallCancellation: boolean;
   inputTranscription: boolean;
   outputTranscription: boolean;
+  governedSpeech: boolean;
+  isolatedTextDecision: boolean;
+  dynamicSessionPolicy: boolean;
+  correlatedResponseLifecycle: boolean;
   directSip: boolean;
 }>;
 
@@ -24,8 +29,13 @@ const OPENAI_CAPABILITIES = Object.freeze({
   vad: true,
   interruption: true,
   functionCalling: true,
+  toolCallCancellation: false,
   inputTranscription: true,
   outputTranscription: true,
+  governedSpeech: true,
+  isolatedTextDecision: true,
+  dynamicSessionPolicy: true,
+  correlatedResponseLifecycle: true,
   directSip: true,
 } satisfies ProviderCapabilities);
 
@@ -35,8 +45,13 @@ const GEMINI_CAPABILITIES = Object.freeze({
   vad: false,
   interruption: false,
   functionCalling: false,
+  toolCallCancellation: false,
   inputTranscription: false,
   outputTranscription: false,
+  governedSpeech: false,
+  isolatedTextDecision: false,
+  dynamicSessionPolicy: false,
+  correlatedResponseLifecycle: false,
   directSip: false,
 } satisfies ProviderCapabilities);
 
