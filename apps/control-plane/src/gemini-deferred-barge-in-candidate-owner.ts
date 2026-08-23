@@ -1,4 +1,8 @@
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
+import {
+  requireAuthoritativeCallerTranscriptEvidence,
+  type AuthoritativeCallerTranscriptionRequest,
+} from "./authoritative-caller-transcription-port.js";
 
 export type GeminiDeferredBargeInCandidate = Readonly<{
   itemId: string;
@@ -46,10 +50,12 @@ export function requireConfirmedGeminiDeferredBargeInCandidate(
  * and cannot interrupt the active model response before semantic authorization.
  *
  * A separate authoritative transcription boundary may complete the candidate.
- * Only after the core confirms interruption may the returned immutable candidate
- * be committed to a provider-specific interrupting activity transport. Ignored
- * candidates are discarded without provider side effects. No timers or arrival
- * windows are used.
+ * The STT request is minted from this owner's exact buffered L16 payloads and the
+ * returned evidence must carry those same payloads before transcript completion is
+ * accepted. Only after the core confirms interruption may the returned immutable
+ * candidate be committed to a provider-specific interrupting activity transport.
+ * Ignored candidates are discarded without provider side effects. No timers or
+ * arrival windows are used.
  */
 export class GeminiDeferredBargeInCandidateOwner {
   private sequence = 0;
@@ -101,20 +107,47 @@ export class GeminiDeferredBargeInCandidateOwner {
     return this.snapshot();
   }
 
-  completeCandidate(transcript: string): readonly RealtimeProviderEvent[] {
+  transcriptionRequest(): AuthoritativeCallerTranscriptionRequest {
     const active = this.requireActive();
     if (active.transcript !== null) {
       throw new Error(`Gemini deferred candidate ${active.itemId} is already completed`);
     }
     if (active.mediaPayloads.length === 0) {
-      throw new Error(`Gemini deferred candidate ${active.itemId} cannot complete without buffered audio`);
+      throw new Error(`Gemini deferred candidate ${active.itemId} cannot transcribe without buffered audio`);
     }
-    const normalized = transcript.replace(/\s+/g, " ").trim();
-    if (!normalized) throw new Error("Gemini deferred candidate requires authoritative transcript text");
-    active.transcript = normalized;
+    return Object.freeze({
+      itemId: active.itemId,
+      audio: Object.freeze({
+        encoding: "L16" as const,
+        sampleRateHz: 16_000 as const,
+        channels: 1 as const,
+        payloads: Object.freeze([...active.mediaPayloads]),
+      }),
+    });
+  }
+
+  completeCandidate(value: unknown): readonly RealtimeProviderEvent[] {
+    const active = this.requireActive();
+    if (active.transcript !== null) {
+      throw new Error(`Gemini deferred candidate ${active.itemId} is already completed`);
+    }
+    const evidence = requireAuthoritativeCallerTranscriptEvidence(value);
+    if (evidence.itemId !== active.itemId) {
+      throw new Error(`Gemini deferred candidate transcript identity mismatch: expected ${active.itemId}`);
+    }
+    if (
+      evidence.audio.encoding !== "L16"
+      || evidence.audio.sampleRateHz !== 16_000
+      || evidence.audio.channels !== 1
+      || evidence.audio.payloads.length !== active.mediaPayloads.length
+      || evidence.audio.payloads.some((payload, index) => payload !== active.mediaPayloads[index])
+    ) {
+      throw new Error(`Gemini deferred candidate transcript audio mismatch: ${active.itemId}`);
+    }
+    active.transcript = evidence.transcript;
     return Object.freeze([
       { type: "CALLER_SPEECH_STOPPED" } as const,
-      { type: "CALLER_TRANSCRIPT_COMPLETED", transcript: normalized, itemId: active.itemId } as const,
+      { type: "CALLER_TRANSCRIPT_COMPLETED", transcript: evidence.transcript, itemId: active.itemId } as const,
     ]);
   }
 
