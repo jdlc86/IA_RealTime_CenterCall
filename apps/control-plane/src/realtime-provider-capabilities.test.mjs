@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
+import {
+  realtimeProviderCapabilities,
+  requireRealtimeProviderCapabilities,
+} from "../.test-dist/realtime-provider-capabilities.js";
 
 const source = readFileSync(new URL("./realtime-provider-capabilities.ts", import.meta.url), "utf8");
 const runtime = readFileSync(new URL("./realtime-provider-runtime.ts", import.meta.url), "utf8");
 
-test("Gate C declares every planned provider capability explicitly", () => {
+test("G1 declares every planned provider capability explicitly", () => {
   for (const capability of [
     "audioInput",
     "audioOutput",
@@ -20,10 +24,20 @@ test("Gate C declares every planned provider capability explicitly", () => {
   }
 });
 
-test("OpenAI current architecture is represented explicitly without registering Gemini", () => {
-  assert.match(source, /OPENAI_CAPABILITIES/);
-  assert.match(source, /directSip:\s*true/);
-  assert.doesNotMatch(source, /GEMINI\s*:/);
+test("G1 registers both providers without claiming unimplemented Gemini parity", () => {
+  const openai = realtimeProviderCapabilities("OPENAI");
+  const gemini = realtimeProviderCapabilities("GEMINI");
+  assert.equal(openai.directSip, true);
+  assert.deepEqual(gemini, {
+    audioInput: false,
+    audioOutput: false,
+    vad: false,
+    interruption: false,
+    functionCalling: false,
+    inputTranscription: false,
+    outputTranscription: false,
+    directSip: false,
+  });
 });
 
 test("runtime binding requires a capability registration", () => {
@@ -31,7 +45,10 @@ test("runtime binding requires a capability registration", () => {
   assert.match(runtime, /export function realtimeCapabilitiesFor/);
 });
 
-test("capability lookup fails closed when a registration is missing", () => {
+test("capability requirements fail closed until Gemini gates are implemented", () => {
+  assert.throws(
+    () => requireRealtimeProviderCapabilities("GEMINI", ["audioInput", "functionCalling"]),
+    /lacks required capabilities: audioInput, functionCalling/,
+  );
   assert.match(source, /if \(!capabilities\) throw new Error/);
-  assert.match(source, /lacks required capabilities/);
 });
