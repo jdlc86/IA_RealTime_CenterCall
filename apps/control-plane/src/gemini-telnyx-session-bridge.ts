@@ -9,10 +9,15 @@ import {
 import type { GeminiLiveSessionSnapshot } from "./gemini-live-session-owner.js";
 import {
   GeminiTelnyxMediaBridge,
+  type GeminiTelnyxInboundAudioMode,
   type GeminiTelnyxMediaBridgeSnapshot,
   type GeminiTelnyxInboundObservation,
   type TelnyxMediaCommandHost,
 } from "./gemini-telnyx-media-bridge.js";
+
+export type GeminiTelnyxSessionBridgeOptions = Readonly<{
+  inboundAudioMode?: GeminiTelnyxInboundAudioMode;
+}>;
 
 export type GeminiTelnyxSessionSnapshot = Readonly<{
   session: GeminiLiveSessionSnapshot;
@@ -76,6 +81,10 @@ function orderComposedEvents(
  * Normal generation completion requests a Telnyx drain mark after all audio in
  * the same provider message has been written. Interruptions deliberately do not
  * clear playback here; the neutral ResponseCoordinator remains that authority.
+ *
+ * inboundAudioMode is immutable for the bridge lifetime. DEFER prevents caller
+ * media from reaching Gemini so a higher edge composition can own VAD/STT and
+ * semantic barge-in authorization before committing any caller activity.
  */
 export class GeminiTelnyxSessionBridge {
   private readonly session: GeminiLiveSessionRuntime;
@@ -85,9 +94,14 @@ export class GeminiTelnyxSessionBridge {
     geminiHost: GeminiLiveCommandHost,
     telnyxHost: TelnyxMediaCommandHost,
     initialSetup: GeminiLiveInitialSetup,
+    options: GeminiTelnyxSessionBridgeOptions = {},
   ) {
     this.session = new GeminiLiveSessionRuntime(geminiHost, initialSetup);
-    this.media = new GeminiTelnyxMediaBridge(geminiHost, telnyxHost);
+    this.media = new GeminiTelnyxMediaBridge(
+      geminiHost,
+      telnyxHost,
+      options.inboundAudioMode ?? "FORWARD",
+    );
   }
 
   get commandPort(): RealtimeProviderCommandPort {
