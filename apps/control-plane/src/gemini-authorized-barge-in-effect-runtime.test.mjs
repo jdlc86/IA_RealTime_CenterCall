@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
+import { createAuthoritativeCallerTranscriptionPort } from "../.test-dist/authoritative-caller-transcription-port.js";
 import { GeminiAuthorizedBargeInCommitAdapter } from "../.test-dist/gemini-authorized-barge-in-commit-adapter.js";
 import { GeminiAuthorizedBargeInEffectRuntime } from "../.test-dist/gemini-authorized-barge-in-effect-runtime.js";
 import { GeminiDeferredBargeInCandidateOwner } from "../.test-dist/gemini-deferred-barge-in-candidate-owner.js";
@@ -46,11 +47,16 @@ function interruptingSetup() {
   };
 }
 
-function confirmedCandidate() {
+async function confirmedCandidate() {
   const owner = new GeminiDeferredBargeInCandidateOwner();
   const started = owner.beginCandidate();
   owner.bufferTelnyxMedia(Buffer.from([0x00, 0x01]).toString("base64"));
-  owner.completeCandidate("espera un momento");
+  const port = createAuthoritativeCallerTranscriptionPort({
+    async transcribe(input) {
+      return { itemId: input.itemId, transcript: "espera un momento" };
+    },
+  });
+  owner.completeCandidate(await port.transcribe(owner.transcriptionRequest()));
   return owner.confirmInterruption(started.itemId);
 }
 
@@ -87,9 +93,9 @@ test("effect runtime cannot arm from shape-compatible or provider evidence", () 
   assert.doesNotMatch(source, /setTimeout\s*\(|\bsleep\s*\(/);
 });
 
-test("authorized effect order is arm then cancel_response then clear_playback", () => {
+test("authorized effect order is arm then cancel_response then clear_playback", async () => {
   const { runtime, bridge, gemini, telnyx } = readyRuntime();
-  const candidate = confirmedCandidate();
+  const candidate = await confirmedCandidate();
   const geminiBefore = gemini.sent.length;
   const telnyxBefore = telnyx.sent.length;
 
@@ -143,9 +149,9 @@ test("authorized effect order is arm then cancel_response then clear_playback", 
   ]);
 });
 
-test("cancel_response must match the session-owned active response identity", () => {
+test("cancel_response must match the session-owned active response identity", async () => {
   const { runtime, gemini, telnyx } = readyRuntime();
-  runtime.arm(confirmedCandidate());
+  runtime.arm(await confirmedCandidate());
   const geminiBefore = gemini.sent.length;
   const telnyxBefore = telnyx.sent.length;
 
@@ -165,12 +171,12 @@ test("cancel_response must match the session-owned active response identity", ()
   assert.throws(() => runtime.cancelResponse("gemini-response-1"), /runtime is failed/);
 });
 
-test("one in-flight authorized interruption cannot be re-armed or double-cancelled", () => {
+test("one in-flight authorized interruption cannot be re-armed or double-cancelled", async () => {
   const { runtime } = readyRuntime();
-  const first = confirmedCandidate();
+  const first = await confirmedCandidate();
   runtime.arm(first);
-  assert.throws(() => runtime.arm(confirmedCandidate()), /already owns an in-flight interruption/);
+  assert.throws(() => runtime.arm({}), /already owns an in-flight interruption/);
   runtime.cancelResponse("gemini-response-1");
-  assert.throws(() => runtime.arm(confirmedCandidate()), /already owns an in-flight interruption/);
+  assert.throws(() => runtime.arm({}), /already owns an in-flight interruption/);
   assert.throws(() => runtime.cancelResponse("gemini-response-1"), /requires an armed authorized candidate/);
 });
