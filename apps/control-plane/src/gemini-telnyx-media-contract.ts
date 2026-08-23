@@ -1,5 +1,8 @@
+import type { Pcm16Resampler } from "./pcm16-stream-resampler.js";
+
 export const GEMINI_INPUT_AUDIO_MIME = "audio/pcm;rate=16000" as const;
 export const GEMINI_OUTPUT_SAMPLE_RATE = 24_000 as const;
+export const TELNYX_GEMINI_STREAM_SAMPLE_RATE = 16_000 as const;
 export const TELNYX_GEMINI_STREAM_CODEC = "L16" as const;
 
 function decodeBase64(value: string): Uint8Array {
@@ -15,10 +18,24 @@ function encodeBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+function littleEndianBytesToPcm16(bytes: Uint8Array): Int16Array {
+  if (bytes.byteLength % 2 !== 0) throw new Error("PCM16 payload must contain complete 16-bit samples");
+  const samples = new Int16Array(bytes.byteLength / 2);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let i = 0; i < samples.length; i += 1) samples[i] = view.getInt16(i * 2, true);
+  return samples;
+}
+
+function pcm16ToLittleEndianBytes(samples: Int16Array): Uint8Array {
+  const bytes = new Uint8Array(samples.length * 2);
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i < samples.length; i += 1) view.setInt16(i * 2, samples[i], true);
+  return bytes;
+}
+
 /**
  * RTP L16 is network byte order (big-endian); Gemini Live PCM16 is little-endian.
- * The sample rate and sample values are unchanged, so this is an endian transform,
- * not a resampler or transcoder.
+ * This transform changes only byte order and never sample timing.
  */
 export function swapPcm16Endianness(bytes: Uint8Array): Uint8Array {
   if (bytes.byteLength % 2 !== 0) throw new Error("PCM16 payload must contain complete 16-bit samples");
@@ -39,7 +56,7 @@ export function buildGeminiTelnyxStreamingStart(streamUrl: string): Readonly<Rec
     stream_codec: TELNYX_GEMINI_STREAM_CODEC,
     stream_bidirectional_mode: "rtp",
     stream_bidirectional_codec: TELNYX_GEMINI_STREAM_CODEC,
-    stream_bidirectional_sampling_rate: GEMINI_OUTPUT_SAMPLE_RATE,
+    stream_bidirectional_sampling_rate: TELNYX_GEMINI_STREAM_SAMPLE_RATE,
   });
 }
 
@@ -55,8 +72,20 @@ export function telnyxL16PayloadToGeminiRealtimeInput(payloadBase64: string): Re
   });
 }
 
-export function geminiPcmPayloadToTelnyxMedia(payloadBase64: string): Readonly<Record<string, unknown>> {
-  const networkOrder = swapPcm16Endianness(decodeBase64(payloadBase64));
+/**
+ * Gemini output is PCM16 little-endian at 24 kHz. Telnyx L16 is 16 kHz network
+ * byte order, so provider output must pass through one session-owned resampler
+ * before endian conversion. The resampler is injected to keep state ownership out
+ * of this stateless framing module.
+ */
+export function geminiPcm24kPayloadToTelnyxMedia(
+  payloadBase64: string,
+  resampler: Pcm16Resampler,
+): Readonly<Record<string, unknown>> | null {
+  const source = littleEndianBytesToPcm16(decodeBase64(payloadBase64));
+  const resampled = resampler.push(source);
+  if (resampled.length === 0) return null;
+  const networkOrder = swapPcm16Endianness(pcm16ToLittleEndianBytes(resampled));
   return Object.freeze({
     event: "media",
     media: { payload: encodeBase64(networkOrder) },
