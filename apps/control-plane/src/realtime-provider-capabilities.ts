@@ -63,6 +63,28 @@ const CAPABILITIES_BY_PROVIDER: Readonly<Record<RealtimeProviderName, ProviderCa
   GEMINI: GEMINI_CAPABILITIES,
 });
 
+/**
+ * Product-level invariants required before a provider may carry live call traffic.
+ *
+ * directSip is intentionally absent: a provider may satisfy media transport through
+ * a bridge. toolCallCancellation is also optional because the core can safely treat
+ * cancellation as evidence while preserving ToolGateway ownership.
+ */
+export const REALTIME_TRAFFIC_REQUIRED_CAPABILITIES = Object.freeze([
+  "audioInput",
+  "audioOutput",
+  "vad",
+  "interruption",
+  "functionCalling",
+  "inputTranscription",
+  "outputTranscription",
+  "governedSpeech",
+  "isolatedTextDecision",
+  "semanticToolGate",
+  "dynamicSessionPolicy",
+  "correlatedResponseLifecycle",
+] as const satisfies readonly (keyof ProviderCapabilities)[]);
+
 export function realtimeProviderCapabilities(provider: RealtimeProviderName): ProviderCapabilities {
   const capabilities = CAPABILITIES_BY_PROVIDER[provider];
   if (!capabilities) throw new Error(`Realtime provider capabilities are not registered: ${String(provider)}`);
@@ -79,4 +101,8 @@ export function requireRealtimeProviderCapabilities(
     throw new Error(`Realtime provider ${provider} lacks required capabilities: ${missing.join(", ")}`);
   }
   return capabilities;
+}
+
+export function requireRealtimeProviderTrafficReadiness(provider: RealtimeProviderName): ProviderCapabilities {
+  return requireRealtimeProviderCapabilities(provider, REALTIME_TRAFFIC_REQUIRED_CAPABILITIES);
 }
