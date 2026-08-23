@@ -1,10 +1,29 @@
 import { TENANT_KV_PREFIX, type TenantConfiguration, type TenantKvNamespace } from "./tenant-kv.js";
+import {
+  DEFAULT_REALTIME_PROVIDER,
+  ENABLED_REALTIME_PROVIDERS,
+  REGISTERED_REALTIME_PROVIDERS,
+  isEnabledRealtimeProvider,
+  isRegisteredRealtimeProvider,
+  parseRealtimeProviderName,
+  requireEnabledRealtimeProvider,
+  type EnabledRealtimeProviderName,
+  type RealtimeProviderName,
+} from "./realtime-provider-types.js";
 
-export const REGISTERED_REALTIME_PROVIDERS = ["OPENAI"] as const;
-export type RealtimeProviderName = (typeof REGISTERED_REALTIME_PROVIDERS)[number];
-export const DEFAULT_REALTIME_PROVIDER: RealtimeProviderName = "OPENAI";
+export {
+  DEFAULT_REALTIME_PROVIDER,
+  ENABLED_REALTIME_PROVIDERS,
+  REGISTERED_REALTIME_PROVIDERS,
+  isEnabledRealtimeProvider,
+  isRegisteredRealtimeProvider,
+  parseRealtimeProviderName,
+  requireEnabledRealtimeProvider,
+  type EnabledRealtimeProviderName,
+  type RealtimeProviderName,
+};
 
-export type RealtimeProviderSelectionSource = "DEFAULT" | "KV_OVERRIDE";
+export type RealtimeProviderSelectionSource = "DEFAULT" | "TENANT_CONFIG" | "KV_OVERRIDE";
 export type RealtimeProviderSelection = {
   tenantId: string;
   provider: RealtimeProviderName;
@@ -18,26 +37,22 @@ export function realtimeProviderOverrideKey(tenantId: string): string {
   return `${TENANT_KV_PREFIX}:runtime:realtime-provider:${normalized}`;
 }
 
-export function isRegisteredRealtimeProvider(value: unknown): value is RealtimeProviderName {
-  return typeof value === "string"
-    && (REGISTERED_REALTIME_PROVIDERS as readonly string[]).includes(value.trim().toUpperCase());
-}
-
-function parseRequestedProvider(value: string, tenantId: string): RealtimeProviderName {
-  const normalized = value.trim().toUpperCase();
-  if (!isRegisteredRealtimeProvider(normalized)) {
+function parseRequestedProvider(value: unknown, tenantId: string): RealtimeProviderName {
+  try {
+    return parseRealtimeProviderName(value, "realtime provider");
+  } catch {
+    const normalized = typeof value === "string" ? value.trim().toUpperCase() : String(value);
     throw new Error(`Unsupported realtime provider for tenant ${tenantId}: ${normalized || "<empty>"}`);
   }
-  return normalized;
 }
 
 /**
  * Single provider-selection authority for a resolved tenant.
  *
- * Gate A deliberately keeps OPENAI as the only registered provider. The tenant
- * configuration establishes the resolved tenant identity; an optional operational
- * KV override may select a registered provider without leaking provider branches
- * into CallSession. Unknown providers fail closed here.
+ * Precedence is operational KV override > tenant configuration > OPENAI default.
+ * The selector may resolve a registered provider that is not yet traffic-enabled;
+ * the composition/runtime boundary is responsible for failing closed before a call
+ * can enter an unavailable provider implementation.
  */
 export async function selectRealtimeProvider(
   tenantConfiguration: TenantConfiguration,
@@ -53,6 +68,15 @@ export async function selectRealtimeProvider(
       tenantId,
       provider: parseRequestedProvider(rawOverride, tenantId),
       source: "KV_OVERRIDE",
+      overrideKey,
+    };
+  }
+
+  if (tenantConfiguration.realtime.provider) {
+    return {
+      tenantId,
+      provider: parseRequestedProvider(tenantConfiguration.realtime.provider, tenantId),
+      source: "TENANT_CONFIG",
       overrideKey,
     };
   }
