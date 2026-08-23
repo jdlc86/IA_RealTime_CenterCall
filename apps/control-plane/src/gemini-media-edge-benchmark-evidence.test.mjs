@@ -5,13 +5,16 @@ import {
   validateGeminiMediaEdgeBenchmarkEvidence,
 } from "../.test-dist/gemini-media-edge-benchmark-evidence.js";
 
+const WORKLOAD_SHA = `sha256:${"a".repeat(64)}`;
+const OTHER_WORKLOAD_SHA = `sha256:${"b".repeat(64)}`;
+
 function evidence(overrides = {}) {
   return {
     schemaVersion: 1,
     candidateId: "candidate-a",
     candidateRegion: "provider-region-a",
     referenceRegion: "eu-west-reference",
-    workloadFingerprint: "sha256:fixture-v1",
+    workloadFingerprint: WORKLOAD_SHA,
     runId: "run-a",
     startedAt: "2026-08-23T16:00:00Z",
     durationSeconds: 1800,
@@ -38,7 +41,26 @@ function evidence(overrides = {}) {
 test("one benchmark result validates without inventing a winner", () => {
   const validated = validateGeminiMediaEdgeBenchmarkEvidence(evidence());
   assert.equal(validated.candidateId, "candidate-a");
+  assert.equal(validated.workloadFingerprint, WORKLOAD_SHA);
   assert.deepEqual(validated.telnyxToGemini, { p50Ms: 4, p95Ms: 8, p99Ms: 12 });
+});
+
+test("workload identity must be a SHA-256 fingerprint, not a human label", () => {
+  assert.throws(
+    () => validateGeminiMediaEdgeBenchmarkEvidence(evidence({ workloadFingerprint: "fixture-v1" })),
+    /must be sha256/,
+  );
+});
+
+test("benchmark must contain attempted calls and stable concurrency cannot exceed configured load", () => {
+  assert.throws(
+    () => validateGeminiMediaEdgeBenchmarkEvidence(evidence({ completedCalls: 0, failedCalls: 0 })),
+    /at least one attempted call/,
+  );
+  assert.throws(
+    () => validateGeminiMediaEdgeBenchmarkEvidence(evidence({ stableConcurrentConnections: 26 })),
+    /cannot exceed configured concurrency/,
+  );
 });
 
 test("percentiles must be monotonic and finite", () => {
@@ -71,7 +93,7 @@ test("comparison requires at least two distinct candidates", () => {
 test("comparison rejects workload, region, duration and concurrency drift", () => {
   const baseline = evidence();
   const variants = [
-    [evidence({ candidateId: "candidate-b", workloadFingerprint: "sha256:other" }), /workloads are not comparable/],
+    [evidence({ candidateId: "candidate-b", workloadFingerprint: OTHER_WORKLOAD_SHA }), /workloads are not comparable/],
     [evidence({ candidateId: "candidate-b", referenceRegion: "us-reference" }), /reference regions are not comparable/],
     [evidence({ candidateId: "candidate-b", durationSeconds: 900 }), /durations are not comparable/],
     [evidence({ candidateId: "candidate-b", concurrency: 50 }), /concurrency is not comparable/],
@@ -94,5 +116,5 @@ test("provider-specific region names may differ when reference region and worklo
 
   assert.equal(comparable.candidates.length, 2);
   assert.equal(comparable.referenceRegion, "eu-west-reference");
-  assert.equal(comparable.workloadFingerprint, "sha256:fixture-v1");
+  assert.equal(comparable.workloadFingerprint, WORKLOAD_SHA);
 });
