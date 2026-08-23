@@ -1,6 +1,7 @@
 import { isBusinessType, type BusinessType } from "./business-types.js";
 import { parseHumanHandoffConfig, type HumanHandoffConfig } from "./human-handoff.js";
 import { parseTenantBlockedPhrases } from "./security-blocked-phrases.js";
+import { parseRealtimeProviderName, type RealtimeProviderName } from "./realtime-provider-types.js";
 
 export const TENANT_KV_SCHEMA_VERSION = 1 as const;
 export const TENANT_KV_SCHEMA_VERSION_V2 = 2 as const;
@@ -27,6 +28,7 @@ type TenantConfigurationCommon = {
     instructions?: string;
   };
   realtime: {
+    provider?: RealtimeProviderName;
     voice?: string;
     vad?: {
       threshold?: number;
@@ -218,6 +220,7 @@ function parseCommon(record: Record<string, unknown>, expectedTenantId?: string)
       ...(waitingPhrases === undefined ? {} : { waitingPhrases }),
     },
     realtime: {
+      ...(realtime.provider === undefined ? {} : { provider: parseRealtimeProviderName(realtime.provider) }),
       ...(realtime.voice === undefined ? {} : { voice: requireNonEmptyString(realtime.voice, "realtime.voice") }),
       ...(vad === undefined ? {} : { vad }),
     },
