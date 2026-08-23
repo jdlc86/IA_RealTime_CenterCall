@@ -12,6 +12,7 @@ import { realtimeCommandPortFor as openAIRealtimeCommandPortFor } from "./openai
 import { adaptOpenAIRealtimeEvent } from "./openai-realtime-event-adapter.js";
 import {
   realtimeProviderCapabilities,
+  requireRealtimeProviderTrafficReadiness,
   type ProviderCapabilities,
 } from "./realtime-provider-capabilities.js";
 import {
@@ -165,7 +166,7 @@ export function bindRealtimeProvider(host: RealtimeProviderHost, provider: Realt
   }
 
   requireEnabledRealtimeProvider(provider);
-  realtimeProviderCapabilities(provider);
+  requireRealtimeProviderTrafficReadiness(provider);
 
   const runtime = RUNTIME_BY_HOST.get(host);
   if (runtime && runtime.provider !== provider) throw new Error(`Realtime provider already initialized as ${runtime.provider}`);
@@ -185,6 +186,7 @@ function commandRuntimeFor(host: RealtimeProviderHost): RealtimeProviderCommandR
   if (!runtime) {
     const provider = realtimeProviderFor(host);
     requireEnabledRealtimeProvider(provider);
+    requireRealtimeProviderTrafficReadiness(provider);
     runtime = new RealtimeProviderCommandRuntime(provider, createProviderCommandPort(provider, host));
     RUNTIME_BY_HOST.set(host, runtime);
   }
