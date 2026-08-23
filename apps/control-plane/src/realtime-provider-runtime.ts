@@ -10,6 +10,7 @@ import type {
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import { realtimeCommandPortFor as openAIRealtimeCommandPortFor } from "./openai-realtime-command-adapter.js";
 import { adaptOpenAIRealtimeEvent } from "./openai-realtime-event-adapter.js";
+import { externalRealtimeProviderCommandPortFor } from "./realtime-provider-external-command-runtime.js";
 import {
   realtimeProviderCapabilities,
   requireRealtimeProviderTrafficReadiness,
@@ -155,7 +156,11 @@ const PROVIDER_BY_HOST = new WeakMap<object, RealtimeProviderName>();
 function createProviderCommandPort(provider: RealtimeProviderName, host: RealtimeProviderHost): RealtimeProviderCommandPort {
   switch (provider) {
     case "OPENAI": return openAIRealtimeCommandPortFor(host);
-    case "GEMINI": throw new Error("Realtime provider adapter is not enabled for traffic: GEMINI");
+    case "GEMINI": {
+      const external = externalRealtimeProviderCommandPortFor(host, provider);
+      if (!external) throw new Error("Realtime provider sideband command capability is not installed: GEMINI");
+      return external;
+    }
   }
 }
 
