@@ -9,35 +9,43 @@ import {
 const source = readFileSync(new URL("./realtime-provider-capabilities.ts", import.meta.url), "utf8");
 const runtime = readFileSync(new URL("./realtime-provider-runtime.ts", import.meta.url), "utf8");
 
-test("G1 declares every planned provider capability explicitly", () => {
-  for (const capability of [
-    "audioInput",
-    "audioOutput",
-    "vad",
-    "interruption",
-    "functionCalling",
-    "inputTranscription",
-    "outputTranscription",
-    "directSip",
-  ]) {
+const plannedCapabilities = [
+  "audioInput",
+  "audioOutput",
+  "vad",
+  "interruption",
+  "functionCalling",
+  "toolCallCancellation",
+  "inputTranscription",
+  "outputTranscription",
+  "governedSpeech",
+  "isolatedTextDecision",
+  "dynamicSessionPolicy",
+  "correlatedResponseLifecycle",
+  "directSip",
+];
+
+test("G1/G2 declares every planned provider capability explicitly", () => {
+  for (const capability of plannedCapabilities) {
     assert.match(source, new RegExp(`\\b${capability}\\s*:`));
   }
 });
 
-test("G1 registers both providers without claiming unimplemented Gemini parity", () => {
+test("OpenAI capabilities describe product-validated semantics rather than vendor marketing", () => {
   const openai = realtimeProviderCapabilities("OPENAI");
-  const gemini = realtimeProviderCapabilities("GEMINI");
   assert.equal(openai.directSip, true);
-  assert.deepEqual(gemini, {
-    audioInput: false,
-    audioOutput: false,
-    vad: false,
-    interruption: false,
-    functionCalling: false,
-    inputTranscription: false,
-    outputTranscription: false,
-    directSip: false,
-  });
+  assert.equal(openai.governedSpeech, true);
+  assert.equal(openai.isolatedTextDecision, true);
+  assert.equal(openai.dynamicSessionPolicy, true);
+  assert.equal(openai.correlatedResponseLifecycle, true);
+  assert.equal(openai.toolCallCancellation, false);
+});
+
+test("Gemini remains registered without claiming any unvalidated parity", () => {
+  const gemini = realtimeProviderCapabilities("GEMINI");
+  for (const capability of plannedCapabilities) {
+    assert.equal(gemini[capability], false, `${capability} must remain false until its gate is proven`);
+  }
 });
 
 test("runtime binding requires a capability registration", () => {
@@ -47,8 +55,8 @@ test("runtime binding requires a capability registration", () => {
 
 test("capability requirements fail closed until Gemini gates are implemented", () => {
   assert.throws(
-    () => requireRealtimeProviderCapabilities("GEMINI", ["audioInput", "functionCalling"]),
-    /lacks required capabilities: audioInput, functionCalling/,
+    () => requireRealtimeProviderCapabilities("GEMINI", ["audioInput", "functionCalling", "correlatedResponseLifecycle"]),
+    /lacks required capabilities: audioInput, functionCalling, correlatedResponseLifecycle/,
   );
   assert.match(source, /if \(!capabilities\) throw new Error/);
 });
