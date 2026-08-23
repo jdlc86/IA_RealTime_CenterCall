@@ -20,6 +20,12 @@ export type GeminiAuthorizedBargeInEffectSnapshot = Readonly<{
  * armed first; then the neutral effect order is preserved structurally:
  * cancel_response(responseId) commits the interrupting caller activity to Gemini,
  * and only afterwards may clear_playback clear the correlated Telnyx playout.
+ *
+ * Gemini may release response lifecycle ownership before Telnyx finishes playing
+ * the same response. In that bounded race, playback ownership is sufficient to
+ * preserve the original barge-in target. A different active response always wins
+ * and causes a fail-closed identity conflict.
+ *
  * No provider event, timer, transcript chunk or acoustic observation can arm this
  * runtime by itself.
  */
@@ -48,11 +54,23 @@ export class GeminiAuthorizedBargeInEffectRuntime {
     this.assertActive();
     const candidate = this.armedCandidate;
     if (!candidate) throw new Error("Gemini cancel_response requires an armed authorized candidate");
+
     const normalized = responseId.trim();
     const activeResponseId = this.sessionBridge.activeResponseId();
-    if (!normalized || !activeResponseId || normalized !== activeResponseId) {
+    const activePlaybackResponseId = this.sessionBridge.activePlaybackResponseId();
+    const responseMatches = activeResponseId === normalized;
+    const playbackMatches = activePlaybackResponseId === normalized;
+    const conflictingActiveResponse = Boolean(activeResponseId && activeResponseId !== normalized);
+
+    if (
+      !normalized
+      || conflictingActiveResponse
+      || (!responseMatches && !playbackMatches)
+    ) {
       this.fail();
-      throw new Error(`Gemini cancel_response identity mismatch: active=${activeResponseId ?? "<none>"}`);
+      throw new Error(
+        `Gemini cancel_response identity mismatch: response=${activeResponseId ?? "<none>"}, playback=${activePlaybackResponseId ?? "<none>"}`,
+      );
     }
 
     try {
