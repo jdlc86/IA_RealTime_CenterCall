@@ -10,14 +10,14 @@ Los datos de GitHub y Cloudflare deben verificarse de nuevo al comenzar otra ses
 ```text
 rama              rebuild/v39-stable-baseline
 PR                 #85, OPEN / DRAFT / MERGEABLE
-HEAD previo docs    a53197f9d920c67349f862057ca618cc4b3d68fe
-CI                 Control Plane CI #873 — SUCCESS
+HEAD G1 código      f85e3e70433457ca807e7a128bbc4088c384aa02
+CI                 Control Plane CI #888 — SUCCESS
 realtime baseline   gpt-realtime + marin
 ```
 
-El HEAD documental será posterior a `a53197f9`; nunca uses este snapshot como sustituto de `git log`, PR/CI o estado efectivo de Cloudflare.
+El HEAD documental será posterior a `f85e3e70`; nunca uses este snapshot como sustituto de `git log`, PR/CI o estado efectivo de Cloudflare.
 
-La versión productiva exacta y su porcentaje de tráfico deben verificarse antes de declarar un deploy actual. La sesión confirmó CI verde para la restauración del baseline, pero este documento no inventa un UUID de producción no comprobado.
+La versión productiva exacta y su porcentaje de tráfico deben verificarse antes de declarar un deploy actual. Gemini permanece deshabilitado para tráfico; G1 no autoriza por sí solo un media path Gemini.
 
 ## Estado por preocupación
 
@@ -32,14 +32,15 @@ La versión productiva exacta y su porcentaje de tráfico deben verificarse ante
 | Saludo protegido frente a voz/ruido | ✅ | ✅ | ✅ | exigir paridad de invariante a Gemini |
 | ResponseCoordinator: autorización pendiente one-shot | ✅ | ✅ (#871) | por verificar versión efectiva | repetir E2E de barge-in/tool sin bucle |
 | OpenAI realtime | ✅ | ✅ | baseline activo | `gpt-realtime + marin` |
-| Gemini Live como segundo realtime provider | 🟡 diseño/inicio | — | ❌ | implementar por gates; no tráfico hasta conformance de voz |
+| Gemini G1: catálogo/tenant/binding/aislamiento | ✅ | ✅ (#888) | ❌ tráfico deshabilitado | G2 text/tools antes de habilitar |
+| Gemini Live media/voz | ❌ | — | ❌ | G3/G4 pendientes |
 
-## Decisión nueva: OpenAI + Gemini Live por tenant
+## Decisión: OpenAI + Gemini Live por tenant
 
-A partir de este punto el producto debe soportar dos realtime providers seleccionables por tenant:
+El producto soportará dos realtime providers seleccionables por tenant mediante:
 
 ```text
-TenantConfiguration.realtime_provider
+TenantConfiguration.realtime.provider
   ├─ OPENAI → OpenAI realtime adapter/media path
   └─ GEMINI → Gemini Live adapter/media path
 ```
@@ -60,10 +61,21 @@ provider-neutral realtime ports
 
 OpenAI debe permanecer funcional y sin cambios semánticos mientras se incorpora Gemini. Las diferencias de Gemini Live —wire protocol, audio, VAD, interruption, tool calls, identidades o transporte— se absorben en adapters de borde.
 
+### G1 completado
+
+- `OPENAI` y `GEMINI` forman el catálogo neutral de providers registrados.
+- Solo `OPENAI` está habilitado para tráfico; seleccionar `GEMINI` falla cerrado con 503 en composición y nunca cae silenciosamente en OpenAI.
+- Los tenants existentes sin `realtime.provider` conservan `OPENAI` como default.
+- `realtime.provider` acepta `OPENAI | GEMINI`; el override operacional KV conserva precedencia sobre la configuración del tenant.
+- El binding por host/llamada es inmutable incluso antes de crear el command runtime.
+- Las capacidades Gemini están declaradas conservadoramente como no implementadas/no validadas en G1; registrar el provider no implica paridad funcional.
+- `CallSession V31–V54` tiene guard estructural contra branches literales `GEMINI`; la selección vive en composición, no en dominio/lifecycle.
+- El wire/event adapter sigue siendo OpenAI-only mientras Gemini no está habilitado; G2 debe resolver esa frontera antes de cualquier tráfico Gemini.
+
 ## Plan Gemini Live por gates
 
-1. **G1 — contrato y selección:** auditar registry/capabilities actuales; añadir `GEMINI` sin habilitar tráfico y demostrar selección por tenant + rechazo de provider no registrado.
-2. **G2 — conformance text/tools:** implementar adapter Gemini para sesión, eventos, comandos y function calling usando contratos neutrales; tests compartidos con OpenAI.
+1. **G1 — contrato y selección: COMPLETO.** Catálogo, `TenantConfiguration.realtime.provider`, override, binding inmutable, capabilities conservadoras, fail-closed y guard estructural; CI #888 verde.
+2. **G2 — conformance text/tools: EN CURSO.** Implementar adapter Gemini para sesión, eventos, comandos y function calling usando contratos neutrales; tests compartidos con OpenAI. No habilitar tráfico.
 3. **G3 — media:** diseñar/implementar el media path Gemini necesario para Telnyx, con benchmark de codec/resampling, latencia, backpressure y playback evidence. ADR obligatorio antes de ampliar media plane.
 4. **G4 — invariantes de voz:** saludo protegido, VAD/input detection, barge-in, one-shot response authorization, tools, silencio, cierre, handoff y liveness.
 5. **G5 — tenant canary:** habilitar Gemini solo para un tenant de prueba; OpenAI continúa seleccionable para cualquier otro tenant. Solo después ampliar disponibilidad.
@@ -78,14 +90,14 @@ Criterio de aislamiento: un fallo, desconexión o peculiaridad de Gemini no debe
 
 ## Siguiente validación
 
-Comenzar Gate G1 sin habilitar tráfico Gemini:
+Continuar Gate G2 sin habilitar tráfico Gemini:
 
-1. auditar el registry/capabilities realtime actuales y localizar el punto único de binding por tenant;
-2. formalizar `TenantConfiguration.realtime_provider` como `OPENAI | GEMINI` sin condicionales dispersos en dominio/lifecycle;
-3. registrar Gemini como provider conocido pero no seleccionable para tráfico hasta disponer de adapter/conformance;
-4. añadir pruebas de selección por tenant, binding inmutable durante la llamada y rechazo de provider no registrado/no habilitado;
-5. añadir guard estructural que impida referencias Gemini en capas neutrales;
-6. mantener OpenAI sin cambios funcionales y ejecutar `npm run docs:check`, `npm test` y `npm run check` antes de avanzar a G2.
+1. definir traducción Gemini Live para los comandos neutrales sin copiar conceptos wire de OpenAI;
+2. adaptar `toolCall.functionCalls`/tool responses al contrato `SEMANTIC_TOOL_SELECTED` y `RealtimeToolResultRequest` preservando `id`;
+3. mapear transcripción, turn completion e interruption teniendo en cuenta que Gemini no garantiza orden entre transcripciones y `serverContent`;
+4. demostrar con tests de conformance compartidos que una misma intención neutral produce semántica equivalente en ambos adapters;
+5. mantener Gemini fuera de `ENABLED_REALTIME_PROVIDERS` hasta completar G2 y antes de cualquier trabajo de media G3;
+6. no modelar `response.create`, `response_id` o eventos OpenAI como si fueran primitives de Gemini; generar identidades neutrales donde sea necesario.
 
 ## Restricciones vigentes
 
