@@ -4,11 +4,11 @@ import {
 } from "./gemini-media-edge-benchmark-report.js";
 import {
   geminiMediaEdgeBenchmarkCallProfile,
-  geminiMediaEdgeBenchmarkGeminiOutputTrace,
   geminiMediaEdgeBenchmarkIngressTrace,
+  geminiMediaEdgeBenchmarkOutputTrace,
   type GeminiMediaEdgeBenchmarkCallProfile,
-  type GeminiMediaEdgeBenchmarkGeminiOutputFrame,
   type GeminiMediaEdgeBenchmarkIngressFrame,
+  type GeminiMediaEdgeBenchmarkOutputFrame,
 } from "./gemini-media-edge-benchmark-trace.js";
 import {
   type GeminiMediaEdgeBenchmarkWorkload,
@@ -26,7 +26,7 @@ export type GeminiMediaEdgeBenchmarkCandidateCall = Readonly<{
   workload: GeminiMediaEdgeBenchmarkWorkload;
   profile: GeminiMediaEdgeBenchmarkCallProfile;
   ingressTrace(): Generator<GeminiMediaEdgeBenchmarkIngressFrame, void, undefined>;
-  geminiOutputTrace(): Generator<GeminiMediaEdgeBenchmarkGeminiOutputFrame, void, undefined>;
+  geminiOutputTrace(): Generator<GeminiMediaEdgeBenchmarkOutputFrame, void, undefined>;
   lifecycle: GeminiMediaEdgeBenchmarkCallLifecycle;
 }>;
 
@@ -189,7 +189,7 @@ export async function runGeminiMediaEdgeBenchmarkCandidate(
         workload,
         profile: geminiMediaEdgeBenchmarkCallProfile(callIndex, workload),
         ingressTrace: () => geminiMediaEdgeBenchmarkIngressTrace(workload),
-        geminiOutputTrace: () => geminiMediaEdgeBenchmarkGeminiOutputTrace(workload),
+        geminiOutputTrace: () => geminiMediaEdgeBenchmarkOutputTrace(workload),
         lifecycle,
       });
 
