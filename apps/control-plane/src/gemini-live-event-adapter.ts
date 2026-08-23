@@ -9,9 +9,10 @@ type GeminiFunctionCall = {
 type GeminiLiveMessage = {
   setupComplete?: Record<string, unknown>;
   toolCall?: { functionCalls?: GeminiFunctionCall[] };
+  toolCallCancellation?: { ids?: string[] };
   serverContent?: {
-    inputTranscription?: { text?: string; finished?: boolean };
-    outputTranscription?: { text?: string; finished?: boolean };
+    inputTranscription?: { text?: string };
+    outputTranscription?: { text?: string };
     generationComplete?: boolean;
     turnComplete?: boolean;
     interrupted?: boolean;
@@ -40,31 +41,17 @@ function stringifyArgs(args: Record<string, unknown> | undefined): string | unde
 }
 
 /**
- * Translate Gemini Live wire messages into the same provider-neutral event
- * vocabulary consumed by CallSession. G2 deliberately covers text/session/tool
- * conformance only; audio activity/playback evidence belongs to G3/G4.
+ * Stateless G2 translation for Gemini Live facts that already have a safe neutral
+ * meaning. Transcript chunks, generation lifecycle, interruptions and tool-call
+ * cancellations deliberately remain provider-edge evidence until a stateful
+ * Gemini session owner can correlate them without timers or invented completion
+ * flags. They must not be promoted to completed core events prematurely.
  */
 export function adaptGeminiLiveEvent(data: unknown): RealtimeProviderEvent[] {
   const message = parseGeminiLiveMessage(data);
   if (!message) return [];
 
   const events: RealtimeProviderEvent[] = [];
-
-  const inputTranscript = message.serverContent?.inputTranscription;
-  if (inputTranscript?.finished === true) {
-    events.push({
-      type: "CALLER_TRANSCRIPT_COMPLETED",
-      transcript: typeof inputTranscript.text === "string" ? inputTranscript.text : "",
-    });
-  }
-
-  const outputTranscript = message.serverContent?.outputTranscription;
-  if (outputTranscript?.finished === true) {
-    events.push({
-      type: "ASSISTANT_TRANSCRIPT_COMPLETED",
-      transcript: typeof outputTranscript.text === "string" ? outputTranscript.text : "",
-    });
-  }
 
   for (const call of message.toolCall?.functionCalls ?? []) {
     if (!call.name) continue;
