@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node src/server.mjs",
     "test": "node --test src/*.test.mjs",
-    "check": "node --check src/credential.mjs && node --check src/server.mjs && node --check src/runtime.mjs"
+    "check": "node --check src/bootstrap.mjs && node --check src/credential.mjs && node --check src/server.mjs && node --check src/runtime.mjs"
   },
   "dependencies": {
     "ws": "8.18.3"
