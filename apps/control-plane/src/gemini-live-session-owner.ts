@@ -62,18 +62,7 @@ function parseWireMessage(data: unknown): GeminiLiveMessage | null {
   try { return JSON.parse(text) as GeminiLiveMessage; } catch { return null; }
 }
 
-/**
- * Stateful authority for Gemini Live protocol/session evidence.
- *
- * This owner deliberately does not infer caller transcript completion from
- * transcription chunks. Gemini sends transcriptions independently and without
- * deterministic ordering relative to serverContent; caller turn completion must
- * later be established from media/activity evidence at the Gemini edge.
- *
- * Likewise, toolCallCancellation is surfaced as cancellation evidence only. It
- * never implies rollback of an already committed business side effect. Stateless
- * wire translation such as provider error adaptation remains in the event adapter.
- */
+/** Stateful authority for Gemini Live protocol/session evidence. */
 export class GeminiLiveSessionOwner {
   private state: GeminiLiveSessionState = "NEW";
   private activeResponseId: string | null = null;
@@ -88,11 +77,15 @@ export class GeminiLiveSessionOwner {
     return this.snapshot();
   }
 
-  noteToolResponseSubmitted(callId: string): GeminiLiveSessionSnapshot {
+  assertPendingToolCall(callId: string): void {
     if (!callId) throw new Error("Gemini Live tool response requires callId");
     if (!this.pendingToolCalls.has(callId)) {
       throw new Error(`Gemini Live tool response does not match a pending call: ${callId}`);
     }
+  }
+
+  noteToolResponseSubmitted(callId: string): GeminiLiveSessionSnapshot {
+    this.assertPendingToolCall(callId);
     this.pendingToolCalls.delete(callId);
     if (this.state === "TOOL_WAIT" && this.pendingToolCalls.size === 0) {
       this.state = this.activeResponseId ? "GENERATING" : "READY";
@@ -136,9 +129,7 @@ export class GeminiLiveSessionOwner {
       this.requireReadyForServerTurn("toolCall");
       this.ensureResponseStarted(events, "tool_call");
       for (const call of calls) {
-        if (!call.id) {
-          throw new Error("Gemini Live function call is missing required correlation id");
-        }
+        if (!call.id) throw new Error("Gemini Live function call is missing required correlation id");
         this.pendingToolCalls.add(call.id);
       }
       this.state = "TOOL_WAIT";
