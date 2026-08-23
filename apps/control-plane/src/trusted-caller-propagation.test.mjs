@@ -26,3 +26,18 @@ test("builds explicit trusted caller SIP header", () => {
   );
   assert.deepEqual(headers.at(-1), { name: "X-IA-Caller-Number", value: "+34612345678" });
 });
+
+test("propagates the provider affinity selected before transport", () => {
+  const headers = buildTrustedCallerTransferHeaders(
+    "+34612345678",
+    "restaurante-centro",
+    "+34910788224",
+    "called_number",
+    "telnyx-call-1",
+    { provider: "OPENAI", source: "KV_OVERRIDE" },
+  );
+  assert.deepEqual(headers.slice(-2), [
+    { name: "X-IA-Realtime-Provider", value: "OPENAI" },
+    { name: "X-IA-Realtime-Provider-Source", value: "KV_OVERRIDE" },
+  ]);
+});
