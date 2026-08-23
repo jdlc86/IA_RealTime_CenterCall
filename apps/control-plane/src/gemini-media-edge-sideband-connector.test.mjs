@@ -27,7 +27,7 @@ test("control URL carries identity but never the control-plane token", () => {
   assert.equal(url.includes(input.controlPlaneToken), false);
 });
 
-test("connector authenticates in header and feeds sanitized Gemini evidence into the owner", async () => {
+test("connector authenticates in header and feeds provider plus edge evidence into one observer", async () => {
   const socket = new FakeSocket();
   const requests = [];
   const observations = [];
@@ -46,9 +46,17 @@ test("connector authenticates in header and feeds sanitized Gemini evidence into
 
   socket.emit("message", JSON.stringify({ type: "GEMINI_EVENT", message: { setupComplete: {} } }));
   assert.equal(observations.at(-1).snapshot.state, "READY");
+  socket.emit("message", JSON.stringify({ type: "GEMINI_EVENT", message: { serverContent: { modelTurn: {} } } }));
+  assert.deepEqual(JSON.parse(socket.sent.at(-1)), { type: "PLAYBACK_BINDING", responseId: "gemini-response-1", kind: "NORMAL" });
+
+  socket.emit("message", JSON.stringify({ type: "PLAYBACK_EVENT", event: { type: "ASSISTANT_AUDIO_STARTED", kind: "NORMAL", responseId: "gemini-response-1" } }));
+  assert.deepEqual(observations.at(-1).events, [{ type: "ASSISTANT_AUDIO_STARTED", kind: "NORMAL", responseId: "gemini-response-1" }]);
+  socket.emit("message", JSON.stringify({ type: "CALLER_EVENT", event: { type: "CALLER_SPEECH_STARTED", itemId: "gemini-candidate-1", playbackResponseIdAtStart: "gemini-response-1" } }));
+  assert.deepEqual(observations.at(-1).events, [{ type: "CALLER_SPEECH_STARTED", itemId: "gemini-candidate-1" }]);
+  assert.equal(socket.closed, null);
+
   socket.emit("message", JSON.stringify({ type: "GEMINI_EVENT", message: { toolCall: { functionCalls: [{ id: "fc-1", name: "restaurant_business_info" }] } } }));
   assert.equal(observations.at(-1).snapshot.state, "TOOL_WAIT");
-
   connection.runtime.commandPort.submitToolResult({ callId: "fc-1", toolName: "restaurant_business_info", output: { ok: true } });
   assert.deepEqual(JSON.parse(socket.sent.at(-1)), { type: "TOOL_RESULT", callId: "fc-1", toolName: "restaurant_business_info", output: { ok: true } });
 });
