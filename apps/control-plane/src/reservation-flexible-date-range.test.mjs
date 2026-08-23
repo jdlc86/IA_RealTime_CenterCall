@@ -43,17 +43,17 @@ test("search range cannot expand beyond seven calendar days", () => {
 });
 
 test("active policy routes flexible dates to range search without phrase catalogues", async () => {
-  const [v17, v26, v29, v31, v50] = await Promise.all([
-    source("call-session-v17.ts"),
+  const [bootstrap, v26, v29, v31, v50] = await Promise.all([
+    source("direct-agent-realtime-bootstrap.ts"),
     source("call-session-v26.ts"),
     source("call-session-v29.ts"),
     source("call-session-v31.ts"),
     source("call-session-v50-reservation-date-scope.ts"),
   ]);
 
-  assert.match(v17, /CALLER_AUTHORIZED_RANGE/);
-  assert.match(v17, /no elijas un día representativo/);
-  assert.doesNotMatch(v17, /required: \["party_size"\]/);
+  assert.match(bootstrap, /CALLER_AUTHORIZED_RANGE/);
+  assert.match(bootstrap, /no elijas un día representativo/);
+  assert.doesNotMatch(bootstrap, /required: \["party_size"\]/);
   assert.match(v26, /"restaurant_reservation_search"/);
   assert.match(v29, /una hora aportada después se aplica como preferencia horaria dentro del rango/);
   assert.match(v29, /aunque todavía falte el número de personas/);
@@ -65,5 +65,5 @@ test("active policy routes flexible dates to range search without phrase catalog
   assert.match(v31, /callerAuthorizedRange\s*\?\s*rows/);
   assert.match(v31, /date_scope: callerAuthorizedRange \? "CALLER_AUTHORIZED_RANGE"/);
   assert.match(v50, /RESERVATION_DATE_RANGE_DELEGATED_V50/);
-  assert.doesNotMatch(`${v17}\n${v29}`, /cualquier día de la semana que viene/i);
+  assert.doesNotMatch(`${bootstrap}\n${v29}`, /cualquier día de la semana que viene/i);
 });
