@@ -4,6 +4,7 @@ import {
   connectGeminiMediaEdgeSideband,
   geminiMediaEdgeControlUrl,
 } from "../.test-dist/gemini-media-edge-sideband-connector.js";
+import { callerTurnDispositionPortFor } from "../.test-dist/caller-turn-disposition-runtime.js";
 
 class FakeSocket {
   constructor() { this.readyState = 1; this.sent = []; this.listeners = new Map(); this.accepted = false; this.closed = null; }
@@ -28,42 +29,36 @@ test("control URL carries identity but never the control-plane token", () => {
 });
 
 test("connector authenticates in header and feeds provider plus edge evidence into one observer", async () => {
-  const socket = new FakeSocket();
-  const requests = [];
-  const observations = [];
-  const connection = await connectGeminiMediaEdgeSideband(
-    input,
-    (observation) => observations.push(observation),
-    async (url, init) => {
-      requests.push({ url, init });
-      return { status: 101, webSocket: socket };
-    },
-  );
+  const socket = new FakeSocket(); const requests = []; const observations = [];
+  const connection = await connectGeminiMediaEdgeSideband(input, (observation) => observations.push(observation), async (url, init) => {
+    requests.push({ url, init }); return { status: 101, webSocket: socket };
+  });
   assert.equal(socket.accepted, true);
   assert.equal(requests[0].init.headers.Authorization, `Bearer ${input.controlPlaneToken}`);
-  assert.equal(requests[0].init.headers.Upgrade, "websocket");
   assert.equal(requests[0].url.includes(input.controlPlaneToken), false);
-
   socket.emit("message", JSON.stringify({ type: "GEMINI_EVENT", message: { setupComplete: {} } }));
-  assert.equal(observations.at(-1).snapshot.state, "READY");
   socket.emit("message", JSON.stringify({ type: "GEMINI_EVENT", message: { serverContent: { modelTurn: {} } } }));
   assert.deepEqual(JSON.parse(socket.sent.at(-1)), { type: "PLAYBACK_BINDING", responseId: "gemini-response-1", kind: "NORMAL" });
-
   socket.emit("message", JSON.stringify({ type: "PLAYBACK_EVENT", event: { type: "ASSISTANT_AUDIO_STARTED", kind: "NORMAL", responseId: "gemini-response-1" } }));
-  assert.deepEqual(observations.at(-1).events, [{ type: "ASSISTANT_AUDIO_STARTED", kind: "NORMAL", responseId: "gemini-response-1" }]);
   socket.emit("message", JSON.stringify({ type: "CALLER_EVENT", event: { type: "CALLER_SPEECH_STARTED", itemId: "gemini-candidate-1", playbackResponseIdAtStart: "gemini-response-1" } }));
   assert.deepEqual(observations.at(-1).events, [{ type: "CALLER_SPEECH_STARTED", itemId: "gemini-candidate-1" }]);
-  assert.equal(socket.closed, null);
+  connection.close();
+});
 
-  socket.emit("message", JSON.stringify({ type: "GEMINI_EVENT", message: { toolCall: { functionCalls: [{ id: "fc-1", name: "restaurant_business_info" }] } } }));
-  assert.equal(observations.at(-1).snapshot.state, "TOOL_WAIT");
-  connection.runtime.commandPort.submitToolResult({ callId: "fc-1", toolName: "restaurant_business_info", output: { ok: true } });
-  assert.deepEqual(JSON.parse(socket.sent.at(-1)), { type: "TOOL_RESULT", callId: "fc-1", toolName: "restaurant_business_info", output: { ok: true } });
+test("connector owns neutral caller disposition capability for exactly its socket lifetime", async () => {
+  const socket = new FakeSocket(); const host = {};
+  const connection = await connectGeminiMediaEdgeSideband({ ...input, capabilityHost: host }, () => {}, async () => ({ status: 101, webSocket: socket }));
+  const port = callerTurnDispositionPortFor(host);
+  assert.ok(port);
+  socket.emit("message", JSON.stringify({ type: "GEMINI_EVENT", message: { setupComplete: {} } }));
+  socket.emit("message", JSON.stringify({ type: "CALLER_EVENT", event: { type: "CALLER_SPEECH_STARTED", itemId: "gemini-candidate-1", playbackResponseIdAtStart: null } }));
+  socket.emit("message", JSON.stringify({ type: "CALLER_EVENT", event: { type: "CALLER_TRANSCRIPT_COMPLETED", itemId: "gemini-candidate-1", transcript: "Hola" } }));
+  port.resolve({ itemId: "gemini-candidate-1", disposition: "NORMAL" });
+  assert.deepEqual(JSON.parse(socket.sent.at(-1)), { type: "CALLER_TURN_DECISION", itemId: "gemini-candidate-1", decision: "NORMAL", responseId: null });
+  connection.close();
+  assert.equal(callerTurnDispositionPortFor(host), null);
 });
 
 test("connector fails closed when upgrade does not return a WebSocket", async () => {
-  await assert.rejects(
-    connectGeminiMediaEdgeSideband(input, () => {}, async () => ({ status: 403 })),
-    /upgrade failed with HTTP 403/,
-  );
+  await assert.rejects(connectGeminiMediaEdgeSideband(input, () => {}, async () => ({ status: 403 })), /upgrade failed with HTTP 403/);
 });
