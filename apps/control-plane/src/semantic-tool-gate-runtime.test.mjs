@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { semanticToolGatePortFor } from "../.test-dist/semantic-tool-gate-runtime.js";
+import {
+  installSemanticToolGatePort,
+  removeSemanticToolGatePort,
+  semanticToolGatePortFor,
+} from "../.test-dist/semantic-tool-gate-runtime.js";
 
 function host() {
   const events = [];
@@ -25,4 +29,38 @@ test("current OpenAI baseline preserves exact semantic gate session policy wire"
     { type: "session.update", session: { type: "realtime", tool_choice: "required" } },
     { type: "session.update", session: { type: "realtime", tool_choice: "auto" } },
   ]);
+});
+
+test("external semantic tool gate overrides realtime enforcement only for its session", () => {
+  const h = host();
+  const effects = [];
+  const external = {
+    arm() { effects.push("ARM"); },
+    release() { effects.push("RELEASE"); },
+  };
+
+  const fallback = semanticToolGatePortFor(h);
+  installSemanticToolGatePort(h, external);
+  const gate = semanticToolGatePortFor(h);
+  assert.equal(gate, external);
+  gate.arm();
+  gate.release();
+  assert.deepEqual(effects, ["ARM", "RELEASE"]);
+  assert.deepEqual(h.events, []);
+
+  removeSemanticToolGatePort(h, external);
+  assert.equal(semanticToolGatePortFor(h), fallback);
+});
+
+test("external semantic tool gate ownership is fail-closed", () => {
+  const h = host();
+  const first = { arm() {}, release() {} };
+  const second = { arm() {}, release() {} };
+
+  installSemanticToolGatePort(h, first);
+  assert.doesNotThrow(() => installSemanticToolGatePort(h, first));
+  assert.throws(() => installSemanticToolGatePort(h, second), /already installed/);
+  assert.throws(() => removeSemanticToolGatePort(h, second), /ownership mismatch/);
+  assert.equal(semanticToolGatePortFor(h), first);
+  removeSemanticToolGatePort(h, first);
 });
