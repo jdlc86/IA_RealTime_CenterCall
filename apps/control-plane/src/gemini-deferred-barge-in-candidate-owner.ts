@@ -1,0 +1,145 @@
+import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
+
+export type GeminiDeferredBargeInCandidate = Readonly<{
+  itemId: string;
+  transcript: string;
+  mediaPayloads: readonly string[];
+}>;
+
+export type GeminiDeferredBargeInCandidateSnapshot = Readonly<{
+  activeItemId: string | null;
+  sequence: number;
+  bufferedChunks: number;
+  bufferedPayloadChars: number;
+  transcriptReady: boolean;
+}>;
+
+type ActiveCandidate = {
+  itemId: string;
+  mediaPayloads: string[];
+  bufferedPayloadChars: number;
+  transcript: string | null;
+};
+
+/**
+ * Owns a caller acoustic candidate while an assistant response is still protected
+ * by the semantic barge-in gate.
+ *
+ * This owner deliberately has no Gemini command host. Starting an acoustic
+ * candidate therefore cannot send activityStart, audio or clientContent to Gemini
+ * and cannot interrupt the active model response before semantic authorization.
+ *
+ * A separate authoritative transcription boundary may complete the candidate.
+ * Only after the core confirms interruption may the returned immutable candidate
+ * be committed to a provider-specific interrupting activity transport. Ignored
+ * candidates are discarded without provider side effects. No timers or arrival
+ * windows are used.
+ */
+export class GeminiDeferredBargeInCandidateOwner {
+  private sequence = 0;
+  private active: ActiveCandidate | null = null;
+
+  constructor(
+    private readonly maxBufferedChunks = 256,
+    private readonly maxBufferedPayloadChars = 2_000_000,
+  ) {
+    if (!Number.isInteger(maxBufferedChunks) || maxBufferedChunks < 1) {
+      throw new Error("Gemini deferred candidate maxBufferedChunks must be a positive integer");
+    }
+    if (!Number.isInteger(maxBufferedPayloadChars) || maxBufferedPayloadChars < 1) {
+      throw new Error("Gemini deferred candidate maxBufferedPayloadChars must be a positive integer");
+    }
+  }
+
+  beginCandidate(): Extract<RealtimeProviderEvent, { type: "CALLER_SPEECH_STARTED" }> {
+    if (this.active) {
+      throw new Error(`Gemini deferred candidate already active: ${this.active.itemId}`);
+    }
+    this.sequence += 1;
+    const itemId = `gemini-candidate-${this.sequence}`;
+    this.active = {
+      itemId,
+      mediaPayloads: [],
+      bufferedPayloadChars: 0,
+      transcript: null,
+    };
+    return { type: "CALLER_SPEECH_STARTED", itemId };
+  }
+
+  bufferTelnyxMedia(payload: string): GeminiDeferredBargeInCandidateSnapshot {
+    const active = this.requireActive();
+    if (active.transcript !== null) {
+      throw new Error(`Gemini deferred candidate ${active.itemId} is already completed`);
+    }
+    const normalized = payload.trim();
+    if (!normalized) throw new Error("Gemini deferred candidate media payload is required");
+    if (active.mediaPayloads.length >= this.maxBufferedChunks) {
+      throw new Error(`Gemini deferred candidate ${active.itemId} exceeded buffered chunk limit`);
+    }
+    const nextChars = active.bufferedPayloadChars + normalized.length;
+    if (nextChars > this.maxBufferedPayloadChars) {
+      throw new Error(`Gemini deferred candidate ${active.itemId} exceeded buffered payload limit`);
+    }
+    active.mediaPayloads.push(normalized);
+    active.bufferedPayloadChars = nextChars;
+    return this.snapshot();
+  }
+
+  completeCandidate(transcript: string): readonly RealtimeProviderEvent[] {
+    const active = this.requireActive();
+    if (active.transcript !== null) {
+      throw new Error(`Gemini deferred candidate ${active.itemId} is already completed`);
+    }
+    const normalized = transcript.replace(/\s+/g, " ").trim();
+    if (!normalized) throw new Error("Gemini deferred candidate requires authoritative transcript text");
+    active.transcript = normalized;
+    return Object.freeze([
+      { type: "CALLER_SPEECH_STOPPED" } as const,
+      { type: "CALLER_TRANSCRIPT_COMPLETED", transcript: normalized, itemId: active.itemId } as const,
+    ]);
+  }
+
+  confirmInterruption(itemId: string): GeminiDeferredBargeInCandidate {
+    const active = this.requireMatching(itemId);
+    if (active.transcript === null) {
+      throw new Error(`Gemini deferred candidate ${active.itemId} cannot commit before transcript completion`);
+    }
+    const committed = Object.freeze({
+      itemId: active.itemId,
+      transcript: active.transcript,
+      mediaPayloads: Object.freeze([...active.mediaPayloads]),
+    });
+    this.active = null;
+    return committed;
+  }
+
+  ignoreCandidate(itemId: string): GeminiDeferredBargeInCandidateSnapshot {
+    this.requireMatching(itemId);
+    this.active = null;
+    return this.snapshot();
+  }
+
+  snapshot(): GeminiDeferredBargeInCandidateSnapshot {
+    return Object.freeze({
+      activeItemId: this.active?.itemId ?? null,
+      sequence: this.sequence,
+      bufferedChunks: this.active?.mediaPayloads.length ?? 0,
+      bufferedPayloadChars: this.active?.bufferedPayloadChars ?? 0,
+      transcriptReady: this.active?.transcript !== null && this.active !== null,
+    });
+  }
+
+  private requireActive(): ActiveCandidate {
+    if (!this.active) throw new Error("Gemini deferred candidate is not active");
+    return this.active;
+  }
+
+  private requireMatching(itemId: string): ActiveCandidate {
+    const active = this.requireActive();
+    const normalized = itemId.trim();
+    if (!normalized || normalized !== active.itemId) {
+      throw new Error(`Gemini deferred candidate identity mismatch: expected ${active.itemId}`);
+    }
+    return active;
+  }
+}
