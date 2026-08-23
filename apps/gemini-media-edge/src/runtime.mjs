@@ -1,5 +1,6 @@
 import { WebSocket, WebSocketServer } from "ws";
 import { requireTelnyxStartForCredential } from "./credential.mjs";
+import { buildGeminiInitialSetup, isGeminiSetupComplete } from "./bootstrap.mjs";
 
 const GEMINI_ENDPOINT = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 const CONNECTING = 0;
@@ -81,6 +82,8 @@ export function createGeminiMediaEdgeRuntime(options) {
   const apiKey = required(options.geminiApiKey, "GEMINI_API_KEY");
   if (typeof options.verifyCredential !== "function") throw new Error("Gemini media edge credential verifier is required");
   if (typeof options.consumeCredentialOnce !== "function") throw new Error("Gemini media edge credential consumer is required");
+  if (typeof options.consumeBootstrapForClaims !== "function") throw new Error("Gemini media edge bootstrap consumer is required");
+  const model = required(options.model ?? "gemini-3.1-flash-live-preview", "GEMINI_LIVE_MODEL");
   const maxBufferedBytes = Number(options.maxBufferedBytes ?? 1_048_576);
   if (!Number.isSafeInteger(maxBufferedBytes) || maxBufferedBytes < 65_536) throw new Error("MEDIA_EDGE_MAX_BUFFERED_BYTES is invalid");
 
@@ -117,8 +120,11 @@ export function createGeminiMediaEdgeRuntime(options) {
       telnyx,
       gemini: null,
       claims,
+      bootstrap: null,
       authorized: false,
       started: false,
+      setupSent: false,
+      setupComplete: false,
       streamId: null,
       nextChunk: 1,
       buffered: new Map(),
@@ -145,20 +151,35 @@ export function createGeminiMediaEdgeRuntime(options) {
       if (socket.bufferedAmount > maxBufferedBytes) throw new Error(`${label} backpressure limit exceeded`);
     };
 
-    const sendInboundToGemini = (payload) => {
-      const pcm16le = swapPcm16Endianness(decodeBase64(payload));
-      if (state.gemini?.readyState === OPEN) {
-        assertBackpressure(state.gemini, "Gemini Live");
-        safeSend(state.gemini, { realtimeInput: { audio: { data: encodeBase64(pcm16le), mimeType: "audio/pcm;rate=16000" } } });
-        return;
-      }
+    const queueInbound = (pcm16le) => {
       state.pendingInbound.push(pcm16le);
       state.pendingInboundBytes += pcm16le.length;
       if (state.pendingInboundBytes > maxBufferedBytes) throw new Error("Gemini Live startup buffer limit exceeded");
     };
 
-    const openGemini = () => {
+    const flushInbound = () => {
+      if (!state.setupComplete || state.gemini?.readyState !== OPEN) return;
+      for (const pcm16le of state.pendingInbound) {
+        assertBackpressure(state.gemini, "Gemini Live");
+        safeSend(state.gemini, { realtimeInput: { audio: { data: encodeBase64(pcm16le), mimeType: "audio/pcm;rate=16000" } } });
+      }
+      state.pendingInbound.length = 0;
+      state.pendingInboundBytes = 0;
+    };
+
+    const sendInboundToGemini = (payload) => {
+      const pcm16le = swapPcm16Endianness(decodeBase64(payload));
+      if (state.setupComplete && state.gemini?.readyState === OPEN) {
+        assertBackpressure(state.gemini, "Gemini Live");
+        safeSend(state.gemini, { realtimeInput: { audio: { data: encodeBase64(pcm16le), mimeType: "audio/pcm;rate=16000" } } });
+        return;
+      }
+      queueInbound(pcm16le);
+    };
+
+    const openGemini = (bootstrap) => {
       if (state.gemini) throw new Error("Gemini Live connection is one-shot");
+      state.bootstrap = bootstrap;
       const geminiUrl = new URL(GEMINI_ENDPOINT);
       geminiUrl.searchParams.set("key", apiKey);
       const gemini = new WebSocket(geminiUrl, { perMessageDeflate: false });
@@ -166,24 +187,22 @@ export function createGeminiMediaEdgeRuntime(options) {
 
       gemini.on("open", () => {
         try {
-          safeSend(gemini, {
-            setup: {
-              model: options.model ?? "gemini-3.1-flash-live-preview",
-              generationConfig: { responseModalities: ["AUDIO"] },
-            },
-          });
-          for (const pcm16le of state.pendingInbound) {
-            assertBackpressure(gemini, "Gemini Live");
-            safeSend(gemini, { realtimeInput: { audio: { data: encodeBase64(pcm16le), mimeType: "audio/pcm;rate=16000" } } });
-          }
-          state.pendingInbound.length = 0;
-          state.pendingInboundBytes = 0;
+          if (state.setupSent) throw new Error("Gemini Live setup is one-shot");
+          safeSend(gemini, buildGeminiInitialSetup(bootstrap, model));
+          state.setupSent = true;
         } catch { closeBoth(); }
       });
 
       gemini.on("message", (raw) => {
         try {
           const message = parseJson(raw, "Gemini Live");
+          if (isGeminiSetupComplete(message)) {
+            if (!state.setupSent || state.setupComplete) throw new Error("Gemini Live setupComplete is out of order");
+            state.setupComplete = true;
+            flushInbound();
+            return;
+          }
+          if (!state.setupComplete) throw new Error("Gemini Live message arrived before setupComplete");
           for (const payload of geminiAudioPayloads(message)) {
             const pcm16le16k = state.resampler.push(decodeBase64(payload));
             if (pcm16le16k.length === 0) continue;
@@ -211,10 +230,11 @@ export function createGeminiMediaEdgeRuntime(options) {
           Date.now(),
         );
         if (consumed !== true) throw new Error("Gemini media edge credential already consumed");
+        const bootstrap = await options.consumeBootstrapForClaims(state.claims, Date.now());
         state.streamId = verifiedStart.streamId;
         state.authorized = true;
         state.started = true;
-        openGemini();
+        openGemini(bootstrap);
         return;
       }
 
