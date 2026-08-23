@@ -6,7 +6,10 @@ import {
 import {
   geminiMediaEdgeBenchmarkCallProfile,
   geminiMediaEdgeBenchmarkIngressTrace,
+  geminiMediaEdgeBenchmarkOutputTrace,
 } from "../.test-dist/gemini-media-edge-benchmark-trace.js";
+import { geminiPcm24kPayloadToTelnyxMedia } from "../.test-dist/gemini-telnyx-media-contract.js";
+import { Pcm16LinearResampler24To16 } from "../.test-dist/pcm16-stream-resampler.js";
 
 function workload(overrides = {}) {
   return {
@@ -43,6 +46,26 @@ test("same workload produces byte-identical trace prefixes", () => {
   const first = Array.from(geminiMediaEdgeBenchmarkIngressTrace(workload())).slice(0, 12);
   const second = Array.from(geminiMediaEdgeBenchmarkIngressTrace(workload())).slice(0, 12);
   assert.deepEqual(second, first);
+});
+
+test("Gemini output trace traverses the production 24 kHz to 16 kHz session resampler", () => {
+  const output = Array.from(geminiMediaEdgeBenchmarkOutputTrace(workload()));
+  const resampler = new Pcm16LinearResampler24To16();
+  let telnyxFrames = 0;
+  let telnyxBytes = 0;
+
+  assert.equal(output.length, 50);
+  for (const frame of output) {
+    const media = geminiPcm24kPayloadToTelnyxMedia(frame.payloadBase64, resampler);
+    if (!media) continue;
+    telnyxFrames += 1;
+    telnyxBytes += Buffer.from(media.media.payload, "base64").length;
+  }
+
+  assert.equal(telnyxFrames, 50);
+  // One second of mono PCM16/16 kHz is approximately 32 kB. The streaming
+  // interpolator may retain one source sample at the final boundary.
+  assert.equal(telnyxBytes >= 31_900 && telnyxBytes <= 32_000, true);
 });
 
 test("slow-peer profile is deterministic per call and does not affect other calls", () => {
