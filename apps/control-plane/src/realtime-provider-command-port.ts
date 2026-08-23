@@ -49,11 +49,12 @@ export type RealtimeFunctionToolDefinition = {
 export type RealtimeSessionPolicyUpdate = {
   instructions?: string;
   /**
-   * Transitional bootstrap/default tool selection only.
-   * Semantic one-tool enforcement must use setSemanticToolGate so the core does
-   * not depend on any provider's session-level tool_choice representation.
+   * Legacy/bootstrap compatibility only. Current semantic one-tool enforcement
+   * must use setSemanticToolGate so provider-specific tool-choice wire semantics
+   * do not leak into the modern core. REQUIRED remains accepted while inherited
+   * pre-v17 layers are migrated behind the neutral gate.
    */
-  toolChoice?: "AUTO" | "NONE";
+  toolChoice?: "AUTO" | "NONE" | "REQUIRED";
   tools?: RealtimeFunctionToolDefinition[];
 };
 
