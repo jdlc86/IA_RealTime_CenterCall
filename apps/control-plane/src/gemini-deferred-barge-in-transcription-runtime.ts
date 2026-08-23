@@ -4,6 +4,7 @@ import {
   GeminiDeferredBargeInCandidateOwner,
   type GeminiDeferredBargeInCandidate,
   type GeminiDeferredBargeInCandidateSnapshot,
+  type GeminiDeferredCallerTurn,
 } from "./gemini-deferred-barge-in-candidate-owner.js";
 
 export type GeminiDeferredBargeInTranscriptionSnapshot = Readonly<{
@@ -60,17 +61,18 @@ export class GeminiDeferredBargeInTranscriptionRuntime {
     }
   }
 
+  releaseNormalTurn(itemId: string): GeminiDeferredCallerTurn {
+    this.assertNoTranscriptionInFlight("release normal turn");
+    return this.owner.releaseNormalTurn(itemId);
+  }
+
   confirmInterruption(itemId: string): GeminiDeferredBargeInCandidate {
-    if (this.transcriptionInFlightItemId) {
-      throw new Error(`Gemini deferred candidate cannot commit while transcription is in flight: ${this.transcriptionInFlightItemId}`);
-    }
+    this.assertNoTranscriptionInFlight("commit interruption");
     return this.owner.confirmInterruption(itemId);
   }
 
   ignoreCandidate(itemId: string): GeminiDeferredBargeInTranscriptionSnapshot {
-    if (this.transcriptionInFlightItemId) {
-      throw new Error(`Gemini deferred candidate cannot be ignored while transcription is in flight: ${this.transcriptionInFlightItemId}`);
-    }
+    this.assertNoTranscriptionInFlight("ignore candidate");
     this.owner.ignoreCandidate(itemId);
     return this.snapshot();
   }
@@ -80,5 +82,11 @@ export class GeminiDeferredBargeInTranscriptionRuntime {
       candidate: this.owner.snapshot(),
       transcriptionInFlightItemId: this.transcriptionInFlightItemId,
     });
+  }
+
+  private assertNoTranscriptionInFlight(operation: string): void {
+    if (this.transcriptionInFlightItemId) {
+      throw new Error(`Gemini deferred candidate cannot ${operation} while transcription is in flight: ${this.transcriptionInFlightItemId}`);
+    }
   }
 }
