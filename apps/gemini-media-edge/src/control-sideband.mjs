@@ -22,6 +22,9 @@ export function canonicalControlCommand(value) {
     if (message.kind !== "NORMAL") throw new Error("Gemini media edge playback kind is unsupported");
     return Object.freeze({ type: "PLAYBACK_BINDING", responseId, kind: "NORMAL" });
   }
+  if (message.type === "PLAYBACK_DRAIN") {
+    return Object.freeze({ type: "PLAYBACK_DRAIN", responseId: required(message.responseId, "Gemini media edge playback drain response id") });
+  }
   if (message.type === "CALLER_TURN_DECISION") {
     const itemId = required(message.itemId, "Gemini media edge caller item id");
     if (!["NORMAL", "INTERRUPT", "IGNORE"].includes(message.decision)) throw new Error("Gemini media edge caller decision is invalid");
