@@ -1,8 +1,15 @@
 import baseHandler from "./index-v3";
-import { KvTenantRepository, type TenantKvNamespace, type TenantResolutionV1 } from "./tenant-kv";
+import {
+  KvTenantRepository,
+  type TenantConfiguration,
+  type TenantKvNamespace,
+  type TenantResolutionV1,
+} from "./tenant-kv";
 import { buildTrustedCallerTransferHeaders, normalizeTrustedCallerNumber } from "./trusted-caller-propagation";
 import { CallerSecurityService } from "./caller-security";
 import { decodeHumanHandoffClientState } from "./human-handoff";
+import { selectRealtimeProvider, type RealtimeProviderSelection } from "./realtime-provider-selector.js";
+import { requireInboundRealtimeRouteReady, type InboundRealtimeRoute } from "./inbound-realtime-route.js";
 export { CallSession } from "./call-session-v13";
 
 type WorkerEnv = {
@@ -42,9 +49,45 @@ function decodeTelnyxPublicKey(value: string): { format: "raw" | "spki"; bytes: 
 async function verifyTelnyxSignature(rawBody: string, request: Request, publicKeyValue: string): Promise<boolean> { const signature = request.headers.get("telnyx-signature-ed25519"); const timestamp = request.headers.get("telnyx-timestamp"); if (!signature || !timestamp) return false; const timestampSeconds = Number(timestamp); if (!Number.isFinite(timestampSeconds)) return false; if (Math.abs(Math.floor(Date.now() / 1000) - timestampSeconds) > 300) return false; const decoded = decodeTelnyxPublicKey(publicKeyValue); const key = await crypto.subtle.importKey(decoded.format, decoded.bytes, { name: "Ed25519" }, false, ["verify"]); return crypto.subtle.verify("Ed25519", key, decodeBase64(signature), new TextEncoder().encode(`${timestamp}|${rawBody}`)); }
 function buildOpenAISipUri(env: WorkerEnv): string { return `sip:${requireEnvString(env.OPENAI_PROJECT_ID, "OPENAI_PROJECT_ID")}@sip.api.openai.com;transport=tls`; }
 
-async function transferToRealtime(callControlId: string, eventId: string, resolution: TenantResolutionV1, callerPhone: string, env: WorkerEnv): Promise<void> {
-  const response = await fetch(`https://api.telnyx.com/v2/calls/${encodeURIComponent(callControlId)}/actions/transfer`, { method: "POST", headers: { Authorization: `Bearer ${requireEnvString(env.TELNYX_API_KEY, "TELNYX_API_KEY")}`, "Content-Type": "application/json" }, body: JSON.stringify({ to: buildOpenAISipUri(env), from: callerPhone, sip_transport_protocol: "TLS", timeout_secs: 30, command_id: eventId, custom_headers: buildTrustedCallerTransferHeaders(callerPhone, resolution.tenantId, resolution.calledNumber, resolution.source, callControlId) }) });
-  if (!response.ok) { const body = await response.text(); console.error(JSON.stringify({ level: "error", event: "telnyx_transfer_with_caller_failed", tenant_id: resolution.tenantId, status: response.status, response: body.slice(0, 1000) })); throw new Error(`Telnyx transfer failed with HTTP ${response.status}`); }
+async function transferToOpenAIRealtime(
+  callControlId: string,
+  eventId: string,
+  resolution: TenantResolutionV1,
+  callerPhone: string,
+  selection: RealtimeProviderSelection,
+  route: InboundRealtimeRoute,
+  env: WorkerEnv,
+): Promise<void> {
+  if (selection.provider !== "OPENAI" || route.transport !== "OPENAI_DIRECT_SIP") {
+    throw new Error(`OpenAI transfer rejected for immutable provider ${selection.provider} via ${route.transport}`);
+  }
+  const response = await fetch(`https://api.telnyx.com/v2/calls/${encodeURIComponent(callControlId)}/actions/transfer`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${requireEnvString(env.TELNYX_API_KEY, "TELNYX_API_KEY")}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      to: buildOpenAISipUri(env),
+      from: callerPhone,
+      sip_transport_protocol: "TLS",
+      timeout_secs: 30,
+      command_id: eventId,
+      custom_headers: buildTrustedCallerTransferHeaders(
+        callerPhone,
+        resolution.tenantId,
+        resolution.calledNumber,
+        resolution.source,
+        callControlId,
+        { provider: selection.provider, source: selection.source },
+      ),
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    console.error(JSON.stringify({ level: "error", event: "telnyx_transfer_with_caller_failed", tenant_id: resolution.tenantId, provider: selection.provider, status: response.status, response: body.slice(0, 1000) }));
+    throw new Error(`Telnyx transfer failed with HTTP ${response.status}`);
+  }
 }
 
 async function rejectSecurityBlockedCall(callControlId: string, eventId: string, env: WorkerEnv): Promise<void> {
@@ -88,6 +131,20 @@ async function forwardHumanHandoffEvent(env: WorkerEnv, event: TelnyxVoiceEvent)
   if (!response.ok) throw new Error(`Human handoff event forwarding failed with HTTP ${response.status}`);
 }
 
+async function resolveInboundRealtime(
+  repository: KvTenantRepository,
+  calledNumber: string,
+  kv: TenantKvNamespace,
+): Promise<{ resolution: TenantResolutionV1; config: TenantConfiguration; selection: RealtimeProviderSelection; route: InboundRealtimeRoute } | null> {
+  const resolution = await repository.resolveByCalledNumber(calledNumber);
+  if (!resolution) return null;
+  const config = await repository.getTenantConfiguration(resolution.tenantId);
+  if (!config) return null;
+  const selection = await selectRealtimeProvider(config, kv);
+  const route = requireInboundRealtimeRouteReady(selection);
+  return { resolution, config, selection, route };
+}
+
 async function handleTelnyxWebhook(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
   const rawBody = await request.text();
   const valid = await verifyTelnyxSignature(rawBody, request, requireEnvString(env.TELNYX_PUBLIC_KEY, "TELNYX_PUBLIC_KEY"));
@@ -107,10 +164,20 @@ async function handleTelnyxWebhook(request: Request, env: WorkerEnv, ctx: Execut
   if (!calledNumber) return json({ ok: false, error: "missing_called_number" }, 400);
   const callerPhone = normalizeTrustedCallerNumber(payload.from, calledNumber);
   if (!callerPhone) { console.error(JSON.stringify({ level: "error", event: "trusted_caller_number_missing", called_number: calledNumber })); return json({ ok: false, error: "missing_trusted_caller_number" }, 409); }
-  const repository = new KvTenantRepository(env.TENANT_CONFIG); let resolution: TenantResolutionV1 | null;
-  try { resolution = await repository.resolveByCalledNumber(calledNumber); } catch { return json({ ok: false, error: "tenant_kv_configuration_invalid" }, 500); }
-  if (!resolution) return json({ ok: false, error: "tenant_not_found" }, 404);
 
+  const repository = new KvTenantRepository(env.TENANT_CONFIG);
+  let inbound: Awaited<ReturnType<typeof resolveInboundRealtime>>;
+  try {
+    inbound = await resolveInboundRealtime(repository, calledNumber, env.TENANT_CONFIG);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(JSON.stringify({ level: "error", event: "inbound_realtime_route_rejected", called_number: calledNumber, error: message, fallback_provider_used: false }));
+    ctx.waitUntil(rejectSecurityBlockedCall(callControlId, event.data?.id ?? crypto.randomUUID(), env).catch(() => undefined));
+    return json({ ok: false, error: "realtime_provider_unavailable", fallback_provider_used: false }, 503);
+  }
+  if (!inbound) return json({ ok: false, error: "tenant_not_found" }, 404);
+
+  const { resolution, config, selection, route } = inbound;
   const eventId = event.data?.id ?? crypto.randomUUID();
   try {
     const security = new CallerSecurityService({ SUPABASE_URL: env.SUPABASE_URL, SUPABASE_SECRET_KEY: env.SUPABASE_SECRET_KEY });
@@ -119,6 +186,7 @@ async function handleTelnyxWebhook(request: Request, env: WorkerEnv, ctx: Execut
       level: decision.decision === "BLOCK" ? "warn" : "info",
       event: "caller_security_inbound_evaluated",
       tenant_id: resolution.tenantId,
+      provider: selection.provider,
       decision: decision.decision,
       reason: decision.reason,
       calls_1m: decision.calls_1m,
@@ -142,8 +210,35 @@ async function handleTelnyxWebhook(request: Request, env: WorkerEnv, ctx: Execut
     return json({ ok: true, accepted: false, action: "security_unavailable_reject" });
   }
 
-  ctx.waitUntil(transferToRealtime(callControlId, eventId, resolution, callerPhone, env));
-  return json({ ok: true, accepted: true, action: "transfer_to_realtime", tenant_id: resolution.tenantId, called_number: resolution.calledNumber, caller_number_propagated: true, caller_security_checked: true, telnyx_call_control_id_propagated: true });
+  if (route.transport !== "OPENAI_DIRECT_SIP") {
+    ctx.waitUntil(rejectSecurityBlockedCall(callControlId, eventId, env).catch(() => undefined));
+    return json({
+      ok: false,
+      accepted: false,
+      error: "realtime_transport_unavailable",
+      provider: selection.provider,
+      transport: route.transport,
+      fallback_provider_used: false,
+    }, 503);
+  }
+
+  ctx.waitUntil(transferToOpenAIRealtime(callControlId, eventId, resolution, callerPhone, selection, route, env));
+  return json({
+    ok: true,
+    accepted: true,
+    action: "transfer_to_realtime",
+    tenant_id: resolution.tenantId,
+    called_number: resolution.calledNumber,
+    business_name: config.business.displayName,
+    realtime_provider: selection.provider,
+    realtime_provider_source: selection.source,
+    realtime_transport: route.transport,
+    immutable_provider_affinity: true,
+    fallback_provider_used: false,
+    caller_number_propagated: true,
+    caller_security_checked: true,
+    telnyx_call_control_id_propagated: true,
+  });
 }
 
 export default { async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> { const url = new URL(request.url); if (request.method === "POST" && url.pathname === "/webhooks/telnyx") return handleTelnyxWebhook(request, env, ctx); return baseHandler.fetch(request, env as never, ctx); } } satisfies ExportedHandler<WorkerEnv>;
