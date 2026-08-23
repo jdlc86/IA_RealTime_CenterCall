@@ -1,0 +1,30 @@
+name: Gemini Media Edge CI
+
+on:
+  push:
+    branches: [rebuild/v39-stable-baseline]
+    paths:
+      - "apps/gemini-media-edge/**"
+      - ".github/workflows/gemini-media-edge-ci.yml"
+  pull_request:
+    paths:
+      - "apps/gemini-media-edge/**"
+      - ".github/workflows/gemini-media-edge-ci.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/gemini-media-edge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: apps/gemini-media-edge/.node-version
+          cache: npm
+          cache-dependency-path: apps/gemini-media-edge/package.json
+      - run: npm install --ignore-scripts
+      - run: npm run check
+      - run: npm test
+      - run: docker build -t gemini-media-edge:test .
