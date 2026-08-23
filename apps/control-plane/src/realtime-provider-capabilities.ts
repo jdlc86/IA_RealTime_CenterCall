@@ -50,8 +50,11 @@ const OPENAI_CAPABILITIES = Object.freeze({
 } satisfies ProviderCapabilities);
 
 const GEMINI_CAPABILITIES = Object.freeze({
-  audioInput: false,
-  audioOutput: false,
+  // G3 media bridge proves ordered Telnyx L16 -> Gemini realtime input and
+  // correlated Gemini PCM -> Telnyx playback. These capabilities describe the
+  // validated edge semantics only; traffic remains blocked by the gates below.
+  audioInput: true,
+  audioOutput: true,
   vad: false,
   interruption: false,
   functionCalling: true,
