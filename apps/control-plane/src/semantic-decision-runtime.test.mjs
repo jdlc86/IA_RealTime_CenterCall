@@ -26,9 +26,18 @@ test("current OpenAI baseline preserves isolated decision wire behavior through 
     maxOutputTokens: 8,
   });
 
-  assert.equal(h.events.length, 2);
-  assert.equal(h.events[0].type, "conversation.item.create");
-  assert.equal(h.events[1].type, "response.create");
-  assert.equal(h.events[1].response.metadata.request_id, "decision-runtime-1");
-  assert.equal(h.events[1].response.metadata.realtime_response_kind, "TEXT_DECISION");
+  assert.equal(h.events.length, 1);
+  assert.equal(h.events[0].type, "response.create");
+  assert.equal(h.events[0].event_id, "decision-runtime-1");
+  assert.equal(h.events[0].response.conversation, "none");
+  assert.deepEqual(h.events[0].response.output_modalities, ["text"]);
+  assert.equal(h.events[0].response.tool_choice, "none");
+  assert.equal(h.events[0].response.instructions, "Return CLOSE or CONTINUE only");
+  assert.equal(h.events[0].response.max_output_tokens, 8);
+  assert.equal(h.events[0].response.metadata.purpose, "contextual_close");
+  assert.deepEqual(h.events[0].response.input, [{
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: "No, gracias" }],
+  }]);
 });
