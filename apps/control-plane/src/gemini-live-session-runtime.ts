@@ -6,20 +6,20 @@ import type {
   RealtimeSpeechRequest,
   RealtimeTextDecisionRequest,
   RealtimeToolResultRequest,
-} from "./realtime-provider-command-port";
-import type { RealtimeProviderEvent } from "./realtime-provider-event";
+} from "./realtime-provider-command-port.js";
+import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import {
   buildGeminiLiveInitialSetup,
   GeminiLiveCommandAdapter,
   type GeminiLiveCommandHost,
   type GeminiLiveInitialSetup,
-} from "./gemini-live-command-adapter";
-import { adaptGeminiLiveEvent } from "./gemini-live-event-adapter";
+} from "./gemini-live-command-adapter.js";
+import { adaptGeminiLiveEvent } from "./gemini-live-event-adapter.js";
 import {
   GeminiLiveSessionOwner,
   type GeminiLiveOwnerObservation,
   type GeminiLiveSessionSnapshot,
-} from "./gemini-live-session-owner";
+} from "./gemini-live-session-owner.js";
 
 export type GeminiLiveSessionRuntimeObservation = Readonly<{
   events: readonly RealtimeProviderEvent[];
