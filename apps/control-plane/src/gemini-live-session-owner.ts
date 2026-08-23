@@ -45,7 +45,6 @@ type GeminiLiveMessage = {
     turnComplete?: boolean;
     interrupted?: boolean;
   };
-  error?: { code?: string | number; message?: string };
 };
 
 function readWireText(data: unknown): string | null {
@@ -72,7 +71,8 @@ function parseWireMessage(data: unknown): GeminiLiveMessage | null {
  * later be established from media/activity evidence at the Gemini edge.
  *
  * Likewise, toolCallCancellation is surfaced as cancellation evidence only. It
- * never implies rollback of an already committed business side effect.
+ * never implies rollback of an already committed business side effect. Stateless
+ * wire translation such as provider error adaptation remains in the event adapter.
  */
 export class GeminiLiveSessionOwner {
   private state: GeminiLiveSessionState = "NEW";
@@ -118,15 +118,6 @@ export class GeminiLiveSessionOwner {
         throw new Error(`Gemini Live setupComplete requires SETUP_SENT; current state=${this.state}`);
       }
       this.state = "READY";
-    }
-
-    if (message.error) {
-      const event: Extract<RealtimeProviderEvent, { type: "PROVIDER_COMMAND_FAILED" }> = {
-        type: "PROVIDER_COMMAND_FAILED",
-      };
-      if (message.error.code !== undefined) event.code = String(message.error.code);
-      if (message.error.message) event.message = message.error.message;
-      events.push(event);
     }
 
     const serverContent = message.serverContent;
@@ -179,9 +170,6 @@ export class GeminiLiveSessionOwner {
     if (serverContent?.turnComplete === true) {
       this.requireReadyForServerTurn("turnComplete");
       if (this.pendingToolCalls.size > 0) {
-        // A model turn cannot release response ownership while externally
-        // requested business work is unresolved. The tool result/cancellation
-        // must settle that protocol wait first.
         this.state = "TOOL_WAIT";
       } else {
         if (this.activeResponseId) {
@@ -196,8 +184,6 @@ export class GeminiLiveSessionOwner {
         this.state = "READY";
       }
     } else if (this.state === "INTERRUPTED" && this.pendingToolCalls.size === 0 && cancelledToolCallIds.length > 0) {
-      // Cancellation evidence closes only the protocol wait. It does not roll
-      // back business effects and it does not manufacture a new model turn.
       this.state = "READY";
     }
 
