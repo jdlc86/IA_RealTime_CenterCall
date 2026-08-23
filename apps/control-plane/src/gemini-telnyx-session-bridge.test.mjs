@@ -24,6 +24,14 @@ function telnyxStart() {
   });
 }
 
+function telnyxMedia(chunk, payload) {
+  return JSON.stringify({
+    event: "media",
+    stream_id: "s1",
+    media: { track: "inbound", chunk: String(chunk), payload },
+  });
+}
+
 function geminiAudio(values, extraServerContent = {}) {
   return JSON.stringify({
     serverContent: {
@@ -35,14 +43,14 @@ function geminiAudio(values, extraServerContent = {}) {
   });
 }
 
-function readyBridge() {
+function readyBridge(options = {}) {
   const gemini = host();
   const telnyx = host();
   const bridge = new GeminiTelnyxSessionBridge(gemini, telnyx, {
     model: "models/gemini-live-test",
     responseModalities: ["AUDIO"],
     manualActivityDetection: true,
-  });
+  }, options);
   bridge.start();
   bridge.observeGemini(JSON.stringify({ setupComplete: {} }));
   bridge.observeTelnyx(telnyxStart());
@@ -66,6 +74,16 @@ test("session-owned response identity is the only identity used for Gemini audio
   assert.equal(observation.snapshot.session.activeResponseId, "gemini-response-1");
   assert.equal(bridge.activeResponseId(), "gemini-response-1");
   assert.equal(telnyx.sent.at(-1).event, "media");
+});
+
+test("DEFER session mode preserves ordered caller media without any Gemini input write", () => {
+  const { bridge, gemini } = readyBridge({ inboundAudioMode: "DEFER" });
+  const before = gemini.sent.length;
+  const payload = Buffer.from([0x00, 0x01]).toString("base64");
+  const observation = bridge.observeTelnyx(telnyxMedia(1, payload));
+  assert.deepEqual(observation.telnyx.mediaPayloads, [payload]);
+  assert.equal(gemini.sent.length, before);
+  assert.equal(observation.snapshot.media.inboundChunksForwarded, 0);
 });
 
 test("normal generation completion drains the exact owned response through a Telnyx mark", () => {
@@ -176,7 +194,7 @@ test("playback clear cannot use stale response identity after Gemini lifecycle r
   assert.equal(telnyx.sent.length, before);
 });
 
-test("transcription remains evidence-only through the composed edge", () => {
+test("input transcription remains evidence-only through the composed edge", () => {
   const { bridge } = readyBridge();
   const observation = bridge.observeGemini(JSON.stringify({
     serverContent: { inputTranscription: { text: "quiero una mesa" } },
