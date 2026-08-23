@@ -51,6 +51,7 @@ export function buildGeminiLiveInitialSetup(request: GeminiLiveInitialSetup): Re
   if (request.manualActivityDetection) {
     setup.realtimeInputConfig = {
       automaticActivityDetection: { disabled: true },
+      activityHandling: "START_OF_ACTIVITY_INTERRUPTS",
     };
   }
   return { setup };
