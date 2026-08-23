@@ -1,8 +1,10 @@
 import type { GeminiLiveCommandHost } from "./gemini-live-command-adapter.js";
+import type { AssistantSpeechKind, RealtimeProviderEvent } from "./realtime-provider-event.js";
 import {
   geminiPcm24kPayloadToTelnyxMedia,
   telnyxL16PayloadToGeminiRealtimeInput,
 } from "./gemini-telnyx-media-contract.js";
+import { GeminiTelnyxPlaybackOwner } from "./gemini-telnyx-playback-owner.js";
 import { Pcm16LinearResampler24To16 } from "./pcm16-stream-resampler.js";
 import {
   TelnyxGeminiMediaStreamOwner,
@@ -17,6 +19,16 @@ export type GeminiTelnyxMediaBridgeSnapshot = Readonly<{
   state: "ACTIVE" | "FAILED" | "STOPPED";
   inboundChunksForwarded: number;
   outboundChunksForwarded: number;
+}>;
+
+export type GeminiTelnyxInboundObservation = Readonly<{
+  telnyx: TelnyxGeminiMediaObservation;
+  playbackEvents: readonly RealtimeProviderEvent[];
+}>;
+
+export type GeminiTelnyxOutboundObservation = Readonly<{
+  emitted: number;
+  playbackEvents: readonly RealtimeProviderEvent[];
 }>;
 
 type GeminiInlinePart = {
@@ -60,13 +72,14 @@ function outputAudioPayloads(data: unknown): string[] {
 }
 
 /**
- * Isolated G3 media composition. This component owns only telephony/provider audio
- * framing and ordering; it owns no conversation, tool or provider-selection state.
- * Provider affinity is fixed before this bridge is constructed and there is no
- * cross-provider fallback path.
+ * Isolated G3/G4 media composition. This component owns telephony/provider audio
+ * framing, ordering and playback evidence only. It owns no conversation, tool or
+ * provider-selection state. Provider affinity is fixed before construction and
+ * there is no cross-provider fallback path.
  */
 export class GeminiTelnyxMediaBridge {
   private readonly telnyxOwner = new TelnyxGeminiMediaStreamOwner();
+  private readonly playbackOwner = new GeminiTelnyxPlaybackOwner();
   private readonly outputResampler = new Pcm16LinearResampler24To16();
   private state: GeminiTelnyxMediaBridgeSnapshot["state"] = "ACTIVE";
   private inboundChunksForwarded = 0;
@@ -77,58 +90,79 @@ export class GeminiTelnyxMediaBridge {
     private readonly telnyxHost: TelnyxMediaCommandHost,
   ) {}
 
-  observeTelnyx(data: unknown): TelnyxGeminiMediaObservation {
+  observeTelnyx(data: unknown): GeminiTelnyxInboundObservation {
     this.assertActive();
-    let observation: TelnyxGeminiMediaObservation;
     try {
-      observation = this.telnyxOwner.observe(data);
+      const observation = this.telnyxOwner.observe(data);
+      const playbackEvents: RealtimeProviderEvent[] = [];
       for (const payload of observation.mediaPayloads) {
         this.geminiHost.send(telnyxL16PayloadToGeminiRealtimeInput(payload));
         this.inboundChunksForwarded += 1;
       }
+      for (const mark of observation.returnedMarks) {
+        playbackEvents.push(...this.playbackOwner.observeReturnedMark(mark));
+      }
       if (observation.stopped) this.state = "STOPPED";
-      return observation;
+      return Object.freeze({
+        telnyx: observation,
+        playbackEvents: Object.freeze(playbackEvents),
+      });
     } catch (error) {
       this.state = "FAILED";
       throw error;
     }
   }
 
-  observeGemini(data: unknown): number {
+  observeGemini(
+    data: unknown,
+    responseId: string | null,
+    kind: AssistantSpeechKind = "NORMAL",
+  ): GeminiTelnyxOutboundObservation {
     this.assertActive();
     try {
       let emitted = 0;
-      for (const payload of outputAudioPayloads(data)) {
+      const playbackEvents: RealtimeProviderEvent[] = [];
+      const payloads = outputAudioPayloads(data);
+      if (payloads.length > 0 && !responseId?.trim()) {
+        throw new Error("Gemini output audio requires correlated responseId");
+      }
+      for (const payload of payloads) {
         const media = geminiPcm24kPayloadToTelnyxMedia(payload, this.outputResampler);
         if (!media) continue;
         this.telnyxHost.send(media);
         this.outboundChunksForwarded += 1;
         emitted += 1;
+        playbackEvents.push(...this.playbackOwner.observeAudioQueued(responseId!, kind));
       }
-      return emitted;
+      return Object.freeze({ emitted, playbackEvents: Object.freeze(playbackEvents) });
     } catch (error) {
       this.state = "FAILED";
       throw error;
     }
   }
 
-  clearPlayback(): void {
+  finishPlayback(responseId: string): string | null {
     this.assertActive();
+    if (this.playbackOwner.snapshot().responseId !== responseId) return null;
+    const mark = this.playbackOwner.requestDrainMark(responseId);
+    try {
+      this.telnyxHost.send({ event: "mark", mark: { name: mark } });
+      return mark;
+    } catch (error) {
+      this.state = "FAILED";
+      throw error;
+    }
+  }
+
+  clearPlayback(responseId: string): string | null {
+    this.assertActive();
+    if (this.playbackOwner.snapshot().responseId !== responseId) return null;
+    const mark = this.playbackOwner.requestClearMark(responseId);
     try {
       this.telnyxHost.send({ event: "clear" });
+      this.telnyxHost.send({ event: "mark", mark: { name: mark } });
       this.outputResampler.reset();
-    } catch (error) {
-      this.state = "FAILED";
-      throw error;
-    }
-  }
-
-  sendPlaybackMark(name: string): void {
-    this.assertActive();
-    const normalized = name.trim();
-    if (!normalized) throw new Error("Telnyx playback mark requires a name");
-    try {
-      this.telnyxHost.send({ event: "mark", mark: { name: normalized } });
+      return mark;
     } catch (error) {
       this.state = "FAILED";
       throw error;
