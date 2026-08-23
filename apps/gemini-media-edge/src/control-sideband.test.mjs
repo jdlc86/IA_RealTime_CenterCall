@@ -29,9 +29,10 @@ test("Gemini sideband preserves provider evidence while stripping audio bytes", 
   });
 });
 
-test("control command admits correlated tool results and authoritative playback bindings", () => {
+test("control command admits correlated tool results, playback bindings and drains", () => {
   assert.deepEqual(canonicalControlCommand({ type: "TOOL_RESULT", callId: "fc1", toolName: "restaurant_business_info", output: { ok: true } }), { type: "TOOL_RESULT", callId: "fc1", toolName: "restaurant_business_info", output: { ok: true } });
   assert.deepEqual(canonicalControlCommand({ type: "PLAYBACK_BINDING", responseId: "gemini-response-7", kind: "NORMAL" }), { type: "PLAYBACK_BINDING", responseId: "gemini-response-7", kind: "NORMAL" });
+  assert.deepEqual(canonicalControlCommand({ type: "PLAYBACK_DRAIN", responseId: "gemini-response-7" }), { type: "PLAYBACK_DRAIN", responseId: "gemini-response-7" });
   assert.throws(() => canonicalControlCommand({ type: "PLAYBACK_BINDING", responseId: "gemini-response-7", kind: "SEMANTIC" }), /unsupported/);
   assert.throws(() => canonicalControlCommand({ type: "SPEAK" }), /unsupported/);
 });
@@ -43,8 +44,10 @@ test("control socket may attach before Gemini session command sink", () => {
   assert.equal(registry.emit(claims, { type: "GEMINI_EVENT", message: { setupComplete: {} } }), true);
   registry.command(claims, { type: "TOOL_RESULT", callId: "fc1", toolName: "x", output: { ok: true } });
   registry.command(claims, { type: "PLAYBACK_BINDING", responseId: "gemini-response-1", kind: "NORMAL" });
+  registry.command(claims, { type: "PLAYBACK_DRAIN", responseId: "gemini-response-1" });
   assert.equal(commands[0].callId, "fc1");
   assert.equal(commands[1].responseId, "gemini-response-1");
+  assert.equal(commands[2].type, "PLAYBACK_DRAIN");
   socketAttachment.detach(); commandAttachment.detach(); assert.equal(registry.size(), 0);
 });
 
