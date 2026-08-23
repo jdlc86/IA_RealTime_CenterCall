@@ -1,30 +1,51 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GeminiLiveCommandAdapter } from "./gemini-live-command-adapter.ts";
+import {
+  GeminiLiveCommandAdapter,
+  buildGeminiLiveInitialSetup,
+} from "./gemini-live-command-adapter.ts";
 
 function harness() {
   const sent = [];
   return { sent, adapter: new GeminiLiveCommandAdapter({ send(message) { sent.push(message); } }) };
 }
 
-test("Gemini Live semantic response sends provider text input without OpenAI wire", () => {
-  const { sent, adapter } = harness();
-  adapter.createSemanticResponse({ callerTurnText: "Quiero reservar para cuatro" });
-  assert.deepEqual(sent, [{ realtimeInput: { text: "Quiero reservar para cuatro" } }]);
+test("Gemini Live initial setup is built once outside the runtime session-policy port", () => {
+  assert.deepEqual(buildGeminiLiveInitialSetup({
+    model: "models/gemini-live",
+    instructions: "Eres Lucía.",
+    responseModalities: ["AUDIO"],
+    enableInputTranscription: true,
+    enableOutputTranscription: true,
+    tools: [{ type: "function", name: "restaurant_search", description: "Busca disponibilidad", parameters: { type: "object" } }],
+  }), {
+    setup: {
+      model: "models/gemini-live",
+      systemInstruction: { parts: [{ text: "Eres Lucía." }] },
+      tools: [{ functionDeclarations: [{ name: "restaurant_search", description: "Busca disponibilidad", parameters: { type: "object" } }] }],
+      generationConfig: { responseModalities: ["AUDIO"] },
+      inputAudioTranscription: {},
+      outputAudioTranscription: {},
+    },
+  });
 });
 
-test("Gemini Live maps neutral function catalog into session setup", () => {
+test("Gemini Live does not fake dynamic session updates with a second setup message", () => {
   const { sent, adapter } = harness();
-  adapter.updateSessionPolicy({
-    instructions: "Eres Lucía.",
-    toolChoice: "AUTO",
-    tools: [{ type: "function", name: "restaurant_search", description: "Busca disponibilidad", parameters: { type: "object" } }],
-  });
-  assert.deepEqual(sent, [{ setup: {
-    systemInstruction: { parts: [{ text: "Eres Lucía." }] },
-    tools: [{ functionDeclarations: [{ name: "restaurant_search", description: "Busca disponibilidad", parameters: { type: "object" } }] }],
-    toolConfig: { functionCallingConfig: { mode: "AUTO" } },
-  } }]);
+  assert.throws(
+    () => adapter.updateSessionPolicy({ instructions: "changed", toolChoice: "REQUIRED" }),
+    /no proven neutral mapping before immutable setup composition/,
+  );
+  assert.deepEqual(sent, []);
+});
+
+test("Gemini Live never disguises governed assistant commands as realtime caller text", () => {
+  const { sent, adapter } = harness();
+  assert.throws(() => adapter.speak({ instructions: "Di hola" }), /governed speech/);
+  assert.throws(() => adapter.requestTextDecision({ instructions: "clasifica", inputText: "hola" }), /isolated text decision/);
+  assert.throws(() => adapter.createSemanticResponse({ callerTurnText: "Quiero reservar" }), /synthetic semantic response/);
+  assert.throws(() => adapter.createDefaultResponse(), /default response creation/);
+  assert.deepEqual(sent, []);
 });
 
 test("Gemini Live tool response preserves provider call identity", () => {
@@ -37,7 +58,7 @@ test("Gemini Live tool response preserves provider call identity", () => {
   }] } }]);
 });
 
-test("Gemini Live fails closed when a tool result lacks correlation identity", () => {
+test("Gemini Live tool response fails closed without correlation identity", () => {
   const { adapter } = harness();
   assert.throws(() => adapter.submitToolResult({ output: { ok: true } }), /require callId and toolName/);
 });
