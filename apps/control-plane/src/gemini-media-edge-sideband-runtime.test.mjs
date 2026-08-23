@@ -19,22 +19,28 @@ test("sideband setupComplete advances the existing Gemini session owner", () => 
 test("sideband returns the owner-minted response id as playback binding", () => {
   const { runtime, sent } = runtimeHarness();
   runtime.observe({ type: "GEMINI_EVENT", message: { setupComplete: {} } });
-  const observation = runtime.observe({
-    type: "GEMINI_EVENT",
-    message: { serverContent: { modelTurn: {} } },
-  });
+  const observation = runtime.observe({ type: "GEMINI_EVENT", message: { serverContent: { modelTurn: {} } } });
   assert.deepEqual(observation.events, [
     { type: "ASSISTANT_RESPONSE_STARTED", kind: "NORMAL", responseId: "gemini-response-1", purpose: "model_turn" },
   ]);
+  assert.deepEqual(sent, [{ type: "PLAYBACK_BINDING", responseId: "gemini-response-1", kind: "NORMAL" }]);
+  runtime.observe({ type: "GEMINI_EVENT", message: { serverContent: { modelTurn: {} } } });
+  assert.equal(sent.length, 1, "one response may bind playback only once");
+});
+
+test("normal Gemini response completion requests Telnyx drain but does not fabricate playback stop", () => {
+  const { runtime, sent } = runtimeHarness();
+  runtime.observe({ type: "GEMINI_EVENT", message: { setupComplete: {} } });
+  runtime.observe({ type: "GEMINI_EVENT", message: { serverContent: { modelTurn: {} } } });
+  const completion = runtime.observe({ type: "GEMINI_EVENT", message: { serverContent: { turnComplete: true } } });
+  assert.deepEqual(completion.events, [
+    { type: "ASSISTANT_RESPONSE_COMPLETED", kind: "NORMAL", responseId: "gemini-response-1", status: "completed" },
+  ]);
   assert.deepEqual(sent, [
     { type: "PLAYBACK_BINDING", responseId: "gemini-response-1", kind: "NORMAL" },
+    { type: "PLAYBACK_DRAIN", responseId: "gemini-response-1" },
   ]);
-
-  runtime.observe({
-    type: "GEMINI_EVENT",
-    message: { serverContent: { modelTurn: {} } },
-  });
-  assert.equal(sent.length, 1, "one response may bind playback only once");
+  assert.equal(completion.events.some((event) => event.type === "ASSISTANT_AUDIO_STOPPED"), false);
 });
 
 test("sideband tool call preserves provider identity through owner and FunctionResponse", () => {
@@ -48,24 +54,12 @@ test("sideband tool call preserves provider identity through owner and FunctionR
     { type: "ASSISTANT_RESPONSE_STARTED", kind: "NORMAL", responseId: "gemini-response-1", purpose: "tool_call" },
     { type: "SEMANTIC_TOOL_SELECTED", name: "restaurant_business_info", arguments: JSON.stringify({ topics: ["HOURS"] }), callId: "fc-edge-1" },
   ]);
-  assert.deepEqual(sent, [
-    { type: "PLAYBACK_BINDING", responseId: "gemini-response-1", kind: "NORMAL" },
-  ]);
+  assert.deepEqual(sent, [{ type: "PLAYBACK_BINDING", responseId: "gemini-response-1", kind: "NORMAL" }]);
   assert.equal(runtime.snapshot().state, "TOOL_WAIT");
-
-  runtime.commandPort.submitToolResult({
-    callId: "fc-edge-1",
-    toolName: "restaurant_business_info",
-    output: { ok: true, hours: "09:00-22:00" },
-  });
+  runtime.commandPort.submitToolResult({ callId: "fc-edge-1", toolName: "restaurant_business_info", output: { ok: true, hours: "09:00-22:00" } });
   assert.deepEqual(sent, [
     { type: "PLAYBACK_BINDING", responseId: "gemini-response-1", kind: "NORMAL" },
-    {
-      type: "TOOL_RESULT",
-      callId: "fc-edge-1",
-      toolName: "restaurant_business_info",
-      output: { ok: true, hours: "09:00-22:00" },
-    },
+    { type: "TOOL_RESULT", callId: "fc-edge-1", toolName: "restaurant_business_info", output: { ok: true, hours: "09:00-22:00" } },
   ]);
   assert.deepEqual(runtime.snapshot().pendingToolCallIds, []);
 });
