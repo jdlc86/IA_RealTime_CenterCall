@@ -15,6 +15,7 @@ function activeCallSessionFiles() {
 const forbiddenBoundaries = [
   ["raw OpenAI event adapter", /openai-realtime-event-adapter/],
   ["raw OpenAI command adapter", /openai-realtime-command-adapter/],
+  ["direct Gemini provider branch", /\bGEMINI\b/],
   ["raw realtime text parser", /\b(?:readRealtimeText|parseEvent|TextDecoder)\b/],
   ["raw OpenAI transcription wire event", /conversation\.item\.input_audio_transcription\.completed/],
   ["raw OpenAI tool-selection wire event", /response\.function_call_arguments\.done/],
@@ -39,6 +40,7 @@ test("active V31-V54 consolidation has no provider-wire or authority bypasses", 
 test("audit guard itself covers the known regression classes", () => {
   const samples = [
     ["openai-realtime-event-adapter", "raw OpenAI event adapter"],
+    ["if (provider === 'GEMINI')", "direct Gemini provider branch"],
     ["const event = parseEvent(data)", "raw realtime text parser"],
     ["response.function_call_arguments.done", "raw OpenAI tool-selection wire event"],
     ["session.send({ type: 'response.create' })", "direct session send/update"],
