@@ -19,6 +19,12 @@ import { inputDetectionConfigRuntimeFor } from "./input-detection-config-runtime
 import { bargeInOrderingRuntimeFor } from "./barge-in-ordering-runtime.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 import { executeCallerTurnDisposition } from "./caller-turn-disposition-execution.js";
+import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
+import {
+  installRealtimeProviderEventIngress,
+  trustedRealtimeProviderEventBatch,
+  type RealtimeProviderEventIngress,
+} from "./realtime-provider-event-ingress-runtime.js";
 
 const BaseConstructor = CallSessionV39 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV39.prototype as any;
@@ -42,6 +48,15 @@ function providerResponseId(event: RealtimeProviderEvent): string | null {
  * ordering and input configuration are owned by version-neutral coordinators.
  */
 export class CallSession extends BaseConstructor {
+  private readonly providerEventIngressV40: RealtimeProviderEventIngress = (events) => {
+    const tasks = sessionTaskRuntimeFor(this);
+    for (const event of events) {
+      tasks.enqueue("provider_event_ingress_v40", () =>
+        this.handleRealtimeMessage(trustedRealtimeProviderEventBatch([event])),
+      );
+    }
+    return tasks.whenIdle();
+  };
   private pendingBargeInV40: PendingBargeIn | null = null;
   private classifierByResponseV40 = new Map<string, PendingBargeIn>();
   private protectedResponseIdsV40 = new Set<string>();
@@ -50,6 +65,11 @@ export class CallSession extends BaseConstructor {
   private deferredConfirmedBargeInV40: DeferredConfirmedBargeIn | null = null;
   private providerClearedPlaybackBeforeDecisionV40 = false;
   private clientClearRequestedV40 = false;
+
+  constructor(...args: any[]) {
+    super(...args);
+    installRealtimeProviderEventIngress(this, this.providerEventIngressV40);
+  }
 
   private observeCallerSpeechStartedV40(itemId: string | null | undefined, source = "v40_runtime"): void {
     if (!itemId) return;
