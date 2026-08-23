@@ -28,9 +28,20 @@ export class BoundPlaybackGate {
   flush() { if (!this.binding) return Object.freeze([]); const responseId = this.binding; const chunks = this.pending.splice(0); this.pendingBytes = 0; return Object.freeze(chunks.map((pcm) => Object.freeze({ responseId, pcm }))); }
   noteQueued(responseId) { return this.owner.noteAudioQueued(responseId); }
   finish(responseId) { const id = required(responseId, "Gemini playback drain response id"); if (this.binding !== id) throw new Error(`Gemini playback drain identity mismatch: expected ${this.binding ?? "<none>"}`); const snapshot = this.owner.snapshot(); if (!snapshot.started) { this.owner.release(); this.binding = null; return null; } return this.owner.requestDrainMark(id); }
+  requestClear(responseId) { const id = required(responseId, "Gemini playback clear response id"); if (this.binding !== id) throw new Error(`Gemini playback clear identity mismatch: expected ${this.binding ?? "<none>"}`); return this.owner.requestClearMark(id); }
   observeReturnedMark(name) { const event = this.owner.observeReturnedMark(name); if (!event) return null; this.binding = null; return Object.freeze({ ...event, kind: "NORMAL" }); }
   activeResponseId() { return this.owner.activeResponseId(); }
   snapshot() { return Object.freeze({ binding: this.binding, pendingChunks: this.pending.length, pendingBytes: this.pendingBytes, playback: this.owner.snapshot() }); }
+}
+
+export function commitDeferredCallerTurn(gemini, turn, assertBackpressure) {
+  if (!turn || !Array.isArray(turn.mediaPayloads) || turn.mediaPayloads.length === 0) throw new Error("Gemini caller turn has no replayable audio");
+  assertBackpressure(gemini, "Gemini Live"); safeSend(gemini, { realtimeInput: { activityStart: {} } });
+  for (const payload of turn.mediaPayloads) {
+    const pcm16le = swapPcm16Endianness(decodeBase64(payload));
+    assertBackpressure(gemini, "Gemini Live"); safeSend(gemini, { realtimeInput: { audio: { data: encodeBase64(pcm16le), mimeType: "audio/pcm;rate=16000" } } });
+  }
+  assertBackpressure(gemini, "Gemini Live"); safeSend(gemini, { realtimeInput: { activityEnd: {} } });
 }
 
 export function createGeminiMediaEdgeRuntime(options) {
@@ -53,7 +64,37 @@ export function createGeminiMediaEdgeRuntime(options) {
     const closeBoth = () => { if (state.closed) return; state.closed = true; state.buffered.clear(); try { state.controlAttachment?.detach?.(); } catch {} state.controlAttachment = null; sessions.delete(state); try { if (telnyx.readyState === OPEN || telnyx.readyState === CONNECTING) telnyx.close(); } catch {} try { if (state.gemini?.readyState === OPEN || state.gemini?.readyState === CONNECTING) state.gemini.close(); } catch {} };
     const assertBackpressure = (socket, label) => { if (socket.bufferedAmount > maxBufferedBytes) throw new Error(`${label} backpressure limit exceeded`); };
     const emitPlaybackChunks = (chunks) => { for (const chunk of chunks) { assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "media", media: { payload: encodeBase64(swapPcm16Endianness(chunk.pcm)) } }); const noted = state.playback.noteQueued(chunk.responseId); if (noted.first) options.emitControlEvent?.(state.claims, { type: "PLAYBACK_EVENT", event: { type: "ASSISTANT_AUDIO_STARTED", kind: "NORMAL", responseId: chunk.responseId } }); } };
-    const submitControlCommand = (command) => { if (!state.setupComplete || state.gemini?.readyState !== OPEN) throw new Error("Gemini Live control command requires setupComplete"); if (command.type === "TOOL_RESULT") { assertBackpressure(state.gemini, "Gemini Live"); safeSend(state.gemini, { toolResponse: { functionResponses: [{ id: command.callId, name: command.toolName, response: { result: command.output } }] } }); return; } if (command.type === "PLAYBACK_BINDING") { emitPlaybackChunks(state.playback.bind(command.responseId)); return; } if (command.type === "PLAYBACK_DRAIN") { const mark = state.playback.finish(command.responseId); if (mark) { assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "mark", mark: { name: mark } }); } return; } throw new Error("Gemini Live control command is unsupported"); };
+    const submitControlCommand = (command) => {
+      if (!state.setupComplete || state.gemini?.readyState !== OPEN) throw new Error("Gemini Live control command requires setupComplete");
+      if (command.type === "TOOL_RESULT") { assertBackpressure(state.gemini, "Gemini Live"); safeSend(state.gemini, { toolResponse: { functionResponses: [{ id: command.callId, name: command.toolName, response: { result: command.output } }] } }); return; }
+      if (command.type === "PLAYBACK_BINDING") { emitPlaybackChunks(state.playback.bind(command.responseId)); return; }
+      if (command.type === "PLAYBACK_DRAIN") { const mark = state.playback.finish(command.responseId); if (mark) { assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "mark", mark: { name: mark } }); } return; }
+      if (command.type === "CALLER_TURN_DECISION") {
+        if (command.decision === "IGNORE") { state.callerInput.resolve(command.itemId, "IGNORE"); return; }
+        if (command.decision === "NORMAL") {
+          if (state.playback.activeResponseId()) throw new Error("Gemini normal caller turn requires idle playback");
+          const turn = state.callerInput.resolve(command.itemId, "NORMAL");
+          if (turn.playbackResponseIdAtStart) throw new Error("Gemini normal caller turn began during playback");
+          commitDeferredCallerTurn(state.gemini, turn, assertBackpressure);
+          return;
+        }
+        if (command.decision === "INTERRUPT") {
+          const responseId = required(command.responseId, "Gemini interruption response id");
+          if (state.playback.activeResponseId() !== responseId) throw new Error(`Gemini interruption playback identity mismatch: expected ${state.playback.activeResponseId() ?? "<none>"}`);
+          const turn = state.callerInput.resolve(command.itemId, "INTERRUPT");
+          if (turn.playbackResponseIdAtStart !== responseId) throw new Error(`Gemini interruption caller identity mismatch: expected ${turn.playbackResponseIdAtStart ?? "<none>"}`);
+          // Preserve the proven effect order: commit authorized activity to Gemini
+          // first. Only after all provider sends succeed may Telnyx playout clear.
+          commitDeferredCallerTurn(state.gemini, turn, assertBackpressure);
+          assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "clear" });
+          const clearMark = state.playback.requestClear(responseId);
+          assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "mark", mark: { name: clearMark } });
+          return;
+        }
+        throw new Error("Gemini caller turn decision is unsupported");
+      }
+      throw new Error("Gemini Live control command is unsupported");
+    };
     const openGemini = (bootstrap) => { if (state.gemini) throw new Error("Gemini Live connection is one-shot"); state.bootstrap = bootstrap; state.controlAttachment = options.bindControlSession?.(state.claims, submitControlCommand) ?? null; const geminiUrl = new URL(GEMINI_ENDPOINT); geminiUrl.searchParams.set("key", apiKey); const gemini = new WebSocket(geminiUrl, { perMessageDeflate: false }); state.gemini = gemini;
       gemini.on("open", () => { try { if (state.setupSent) throw new Error("Gemini Live setup is one-shot"); safeSend(gemini, buildGeminiInitialSetup(bootstrap, model)); state.setupSent = true; } catch { closeBoth(); } });
       gemini.on("message", (raw) => { try { const message = parseJson(raw, "Gemini Live"); const controlEnvelope = geminiControlEnvelope(message); if (isGeminiSetupComplete(message)) { if (!state.setupSent || state.setupComplete) throw new Error("Gemini Live setupComplete is out of order"); state.setupComplete = true; options.emitControlEvent?.(state.claims, controlEnvelope); return; } if (!state.setupComplete) throw new Error("Gemini Live message arrived before setupComplete"); const delivered = options.emitControlEvent?.(state.claims, controlEnvelope); const audioPayloads = geminiAudioPayloads(message); if (audioPayloads.length > 0 && delivered !== true && !state.playback.activeResponseId()) throw new Error("Gemini output audio requires active control sideband"); for (const payload of audioPayloads) { const pcm16le16k = state.resampler.push(decodeBase64(payload)); if (pcm16le16k.length === 0) continue; state.playback.queue(pcm16le16k); } emitPlaybackChunks(state.playback.flush()); } catch { closeBoth(); } }); gemini.on("error", closeBoth); gemini.on("close", closeBoth); };
