@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { OpenAIRealtimeCommandAdapter } from "../.test-dist/openai-realtime-command-adapter.js";
 import { GeminiLiveCommandAdapter } from "../.test-dist/gemini-live-command-adapter.js";
 
@@ -46,4 +46,19 @@ test("Gemini refuses to fake the semantic gate through Live session mutation", (
     /semantic tool gate has no proven neutral mapping before provider-specific semantic gate conformance/,
   );
   assert.deepEqual(h.events, []);
+});
+
+test("direct REQUIRED session tool choice is fenced to the four inherited legacy layers", () => {
+  const srcDir = new URL("./", import.meta.url);
+  const offenders = readdirSync(srcDir)
+    .filter((name) => /^call-session-v.*\.ts$/.test(name))
+    .filter((name) => /toolChoice:\s*["']REQUIRED["']/.test(readFileSync(new URL(name, srcDir), "utf8")))
+    .sort();
+
+  assert.deepEqual(offenders, [
+    "call-session-v11.ts",
+    "call-session-v13.ts",
+    "call-session-v5.ts",
+    "call-session-v7.ts",
+  ]);
 });
