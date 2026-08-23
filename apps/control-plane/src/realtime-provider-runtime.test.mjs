@@ -22,22 +22,29 @@ function host() {
 function wire(event) { return JSON.stringify(event); }
 function responseCreates(events) { return events.filter((event) => event?.type === "response.create"); }
 
-test("provider runtime keeps OpenAI as the only active provider during Gate A", () => {
+test("provider runtime keeps OpenAI as the active traffic baseline during G1", () => {
   assert.equal(ACTIVE_REALTIME_PROVIDER, "OPENAI");
 });
 
-test("Gate A binds the selected provider before command runtime creation", () => {
+test("G1 binds the selected enabled provider before command runtime creation", () => {
   const h = host();
   bindRealtimeProvider(h, "OPENAI");
   assert.equal(realtimeProviderFor(h), "OPENAI");
   const port = realtimeCommandPortFor(h);
-  port.speak({ instructions: "hola", tools: "DISABLED", purpose: "provider-selector-gate-a" });
+  port.speak({ instructions: "hola", tools: "DISABLED", purpose: "provider-selector-g1" });
   assert.equal(h.events[0]?.type, "response.create");
 });
 
-test("Gate A rejects an unregistered provider at the runtime boundary", () => {
+test("G1 rejects registered Gemini until its traffic gates are enabled", () => {
   const h = host();
-  assert.throws(() => bindRealtimeProvider(h, "GEMINI"), /not registered/);
+  assert.throws(() => bindRealtimeProvider(h, "GEMINI"), /registered but not enabled for traffic/);
+  assert.equal(realtimeProviderFor(h), "OPENAI");
+});
+
+test("G1 provider binding is immutable even before command runtime creation", () => {
+  const h = host();
+  bindRealtimeProvider(h, "OPENAI");
+  assert.throws(() => bindRealtimeProvider(h, "GEMINI"), /already bound as OPENAI/);
   assert.equal(realtimeProviderFor(h), "OPENAI");
 });
 
