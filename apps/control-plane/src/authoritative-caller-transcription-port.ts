@@ -1,16 +1,19 @@
+export type AuthoritativeCallerAudio = Readonly<{
+  encoding: "L16";
+  sampleRateHz: 16_000;
+  channels: 1;
+  payloads: readonly string[];
+}>;
+
 export type AuthoritativeCallerTranscriptionRequest = Readonly<{
   itemId: string;
-  audio: Readonly<{
-    encoding: "L16";
-    sampleRateHz: 16_000;
-    channels: 1;
-    payloads: readonly string[];
-  }>;
+  audio: AuthoritativeCallerAudio;
 }>;
 
 export type AuthoritativeCallerTranscriptEvidence = Readonly<{
   itemId: string;
   transcript: string;
+  audio: AuthoritativeCallerAudio;
 }>;
 
 export interface AuthoritativeCallerTranscriptionDelegate {
@@ -55,8 +58,11 @@ function normalizeRequest(request: AuthoritativeCallerTranscriptionRequest): Aut
  *
  * The delegate is the only place allowed to contact an eventual transcription
  * provider. This wrapper enforces exact candidate identity, non-empty transcript
- * evidence, immutable audio input and one explicit PCM contract. It uses no Gemini
- * Live transcript chunks, timers or model turn-completion signals.
+ * evidence, immutable audio input and one explicit PCM contract. The resulting
+ * evidence carries the exact canonical audio that was submitted, so downstream
+ * ownership can prove the transcript belongs to the buffered candidate rather
+ * than merely sharing its item id. It uses no Gemini Live transcript chunks,
+ * timers or model turn-completion signals.
  */
 export function createAuthoritativeCallerTranscriptionPort(
   delegate: AuthoritativeCallerTranscriptionDelegate,
@@ -73,7 +79,11 @@ export function createAuthoritativeCallerTranscriptionPort(
         throw new Error(`Authoritative caller transcription identity mismatch: expected ${normalized.itemId}`);
       }
       if (!transcript) throw new Error("Authoritative caller transcription returned empty transcript");
-      const evidence = Object.freeze({ itemId, transcript });
+      const evidence = Object.freeze({
+        itemId,
+        transcript,
+        audio: normalized.audio,
+      });
       VERIFIED_TRANSCRIPTS.add(evidence);
       return evidence;
     },
