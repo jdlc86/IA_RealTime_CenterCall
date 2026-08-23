@@ -19,6 +19,8 @@ export type ProviderCapabilities = Readonly<{
   governedSpeech: boolean;
   isolatedTextDecision: boolean;
   semanticToolGate: boolean;
+  initialInstructionBootstrap: boolean;
+  toolCatalogBootstrap: boolean;
   runtimeInstructionPolicyUpdate: boolean;
   runtimeToolCatalogUpdate: boolean;
   correlatedResponseLifecycle: boolean;
@@ -37,6 +39,8 @@ const OPENAI_CAPABILITIES = Object.freeze({
   governedSpeech: true,
   isolatedTextDecision: true,
   semanticToolGate: true,
+  initialInstructionBootstrap: true,
+  toolCatalogBootstrap: true,
   runtimeInstructionPolicyUpdate: true,
   runtimeToolCatalogUpdate: true,
   correlatedResponseLifecycle: true,
@@ -55,6 +59,8 @@ const GEMINI_CAPABILITIES = Object.freeze({
   governedSpeech: false,
   isolatedTextDecision: false,
   semanticToolGate: false,
+  initialInstructionBootstrap: true,
+  toolCatalogBootstrap: true,
   runtimeInstructionPolicyUpdate: false,
   runtimeToolCatalogUpdate: false,
   correlatedResponseLifecycle: false,
@@ -73,11 +79,15 @@ const CAPABILITIES_BY_PROVIDER: Readonly<Record<RealtimeProviderName, ProviderCa
  * a bridge. toolCallCancellation is also optional because the core can safely treat
  * cancellation as evidence while preserving ToolGateway ownership.
  *
- * The two runtime session-policy capabilities are intentionally separate. Today the
- * active call runtime still mutates both instructions and the tool catalog after the
- * provider session exists. A future provider may instead compose either concern into
- * immutable bootstrap; that architecture must be proven before either runtime gate is
- * removed from traffic readiness.
+ * Initial instructions and the tool catalog are bootstrap concerns. They may be
+ * composed into an immutable provider session before the call runtime becomes ready,
+ * so live traffic requires bootstrap support rather than runtime mutation support.
+ * Runtime tool-catalog mutation remains an optional provider capability.
+ *
+ * Runtime instruction updates remain required today because V48 refreshes the
+ * authoritative Madrid clock at caller-turn boundaries. That gate can only be
+ * removed after temporal grounding is expressed through a provider-neutral runtime
+ * context capability with equivalent semantics.
  */
 export const REALTIME_TRAFFIC_REQUIRED_CAPABILITIES = Object.freeze([
   "audioInput",
@@ -90,8 +100,9 @@ export const REALTIME_TRAFFIC_REQUIRED_CAPABILITIES = Object.freeze([
   "governedSpeech",
   "isolatedTextDecision",
   "semanticToolGate",
+  "initialInstructionBootstrap",
+  "toolCatalogBootstrap",
   "runtimeInstructionPolicyUpdate",
-  "runtimeToolCatalogUpdate",
   "correlatedResponseLifecycle",
 ] as const satisfies readonly (keyof ProviderCapabilities)[]);
 
