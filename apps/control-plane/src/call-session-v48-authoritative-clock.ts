@@ -2,8 +2,8 @@ import { CallSession as CallSessionV46 } from "./call-session-v46-sideband-lifec
 import {
   adaptRealtimeProviderEvents,
   installRealtimeSessionPolicyTransform,
-  realtimeCommandPortFor,
 } from "./realtime-provider-runtime.js";
+import { authoritativeTemporalContextPortFor } from "./authoritative-temporal-context-runtime.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 import {
   authoritativeMadridNowContext,
@@ -24,9 +24,10 @@ function hasUsableTranscript(value: unknown): boolean {
  * It does not become the backend authority for reservation validity:
  * ReservationDatetimeRuntime and the reservation backend still reject invalid,
  * past or out-of-hours datetimes.
- * Session instructions and caller-turn refreshes pass exclusively through the
- * provider-neutral runtime. Retired v47 reservation-search state is bypassed;
- * shared semantic tool authority is owned by the neutral authorization runtime.
+ * Initial instructions are enriched through the neutral bootstrap/session transform.
+ * Caller-turn refreshes use the semantic temporal-context port, not a provider wire
+ * operation. Retired v47 reservation-search state is bypassed; shared semantic tool
+ * authority is owned by the neutral authorization runtime.
  */
 export class CallSession extends BaseConstructor {
   private temporalPolicyTransformInstalledV48 = false;
@@ -71,8 +72,9 @@ export class CallSession extends BaseConstructor {
     this.lastRefreshedItemIdV48 = itemId;
     const now = new Date();
     const temporal = authoritativeMadridNowContext(now);
-    realtimeCommandPortFor(session).updateSessionPolicy({
-      instructions: withAuthoritativeNowContext(this.latestBaseInstructionsV48, now),
+    authoritativeTemporalContextPortFor(session).refresh({
+      baseInstructions: this.latestBaseInstructionsV48,
+      now,
     });
     session.diagnostics?.checkpoint?.("AUTHORITATIVE_CLOCK_REFRESHED_FOR_CALLER_TURN_V48", {
       item_id: itemId,
@@ -84,7 +86,7 @@ export class CallSession extends BaseConstructor {
       refresh_boundary: "completed_usable_caller_transcription",
       backend_validation_still_authoritative: true,
       lifecycle_authority: "conversation_lifecycle_port",
-      provider_command_port: true,
+      provider_temporal_context_port: true,
     });
   }
 
