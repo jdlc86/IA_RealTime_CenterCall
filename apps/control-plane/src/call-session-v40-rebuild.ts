@@ -18,6 +18,7 @@ import { turnOwnershipRuntimeFor } from "./turn-ownership-runtime.js";
 import { inputDetectionConfigRuntimeFor } from "./input-detection-config-runtime.js";
 import { bargeInOrderingRuntimeFor } from "./barge-in-ordering-runtime.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
+import { executeCallerTurnDisposition } from "./caller-turn-disposition-execution.js";
 
 const BaseConstructor = CallSessionV39 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV39.prototype as any;
@@ -172,6 +173,21 @@ export class CallSession extends BaseConstructor {
     });
   }
 
+  private executeIgnoredCallerDispositionV40(itemId: string): void {
+    executeCallerTurnDisposition(
+      this as any,
+      { itemId, disposition: "IGNORE" },
+      () => { try { realtimeCommandPortFor(this as any).discardInputItem(itemId); } catch {} },
+    );
+  }
+
+  private executeNormalCallerDispositionV40(event: Extract<RealtimeProviderEvent, { type: "CALLER_TRANSCRIPT_COMPLETED" }>): void {
+    const itemId = typeof event.itemId === "string" ? event.itemId : "";
+    if (!itemId || !usableTranscript(event.transcript)) return;
+    if (responseCoordinatorFor(this).snapshot().state === "BARGE_IN_CLASSIFYING") return;
+    executeCallerTurnDisposition(this as any, { itemId, disposition: "NORMAL" }, () => {});
+  }
+
   private requestClassifierV40(event: Extract<RealtimeProviderEvent, { type: "CALLER_TRANSCRIPT_COMPLETED" }>, data: unknown): boolean {
     const owner = responseCoordinatorFor(this).snapshot();
     if (owner.state !== "BARGE_IN_CLASSIFYING") return false;
@@ -188,7 +204,7 @@ export class CallSession extends BaseConstructor {
         });
         return false;
       }
-      try { realtimeCommandPortFor(this as any).discardInputItem(itemId); } catch {}
+      this.executeIgnoredCallerDispositionV40(itemId);
       (this as any).diagnostics?.checkpoint?.("BARGE_IN_EXTRA_CANDIDATE_DROPPED_V40_REBUILD", {
         item_id: itemId, pending_item_id: this.pendingBargeInV40.itemId,
       });
@@ -321,7 +337,7 @@ export class CallSession extends BaseConstructor {
     const result = coordinator.applyBargeInDecision("IGNORE");
     if (!result.accepted) return false;
     this.reportOwnerEffectsV40(result.effects);
-    if (itemId) { try { realtimeCommandPortFor(this as any).discardInputItem(itemId); } catch {} }
+    if (itemId) this.executeIgnoredCallerDispositionV40(itemId);
     this.executePostSemanticEffectsV40([...result.executable]);
     this.recoverIgnoredProviderClearedPlaybackV40("unclassifiable_candidate", itemId || null);
     (this as any).diagnostics?.checkpoint?.("BARGE_IN_UNCLASSIFIABLE_IGNORED_V40_REBUILD", {
@@ -347,7 +363,7 @@ export class CallSession extends BaseConstructor {
     }
     this.reportOwnerEffectsV40(result.effects);
     if (decision === "IGNORE") {
-      try { realtimeCommandPortFor(this as any).discardInputItem(pending.itemId); } catch {}
+      this.executeIgnoredCallerDispositionV40(pending.itemId);
       this.executePostSemanticEffectsV40([...result.executable]);
       this.recoverIgnoredProviderClearedPlaybackV40("classified_ignore", pending.itemId);
       (this as any).diagnostics?.checkpoint?.("BARGE_IN_IGNORED_V40_REBUILD", {
@@ -359,7 +375,14 @@ export class CallSession extends BaseConstructor {
     }
 
     this.providerClearedPlaybackBeforeDecisionV40 = false;
-    this.executePreSemanticEffectsV40([...result.executable]);
+    const dispositionExecutor = executeCallerTurnDisposition(
+      this as any,
+      { itemId: pending.itemId, disposition: "INTERRUPT" },
+      () => this.executePreSemanticEffectsV40([...result.executable]),
+    );
+    const postSemanticEffects = dispositionExecutor === "CAPABILITY"
+      ? result.executable.filter((effect) => effect.type !== "create_caller_response")
+      : [...result.executable];
     const ordering = bargeInOrderingRuntimeFor(this);
     const latestStarted = ordering.latestStarted();
     const latestCompleted = ordering.latestCompleted();
@@ -371,24 +394,26 @@ export class CallSession extends BaseConstructor {
         target_transcript_already_completed: latestCompleted === targetItemId,
         cancelled_response_id: this.cancelledResponseIdV40(result.effects),
         response_creation_deferred: latestCompleted !== targetItemId, timer_used: false,
+        caller_disposition_executor: dispositionExecutor,
       });
       if (latestCompleted === targetItemId) {
-        this.executePostSemanticEffectsV40([...result.executable]);
+        this.executePostSemanticEffectsV40(postSemanticEffects);
         this.reportConfirmedBargeInV40({
           classifierSourceItemId: pending.itemId, semanticItemId: targetItemId,
-          effects: [...result.executable], turnOwnershipBypassed: false, deferredToNewerSpeech: true,
+          effects: postSemanticEffects, turnOwnershipBypassed: false, deferredToNewerSpeech: true,
         });
         (this as any).diagnostics?.checkpoint?.("BARGE_IN_NEWER_COMPLETED_FRAGMENT_RESPONSE_RELEASED_V40_REBUILD", {
           classifier_source_item_id: pending.itemId, item_id: targetItemId,
-          semantic_pipeline_already_entered: true, response_creation_released: true,
+          semantic_pipeline_already_entered: true, response_creation_released: dispositionExecutor === "LEGACY",
+          caller_disposition_executor: dispositionExecutor,
           v36_turn_lock_bypassed: false, timer_used: false,
         });
         return;
       }
-      this.deferredConfirmedBargeInV40 = { source: pending, targetItemId, postSemanticEffects: [...result.executable] };
+      this.deferredConfirmedBargeInV40 = { source: pending, targetItemId, postSemanticEffects };
       return;
     }
-    await this.promoteConfirmedSourceV40(pending, [...result.executable]);
+    await this.promoteConfirmedSourceV40(pending, postSemanticEffects);
   }
 
   private async handleRealtimeMessage(data: unknown): Promise<void> {
@@ -419,6 +444,7 @@ export class CallSession extends BaseConstructor {
         if (await this.handleDeferredConfirmedTranscriptV40(event, data)) return;
         if (this.resolveUnclassifiableCandidateV40(event)) return;
         if (this.requestClassifierV40(event, data)) return;
+        this.executeNormalCallerDispositionV40(event);
       }
       if (event.type === "ASSISTANT_RESPONSE_STARTED" && id) {
         if (event.kind !== "NORMAL") this.protectedResponseIdsV40.add(id);
