@@ -4,12 +4,15 @@ import { readFileSync } from "node:fs";
 
 const source = readFileSync(new URL("./semantic-turn-coordinator.ts", import.meta.url), "utf8");
 
-test("semantic turn coordinator emits provider commands only through the neutral command port", () => {
+test("semantic turn coordinator emits provider commands only through neutral capability boundaries", () => {
+  assert.match(source, /semanticToolGatePortFor/);
+  assert.match(source, /\.arm\(\)/);
+  assert.match(source, /\.release\(\)/);
   assert.match(source, /realtimeCommandPortFor/);
-  assert.match(source, /updateSessionPolicy\(\{ toolChoice \}\)/);
   assert.match(source, /port\.submitToolResult/);
   assert.match(source, /toolName: event\.name/);
 
+  assert.doesNotMatch(source, /updateSessionPolicy\(\{\s*toolChoice/);
   assert.doesNotMatch(source, /session\.send/);
   assert.doesNotMatch(source, /s\.send/);
   assert.doesNotMatch(source, /session\.update/);
@@ -18,8 +21,10 @@ test("semantic turn coordinator emits provider commands only through the neutral
   assert.doesNotMatch(source, /response\.create/);
 });
 
-test("semantic gate still maps required and auto choices through neutral policy values", () => {
-  assert.match(source, /updateToolChoice\(session, "REQUIRED"\)/);
-  assert.match(source, /updateToolChoice\(session, "AUTO"\)/);
-  assert.match(source, /toolChoice: "AUTO" \| "REQUIRED"/);
+test("semantic gate asks for semantic enforcement instead of naming provider tool-choice wire", () => {
+  assert.match(source, /semanticToolGatePortFor\(session as any\)\.arm\(\)/);
+  assert.match(source, /semanticToolGatePortFor\(session as any\)\.release\(\)/);
+  assert.match(source, /provider_capability_boundary: "semantic_tool_gate_port"/);
+  assert.doesNotMatch(source, /"REQUIRED"/);
+  assert.doesNotMatch(source, /"AUTO"/);
 });
