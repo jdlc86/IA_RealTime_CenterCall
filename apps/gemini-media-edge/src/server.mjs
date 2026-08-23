@@ -1,15 +1,44 @@
 import http from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import { createGeminiMediaEdgeRuntime } from "./runtime.mjs";
 import { createHmacCredentialVerifier, InMemoryOneShotCredentialConsumer } from "./credential.mjs";
+import { InMemoryBootstrapRegistry } from "./bootstrap.mjs";
+
+function required(value, field) {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`);
+  return value.trim();
+}
+
+function secureTokenEqual(actual, expected) {
+  const left = Buffer.from(actual ?? "", "utf8");
+  const right = Buffer.from(expected, "utf8");
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+async function readJsonBody(request, maxBytes = 262_144) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of request) {
+    total += chunk.length;
+    if (total > maxBytes) throw new Error("Gemini media edge bootstrap body is too large");
+    chunks.push(chunk);
+  }
+  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+  catch { throw new Error("Gemini media edge bootstrap body is invalid JSON"); }
+}
 
 const port = Number(process.env.PORT ?? "8080");
 if (!Number.isSafeInteger(port) || port <= 0 || port > 65535) throw new Error("PORT must be a valid TCP port");
 
 if (process.env.MEDIA_EDGE_SINGLE_INSTANCE !== "true") {
-  throw new Error("MEDIA_EDGE_SINGLE_INSTANCE=true is required until a durable shared one-shot credential consumer is configured");
+  throw new Error("MEDIA_EDGE_SINGLE_INSTANCE=true is required until durable shared credential/bootstrap stores are configured");
 }
 
+const controlPlaneToken = required(process.env.MEDIA_EDGE_CONTROL_PLANE_TOKEN, "MEDIA_EDGE_CONTROL_PLANE_TOKEN");
+if (Buffer.byteLength(controlPlaneToken, "utf8") < 32) throw new Error("MEDIA_EDGE_CONTROL_PLANE_TOKEN must be at least 32 bytes");
+
 const credentialConsumer = new InMemoryOneShotCredentialConsumer();
+const bootstrapRegistry = new InMemoryBootstrapRegistry();
 const verifyCredential = createHmacCredentialVerifier(
   process.env.MEDIA_EDGE_CREDENTIAL_HMAC_SECRET,
   process.env.MEDIA_EDGE_PUBLIC_URL,
@@ -20,16 +49,37 @@ const runtime = createGeminiMediaEdgeRuntime({
   verifyCredential,
   consumeCredentialOnce: (credentialId, notAfterEpochMs, nowEpochMs) =>
     credentialConsumer.consume(credentialId, notAfterEpochMs, nowEpochMs),
+  consumeBootstrapForClaims: (claims, nowEpochMs) => bootstrapRegistry.consumeForClaims(claims, nowEpochMs),
   model: process.env.GEMINI_LIVE_MODEL,
   maxBufferedBytes: process.env.MEDIA_EDGE_MAX_BUFFERED_BYTES ? Number(process.env.MEDIA_EDGE_MAX_BUFFERED_BYTES) : undefined,
 });
 
-const server = http.createServer((request, response) => {
-  if (request.url === "/healthz") {
+const server = http.createServer(async (request, response) => {
+  if (request.url === "/healthz" && request.method === "GET") {
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify({ ok: true, service: "gemini-media-edge", activeSessions: runtime.activeSessions() }));
     return;
   }
+
+  if (request.url === "/internal/bootstrap" && request.method === "POST") {
+    const authorization = typeof request.headers.authorization === "string" ? request.headers.authorization.trim() : "";
+    const supplied = authorization.replace(/^Bearer\s+/i, "");
+    if (!/^Bearer\s+/i.test(authorization) || !secureTokenEqual(supplied, controlPlaneToken)) {
+      response.writeHead(401, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+      return;
+    }
+    try {
+      const bootstrap = bootstrapRegistry.register(await readJsonBody(request), Date.now());
+      response.writeHead(201, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ ok: true, credentialId: bootstrap.credentialId }));
+    } catch {
+      response.writeHead(400, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ ok: false, error: "invalid_bootstrap" }));
+    }
+    return;
+  }
+
   response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
   response.end("not found");
 });
