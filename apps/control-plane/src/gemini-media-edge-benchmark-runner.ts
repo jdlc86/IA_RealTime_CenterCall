@@ -78,6 +78,13 @@ function positiveInteger(value: unknown, field: string): number {
   return value;
 }
 
+function nonNegativeInteger(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${field} must be a non-negative safe integer`);
+  }
+  return value;
+}
+
 function finiteNonNegative(value: unknown, field: string): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
     throw new Error(`${field} must be a finite non-negative number`);
@@ -200,8 +207,8 @@ export async function runGeminiMediaEdgeBenchmarkCandidate(
       append(raw.jitterMs, observation.jitterMs);
       append(raw.cpuPercent, observation.cpuPercent);
       append(raw.memoryMiB, observation.memoryMiB);
-      reorderedFrames += positiveInteger(observation.reorderedFrames + 1, "benchmark reorderedFrames sentinel") - 1;
-      droppedFrames += positiveInteger(observation.droppedFrames + 1, "benchmark droppedFrames sentinel") - 1;
+      reorderedFrames += nonNegativeInteger(observation.reorderedFrames, "benchmark reorderedFrames");
+      droppedFrames += nonNegativeInteger(observation.droppedFrames, "benchmark droppedFrames");
       if (observation.slowPeerClosed) slowPeerClosures += 1;
       if (observation.orphanedSession) orphanedSessions += 1;
     }
