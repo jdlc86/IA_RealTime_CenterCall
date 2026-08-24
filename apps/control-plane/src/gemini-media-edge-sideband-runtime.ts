@@ -1,5 +1,6 @@
 import type { RealtimeProviderCommandPort } from "./realtime-provider-command-port.js";
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
+import type { SemanticToolGatePort } from "./semantic-tool-gate-port.js";
 import {
   GeminiLiveSessionRuntime,
   type GeminiLiveSessionRuntimeObservation,
@@ -10,7 +11,9 @@ export type GeminiMediaEdgeSidebandOutbound =
   | Readonly<{ type: "TOOL_RESULT"; callId: string; toolName: string; output: unknown }>
   | Readonly<{ type: "PLAYBACK_BINDING"; responseId: string; kind: "NORMAL" }>
   | Readonly<{ type: "PLAYBACK_DRAIN"; responseId: string }>
-  | Readonly<{ type: "CALLER_TURN_DECISION"; itemId: string; decision: GeminiMediaEdgeCallerDecision; responseId: string | null }>;
+  | Readonly<{ type: "CALLER_TURN_DECISION"; itemId: string; decision: GeminiMediaEdgeCallerDecision; responseId: string | null }>
+  | Readonly<{ type: "SEMANTIC_GATE_ARM" }>
+  | Readonly<{ type: "SEMANTIC_GATE_RELEASE" }>;
 export type GeminiMediaEdgeSidebandSend = (message: GeminiMediaEdgeSidebandOutbound) => void;
 export type GeminiMediaEdgeCallerContext = Readonly<{ itemId: string; playbackResponseIdAtStart: string | null }>;
 
@@ -45,6 +48,7 @@ export class GeminiMediaEdgeSidebandRuntime {
   private readonly callerContexts = new Map<string, GeminiMediaEdgeCallerContext>();
   private activePlaybackResponseId: string | null = null;
   readonly commandPort: RealtimeProviderCommandPort;
+  readonly semanticToolGatePort: SemanticToolGatePort;
 
   constructor(send: GeminiMediaEdgeSidebandSend) {
     if (typeof send !== "function") throw new Error("Gemini media edge sideband sender is required");
@@ -52,6 +56,10 @@ export class GeminiMediaEdgeSidebandRuntime {
     this.runtime = new GeminiLiveSessionRuntime({ send: (message) => send(outboundToolResult(message)) }, { model: "external-media-edge" });
     this.runtime.adoptExternalSetupSent();
     this.commandPort = this.runtime.commandPort;
+    this.semanticToolGatePort = Object.freeze({
+      arm: () => this.send(Object.freeze({ type: "SEMANTIC_GATE_ARM" })),
+      release: () => this.send(Object.freeze({ type: "SEMANTIC_GATE_RELEASE" })),
+    });
   }
 
   observe(frameValue: unknown): GeminiLiveSessionRuntimeObservation {
