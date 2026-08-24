@@ -23,6 +23,10 @@ import {
   removeSemanticToolGatePort,
 } from "./semantic-tool-gate-runtime.js";
 import {
+  installGovernedSpeechPort,
+  removeGovernedSpeechPort,
+} from "./governed-speech-runtime.js";
+import {
   installIsolatedTextGenerationPort,
   removeIsolatedTextGenerationPort,
 } from "./isolated-text-generation-runtime.js";
@@ -80,8 +84,8 @@ function closeForObservationFailure(socket: WebSocket): void {
  *
  * When capabilityHost is supplied, this connector owns the session-scoped Gemini
  * command port, caller disposition effect boundary, isolated semantic-decision,
- * isolated text-generation capability and product-owned semantic tool gate for
- * exactly this sideband lifetime.
+ * isolated text-generation, governed speech capability and product-owned semantic
+ * tool gate for exactly this sideband lifetime.
  */
 export async function connectGeminiMediaEdgeSideband(
   input: GeminiMediaEdgeSidebandConnectionInput,
@@ -129,6 +133,7 @@ export async function connectGeminiMediaEdgeSideband(
   let dispositionCapabilityInstalled = false;
   let semanticDecisionCapabilityInstalled = false;
   let semanticToolGateCapabilityInstalled = false;
+  let governedSpeechCapabilityInstalled = false;
   let isolatedGenerationCapabilityInstalled = false;
   if (input.capabilityHost) {
     try {
@@ -144,6 +149,8 @@ export async function connectGeminiMediaEdgeSideband(
       }
       installSemanticToolGatePort(input.capabilityHost, runtime.semanticToolGatePort);
       semanticToolGateCapabilityInstalled = true;
+      installGovernedSpeechPort(input.capabilityHost, "GEMINI", runtime.governedSpeechPort);
+      governedSpeechCapabilityInstalled = true;
       if (isolatedGenerationCapability) {
         installIsolatedTextGenerationPort(input.capabilityHost, isolatedGenerationCapability);
         isolatedGenerationCapabilityInstalled = true;
@@ -153,6 +160,9 @@ export async function connectGeminiMediaEdgeSideband(
         removeIsolatedTextGenerationPort(input.capabilityHost, isolatedGenerationCapability);
       }
       isolatedGenerationCapability?.close();
+      if (governedSpeechCapabilityInstalled) {
+        removeGovernedSpeechPort(input.capabilityHost, "GEMINI", runtime.governedSpeechPort);
+      }
       semanticDecisionCapability?.close();
       if (semanticToolGateCapabilityInstalled) {
         removeSemanticToolGatePort(input.capabilityHost, runtime.semanticToolGatePort);
@@ -181,6 +191,10 @@ export async function connectGeminiMediaEdgeSideband(
       isolatedGenerationCapabilityInstalled = false;
     }
     isolatedGenerationCapability?.close();
+    if (input.capabilityHost && governedSpeechCapabilityInstalled) {
+      removeGovernedSpeechPort(input.capabilityHost, "GEMINI", runtime.governedSpeechPort);
+      governedSpeechCapabilityInstalled = false;
+    }
     semanticDecisionCapability?.close();
     if (input.capabilityHost && semanticToolGateCapabilityInstalled) {
       removeSemanticToolGatePort(input.capabilityHost, runtime.semanticToolGatePort);
