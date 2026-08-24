@@ -55,7 +55,7 @@ test("OpenAI capabilities describe product-validated semantics rather than vendo
   assert.equal(openai.toolCallCancellation, false);
 });
 
-test("Gemini claims only product-proven media, caller authority, interruption, isolated decision, bootstrap, function and lifecycle semantics", () => {
+test("Gemini claims only product-proven media, caller authority, interruption, isolated decision, semantic gate, bootstrap, function and lifecycle semantics", () => {
   const gemini = realtimeProviderCapabilities("GEMINI");
   assert.equal(gemini.audioInput, true);
   assert.equal(gemini.audioOutput, true);
@@ -64,6 +64,7 @@ test("Gemini claims only product-proven media, caller authority, interruption, i
   assert.equal(gemini.inputTranscription, true);
   assert.equal(gemini.outputTranscription, true);
   assert.equal(gemini.isolatedTextDecision, true);
+  assert.equal(gemini.semanticToolGate, true);
   assert.equal(gemini.initialInstructionBootstrap, true);
   assert.equal(gemini.toolCatalogBootstrap, true);
   assert.equal(gemini.functionCalling, true);
@@ -77,6 +78,7 @@ test("Gemini claims only product-proven media, caller authority, interruption, i
       "inputTranscription",
       "outputTranscription",
       "isolatedTextDecision",
+      "semanticToolGate",
       "initialInstructionBootstrap",
       "toolCatalogBootstrap",
       "functionCalling",
@@ -136,10 +138,10 @@ test("OpenAI is traffic-ready under the current validated baseline", () => {
   assert.equal(requireRealtimeProviderTrafficReadiness("OPENAI"), realtimeProviderCapabilities("OPENAI"));
 });
 
-test("Gemini traffic readiness remains closed after isolated decision proof", () => {
+test("Gemini traffic readiness remains closed after semantic gate proof", () => {
   assert.throws(
     () => requireRealtimeProviderTrafficReadiness("GEMINI"),
-    /lacks required capabilities: governedSpeech, semanticToolGate, authoritativeTemporalContext/,
+    /lacks required capabilities: governedSpeech, authoritativeTemporalContext/,
   );
 });
 
@@ -151,8 +153,8 @@ test("runtime binding requires both provider enablement and traffic readiness", 
 
 test("capability requirements fail closed until remaining Gemini runtime gates are implemented", () => {
   assert.throws(
-    () => requireRealtimeProviderCapabilities("GEMINI", ["semanticToolGate", "authoritativeTemporalContext"]),
-    /lacks required capabilities: semanticToolGate, authoritativeTemporalContext/,
+    () => requireRealtimeProviderCapabilities("GEMINI", ["authoritativeTemporalContext"]),
+    /lacks required capabilities: authoritativeTemporalContext/,
   );
   assert.doesNotThrow(
     () => requireRealtimeProviderCapabilities("GEMINI", [
@@ -163,6 +165,7 @@ test("capability requirements fail closed until remaining Gemini runtime gates a
       "inputTranscription",
       "outputTranscription",
       "isolatedTextDecision",
+      "semanticToolGate",
       "initialInstructionBootstrap",
       "toolCatalogBootstrap",
       "functionCalling",

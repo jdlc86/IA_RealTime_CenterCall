@@ -62,10 +62,14 @@ const GEMINI_CAPABILITIES = Object.freeze({
   // under START_OF_ACTIVITY_INTERRUPTS, then clears only that Telnyx playback.
   // Auxiliary semantic decisions are isolated from Live: a session-scoped port
   // calls a one-shot Gemini text model only while the exact control/media session
-  // is active and reintroduces only correlated neutral decision events. The
-  // session owner also correlates output-transcription chunks to its active
-  // response and finalizes them only on turnComplete. Traffic remains blocked by
-  // the remaining semantic/runtime gates below.
+  // is active and reintroduces only correlated neutral decision events. Semantic
+  // tool gating is product-owned at the media edge: caller input is pre-armed
+  // before Live commit, semantic output is rejected until exactly one correlated
+  // tool is authorized, provisional rejection keeps the gate closed, and release
+  // is owned by the authenticated control-plane sideband. The session owner also
+  // correlates output-transcription chunks to its active response and finalizes
+  // them only on turnComplete. Traffic remains blocked by the remaining
+  // governed-speech and authoritative-time runtime gates below.
   audioInput: true,
   audioOutput: true,
   vad: true,
@@ -76,7 +80,7 @@ const GEMINI_CAPABILITIES = Object.freeze({
   outputTranscription: true,
   governedSpeech: false,
   isolatedTextDecision: true,
-  semanticToolGate: false,
+  semanticToolGate: true,
   initialInstructionBootstrap: true,
   toolCatalogBootstrap: true,
   authoritativeTemporalContext: false,
