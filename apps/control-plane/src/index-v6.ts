@@ -1,5 +1,5 @@
 import baseHandler from "./index-v6-runtime-core.js";
-import type { QueuedCallerSecuritySignal } from "./caller-security.js";
+import { CallerSecurityService, type QueuedCallerSecuritySignal } from "./caller-security.js";
 import {
   callDiagnosticPersistencePortForEnv,
   type CrossPlaneDiagnosticEvent,
@@ -12,6 +12,7 @@ export { CallSession } from "./call-session-v54-close-confirmation-authority";
 type WorkerEnv = Env & {
   SUPABASE_URL: string;
   SUPABASE_SECRET_KEY: string;
+  CALLER_SECURITY_SIGNALS: Queue<QueuedCallerSecuritySignal>;
   GEMINI_MEDIA_EDGE_URL?: string;
   MEDIA_EDGE_CONTROL_PLANE_TOKEN?: string;
 };
@@ -35,6 +36,44 @@ type GeminiAdmissionResponse = Readonly<{
   streaming_start_final_effect?: unknown;
   fallback_provider_used?: unknown;
 }>;
+
+function isQueuedSecuritySignal(value: unknown): value is QueuedCallerSecuritySignal {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as Partial<QueuedCallerSecuritySignal>;
+  return typeof item.eventKey === "string" && Boolean(item.eventKey.trim())
+    && typeof item.tenantId === "string" && Boolean(item.tenantId.trim())
+    && typeof item.callerKey === "string" && Boolean(item.callerKey.trim())
+    && typeof item.eventType === "string" && Boolean(item.eventType.trim())
+    && ["LOW", "MEDIUM", "HIGH", "CRITICAL"].includes(item.severity ?? "")
+    && typeof item.riskDelta === "number" && Number.isInteger(item.riskDelta) && item.riskDelta >= 0
+    && typeof item.highConfidence === "boolean"
+    && (item.metadata === undefined || (Boolean(item.metadata) && typeof item.metadata === "object" && !Array.isArray(item.metadata)));
+}
+
+async function consumeSecuritySignals(batch: MessageBatch<QueuedCallerSecuritySignal>, env: WorkerEnv): Promise<void> {
+  const security = new CallerSecurityService(env);
+  await Promise.all(batch.messages.map(async (message) => {
+    if (!isQueuedSecuritySignal(message.body)) {
+      console.error(JSON.stringify({ level: "error", event: "caller_security_signal_queue_invalid", queue_message_id: message.id }));
+      message.ack();
+      return;
+    }
+    try {
+      await security.recordSignalByCallerKey(message.body);
+      message.ack();
+    } catch (error) {
+      console.error(JSON.stringify({
+        level: "error",
+        event: "caller_security_signal_queue_retry",
+        queue_message_id: message.id,
+        event_key: message.body.eventKey,
+        attempts: message.attempts,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+      message.retry();
+    }
+  }));
+}
 
 function requiredEnv(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`Missing runtime configuration: ${name}`);
@@ -215,8 +254,5 @@ export default {
     return response;
   },
 
-  queue(batch: MessageBatch<QueuedCallerSecuritySignal>, env: WorkerEnv): void | Promise<void> {
-    if (!baseHandler.queue) throw new Error("Worker queue handler unavailable");
-    return baseHandler.queue(batch, env as never);
-  },
+  queue: consumeSecuritySignals,
 } satisfies ExportedHandler<WorkerEnv, QueuedCallerSecuritySignal>;

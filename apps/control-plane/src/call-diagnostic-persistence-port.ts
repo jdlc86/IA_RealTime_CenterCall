@@ -35,6 +35,29 @@ type CallDiagnosticPersistenceHost = object;
 type PersistenceEnv = object;
 
 const ALLOWED_PLANES = new Set(["worker", "call_session", "media_edge", "provider"]);
+const ALLOWED_EVENT_KEYS = new Set([
+  "event_id",
+  "occurred_at",
+  "call_id",
+  "call_control_id",
+  "tenant_id",
+  "plane",
+  "component",
+  "stage",
+  "severity",
+  "error_code",
+  "sequence",
+  "causal_parent_event_id",
+  "response_id",
+  "item_id",
+  "stream_id",
+  "elapsed_ms",
+  "duration_ms",
+  "audio_duration_ms",
+  "chunk_count",
+  "sample_count",
+  "details",
+]);
 const SAFE_DETAIL_KEYS = new Set([
   "phase",
   "reason",
@@ -149,8 +172,7 @@ export function normalizeCrossPlaneDiagnosticEvent(value: unknown): CrossPlaneDi
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid cross-plane diagnostic event");
   const source = value as Record<string, unknown>;
   for (const key of Object.keys(source)) {
-    const lower = key.toLowerCase();
-    if (FORBIDDEN_KEY_PARTS.some((part) => lower.includes(part))) {
+    if (!ALLOWED_EVENT_KEYS.has(key)) {
       throw new Error("Cross-plane diagnostic event contains a forbidden field");
     }
   }
