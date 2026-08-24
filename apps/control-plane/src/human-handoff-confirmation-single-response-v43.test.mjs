@@ -15,14 +15,17 @@ test("v43 handoff confirmation is emitted once with tools disabled", async () =>
   assert.match(v43, /single_confirmation_prompt: true/);
   assert.match(v43, /confirmation_response_tools_disabled: true/);
 
-  const start = v43.indexOf("private rejectUnauthorizedHandoffV43");
+  const start = v43.indexOf("private async rejectUnauthorizedHandoffV43");
   const end = v43.indexOf("private consumeRejectedOfferMisclassifiedAsIgnoredV43", start);
   assert.ok(start >= 0 && end > start, "v43 unauthorized-handoff boundary must be present");
   const boundary = v43.slice(start, end);
 
   assert.doesNotMatch(boundary, /send\?\.\(\{ type: "response\.create" \}\)/);
+  assert.match(boundary, /optionalIsolatedTextGenerationPortFor\(this\)/);
+  assert.match(boundary, /await isolatedGeneration\.generate/);
   assert.match(boundary, /realtimeCommandPortFor\(session\)\.speak/);
   assert.match(boundary, /tools: "DISABLED"/);
+  assert.equal((boundary.match(/purpose: "human_handoff_confirmation_v43"/g) ?? []).length, 1);
 });
 
 test("v43 suppresses duplicate handoff explanation while confirmation is pending", async () => {
