@@ -64,7 +64,7 @@ export class CallSession extends BaseConstructor {
     });
   }
 
-  private refreshTemporalContextForCallerTurnV48(itemId: string): void {
+  private refreshTemporalContextForCallerTurnV48(itemId: string, transcript: string): void {
     if (!itemId || itemId === this.lastRefreshedItemIdV48 || !this.latestBaseInstructionsV48) return;
     const session = this as any;
     if (!session.socket || conversationLifecyclePortFor(this).isTerminal()) return;
@@ -75,6 +75,7 @@ export class CallSession extends BaseConstructor {
     authoritativeTemporalContextPortFor(session).refresh({
       baseInstructions: this.latestBaseInstructionsV48,
       now,
+      callerTurn: { itemId, transcript },
     });
     session.diagnostics?.checkpoint?.("AUTHORITATIVE_CLOCK_REFRESHED_FOR_CALLER_TURN_V48", {
       item_id: itemId,
@@ -105,7 +106,7 @@ export class CallSession extends BaseConstructor {
         && hasUsableTranscript(event.transcript)
         && typeof event.itemId === "string"
       ) {
-        this.refreshTemporalContextForCallerTurnV48(event.itemId);
+        this.refreshTemporalContextForCallerTurnV48(event.itemId, event.transcript);
       }
     }
     await BasePrototype.handleRealtimeMessage.call(this, data);

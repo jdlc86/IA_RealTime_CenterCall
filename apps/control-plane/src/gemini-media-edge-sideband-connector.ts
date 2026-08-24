@@ -30,6 +30,11 @@ import {
   installIsolatedTextGenerationPort,
   removeIsolatedTextGenerationPort,
 } from "./isolated-text-generation-runtime.js";
+import { createProductOwnedAuthoritativeTemporalContextCapability } from "./authoritative-temporal-context-port.js";
+import {
+  installAuthoritativeTemporalContextPort,
+  removeAuthoritativeTemporalContextPort,
+} from "./authoritative-temporal-context-runtime.js";
 import {
   deliverRealtimeProviderEvents,
   requireRealtimeProviderEventIngress,
@@ -85,7 +90,7 @@ function closeForObservationFailure(socket: WebSocket): void {
  * When capabilityHost is supplied, this connector owns the session-scoped Gemini
  * command port, caller disposition effect boundary, isolated semantic-decision,
  * isolated text-generation, governed speech capability and product-owned semantic
- * tool gate for exactly this sideband lifetime.
+ * tool gate plus authoritative caller-turn clock for exactly this sideband lifetime.
  */
 export async function connectGeminiMediaEdgeSideband(
   input: GeminiMediaEdgeSidebandConnectionInput,
@@ -128,8 +133,12 @@ export async function connectGeminiMediaEdgeSideband(
         controlPlaneToken: token,
       }, fetcher)
     : null;
+  const temporalContextCapability = input.capabilityHost
+    ? createProductOwnedAuthoritativeTemporalContextCapability()
+    : null;
 
   let commandCapabilityInstalled = false;
+  let temporalContextCapabilityInstalled = false;
   let dispositionCapabilityInstalled = false;
   let semanticDecisionCapabilityInstalled = false;
   let semanticToolGateCapabilityInstalled = false;
@@ -139,6 +148,10 @@ export async function connectGeminiMediaEdgeSideband(
     try {
       installExternalRealtimeProviderCommandPort(input.capabilityHost, "GEMINI", runtime.commandPort);
       commandCapabilityInstalled = true;
+      if (temporalContextCapability) {
+        installAuthoritativeTemporalContextPort(input.capabilityHost, temporalContextCapability.port);
+        temporalContextCapabilityInstalled = true;
+      }
       if (dispositionPort) {
         installCallerTurnDispositionPort(input.capabilityHost, dispositionPort);
         dispositionCapabilityInstalled = true;
@@ -176,6 +189,10 @@ export async function connectGeminiMediaEdgeSideband(
       if (commandCapabilityInstalled) {
         removeExternalRealtimeProviderCommandPort(input.capabilityHost, "GEMINI", runtime.commandPort);
       }
+      if (temporalContextCapabilityInstalled && temporalContextCapability) {
+        removeAuthoritativeTemporalContextPort(input.capabilityHost, temporalContextCapability.port);
+      }
+      temporalContextCapability?.close();
       runtime.close();
       try { socket.close(1011, "capability installation failed"); } catch {}
       throw error;
@@ -212,6 +229,11 @@ export async function connectGeminiMediaEdgeSideband(
       removeExternalRealtimeProviderCommandPort(input.capabilityHost, "GEMINI", runtime.commandPort);
       commandCapabilityInstalled = false;
     }
+    if (input.capabilityHost && temporalContextCapabilityInstalled && temporalContextCapability) {
+      removeAuthoritativeTemporalContextPort(input.capabilityHost, temporalContextCapability.port);
+      temporalContextCapabilityInstalled = false;
+    }
+    temporalContextCapability?.close();
     runtime.close();
   };
 

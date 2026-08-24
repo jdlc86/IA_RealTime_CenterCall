@@ -9,13 +9,15 @@ import {
 const FALLBACK_TEMPORAL_CONTEXT_PORT_BY_HOST = new WeakMap<object, AuthoritativeTemporalContextPort>();
 const EXTERNAL_TEMPORAL_CONTEXT_PORT_BY_HOST = new WeakMap<object, AuthoritativeTemporalContextPort>();
 
-function requireHost(host: RealtimeProviderHost): object {
+function requireHost(host: object): object {
   if (!host || typeof host !== "object") throw new Error("Authoritative temporal context host is required");
   return host;
 }
 
 function requirePort(port: AuthoritativeTemporalContextPort): AuthoritativeTemporalContextPort {
-  if (!port || typeof port.refresh !== "function") throw new Error("Authoritative temporal context port is required");
+  if (!port || typeof port.refresh !== "function" || typeof port.decideReservationDate !== "function") {
+    throw new Error("Authoritative temporal context port is required");
+  }
   return port;
 }
 
@@ -25,7 +27,7 @@ function requirePort(port: AuthoritativeTemporalContextPort): AuthoritativeTempo
  * immutable provider affinity realizes the semantic effect.
  */
 export function installAuthoritativeTemporalContextPort(
-  host: RealtimeProviderHost,
+  host: object,
   port: AuthoritativeTemporalContextPort,
 ): void {
   const key = requireHost(host);
@@ -36,7 +38,7 @@ export function installAuthoritativeTemporalContextPort(
 }
 
 export function removeAuthoritativeTemporalContextPort(
-  host: RealtimeProviderHost,
+  host: object,
   port?: AuthoritativeTemporalContextPort,
 ): void {
   const key = requireHost(host);

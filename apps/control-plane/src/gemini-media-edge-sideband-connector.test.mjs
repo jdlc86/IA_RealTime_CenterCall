@@ -9,6 +9,7 @@ import { callerTurnDispositionPortFor } from "../.test-dist/caller-turn-disposit
 import { externalRealtimeProviderCommandPortFor } from "../.test-dist/realtime-provider-external-command-runtime.js";
 import { semanticToolGatePortFor } from "../.test-dist/semantic-tool-gate-runtime.js";
 import { withGovernedSpeechPort } from "../.test-dist/governed-speech-runtime.js";
+import { authoritativeTemporalContextPortFor } from "../.test-dist/authoritative-temporal-context-runtime.js";
 import {
   installRealtimeProviderEventIngress,
   removeRealtimeProviderEventIngress,
@@ -53,7 +54,7 @@ test("connector authenticates in header and feeds provider plus edge evidence in
   connection.close();
 });
 
-test("connector owns neutral caller disposition, provider command, semantic gate and governed speech capabilities for exactly its socket lifetime", async () => {
+test("connector owns caller disposition, commands, semantic gate, governed speech and temporal context for exactly its socket lifetime", async () => {
   const socket = new FakeSocket(); const host = {};
   let fallbackSpeech = 0;
   const fallback = {
@@ -61,6 +62,7 @@ test("connector owns neutral caller disposition, provider command, semantic gate
     requestTextDecision() {}, createSemanticResponse() {}, submitToolResult() {}, updateSessionPolicy() {}, setSemanticToolGate() {}, createDefaultResponse() {}, cancelResponse() {}, clearPlayback() {}, clearInput() {}, discardInputItem() {}, suspendInputDetection() {}, beginNonInterruptingListening() {}, restoreInputDetection() {},
   };
   const governed = withGovernedSpeechPort(host, "GEMINI", fallback);
+  const fallbackTemporal = authoritativeTemporalContextPortFor(host);
   const connection = await connectGeminiMediaEdgeSideband({ ...input, capabilityHost: host }, () => {}, async () => ({ status: 101, webSocket: socket }));
   const dispositionPort = callerTurnDispositionPortFor(host);
   const commandPort = externalRealtimeProviderCommandPortFor(host, "GEMINI");
@@ -68,6 +70,10 @@ test("connector owns neutral caller disposition, provider command, semantic gate
   assert.ok(dispositionPort);
   assert.equal(commandPort, connection.runtime.commandPort);
   assert.equal(gatePort, connection.runtime.semanticToolGatePort);
+  const temporal = authoritativeTemporalContextPortFor(host);
+  assert.notEqual(temporal, fallbackTemporal);
+  temporal.refresh({ baseInstructions: "BASE", now: new Date("2026-08-23T22:01:00Z"), callerTurn: { itemId: "gemini-candidate-1", transcript: "mañana" } });
+  assert.equal(temporal.decideReservationDate("2026-08-24").action, "BLOCK_MISMATCH");
   socket.emit("message", JSON.stringify({ type: "GEMINI_EVENT", message: { setupComplete: {} } }));
   socket.emit("message", JSON.stringify({ type: "CALLER_EVENT", event: { type: "CALLER_SPEECH_STARTED", itemId: "gemini-candidate-1", playbackResponseIdAtStart: null } }));
   socket.emit("message", JSON.stringify({ type: "CALLER_EVENT", event: { type: "CALLER_TRANSCRIPT_COMPLETED", itemId: "gemini-candidate-1", transcript: "Hola" } }));
@@ -83,6 +89,8 @@ test("connector owns neutral caller disposition, provider command, semantic gate
   connection.close();
   assert.equal(callerTurnDispositionPortFor(host), null);
   assert.equal(externalRealtimeProviderCommandPortFor(host, "GEMINI"), null);
+  assert.equal(authoritativeTemporalContextPortFor(host), fallbackTemporal);
+  assert.throws(() => temporal.decideReservationDate("2026-08-25"), /is closed/);
   governed.speak({ instructions: "fallback", exactText: "Después" });
   assert.equal(fallbackSpeech, 1);
 
