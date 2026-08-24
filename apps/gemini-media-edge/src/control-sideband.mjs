@@ -16,6 +16,10 @@ function governedSpeechKind(value) {
   if (value === "GREETING" || value === "RECOVERY") return value;
   throw new Error("Gemini governed speech kind is unsupported");
 }
+function governedLifecycleKind(value) {
+  if (value === "NORMAL" || value === "GREETING" || value === "RECOVERY") return value;
+  throw new Error("Gemini governed lifecycle kind is unsupported");
+}
 export function controlSessionKey(claims) {
   return `${required(claims?.tenantId, "control tenant_id")}\u0000${required(claims?.callControlId, "control call_control_id")}`;
 }
@@ -93,6 +97,21 @@ export function callerControlEnvelope(event) {
   const value = object(event, "Gemini caller control event");
   if (!["CALLER_SPEECH_STARTED", "CALLER_SPEECH_STOPPED", "CALLER_TRANSCRIPT_COMPLETED"].includes(value.type)) throw new Error("Gemini caller control event type is unsupported");
   return Object.freeze({ type: "CALLER_EVENT", event: structuredClone(value) });
+}
+export function governedControlEnvelope(event) {
+  const value = object(event, "Gemini governed lifecycle event");
+  const type = required(value.type, "Gemini governed lifecycle event type");
+  if (type !== "ASSISTANT_RESPONSE_STARTED" && type !== "ASSISTANT_RESPONSE_COMPLETED") {
+    throw new Error("Gemini governed lifecycle event type is unsupported");
+  }
+  const responseId = required(value.responseId, "Gemini governed lifecycle response id");
+  const kind = governedLifecycleKind(value.kind);
+  if (type === "ASSISTANT_RESPONSE_STARTED") {
+    const purpose = value.purpose == null ? undefined : required(value.purpose, "Gemini governed lifecycle purpose");
+    return Object.freeze({ type: "GOVERNED_EVENT", event: Object.freeze({ type, responseId, kind, ...(purpose ? { purpose } : {}) }) });
+  }
+  const status = value.status == null ? undefined : required(value.status, "Gemini governed lifecycle status");
+  return Object.freeze({ type: "GOVERNED_EVENT", event: Object.freeze({ type, responseId, kind, ...(status ? { status } : {}) }) });
 }
 
 export class InMemoryControlSidebandRegistry {
