@@ -1,3 +1,4 @@
+import type { GovernedSpeechPort } from "./governed-speech-runtime.js";
 import type { RealtimeProviderCommandPort } from "./realtime-provider-command-port.js";
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import type { SemanticToolGatePort } from "./semantic-tool-gate-port.js";
@@ -11,6 +12,7 @@ export type GeminiMediaEdgeSidebandOutbound =
   | Readonly<{ type: "TOOL_RESULT"; callId: string; toolName: string; output: unknown }>
   | Readonly<{ type: "PLAYBACK_BINDING"; responseId: string; kind: "NORMAL" }>
   | Readonly<{ type: "PLAYBACK_DRAIN"; responseId: string }>
+  | Readonly<{ type: "GOVERNED_SPEECH"; responseId: string; text: string }>
   | Readonly<{ type: "CALLER_TURN_DECISION"; itemId: string; decision: GeminiMediaEdgeCallerDecision; responseId: string | null }>
   | Readonly<{ type: "SEMANTIC_GATE_ARM" }>
   | Readonly<{ type: "SEMANTIC_GATE_RELEASE" }>;
@@ -49,6 +51,7 @@ export class GeminiMediaEdgeSidebandRuntime {
   private activePlaybackResponseId: string | null = null;
   readonly commandPort: RealtimeProviderCommandPort;
   readonly semanticToolGatePort: SemanticToolGatePort;
+  readonly governedSpeechPort: GovernedSpeechPort;
 
   constructor(send: GeminiMediaEdgeSidebandSend) {
     if (typeof send !== "function") throw new Error("Gemini media edge sideband sender is required");
@@ -59,6 +62,15 @@ export class GeminiMediaEdgeSidebandRuntime {
     this.semanticToolGatePort = Object.freeze({
       arm: () => this.send(Object.freeze({ type: "SEMANTIC_GATE_ARM" })),
       release: () => this.send(Object.freeze({ type: "SEMANTIC_GATE_RELEASE" })),
+    });
+    this.governedSpeechPort = Object.freeze({
+      speak: (request) => {
+        const text = required(request?.exactText, "Gemini governed speech exact text");
+        const responseId = request?.requestId
+          ? required(request.requestId, "Gemini governed speech response id")
+          : `gemini_governed_speech_${crypto.randomUUID()}`;
+        this.send(Object.freeze({ type: "GOVERNED_SPEECH", responseId, text }));
+      },
     });
   }
 
@@ -97,8 +109,6 @@ export class GeminiMediaEdgeSidebandRuntime {
       if (activeResponseId && activeResponseId !== target) throw new Error(`Gemini interruption target superseded by active response ${activeResponseId}`);
       if (activePlaybackResponseId && activePlaybackResponseId !== target) throw new Error(`Gemini interruption playback identity mismatch: expected ${activePlaybackResponseId}`);
       if (!activeResponseId && !activePlaybackResponseId) {
-        // Match the validated deferred-input coordinator: once the captured target
-        // fully drains and nothing supersedes it, preserve speech as a normal turn.
         wireDecision = "NORMAL";
       } else {
         responseId = target;
