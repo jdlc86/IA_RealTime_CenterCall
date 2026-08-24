@@ -22,8 +22,12 @@ export function removeIsolatedTextGenerationPort(host: object, port: IsolatedTex
   ports.delete(host);
 }
 
+export function optionalIsolatedTextGenerationPortFor(host: object): IsolatedTextGenerationPort | null {
+  return ports.get(host) ?? null;
+}
+
 export function isolatedTextGenerationPortFor(host: object): IsolatedTextGenerationPort {
-  const port = ports.get(host);
+  const port = optionalIsolatedTextGenerationPortFor(host);
   if (!port) throw new Error("Isolated text generation port is not installed for this session");
   return port;
 }
