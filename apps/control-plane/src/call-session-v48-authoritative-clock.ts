@@ -2,6 +2,7 @@ import { CallSession as CallSessionV46 } from "./call-session-v46-sideband-lifec
 import {
   adaptRealtimeProviderEvents,
   installRealtimeSessionPolicyTransform,
+  installRealtimeToolResultTransform,
 } from "./realtime-provider-runtime.js";
 import { authoritativeTemporalContextPortFor } from "./authoritative-temporal-context-runtime.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
@@ -10,6 +11,7 @@ import {
   stripAuthoritativeNowContext,
   withAuthoritativeNowContext,
 } from "./temporal-grounding";
+import { withAuthoritativeTemporalToolResult } from "./authoritative-temporal-tool-result.js";
 
 const BaseConstructor = CallSessionV46 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV46.prototype as any;
@@ -31,6 +33,7 @@ function hasUsableTranscript(value: unknown): boolean {
  */
 export class CallSession extends BaseConstructor {
   private temporalPolicyTransformInstalledV48 = false;
+  private temporalToolResultTransformInstalledV48 = false;
   private latestBaseInstructionsV48: string | null = null;
   private lastRefreshedItemIdV48: string | null = null;
 
@@ -61,6 +64,26 @@ export class CallSession extends BaseConstructor {
         ...update,
         instructions: this.enrichTemporalInstructionsV48(update.instructions, "session_instructions_update"),
       };
+    });
+  }
+
+  private installTemporalToolResultTransformV48(): void {
+    if (this.temporalToolResultTransformInstalledV48) return;
+    this.temporalToolResultTransformInstalledV48 = true;
+    installRealtimeToolResultTransform(this as any, (request) => {
+      const now = new Date();
+      const enriched = withAuthoritativeTemporalToolResult(request, now);
+      if (enriched !== request) {
+        const temporal = authoritativeMadridNowContext(now);
+        (this as any).diagnostics?.checkpoint?.("AUTHORITATIVE_CLOCK_ATTACHED_TO_TOOL_RESULT_V48", {
+          tool: request.toolName ?? null,
+          timezone: temporal.timezone,
+          now_iso: temporal.now_iso,
+          correlated_tool_result: true,
+          provider_conversation_input_mutated: false,
+        });
+      }
+      return enriched;
     });
   }
 
@@ -95,6 +118,7 @@ export class CallSession extends BaseConstructor {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/start") {
       this.installTemporalPolicyTransformV48();
+      this.installTemporalToolResultTransformV48();
     }
     return super.fetch(request);
   }

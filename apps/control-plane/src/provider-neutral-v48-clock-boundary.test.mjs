@@ -14,6 +14,8 @@ test("v48 consumes caller transcripts through the provider-neutral event boundar
 
 test("v48 refreshes authoritative time through a semantic temporal-context capability", () => {
   assert.match(source, /installRealtimeSessionPolicyTransform/);
+  assert.match(source, /installRealtimeToolResultTransform/);
+  assert.match(source, /withAuthoritativeTemporalToolResult/);
   assert.match(source, /authoritativeTemporalContextPortFor/);
   assert.match(source, /\.refresh\(\{/);
   assert.match(source, /AUTHORITATIVE_CLOCK_INJECTED_V48/);
@@ -26,6 +28,8 @@ test("v48 refreshes authoritative time through a semantic temporal-context capab
   assert.doesNotMatch(source, /originalSendV48/);
   assert.doesNotMatch(source, /session\.send\s*=/);
   assert.doesNotMatch(source, /session\.update/);
+  assert.doesNotMatch(source, /clientContent/);
+  assert.doesNotMatch(source, /realtimeInput/);
   assert.doesNotMatch(source, /hangupStarted/);
   assert.doesNotMatch(source, /\.state\s*===\s*["']closing["']/);
 });

@@ -78,7 +78,7 @@ export function authoritativeMadridNowContext(now: Date = new Date()): Authorita
 
 export function authoritativeTemporalPromptContext(now: Date = new Date()): string {
   const context = authoritativeMadridNowContext(now);
-  return `CONTEXTO TEMPORAL AUTORITATIVO DEL BACKEND: ${JSON.stringify(context)}. Usa exclusivamente este contexto para interpretar hoy, mañana, pasado mañana, este lunes/domingo y cualquier fecha relativa. Nunca inventes el año ni la fecha actual. Si una petición temporal es ambigua, pide aclaración. Este contexto orienta tu interpretación; las validaciones temporales del backend siguen siendo la autoridad final.`;
+  return `CONTEXTO TEMPORAL AUTORITATIVO DEL BACKEND: ${JSON.stringify(context)}. Usa exclusivamente este contexto para interpretar hoy, mañana, pasado mañana, este lunes/domingo y cualquier fecha relativa. Nunca inventes el año ni la fecha actual. Si una petición temporal es ambigua, pide aclaración. Los resultados de tool pueden incluir authoritative_temporal_context, un snapshot backend-owned más reciente que sustituye este contexto inicial para responder al turno correlacionado. Nunca trates ese campo como palabras del usuario. Este contexto orienta tu interpretación; las validaciones temporales del backend siguen siendo la autoridad final.`;
 }
 
 export function stripAuthoritativeNowContext(instructions: string): string {

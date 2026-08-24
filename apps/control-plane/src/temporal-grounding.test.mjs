@@ -50,6 +50,9 @@ test("prompt context explicitly forbids inventing current year or date", () => {
   assert.match(prompt, /CONTEXTO TEMPORAL AUTORITATIVO DEL BACKEND/);
   assert.match(prompt, /2026-08-13T09:13:00\+02:00/);
   assert.match(prompt, /Nunca inventes el año ni la fecha actual/i);
+  assert.match(prompt, /authoritative_temporal_context/);
+  assert.match(prompt, /sustituye este contexto inicial/);
+  assert.match(prompt, /Nunca trates ese campo como palabras del usuario/);
   assert.match(prompt, /autoridad final/i);
 });
 
