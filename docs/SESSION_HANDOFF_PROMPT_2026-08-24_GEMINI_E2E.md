@@ -33,11 +33,14 @@ Antes de editar:
    `rebuild/v39-stable-baseline`.
 3. Consulta todos los checks del HEAD exacto.
 4. Lee el diff de los commits posteriores a `a5b4c9d`.
-5. Confirma si el HEAD contiene como mínimo este commit funcional:
+5. Confirma si el HEAD contiene como mínimo estos commits funcionales:
 
 ```text
 190ef673ecdf1e1069cf30b490c38abed7858924
 feat(gemini): connect controlled real-call canary
+
+36c2808761b38d304d0c3519001cc6306c32e408
+fix(gemini): join caller turn continuation
 ```
 
 El documento de relevo se publicará en un commit posterior, por lo que el HEAD
@@ -55,13 +58,17 @@ Mantén el PR #85 como draft.
 
 ## 2. Objetivo inmediato de la nueva sesión
 
-Prioridad 1: mejorar la trazabilidad E2E persistida en Supabase. Es la fuente
+Prioridad 1: si aún no consta una llamada posterior al Worker `abe869a9`, hacer
+una sola E2E humana y reconstruirla primero desde Supabase. No repitas llamadas
+a ciegas.
+
+Prioridad 2: mejorar la trazabilidad E2E persistida en Supabase. Es la fuente
 operativa principal que se usará para diagnosticar llamadas sin depender de
 tails efímeros de Cloudflare o Cloud Logging.
 
-Prioridad 2: desplegar desde el HEAD de GitHub la imagen/Worker correspondientes
-y repetir una llamada real completa, reconstruyéndola principalmente desde
-Supabase.
+Prioridad 3: desplegar desde el HEAD verde de GitHub cualquier corrección
+posterior y repetir una llamada real completa, reconstruyéndola principalmente
+desde Supabase.
 
 No comiences otro refactor general y no rediseñes piezas ya existentes. Formula
 una hipótesis por bloque, implementa el cambio mínimo, prueba, publica y espera
@@ -151,57 +158,85 @@ Incidente ya corregido: se solicitaba el encoding no documentado `PCM`; Google
 devolvió MP3 y se envió como si fuera L16, produciendo el ruido «shshsh». No
 relajes la validación introducida en `google-text-to-speech.mjs`.
 
+Estado Worker observado al cerrar la sesión:
+
+```text
+version: abe869a9-339f-4dfe-b5d2-93419241934c
+commit fuente: 36c2808761b38d304d0c3519001cc6306c32e408
+/health: 200, environment=production, phase=F5
+```
+
 ## 6. Último fallo real y corrección aplicada
 
-Última llamada anterior a la revisión 00017:
+Última llamada humana reconstruida desde Supabase:
 
 ```text
-call_id Worker: v3:kEcNUWJVYfqaPG1_L2iqk1RCfEoGx04gmmtANfK4hp4iDsrQJnoWGQ
+call_id Worker: v3:a9Jzj6pMWk6GnCX4MouUeY0RMwgWCzw4gYgE6_ZVAfel3ulDFSqEAw
 tenant: restaurante-centro
-resultado humano: Lucía saludó; el caller habló; Lucía no respondió
+inicio: 2026-08-24T20:56:27Z
+último evento: 2026-08-24T20:57:32Z
+eventos: 83
+errores: 4
+resultado humano: saludo y primera respuesta audibles; silencio en el segundo turno
 ```
 
-Evidencia de Cloud Run:
+Evidencia positiva persistida:
 
 ```text
-CALLER_SPEECH_STARTED
-rms ≈ 0.2812
-noiseFloorRms ≈ 0.0891
-effectiveStopRms ≈ 0.1336
-después: TELNYX_MESSAGE_REJECTED y cierre
+REALTIME_PROVIDER_SELECTED_G1: GEMINI, binding inmutable
+saludo gobernado con responseId preservado y playback completo
+caller item 1: VAD start/stop y transcript authority completed
+Gemini seleccionó restaurant_conversation y Lucía respondió
+caller item 2: VAD start/stop y transcript authority completed
+semantic gate armado para la intención de reserva
 ```
 
-Causa raíz demostrada mediante una petición controlada TTS → PCM16 → Speech V2:
+Causa exacta del silencio del segundo turno:
 
 ```text
-HTTP 400 INVALID_ARGUMENT
-Invalid `model`: field must be non-empty.
+SESSION_TASK_FAILED
+task: provider_event_ingress_v40
+error: Gemini Live default response creation has no proven neutral mapping before
+       G3/G4 turn continuation conformance
+
+30 segundos después:
+TURN_CONCURRENCY_WATCHDOG_V36
+diagnosis: TURN_LOCK_TERMINAL_EVENT_MISSING
 ```
 
-Aunque la referencia REST marca `model` como opcional, el recognizer implícito
-`_` rechazó la configuración sin modelo. Con `telephony_short`, `es-ES`, global,
-PCM16 mono 16 kHz, la misma prueba devolvió una transcripción válida.
+La corrección STT `telephony_short` quedó demostrada en esta llamada: ambos
+turnos se transcribieron. El fallo siguiente estaba en el Control Plane. El
+Media Edge ya inicia la continuación de Gemini al recibir la disposición
+autorizada `CALLER_TURN_DECISION` y comprometer el audio real diferido. El core
+heredado invocaba después `createDefaultResponse`; faltaba unir ambos efectos.
 
 Corrección:
 
-- `GOOGLE_SPEECH_MODEL=telephony_short` en Cloud Run;
-- default determinista `telephony_short` en el adapter y server;
-- modelo explícito siempre incluido en `RecognitionConfig`;
-- regresión automatizada.
+- el runtime de sesión registra una continuación provider-owned únicamente
+  después de enviar una disposición `NORMAL`/`INTERRUPT` autorizada;
+- consume exactamente una invocación heredada de `createDefaultResponse` sin
+  enviar texto sintético ni un segundo comando wire;
+- conserva el fail-closed si no existe una continuación demostrada;
+- coalesce de forma explícita caller + post-tool cuando pertenecen al mismo
+  ciclo Live;
+- tests unitarios, sideband y E2E sintético reproducen la unión completa.
 
-No hubo una llamada humana nueva después de esta corrección. Por tanto:
+El commit `36c2808` está publicado, sus tres CI están verdes y el Worker anterior
+fue sustituido por `abe869a9`. No hubo una llamada humana nueva después de este
+último despliegue. Por tanto:
 
 ```text
 implementado: sí
-prueba REST controlada: sí
-Cloud Run configurado: sí
-E2E humana posterior: pendiente
+CI verde: sí
+Worker producción: sí
+Cloud Run requiere cambio para este fix: no
+E2E humana posterior a abe869a9: pendiente
 ```
 
 ## 7. Estado de validación local del commit funcional
 
 ```text
-Control Plane Node: 1148/1148
+Control Plane Node: 1150/1150
 Control Plane Workers runtime: 4/4
 Wrangler dry-run: production/preview/dev verdes
 Gemini Media Edge: 99/99
@@ -215,6 +250,14 @@ Cloud Run preflight:
 ```
 
 Vuelve a verificar CI en GitHub; estos resultados locales no sustituyen CI.
+
+CI GitHub observado para `36c2808`:
+
+```text
+Control Plane CI: success
+Gemini Media Edge CI: success
+Gemini Media Edge Benchmark CI: success
+```
 
 ## 8. Trazabilidad Supabase: estado actual y brecha
 
