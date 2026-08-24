@@ -2,6 +2,11 @@ function required(value, field) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`);
   return value.trim();
 }
+function boundedText(value, field, maxChars) {
+  const text = required(value, field);
+  if (text.length > maxChars) throw new Error(`${field} exceeds the configured limit`);
+  return text;
+}
 function object(value, field) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field} is invalid`);
   return value;
@@ -24,6 +29,13 @@ export function canonicalControlCommand(value) {
   }
   if (message.type === "PLAYBACK_DRAIN") {
     return Object.freeze({ type: "PLAYBACK_DRAIN", responseId: required(message.responseId, "Gemini media edge playback drain response id") });
+  }
+  if (message.type === "GOVERNED_SPEECH") {
+    return Object.freeze({
+      type: "GOVERNED_SPEECH",
+      responseId: required(message.responseId, "Gemini governed speech response id"),
+      text: boundedText(message.text, "Gemini governed speech text", 2_000),
+    });
   }
   if (message.type === "CALLER_TURN_DECISION") {
     const itemId = required(message.itemId, "Gemini media edge caller item id");
