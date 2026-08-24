@@ -35,11 +35,13 @@ test("sideband governed speech requires exact text and preserves or mints respon
     requestId: "protected-response-1",
     instructions: "Pronuncia exactamente el texto.",
     exactText: "Hola.",
+    purpose: "initial_greeting",
   });
   assert.deepEqual(sent.at(-1), {
     type: "GOVERNED_SPEECH",
     responseId: "protected-response-1",
     text: "Hola.",
+    purpose: "initial_greeting",
   });
 
   runtime.governedSpeechPort.speak({

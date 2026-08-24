@@ -13,7 +13,13 @@ export type GeminiMediaEdgeSidebandOutbound =
   | Readonly<{ type: "TOOL_RESULT"; callId: string; toolName: string; output: unknown }>
   | Readonly<{ type: "PLAYBACK_BINDING"; responseId: string; kind: "NORMAL" }>
   | Readonly<{ type: "PLAYBACK_DRAIN"; responseId: string }>
-  | Readonly<{ type: "GOVERNED_SPEECH"; responseId: string; text: string; kind?: Exclude<AssistantSpeechKind, "NORMAL"> }>
+  | Readonly<{
+      type: "GOVERNED_SPEECH";
+      responseId: string;
+      text: string;
+      kind?: Exclude<AssistantSpeechKind, "NORMAL">;
+      purpose?: string;
+    }>
   | Readonly<{ type: "CALLER_TURN_DECISION"; itemId: string; decision: GeminiMediaEdgeCallerDecision; responseId: string | null }>
   | Readonly<{ type: "SEMANTIC_GATE_ARM" }>
   | Readonly<{ type: "SEMANTIC_GATE_RELEASE" }>;
@@ -54,6 +60,7 @@ export class GeminiMediaEdgeSidebandRuntime {
   private readonly send: GeminiMediaEdgeSidebandSend;
   private readonly callerContexts = new Map<string, GeminiMediaEdgeCallerContext>();
   private activePlaybackResponseId: string | null = null;
+  private activePlaybackKind: "NORMAL" | "GREETING" | "RECOVERY" | null = null;
   readonly commandPort: RealtimeProviderCommandPort;
   readonly semanticToolGatePort: SemanticToolGatePort;
   readonly governedSpeechPort: GovernedSpeechPort;
@@ -76,6 +83,7 @@ export class GeminiMediaEdgeSidebandRuntime {
           responseId: descriptor.responseId,
           text: descriptor.text,
           ...(descriptor.kind === "NORMAL" ? {} : { kind: descriptor.kind }),
+          ...(descriptor.purpose ? { purpose: descriptor.purpose } : {}),
         }));
       },
     });
@@ -136,7 +144,12 @@ export class GeminiMediaEdgeSidebandRuntime {
     return context;
   }
   snapshot() { return this.runtime.snapshot(); }
-  close() { this.callerContexts.clear(); this.activePlaybackResponseId = null; return this.runtime.close(); }
+  close() {
+    this.callerContexts.clear();
+    this.activePlaybackResponseId = null;
+    this.activePlaybackKind = null;
+    return this.runtime.close();
+  }
 
   private observeCallerEvent(value: unknown): GeminiLiveSessionRuntimeObservation {
     const edge = object(value, "Gemini media edge caller event");
@@ -182,16 +195,20 @@ export class GeminiMediaEdgeSidebandRuntime {
     const edge = object(value, "Gemini media edge playback event");
     const type = required(edge.type, "Gemini media edge playback event type");
     const responseId = required(edge.responseId, "Gemini media edge playback response id");
-    if (edge.kind !== "NORMAL") throw new Error("Gemini media edge playback kind is unsupported");
+    const kind = governedEventKind(edge.kind);
     if (type === "ASSISTANT_AUDIO_STARTED") {
       if (this.activePlaybackResponseId && this.activePlaybackResponseId !== responseId) throw new Error(`Gemini sideband playback already owned by ${this.activePlaybackResponseId}`);
+      if (this.activePlaybackKind && this.activePlaybackKind !== kind) throw new Error(`Gemini sideband playback kind mismatch: expected ${this.activePlaybackKind}`);
       this.activePlaybackResponseId = responseId;
-      return this.edgeObservation({ type: "ASSISTANT_AUDIO_STARTED", kind: "NORMAL", responseId });
+      this.activePlaybackKind = kind;
+      return this.edgeObservation({ type: "ASSISTANT_AUDIO_STARTED", kind, responseId });
     }
     if (type === "ASSISTANT_AUDIO_STOPPED" || type === "ASSISTANT_AUDIO_CLEARED") {
       if (this.activePlaybackResponseId !== responseId) throw new Error(`Gemini sideband playback completion identity mismatch: expected ${this.activePlaybackResponseId ?? "<none>"}`);
+      if (this.activePlaybackKind !== kind) throw new Error(`Gemini sideband playback completion kind mismatch: expected ${this.activePlaybackKind ?? "<none>"}`);
       this.activePlaybackResponseId = null;
-      return this.edgeObservation({ type, kind: "NORMAL", responseId } as RealtimeProviderEvent);
+      this.activePlaybackKind = null;
+      return this.edgeObservation({ type, kind, responseId } as RealtimeProviderEvent);
     }
     throw new Error("Gemini media edge playback event type is unsupported");
   }

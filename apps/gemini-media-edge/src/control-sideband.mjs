@@ -41,11 +41,15 @@ export function canonicalControlCommand(value) {
   }
   if (message.type === "GOVERNED_SPEECH") {
     const kind = governedSpeechKind(message.kind);
+    const purpose = message.purpose == null
+      ? null
+      : boundedText(message.purpose, "Gemini governed speech purpose", 200);
     return Object.freeze({
       type: "GOVERNED_SPEECH",
       responseId: required(message.responseId, "Gemini governed speech response id"),
       text: boundedText(message.text, "Gemini governed speech text", 2_000),
       ...(kind ? { kind } : {}),
+      ...(purpose ? { purpose } : {}),
     });
   }
   if (message.type === "CALLER_TURN_DECISION") {

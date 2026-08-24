@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { BoundPlaybackGate, commitDeferredCallerTurn, Pcm16Resampler24To16, swapPcm16Endianness } from "./runtime.mjs";
+import {
+  BoundPlaybackGate,
+  commitDeferredCallerTurn,
+  completeGovernedSpeechPlayback,
+  executeGovernedSpeechPlayback,
+  Pcm16Resampler24To16,
+  swapPcm16Endianness,
+} from "./runtime.mjs";
+import { GovernedSpeechPlaybackCoordinator } from "./governed-speech-playback-coordinator.mjs";
 
 class FakeSocket {
   constructor() { this.readyState = 1; this.bufferedAmount = 0; this.sent = []; }
@@ -100,4 +108,135 @@ test("Gemini playback binding buffer is bounded", () => {
   const gate = new BoundPlaybackGate(4);
   gate.queue(Buffer.from([0, 0, 0, 0]));
   assert.throws(() => gate.queue(Buffer.from([0, 0])), /buffer limit exceeded/);
+});
+
+test("governed speech reaches correlated Telnyx drain before response completion", async () => {
+  const playback = new BoundPlaybackGate(64 * 1024);
+  const coordinator = new GovernedSpeechPlaybackCoordinator();
+  const controlEvents = [];
+  const telnyxAudio = [];
+  const marks = [];
+  const syntheses = [];
+  const emitControlEvent = (event) => { controlEvents.push(event); return true; };
+
+  const context = await executeGovernedSpeechPlayback({
+    command: {
+      type: "GOVERNED_SPEECH",
+      responseId: "governed-greeting-1",
+      text: "Hola, soy Lucía.",
+      kind: "GREETING",
+      purpose: "initial_greeting",
+    },
+    synthesize: async ({ text }) => {
+      syntheses.push(text);
+      return { text, pcm16le: Buffer.from([0x01, 0x02, 0x03, 0x04]), sampleRateHertz: 16_000, encoding: "PCM16_LE" };
+    },
+    coordinator,
+    playback,
+    assertSessionActive() {},
+    emitControlEvent,
+    emitPlaybackChunks(chunks, onFirstQueued) {
+      for (const chunk of chunks) {
+        telnyxAudio.push(chunk);
+        const noted = playback.noteQueued(chunk.responseId);
+        if (noted.first) {
+          onFirstQueued();
+          emitControlEvent({ type: "PLAYBACK_EVENT", event: { type: "ASSISTANT_AUDIO_STARTED", responseId: chunk.responseId, kind: chunk.kind } });
+        }
+      }
+    },
+    sendDrainMark(mark) { marks.push(mark); },
+  });
+
+  assert.deepEqual(syntheses, ["Hola, soy Lucía."]);
+  assert.deepEqual(context, { responseId: "governed-greeting-1", kind: "GREETING", purpose: "initial_greeting" });
+  assert.equal(telnyxAudio.length, 1);
+  assert.deepEqual([...telnyxAudio[0].pcm], [0x01, 0x02, 0x03, 0x04]);
+  assert.deepEqual(controlEvents, [
+    {
+      type: "GOVERNED_EVENT",
+      event: {
+        type: "ASSISTANT_RESPONSE_STARTED",
+        responseId: "governed-greeting-1",
+        kind: "GREETING",
+        purpose: "initial_greeting",
+      },
+    },
+    {
+      type: "PLAYBACK_EVENT",
+      event: { type: "ASSISTANT_AUDIO_STARTED", responseId: "governed-greeting-1", kind: "GREETING" },
+    },
+  ]);
+  assert.match(marks[0], /^ia-gemini-playback:drain:/);
+  assert.equal(coordinator.snapshot().activeResponseId, "governed-greeting-1");
+
+  assert.equal(playback.observeReturnedMark("stale-mark"), null);
+  assert.equal(controlEvents.some((event) => event.event?.type === "ASSISTANT_RESPONSE_COMPLETED"), false);
+  const stopped = playback.observeReturnedMark(marks[0]);
+  completeGovernedSpeechPlayback({ context, event: stopped, coordinator, emitControlEvent });
+  assert.deepEqual(controlEvents.slice(-2), [
+    {
+      type: "PLAYBACK_EVENT",
+      event: { type: "ASSISTANT_AUDIO_STOPPED", responseId: "governed-greeting-1", kind: "GREETING" },
+    },
+    {
+      type: "GOVERNED_EVENT",
+      event: {
+        type: "ASSISTANT_RESPONSE_COMPLETED",
+        responseId: "governed-greeting-1",
+        kind: "GREETING",
+        status: "completed",
+      },
+    },
+  ]);
+  assert.deepEqual(coordinator.snapshot(), { pendingResponseId: null, activeResponseId: null });
+});
+
+test("governed speech reserves before TTS and rejects Live audio ownership", async () => {
+  const playback = new BoundPlaybackGate(64 * 1024);
+  const coordinator = new GovernedSpeechPlaybackCoordinator();
+  let finishSynthesis;
+  const synthesis = new Promise((resolve) => { finishSynthesis = resolve; });
+  const execution = executeGovernedSpeechPlayback({
+    command: { type: "GOVERNED_SPEECH", responseId: "governed-1", text: "Texto exacto" },
+    synthesize: async () => synthesis,
+    coordinator,
+    playback,
+    assertSessionActive() {},
+    emitControlEvent: () => true,
+    emitPlaybackChunks(chunks, onFirstQueued) {
+      for (const chunk of chunks) {
+        playback.noteQueued(chunk.responseId);
+        onFirstQueued();
+      }
+    },
+    sendDrainMark() {},
+  });
+
+  assert.deepEqual(coordinator.snapshot(), { pendingResponseId: "governed-1", activeResponseId: null });
+  assert.throws(() => coordinator.assertProviderAudioAllowed(), /forbidden/);
+  finishSynthesis({ text: "Texto exacto", pcm16le: Buffer.from([1, 2]), sampleRateHertz: 16_000, encoding: "PCM16_LE" });
+  await execution;
+});
+
+test("governed speech rejects a stale session after late TTS without playback", async () => {
+  const playback = new BoundPlaybackGate(64 * 1024);
+  const coordinator = new GovernedSpeechPlaybackCoordinator();
+  let emitted = false;
+  await assert.rejects(
+    executeGovernedSpeechPlayback({
+      command: { type: "GOVERNED_SPEECH", responseId: "governed-late", text: "Hola" },
+      synthesize: async ({ text }) => ({ text, pcm16le: Buffer.from([1, 2]), sampleRateHertz: 16_000, encoding: "PCM16_LE" }),
+      coordinator,
+      playback,
+      assertSessionActive() { throw new Error("session closed"); },
+      emitControlEvent: () => true,
+      emitPlaybackChunks() { emitted = true; },
+      sendDrainMark() { emitted = true; },
+    }),
+    /session closed/,
+  );
+  assert.equal(emitted, false);
+  assert.equal(playback.snapshot().pendingBytes, 0);
+  assert.deepEqual(coordinator.snapshot(), { pendingResponseId: null, activeResponseId: null });
 });

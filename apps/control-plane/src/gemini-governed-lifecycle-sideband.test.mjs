@@ -58,3 +58,41 @@ test("governed lifecycle sideband fails closed on unsupported kind or event type
     /event type is unsupported/,
   );
 });
+
+test("governed playback lifecycle preserves protected kind and exact response identity", () => {
+  const sideband = runtime();
+  const started = sideband.observe({
+    type: "PLAYBACK_EVENT",
+    event: { type: "ASSISTANT_AUDIO_STARTED", responseId: "recovery-1", kind: "RECOVERY" },
+  });
+  assert.deepEqual(started.events, [{
+    type: "ASSISTANT_AUDIO_STARTED",
+    responseId: "recovery-1",
+    kind: "RECOVERY",
+  }]);
+
+  assert.throws(
+    () => sideband.observe({
+      type: "PLAYBACK_EVENT",
+      event: { type: "ASSISTANT_AUDIO_STOPPED", responseId: "recovery-2", kind: "RECOVERY" },
+    }),
+    /identity mismatch/,
+  );
+  assert.throws(
+    () => sideband.observe({
+      type: "PLAYBACK_EVENT",
+      event: { type: "ASSISTANT_AUDIO_STOPPED", responseId: "recovery-1", kind: "GREETING" },
+    }),
+    /kind mismatch/,
+  );
+
+  const stopped = sideband.observe({
+    type: "PLAYBACK_EVENT",
+    event: { type: "ASSISTANT_AUDIO_STOPPED", responseId: "recovery-1", kind: "RECOVERY" },
+  });
+  assert.deepEqual(stopped.events, [{
+    type: "ASSISTANT_AUDIO_STOPPED",
+    responseId: "recovery-1",
+    kind: "RECOVERY",
+  }]);
+});

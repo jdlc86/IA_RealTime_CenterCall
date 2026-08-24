@@ -39,12 +39,13 @@ test("control command admits correlated tool results, playback bindings and drai
 
 test("governed speech control command requires bounded exact text and correlation", () => {
   assert.deepEqual(
-    canonicalControlCommand({ type: "GOVERNED_SPEECH", responseId: "speech-7", text: "  De acuerdo, no te transfiero.  " }),
-    { type: "GOVERNED_SPEECH", responseId: "speech-7", text: "De acuerdo, no te transfiero." },
+    canonicalControlCommand({ type: "GOVERNED_SPEECH", responseId: "speech-7", text: "  De acuerdo, no te transfiero.  ", purpose: " human_handoff_declined_v43 " }),
+    { type: "GOVERNED_SPEECH", responseId: "speech-7", text: "De acuerdo, no te transfiero.", purpose: "human_handoff_declined_v43" },
   );
   assert.throws(() => canonicalControlCommand({ type: "GOVERNED_SPEECH", responseId: "", text: "Hola" }), /response id is required/);
   assert.throws(() => canonicalControlCommand({ type: "GOVERNED_SPEECH", responseId: "speech-7", text: "" }), /text is required/);
   assert.throws(() => canonicalControlCommand({ type: "GOVERNED_SPEECH", responseId: "speech-7", text: "x".repeat(2001) }), /configured limit/);
+  assert.throws(() => canonicalControlCommand({ type: "GOVERNED_SPEECH", responseId: "speech-7", text: "Hola", purpose: "x".repeat(201) }), /configured limit/);
 });
 
 test("control socket may attach before Gemini session command sink", () => {
