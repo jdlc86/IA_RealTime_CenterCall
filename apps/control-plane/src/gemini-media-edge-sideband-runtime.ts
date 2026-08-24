@@ -23,6 +23,10 @@ export type GeminiMediaEdgeCallerContext = Readonly<{ itemId: string; playbackRe
 function object(value: unknown, field: string): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field} is invalid`); return value as Record<string, unknown>; }
 function required(value: unknown, field: string): string { if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`); return value.trim(); }
 function optionalId(value: unknown, field: string): string | null { if (value == null) return null; return required(value, field); }
+function governedEventKind(value: unknown): "NORMAL" | "GREETING" | "RECOVERY" {
+  if (value === "NORMAL" || value === "GREETING" || value === "RECOVERY") return value;
+  throw new Error("Gemini governed event kind is unsupported");
+}
 function outboundToolResult(message: Record<string, unknown>): GeminiMediaEdgeSidebandOutbound {
   const toolResponse = object(message.toolResponse, "Gemini sideband toolResponse");
   const responses = toolResponse.functionResponses;
@@ -87,6 +91,7 @@ export class GeminiMediaEdgeSidebandRuntime {
     }
     if (frame.type === "CALLER_EVENT") return this.observeCallerEvent(frame.event);
     if (frame.type === "PLAYBACK_EVENT") return this.observePlaybackEvent(frame.event);
+    if (frame.type === "GOVERNED_EVENT") return this.observeGovernedEvent(frame.event);
     throw new Error("Gemini media edge sideband frame type is unsupported");
   }
 
@@ -155,6 +160,22 @@ export class GeminiMediaEdgeSidebandRuntime {
       return this.edgeObservation({ type: "CALLER_TRANSCRIPT_COMPLETED", itemId, transcript: required(edge.transcript, "Gemini media edge caller transcript") });
     }
     throw new Error("Gemini media edge caller event type is unsupported");
+  }
+
+  private observeGovernedEvent(value: unknown): GeminiLiveSessionRuntimeObservation {
+    const edge = object(value, "Gemini governed lifecycle event");
+    const type = required(edge.type, "Gemini governed lifecycle event type");
+    const responseId = required(edge.responseId, "Gemini governed lifecycle response id");
+    const kind = governedEventKind(edge.kind);
+    if (type === "ASSISTANT_RESPONSE_STARTED") {
+      const purpose = edge.purpose == null ? undefined : required(edge.purpose, "Gemini governed lifecycle purpose");
+      return this.edgeObservation({ type, kind, responseId, ...(purpose ? { purpose } : {}) });
+    }
+    if (type === "ASSISTANT_RESPONSE_COMPLETED") {
+      const status = edge.status == null ? undefined : required(edge.status, "Gemini governed lifecycle status");
+      return this.edgeObservation({ type, kind, responseId, ...(status ? { status } : {}) });
+    }
+    throw new Error("Gemini governed lifecycle event type is unsupported");
   }
 
   private observePlaybackEvent(value: unknown): GeminiLiveSessionRuntimeObservation {
