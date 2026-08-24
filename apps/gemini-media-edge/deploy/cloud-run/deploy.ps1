@@ -58,13 +58,44 @@ $sourceRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $serviceAccount = "gemini-media-edge@$ProjectId.iam.gserviceaccount.com"
 $taggedImage = "$Region-docker.pkg.dev/$ProjectId/$Repository/$Service`:$ImageTag"
 
-Invoke-Gcloud @(
-  'builds', 'submit', $sourceRoot,
-  '--tag', $taggedImage,
-  '--region', $Region,
-  '--project', $ProjectId,
-  '--suppress-logs'
-)
+$buildId = (& $gcloud builds submit $sourceRoot `
+  --tag $taggedImage `
+  --region $Region `
+  --project $ProjectId `
+  --async `
+  --suppress-logs `
+  --format 'value(id)').Trim()
+if ($LASTEXITCODE -ne 0 -or $buildId -notmatch '^[0-9a-fA-F-]{36}$') {
+  throw 'Cloud Build could not be submitted asynchronously or its build id could not be resolved.'
+}
+
+$buildDeadline = (Get-Date).AddMinutes(20)
+do {
+  $buildStatus = (& $gcloud builds describe $buildId `
+    --region $Region `
+    --project $ProjectId `
+    --format 'value(status)').Trim()
+  if ($LASTEXITCODE -ne 0) {
+    throw "Cloud Build status could not be read for build $buildId."
+  }
+
+  switch ($buildStatus) {
+    'SUCCESS' { break }
+    'FAILURE' { throw "Cloud Build $buildId failed." }
+    'INTERNAL_ERROR' { throw "Cloud Build $buildId ended with INTERNAL_ERROR." }
+    'TIMEOUT' { throw "Cloud Build $buildId timed out." }
+    'CANCELLED' { throw "Cloud Build $buildId was cancelled." }
+    'EXPIRED' { throw "Cloud Build $buildId expired." }
+    'QUEUED' { Start-Sleep -Seconds 5 }
+    'PENDING' { Start-Sleep -Seconds 5 }
+    'WORKING' { Start-Sleep -Seconds 5 }
+    default { throw "Cloud Build $buildId returned unexpected status '$buildStatus'." }
+  }
+
+  if ((Get-Date) -gt $buildDeadline) {
+    throw "Timed out waiting for Cloud Build $buildId to finish."
+  }
+} while ($buildStatus -ne 'SUCCESS')
 
 $digest = (& $gcloud artifacts docker images describe $taggedImage --project $ProjectId --format 'value(image_summary.digest)').Trim()
 if ($LASTEXITCODE -ne 0 -or $digest -notmatch '^sha256:[a-f0-9]{64}$') {
@@ -135,6 +166,7 @@ Invoke-Gcloud @(
   image = $immutableImage
   serviceUrl = $serviceUrl
   publicWebSocketUrl = $publicWebSocketUrl
+  buildId = $buildId
   singleInstanceCanary = $true
   requestTimeoutSeconds = 3600
 } | ConvertTo-Json -Depth 3
