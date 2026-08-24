@@ -56,14 +56,17 @@ const GEMINI_CAPABILITIES = Object.freeze({
   // samples, retains onset frames, and closes only after configured silence.
   // Caller input transcription is likewise product-owned: the edge freezes the
   // exact detected candidate, sends it to Google Speech-to-Text v2, and rejects
-  // any transcript whose item identity differs from the captured candidate. The
-  // session owner also correlates output-transcription chunks to its active
+  // any transcript whose item identity differs from the captured candidate.
+  // Authorized interruption is also product-owned: the control plane binds the
+  // captured playback response, the edge commits activityStart/audio/activityEnd
+  // under START_OF_ACTIVITY_INTERRUPTS, then clears only that Telnyx playback.
+  // The session owner correlates output-transcription chunks to its active
   // response and finalizes them only on turnComplete. Traffic remains blocked by
-  // the semantic/runtime gates below.
+  // the remaining semantic/runtime gates below.
   audioInput: true,
   audioOutput: true,
   vad: true,
-  interruption: false,
+  interruption: true,
   functionCalling: true,
   toolCallCancellation: false,
   inputTranscription: true,
