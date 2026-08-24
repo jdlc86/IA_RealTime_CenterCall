@@ -11,6 +11,11 @@ function object(value, field) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field} is invalid`);
   return value;
 }
+function governedSpeechKind(value) {
+  if (value == null) return null;
+  if (value === "GREETING" || value === "RECOVERY") return value;
+  throw new Error("Gemini governed speech kind is unsupported");
+}
 export function controlSessionKey(claims) {
   return `${required(claims?.tenantId, "control tenant_id")}\u0000${required(claims?.callControlId, "control call_control_id")}`;
 }
@@ -31,10 +36,12 @@ export function canonicalControlCommand(value) {
     return Object.freeze({ type: "PLAYBACK_DRAIN", responseId: required(message.responseId, "Gemini media edge playback drain response id") });
   }
   if (message.type === "GOVERNED_SPEECH") {
+    const kind = governedSpeechKind(message.kind);
     return Object.freeze({
       type: "GOVERNED_SPEECH",
       responseId: required(message.responseId, "Gemini governed speech response id"),
       text: boundedText(message.text, "Gemini governed speech text", 2_000),
+      ...(kind ? { kind } : {}),
     });
   }
   if (message.type === "CALLER_TURN_DECISION") {
