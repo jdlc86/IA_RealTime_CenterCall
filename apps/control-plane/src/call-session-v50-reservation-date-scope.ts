@@ -9,6 +9,7 @@ import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import { publicRestaurantToolAuthorizationPortFor } from "./semantic-tool-authorization-port.js";
 import { decideReservationSearchDateRange } from "./reservation-search-date-range-policy.js";
+import { enforceReservationRelativeDateAuthority } from "./reservation-relative-date-authority-runtime.js";
 
 const BaseConstructor = CallSessionV49 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV49.prototype as any;
@@ -162,6 +163,14 @@ export class CallSession extends BaseConstructor {
       await BasePrototype.handleRealtimeMessage.call(this, data);
       return;
     }
+
+    const temporalAuthority = enforceReservationRelativeDateAuthority(this, {
+      callId: toolEvent.callId,
+      toolName: toolEvent.name,
+      requestedLocalDate,
+      authorizeSemanticTool: () => this.authorizeBlockedDateToolV50(toolEvent),
+    });
+    if (temporalAuthority.handled) return;
 
     const runtime = reservationDateScopeRuntimeFor(this);
     const decision = runtime.decide(requestedLocalDate);

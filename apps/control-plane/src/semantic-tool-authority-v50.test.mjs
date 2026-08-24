@@ -19,3 +19,13 @@ test("V50 keeps date-scope state in the neutral runtime", () => {
   assert.match(source, /runtime\.accept\(decision\)/);
   assert.match(source, /state_owner: "reservation_date_scope_runtime"/);
 });
+
+test("V50 blocks a stale or ambiguous relative date through the authoritative temporal port before business effects", () => {
+  assert.match(source, /enforceReservationRelativeDateAuthority/);
+  assert.match(source, /requestedLocalDate/);
+  assert.match(source, /authorizeSemanticTool: \(\) => this\.authorizeBlockedDateToolV50\(toolEvent\)/);
+  assert.match(source, /temporalAuthority\.handled/);
+  assert.doesNotMatch(source, /session\.update/);
+  assert.doesNotMatch(source, /clientContent/);
+  assert.doesNotMatch(source, /realtimeInput/);
+});
