@@ -12,6 +12,7 @@ import { realtimeCommandPortFor as openAIRealtimeCommandPortFor } from "./openai
 import { adaptOpenAIRealtimeEvent } from "./openai-realtime-event-adapter.js";
 import { externalRealtimeProviderCommandPortFor } from "./realtime-provider-external-command-runtime.js";
 import { realtimeProviderEventsFromTrustedBatch } from "./realtime-provider-event-ingress-runtime.js";
+import { withGovernedSpeechPort } from "./governed-speech-runtime.js";
 import {
   realtimeProviderCapabilities,
   requireRealtimeProviderTrafficReadiness,
@@ -155,14 +156,19 @@ const RUNTIME_BY_HOST = new WeakMap<object, RealtimeProviderCommandRuntime>();
 const PROVIDER_BY_HOST = new WeakMap<object, RealtimeProviderName>();
 
 function createProviderCommandPort(provider: RealtimeProviderName, host: RealtimeProviderHost): RealtimeProviderCommandPort {
+  let port: RealtimeProviderCommandPort;
   switch (provider) {
-    case "OPENAI": return openAIRealtimeCommandPortFor(host);
+    case "OPENAI":
+      port = openAIRealtimeCommandPortFor(host);
+      break;
     case "GEMINI": {
       const external = externalRealtimeProviderCommandPortFor(host, provider);
       if (!external) throw new Error("Realtime provider sideband command capability is not installed: GEMINI");
-      return external;
+      port = external;
+      break;
     }
   }
+  return withGovernedSpeechPort(host, provider, port);
 }
 
 export function bindRealtimeProvider(host: RealtimeProviderHost, provider: RealtimeProviderName): void {
