@@ -18,7 +18,6 @@ export type ResponseOwnerEvent =
 export type ResponseOwnerEffect =
   | { type: "cancel_response"; responseId: string }
   | { type: "clear_playback" }
-  | { type: "resume_assistant" }
   | { type: "create_caller_response" }
   | { type: "response_ownership_conflict"; previousResponseId: string; newResponseId: string };
 
@@ -27,7 +26,6 @@ export type ResponseOwnerSnapshot = {
   activeResponseId: string | null;
   playbackCleared: boolean;
   callerResponsePending: boolean;
-  resumeAfterActiveDone: boolean;
 };
 
 export function initialResponseOwnerSnapshot(): ResponseOwnerSnapshot {
@@ -36,7 +34,6 @@ export function initialResponseOwnerSnapshot(): ResponseOwnerSnapshot {
     activeResponseId: null,
     playbackCleared: false,
     callerResponsePending: false,
-    resumeAfterActiveDone: false,
   };
 }
 
@@ -78,7 +75,6 @@ export function reduceResponseOwner(
         state: "TERMINAL",
         activeResponseId: null,
         callerResponsePending: false,
-        resumeAfterActiveDone: false,
       },
       effects: [],
     };
@@ -106,7 +102,6 @@ export function reduceResponseOwner(
             ? snapshot.playbackCleared
             : false,
           callerResponsePending: snapshot.callerResponsePending,
-          resumeAfterActiveDone: snapshot.resumeAfterActiveDone,
         },
         effects: conflict,
       };
@@ -126,7 +121,6 @@ export function reduceResponseOwner(
           ...snapshot,
           state: "ASSISTANT_ACTIVE",
           callerResponsePending: false,
-          resumeAfterActiveDone: false,
         },
         effects: [],
       };
@@ -144,7 +138,6 @@ export function reduceResponseOwner(
           state: "CALLER_TURN_READY",
           callerResponsePending: waitsForProviderRelease,
           playbackCleared: true,
-          resumeAfterActiveDone: false,
         },
         effects,
       };
@@ -152,17 +145,6 @@ export function reduceResponseOwner(
 
     case "assistant_response_done":
       if (snapshot.activeResponseId !== event.responseId) return { snapshot, effects: [] };
-      if (snapshot.resumeAfterActiveDone) {
-        return {
-          snapshot: {
-            ...snapshot,
-            activeResponseId: null,
-            playbackCleared: false,
-            resumeAfterActiveDone: false,
-          },
-          effects: [{ type: "resume_assistant" }],
-        };
-      }
       if (snapshot.callerResponsePending && snapshot.state === "CALLER_TURN_READY") {
         return {
           snapshot: {
@@ -192,7 +174,6 @@ export function reduceResponseOwner(
           activeResponseId: event.responseId,
           playbackCleared: false,
           callerResponsePending: false,
-          resumeAfterActiveDone: false,
         },
         effects: conflict,
       };

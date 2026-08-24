@@ -139,12 +139,10 @@ test("ignored SIP-cleared candidate preserves the authoritative response without
   assert.equal(ignored.snapshot.state, "ASSISTANT_ACTIVE");
   assert.equal(ignored.snapshot.activeResponseId, "old");
   assert.equal(ignored.snapshot.playbackCleared, true);
-  assert.equal(ignored.snapshot.resumeAfterActiveDone, false);
   assert.deepEqual(ignored.effects, []);
 
   const done = step(ignored.snapshot, { type: "assistant_response_done", responseId: "old" });
   assert.equal(done.snapshot.activeResponseId, null);
-  assert.equal(done.snapshot.resumeAfterActiveDone, false);
   assert.equal(done.snapshot.playbackCleared, true);
   assert.deepEqual(done.effects, []);
 });
@@ -158,7 +156,6 @@ test("ignored candidate with no active response never synthesizes a replacement"
   const r = step(s, { type: "barge_in_ignore" });
   assert.equal(r.snapshot.state, "ASSISTANT_ACTIVE");
   assert.equal(r.snapshot.activeResponseId, null);
-  assert.equal(r.snapshot.resumeAfterActiveDone, false);
   assert.deepEqual(r.effects, []);
 });
 

@@ -16,4 +16,5 @@ test("deterministic inherited speech callsites provide product-owned exact text"
   assert.match(v18, /exactText: IGNORED_INPUT_RECOVERY_MESSAGE/);
   assert.match(v40, /exactText: PROVIDER_CLEAR_LIVENESS_MESSAGE/);
   assert.match(v41, /exactText: COURTESY_FOLLOWUP_EXACT_TEXT/);
+  assert.doesNotMatch(v40, /resume_assistant/);
 });

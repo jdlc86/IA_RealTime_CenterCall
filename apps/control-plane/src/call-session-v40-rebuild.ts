@@ -123,7 +123,6 @@ export class CallSession extends BaseConstructor {
       active_response_id: result.snapshot.activeResponseId,
       playback_cleared: result.snapshot.playbackCleared,
       caller_response_pending: result.snapshot.callerResponsePending,
-      resume_after_active_done: result.snapshot.resumeAfterActiveDone,
       reducer_effects: result.effects.map((effect) => effect.type),
       executable_effects: result.executable.map((effect) => effect.type),
       observed_only_effects: result.observedOnly.map((effect) => effect.type),
@@ -254,12 +253,6 @@ export class CallSession extends BaseConstructor {
     const realtime = realtimeCommandPortFor(this as any);
     for (const effect of effects) {
       if (effect.type === "create_caller_response") realtime.createDefaultResponse();
-      else if (effect.type === "resume_assistant") {
-        realtime.speak({
-          tools: "DISABLED",
-          instructions: "Continúa inmediatamente la respuesta que estabas pronunciando antes de la interrupción acústica. No menciones la interrupción, no vuelvas a empezar desde el principio y completa únicamente la información pendiente.",
-        });
-      }
     }
   }
 
@@ -391,7 +384,7 @@ export class CallSession extends BaseConstructor {
       (this as any).diagnostics?.checkpoint?.("BARGE_IN_IGNORED_V40_REBUILD", {
         item_id: pending.itemId, playback_cleared: result.snapshot.playbackCleared,
         active_response_id: result.snapshot.activeResponseId,
-        resume_after_active_done: result.snapshot.resumeAfterActiveDone, semantic_pipeline_entered: false,
+        semantic_pipeline_entered: false,
       });
       return;
     }
