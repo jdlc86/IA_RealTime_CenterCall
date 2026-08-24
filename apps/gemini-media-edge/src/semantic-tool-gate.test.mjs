@@ -59,6 +59,48 @@ test("Gemini semantic gate admits exactly one tool decision for the caller turn"
   );
 });
 
+test("Gemini semantic gate keeps speech closed while a provisional tool selection is rejected and retried", () => {
+  const gate = new GeminiSemanticToolGate();
+  gate.preArm("item-1");
+  gate.confirmArm();
+  gate.observeProviderMessage(toolCall("fc-ignore", "restaurant_input_ignored"));
+
+  gate.rejectProvisionalSelection("fc-ignore", "restaurant_input_ignored");
+  assert.deepEqual(gate.snapshot(), {
+    armed: true,
+    activeItemId: "item-1",
+    confirmed: true,
+    selectedTool: null,
+    selectedCallId: null,
+  });
+  assert.throws(
+    () => gate.observeProviderMessage({ serverContent: { outputTranscription: { text: "No debo hablar todavía" } } }),
+    /before semantic tool selection/,
+  );
+
+  gate.observeProviderMessage(toolCall("fc-2", "restaurant_business_info"));
+  assert.equal(gate.snapshot().selectedCallId, "fc-2");
+  gate.release();
+  assert.equal(gate.snapshot().armed, false);
+});
+
+test("Gemini semantic gate rejects mismatched provisional-selection identities", () => {
+  const gate = new GeminiSemanticToolGate();
+  gate.preArm("item-1");
+  gate.confirmArm();
+  gate.observeProviderMessage(toolCall("fc-1", "restaurant_input_ignored"));
+
+  assert.throws(
+    () => gate.rejectProvisionalSelection("fc-2", "restaurant_input_ignored"),
+    /identity mismatch/,
+  );
+  assert.throws(
+    () => gate.rejectProvisionalSelection("fc-1", "restaurant_business_info"),
+    /identity mismatch/,
+  );
+  assert.equal(gate.snapshot().selectedCallId, "fc-1");
+});
+
 test("Gemini semantic gate releases only after control-plane confirmation and provider tool selection", () => {
   const gate = new GeminiSemanticToolGate();
   gate.preArm("item-1");
