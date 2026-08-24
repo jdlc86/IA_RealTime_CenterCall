@@ -139,20 +139,21 @@ export function governedControlEnvelope(event) {
 
 export class InMemoryControlSidebandRegistry {
   constructor() { this.sessions = new Map(); }
-  entry(claims) { const key = controlSessionKey(claims); let session = this.sessions.get(key); if (!session) { session = { claims, send: null, commandSink: null }; this.sessions.set(key, session); } return { key, session }; }
+  entry(claims) { const key = controlSessionKey(claims); let session = this.sessions.get(key); if (!session) { session = { claims, send: null, sendActive: null, commandSink: null }; this.sessions.set(key, session); } return { key, session }; }
   cleanup(key, session) { if (this.sessions.get(key) === session && !session.send && !session.commandSink) this.sessions.delete(key); }
-  attach(claims, send) {
+  attach(claims, send, sendActive = () => true) {
     if (typeof send !== "function") throw new Error("Gemini media edge control sender is required");
-    const { key, session } = this.entry(claims); if (session.send) throw new Error("Gemini media edge control sideband already attached"); session.send = send;
-    return Object.freeze({ detach: () => { if (this.sessions.get(key) !== session) return; session.send = null; this.cleanup(key, session); } });
+    if (typeof sendActive !== "function") throw new Error("Gemini media edge control sender liveness is required");
+    const { key, session } = this.entry(claims); if (session.send) throw new Error("Gemini media edge control sideband already attached"); session.send = send; session.sendActive = sendActive;
+    return Object.freeze({ detach: () => { if (this.sessions.get(key) !== session) return; session.send = null; session.sendActive = null; this.cleanup(key, session); } });
   }
   bindCommandSink(claims, sink) {
     if (typeof sink !== "function") throw new Error("Gemini media edge control command sink is required");
     const { key, session } = this.entry(claims); if (session.commandSink && session.commandSink !== sink) throw new Error("Gemini media edge control command sink already bound"); session.commandSink = sink;
     return Object.freeze({ detach: () => { if (this.sessions.get(key) !== session || session.commandSink !== sink) return; session.commandSink = null; this.cleanup(key, session); } });
   }
-  isActive(claims) { const session = this.sessions.get(controlSessionKey(claims)); return Boolean(session?.send && session?.commandSink); }
-  emit(claims, event) { const session = this.sessions.get(controlSessionKey(claims)); if (!session?.send) return false; session.send(event); return true; }
+  isActive(claims) { const session = this.sessions.get(controlSessionKey(claims)); if (!session?.send || !session?.sendActive || !session?.commandSink) return false; try { return session.sendActive() === true; } catch { return false; } }
+  emit(claims, event) { const session = this.sessions.get(controlSessionKey(claims)); if (!session?.send || !session?.sendActive) return false; try { if (session.sendActive() !== true) return false; } catch { return false; } return session.send(event) !== false; }
   command(claims, value) { const session = this.sessions.get(controlSessionKey(claims)); if (!session?.commandSink) throw new Error("Gemini media edge control sideband is not bound to an active Gemini session"); return session.commandSink(canonicalControlCommand(value)); }
   size() { return this.sessions.size; }
 }

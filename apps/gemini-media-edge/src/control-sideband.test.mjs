@@ -96,6 +96,19 @@ test("Gemini session command sink may bind before control socket", () => {
   assert.equal(registry.size(), 0);
 });
 
+test("control registry propagates an attached sender that can no longer deliver", () => {
+  const registry = new InMemoryControlSidebandRegistry();
+  let open = true;
+  const socketAttachment = registry.attach(claims, () => open, () => open);
+  const sinkAttachment = registry.bindCommandSink(claims, () => {});
+  assert.equal(registry.isActive(claims), true);
+  open = false;
+  assert.equal(registry.isActive(claims), false);
+  assert.equal(registry.emit(claims, { type: "GOVERNED_EVENT", event: {} }), false);
+  sinkAttachment.detach();
+  socketAttachment.detach();
+});
+
 test("active control session requires exact identity plus both live endpoints", () => {
   const registry = new InMemoryControlSidebandRegistry();
   const otherCall = { tenantId: claims.tenantId, callControlId: "call-b" };

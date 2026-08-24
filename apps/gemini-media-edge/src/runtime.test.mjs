@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   BoundPlaybackGate,
   applyCallerInputControlCommand,
+  assertMediaEdgeSocketWritable,
   commitDeferredCallerTurn,
   completeGovernedSpeechPlayback,
   executeGovernedSpeechPlayback,
@@ -303,6 +304,101 @@ test("governed speech rejects a stale session after late TTS without playback", 
   assert.equal(emitted, false);
   assert.equal(playback.snapshot().pendingBytes, 0);
   assert.deepEqual(coordinator.snapshot(), { pendingResponseId: null, activeResponseId: null });
+});
+
+test("governed speech resets ownership on closed Telnyx socket and backpressure", async (t) => {
+  for (const failure of [
+    { name: "closed socket", socket: { readyState: 3, bufferedAmount: 0 }, error: /socket is not open/ },
+    { name: "backpressure", socket: { readyState: 1, bufferedAmount: 65_537 }, error: /backpressure limit exceeded/ },
+  ]) {
+    await t.test(failure.name, async () => {
+      const playback = new BoundPlaybackGate(64 * 1024);
+      const coordinator = new GovernedSpeechPlaybackCoordinator();
+      let drainSent = false;
+      await assert.rejects(
+        executeGovernedSpeechPlayback({
+          command: { type: "GOVERNED_SPEECH", responseId: `governed-${failure.name}`, text: "Hola" },
+          synthesize: async ({ text }) => ({ text, pcm16le: Buffer.from([1, 2]), sampleRateHertz: 16_000, encoding: "PCM16_LE" }),
+          coordinator,
+          playback,
+          assertSessionActive() {},
+          emitControlEvent: () => true,
+          emitPlaybackChunks() { assertMediaEdgeSocketWritable(failure.socket, "Telnyx", 64 * 1024); },
+          sendDrainMark() { drainSent = true; },
+        }),
+        failure.error,
+      );
+      assert.equal(drainSent, false);
+      assert.deepEqual(playback.snapshot(), {
+        binding: null,
+        bindingKind: null,
+        pendingChunks: 0,
+        pendingBytes: 0,
+        playback: { responseId: null, started: false, pendingMark: null, pendingPurpose: null },
+      });
+      assert.deepEqual(coordinator.snapshot(), { pendingResponseId: null, activeResponseId: null });
+    });
+  }
+});
+
+test("governed speech rechecks sideband ownership at the physical playback boundary", async () => {
+  const playback = new BoundPlaybackGate(64 * 1024);
+  const coordinator = new GovernedSpeechPlaybackCoordinator();
+  let assertions = 0;
+  let physicalEffects = 0;
+  await assert.rejects(
+    executeGovernedSpeechPlayback({
+      command: { type: "GOVERNED_SPEECH", responseId: "governed-detached", text: "Hola" },
+      synthesize: async ({ text }) => ({ text, pcm16le: Buffer.from([1, 2]), sampleRateHertz: 16_000, encoding: "PCM16_LE" }),
+      coordinator,
+      playback,
+      assertSessionActive() { assertions += 1; if (assertions === 2) throw new Error("control sideband detached"); },
+      emitControlEvent: () => true,
+      emitPlaybackChunks() { physicalEffects += 1; },
+      sendDrainMark() { physicalEffects += 1; },
+    }),
+    /control sideband detached/,
+  );
+  assert.equal(assertions, 2);
+  assert.equal(physicalEffects, 0);
+  assert.deepEqual(playback.snapshot(), {
+    binding: null,
+    bindingKind: null,
+    pendingChunks: 0,
+    pendingBytes: 0,
+    playback: { responseId: null, started: false, pendingMark: null, pendingPurpose: null },
+  });
+  assert.deepEqual(coordinator.snapshot(), { pendingResponseId: null, activeResponseId: null });
+});
+
+test("governed completion fails closed when its sideband delivery disappears", async (t) => {
+  for (const failure of [
+    { name: "before playback completion", delivered: () => false, error: /playback completion requires active control sideband/ },
+    { name: "before response completion", delivered: (() => { let calls = 0; return () => { calls += 1; return calls === 1; }; })(), error: /response completion requires active control sideband/ },
+  ]) {
+    await t.test(failure.name, async () => {
+      const playback = new BoundPlaybackGate(64 * 1024);
+      const coordinator = new GovernedSpeechPlaybackCoordinator();
+      const marks = [];
+      const context = await executeGovernedSpeechPlayback({
+        command: { type: "GOVERNED_SPEECH", responseId: `governed-completion-${failure.name}`, text: "Hola" },
+        synthesize: async ({ text }) => ({ text, pcm16le: Buffer.from([1, 2]), sampleRateHertz: 16_000, encoding: "PCM16_LE" }),
+        coordinator,
+        playback,
+        assertSessionActive() {},
+        emitControlEvent: () => true,
+        emitPlaybackChunks(chunks, onFirstQueued) { for (const chunk of chunks) { playback.noteQueued(chunk.responseId); onFirstQueued(); } },
+        sendDrainMark(mark) { marks.push(mark); },
+      });
+      const stopped = playback.observeReturnedMark(marks[0]);
+      assert.throws(
+        () => completeGovernedSpeechPlayback({ context, event: stopped, coordinator, emitControlEvent: failure.delivered }),
+        failure.error,
+      );
+      assert.deepEqual(coordinator.snapshot(), { pendingResponseId: null, activeResponseId: null });
+      assert.equal(playback.activeResponseId(), null);
+    });
+  }
 });
 
 test("runtime caller-input controls mutate only the product-owned edge owner", () => {

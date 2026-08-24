@@ -19,6 +19,12 @@ function encodeBase64(value) { return Buffer.from(value).toString("base64"); }
 function bearerCredential(request) { const authorization = request.headers.authorization; if (typeof authorization !== "string") throw new Error("missing authorization"); const match = /^Bearer\s+(.+)$/i.exec(authorization.trim()); if (!match?.[1]?.trim()) throw new Error("missing bearer credential"); return match[1].trim(); }
 function playbackKind(value) { if (value == null || value === "NORMAL") return "NORMAL"; if (["GREETING", "RECOVERY", "TERMINAL", "PRESENCE", "HANDOFF"].includes(value)) return value; throw new Error("Gemini playback kind is unsupported"); }
 
+export function assertMediaEdgeSocketWritable(socket, label, maxBufferedBytes) {
+  const name = required(label, "Media edge socket label");
+  if (!socket || socket.readyState !== OPEN) throw new Error(`${name} socket is not open`);
+  if (socket.bufferedAmount > maxBufferedBytes) throw new Error(`${name} backpressure limit exceeded`);
+}
+
 export function swapPcm16Endianness(bytes) { if (bytes.length % 2 !== 0) throw new Error("PCM16 payload must contain complete 16-bit samples"); const output = Buffer.allocUnsafe(bytes.length); for (let i = 0; i < bytes.length; i += 2) { output[i] = bytes[i + 1]; output[i + 1] = bytes[i]; } return output; }
 export class Pcm16Resampler24To16 { constructor() { this.pending = null; this.phase = 0; } reset() { this.pending = null; this.phase = 0; } push(bytes) { if (bytes.length % 2 !== 0) throw new Error("Gemini PCM16 output must contain complete samples"); const source = []; if (this.pending !== null) source.push(this.pending); for (let i = 0; i < bytes.length; i += 2) source.push(bytes.readInt16LE(i)); if (source.length < 2) { this.pending = source[0] ?? null; return Buffer.alloc(0); } const out = []; let position = this.phase; while (position + 1 < source.length) { const left = Math.floor(position); const fraction = position - left; const sample = Math.round(source[left] + (source[left + 1] - source[left]) * fraction); out.push(Math.max(-32768, Math.min(32767, sample))); position += 1.5; } const consumed = Math.floor(position); this.phase = position - consumed; this.pending = source[source.length - 1]; const result = Buffer.allocUnsafe(out.length * 2); out.forEach((sample, index) => result.writeInt16LE(sample, index * 2)); return result; } }
 
@@ -48,7 +54,7 @@ export async function executeGovernedSpeechPlayback(options) {
   const coordinator = options?.coordinator;
   const playback = options?.playback;
   if (!coordinator || typeof coordinator.reserve !== "function") throw new Error("Governed speech coordinator is required");
-  if (!playback || typeof playback.assertIdle !== "function") throw new Error("Governed speech playback owner is required");
+  if (!playback || typeof playback.assertIdle !== "function" || typeof playback.reset !== "function") throw new Error("Governed speech playback owner is required");
   if (typeof options?.assertSessionActive !== "function") throw new Error("Governed speech session assertion is required");
   if (typeof options?.emitPlaybackChunks !== "function") throw new Error("Governed speech playback emitter is required");
   if (typeof options?.sendDrainMark !== "function") throw new Error("Governed speech drain sender is required");
@@ -64,6 +70,7 @@ export async function executeGovernedSpeechPlayback(options) {
     const chunks = playback.bind(responseId, kind);
     coordinator.beginPlayback(responseId);
     let responseStarted = false;
+    options.assertSessionActive();
     options.emitPlaybackChunks(chunks, () => {
       const delivered = options.emitControlEvent(governedControlEnvelope({
         type: "ASSISTANT_RESPONSE_STARTED",
@@ -80,6 +87,7 @@ export async function executeGovernedSpeechPlayback(options) {
     options.sendDrainMark(mark);
     return Object.freeze({ responseId, kind, ...(purpose ? { purpose } : {}) });
   } catch (error) {
+    playback.reset();
     coordinator.reset();
     throw error;
   }
@@ -166,7 +174,7 @@ export function createGeminiMediaEdgeRuntime(options) {
     const claims = pendingAuthorizations.get(telnyx); pendingAuthorizations.delete(telnyx); if (!claims) { try { telnyx.close(); } catch {} return; }
     const state = { telnyx, gemini: null, claims, bootstrap: null, controlAttachment: null, authorized: false, started: false, setupSent: false, setupComplete: false, streamId: null, nextChunk: 1, buffered: new Map(), resampler: new Pcm16Resampler24To16(), playback: new BoundPlaybackGate(maxBufferedBytes), governedPlayback: new GovernedSpeechPlaybackCoordinator(), governedContext: null, callerInput: new AuthoritativeCallerInputOwner(options.authoritativeTranscribe, options.callerVadConfig, options.callerInputOptions), semanticGate: new GeminiSemanticToolGate(), closed: false, telnyxChain: Promise.resolve() }; sessions.add(state);
     const closeBoth = () => { if (state.closed) return; state.closed = true; state.buffered.clear(); state.playback.reset(); state.governedPlayback.reset(); state.governedContext = null; try { state.controlAttachment?.detach?.(); } catch {} state.controlAttachment = null; sessions.delete(state); try { if (telnyx.readyState === OPEN || telnyx.readyState === CONNECTING) telnyx.close(); } catch {} try { if (state.gemini?.readyState === OPEN || state.gemini?.readyState === CONNECTING) state.gemini.close(); } catch {} };
-    const assertBackpressure = (socket, label) => { if (socket.bufferedAmount > maxBufferedBytes) throw new Error(`${label} backpressure limit exceeded`); };
+    const assertBackpressure = (socket, label) => assertMediaEdgeSocketWritable(socket, label, maxBufferedBytes);
     const emitRequiredControlEvent = (event, error) => { if (options.emitControlEvent?.(state.claims, event) !== true) throw new Error(error); };
     const emitPlaybackChunks = (chunks, onFirstQueued = null) => { for (const chunk of chunks) { assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "media", media: { payload: encodeBase64(swapPcm16Endianness(chunk.pcm)) } }); const noted = state.playback.noteQueued(chunk.responseId); if (noted.first) { onFirstQueued?.(); const delivered = options.emitControlEvent?.(state.claims, { type: "PLAYBACK_EVENT", event: { type: "ASSISTANT_AUDIO_STARTED", kind: chunk.kind, responseId: chunk.responseId } }); if (onFirstQueued && delivered !== true) throw new Error("Governed speech playback start requires active control sideband"); } } };
     const submitControlCommand = (command) => {
