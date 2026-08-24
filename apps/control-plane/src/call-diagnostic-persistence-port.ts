@@ -231,7 +231,7 @@ function createPort(env: PersistenceEnv): CallDiagnosticPersistencePort {
           chunk_count: event.chunk_count ?? null,
           sample_count: event.sample_count ?? null,
           details: event.details ?? {},
-        })),
+        }))),
       });
       if (!response.ok) throw new Error(`Supabase cross-plane diagnostics write failed with HTTP ${response.status}`);
       return events.length;

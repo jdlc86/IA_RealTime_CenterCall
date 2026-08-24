@@ -155,7 +155,7 @@ controlWss.on("connection", (socket, request) => {
 
 const server = http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url, "http://localhost");
-  if (requestUrl.pathname === "/ready" && request.method === "GET") {
+  if (request.url === "/ready" && request.method === "GET") {
     response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     response.end(JSON.stringify({
       ok: true,
@@ -184,7 +184,7 @@ const server = http.createServer(async (request, response) => {
     }
     return;
   }
-  if (requestUrl.pathname === "/internal/bootstrap" && request.method === "POST") {
+  if (request.url === "/internal/bootstrap" && request.method === "POST") {
     if (!controlAuthorization(request, controlPlaneToken)) {
       response.writeHead(401, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({ ok: false, error: "unauthorized" }));
@@ -200,7 +200,7 @@ const server = http.createServer(async (request, response) => {
     }
     return;
   }
-  if (requestUrl.pathname === "/internal/semantic-decision" && request.method === "POST") {
+  if (request.url === "/internal/semantic-decision" && request.method === "POST") {
     if (!controlAuthorization(request, controlPlaneToken)) {
       response.writeHead(401, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({ ok: false, error: "unauthorized" }));
@@ -218,7 +218,7 @@ const server = http.createServer(async (request, response) => {
     }
     return;
   }
-  if (requestUrl.pathname === "/internal/isolated-generation" && request.method === "POST") {
+  if (request.url === "/internal/isolated-generation" && request.method === "POST") {
     if (!controlAuthorization(request, controlPlaneToken)) {
       response.writeHead(401, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({ ok: false, error: "unauthorized" }));
