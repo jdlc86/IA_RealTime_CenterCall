@@ -9,7 +9,10 @@ import { adaptRealtimeProviderEvents, realtimeCommandPortFor } from "./realtime-
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import { publicRestaurantToolAuthorizationPortFor } from "./semantic-tool-authorization-port.js";
 import { decideReservationSearchDateRange } from "./reservation-search-date-range-policy.js";
-import { enforceReservationRelativeDateAuthority } from "./reservation-relative-date-authority-runtime.js";
+import {
+  enforceReservationRelativeDateAuthority,
+  enforceReservationRelativeDateRangeAuthority,
+} from "./reservation-relative-date-authority-runtime.js";
 
 const BaseConstructor = CallSessionV49 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV49.prototype as any;
@@ -127,12 +130,22 @@ export class CallSession extends BaseConstructor {
       const toRaw = text(args.to);
       if (fromRaw && toRaw) {
         try {
+          const fromLocalDate = reservationSearchLocalDate(fromRaw);
+          const toLocalDate = reservationSearchLocalDate(toRaw);
           const rangeDecision = decideReservationSearchDateRange({
-            fromLocalDate: reservationSearchLocalDate(fromRaw),
-            toLocalDate: reservationSearchLocalDate(toRaw),
+            fromLocalDate,
+            toLocalDate,
             dateScope: text(args.date_scope),
           });
           if (rangeDecision.action !== "SAME_DATE") {
+            const temporalRangeAuthority = enforceReservationRelativeDateRangeAuthority(this, {
+              callId: toolEvent.callId,
+              toolName: toolEvent.name,
+              requestedFromLocalDate: fromLocalDate,
+              requestedToLocalDateExclusive: toLocalDate,
+              authorizeSemanticTool: () => this.authorizeBlockedDateToolV50(toolEvent),
+            });
+            if (temporalRangeAuthority.handled) return;
             (this as any).diagnostics?.checkpoint?.("RESERVATION_DATE_RANGE_DELEGATED_V50", {
               decision: rangeDecision.action,
               reason: rangeDecision.action === "BLOCK_RANGE" ? rangeDecision.reason : null,

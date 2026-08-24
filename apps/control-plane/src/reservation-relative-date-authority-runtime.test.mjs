@@ -5,7 +5,10 @@ import {
   installAuthoritativeTemporalContextPort,
   removeAuthoritativeTemporalContextPort,
 } from "../.test-dist/authoritative-temporal-context-runtime.js";
-import { enforceReservationRelativeDateAuthority } from "../.test-dist/reservation-relative-date-authority-runtime.js";
+import {
+  enforceReservationRelativeDateAuthority,
+  enforceReservationRelativeDateRangeAuthority,
+} from "../.test-dist/reservation-relative-date-authority-runtime.js";
 
 test("relative-date authority consumes stale rollover materialization before business execution", () => {
   const sent = [];
@@ -89,4 +92,71 @@ test("fresh or non-relative dates pass without consuming semantic authority or e
 
   assert.equal(semanticAuthorizations, 0);
   assert.deepEqual(sent, []);
+});
+
+test("relative-range authority blocks stale endpoints before availability", () => {
+  const sent = [];
+  const session = { send: (event) => sent.push(structuredClone(event)) };
+  const temporal = createProductOwnedAuthoritativeTemporalContextCapability();
+  installAuthoritativeTemporalContextPort(session, temporal.port);
+  temporal.port.refresh({
+    baseInstructions: "BASE",
+    now: new Date("2026-08-23T22:01:00Z"),
+    callerTurn: { itemId: "range-after-rollover", transcript: "hoy o mañana" },
+  });
+
+  try {
+    const outcome = enforceReservationRelativeDateRangeAuthority(session, {
+      callId: "search-1",
+      toolName: "restaurant_reservation_search",
+      requestedFromLocalDate: "2026-08-23",
+      requestedToLocalDateExclusive: "2026-08-25",
+      authorizeSemanticTool: () => true,
+    });
+    assert.equal(outcome.handled, true);
+    assert.equal(outcome.decision.action, "BLOCK_RANGE_MISMATCH");
+  } finally {
+    removeAuthoritativeTemporalContextPort(session, temporal.port);
+    temporal.close();
+  }
+
+  const result = JSON.parse(sent.find((event) => event.item?.type === "function_call_output").item.output);
+  assert.equal(result.status, "RELATIVE_DATE_RANGE_MISMATCH");
+  assert.equal(result.authoritative_from_local_date, "2026-08-24");
+  assert.equal(result.authoritative_to_local_date_exclusive, "2026-08-26");
+  assert.equal(result.authoritative_last_included_local_date, "2026-08-25");
+  assert.equal(result.availability_checked, false);
+  assert.equal(sent.some((event) => event.item?.role === "user"), false);
+});
+
+test("discontinuous relative alternatives cannot authorize a continuous from/to search", () => {
+  const sent = [];
+  const session = { send: (event) => sent.push(structuredClone(event)) };
+  const temporal = createProductOwnedAuthoritativeTemporalContextCapability();
+  installAuthoritativeTemporalContextPort(session, temporal.port);
+  temporal.port.refresh({
+    baseInstructions: "BASE",
+    now: new Date("2026-08-24T10:00:00Z"),
+    callerTurn: { itemId: "range-discontinuous", transcript: "el lunes o el viernes" },
+  });
+
+  try {
+    const outcome = enforceReservationRelativeDateRangeAuthority(session, {
+      callId: "search-2",
+      toolName: "restaurant_reservation_search",
+      requestedFromLocalDate: "2026-08-24",
+      requestedToLocalDateExclusive: "2026-08-29",
+      authorizeSemanticTool: () => true,
+    });
+    assert.equal(outcome.handled, true);
+    assert.equal(outcome.decision.action, "BLOCK_RANGE_UNPROVEN");
+  } finally {
+    removeAuthoritativeTemporalContextPort(session, temporal.port);
+    temporal.close();
+  }
+
+  const result = JSON.parse(sent.find((event) => event.item?.type === "function_call_output").item.output);
+  assert.equal(result.status, "RELATIVE_DATE_RANGE_UNPROVEN");
+  assert.deepEqual(result.referenced_local_dates, ["2026-08-24", "2026-08-28"]);
+  assert.equal(result.availability_checked, false);
 });

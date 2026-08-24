@@ -29,3 +29,15 @@ test("V50 blocks a stale or ambiguous relative date through the authoritative te
   assert.doesNotMatch(source, /clientContent/);
   assert.doesNotMatch(source, /realtimeInput/);
 });
+
+test("V50 validates a cross-date search against authoritative range semantics before delegation", () => {
+  assert.match(source, /enforceReservationRelativeDateRangeAuthority/);
+  assert.match(source, /requestedFromLocalDate: fromLocalDate/);
+  assert.match(source, /requestedToLocalDateExclusive: toLocalDate/);
+  assert.match(source, /temporalRangeAuthority\.handled/);
+  assert.match(source, /RESERVATION_DATE_RANGE_DELEGATED_V50/);
+  assert.ok(
+    source.indexOf("temporalRangeAuthority.handled") < source.indexOf("RESERVATION_DATE_RANGE_DELEGATED_V50"),
+    "relative range authority must run before lower range delegation",
+  );
+});

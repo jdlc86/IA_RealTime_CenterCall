@@ -15,7 +15,12 @@ function requireHost(host: object): object {
 }
 
 function requirePort(port: AuthoritativeTemporalContextPort): AuthoritativeTemporalContextPort {
-  if (!port || typeof port.refresh !== "function" || typeof port.decideReservationDate !== "function") {
+  if (
+    !port
+    || typeof port.refresh !== "function"
+    || typeof port.decideReservationDate !== "function"
+    || typeof port.decideReservationDateRange !== "function"
+  ) {
     throw new Error("Authoritative temporal context port is required");
   }
   return port;

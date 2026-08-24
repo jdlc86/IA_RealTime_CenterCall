@@ -30,7 +30,7 @@ test("OpenAI fallback keeps authoritative time refresh on the existing realtime 
 test("external authoritative temporal context overrides refresh for exactly one session", () => {
   const h = host();
   const effects = [];
-  const external = { refresh(request) { effects.push(request); }, decideReservationDate() { return { action: "NO_CALLER_CONTEXT" }; } };
+  const external = { refresh(request) { effects.push(request); }, decideReservationDate() { return { action: "NO_CALLER_CONTEXT" }; }, decideReservationDateRange() { return { action: "NO_CALLER_CONTEXT" }; } };
   const fallback = authoritativeTemporalContextPortFor(h);
 
   installAuthoritativeTemporalContextPort(h, external);
@@ -46,8 +46,8 @@ test("external authoritative temporal context overrides refresh for exactly one 
 
 test("external authoritative temporal context ownership is fail-closed", () => {
   const h = host();
-  const first = { refresh() {}, decideReservationDate() { return { action: "NO_CALLER_CONTEXT" }; } };
-  const second = { refresh() {}, decideReservationDate() { return { action: "NO_CALLER_CONTEXT" }; } };
+  const first = { refresh() {}, decideReservationDate() { return { action: "NO_CALLER_CONTEXT" }; }, decideReservationDateRange() { return { action: "NO_CALLER_CONTEXT" }; } };
+  const second = { refresh() {}, decideReservationDate() { return { action: "NO_CALLER_CONTEXT" }; }, decideReservationDateRange() { return { action: "NO_CALLER_CONTEXT" }; } };
 
   installAuthoritativeTemporalContextPort(h, first);
   assert.doesNotThrow(() => installAuthoritativeTemporalContextPort(h, first));

@@ -79,3 +79,26 @@ test("product-owned temporal context detects a stale Gemini date after Madrid ro
   capability.close();
   assert.throws(() => capability.port.decideReservationDate("2026-08-25"), /is closed/);
 });
+
+test("product-owned temporal context validates flexible range endpoints with the same caller-turn clock", () => {
+  const capability = createProductOwnedAuthoritativeTemporalContextCapability();
+  capability.port.refresh({
+    baseInstructions: "Eres Lucía.",
+    now: new Date("2026-08-23T22:01:00Z"),
+    callerTurn: { itemId: "gemini-range-1", transcript: "hoy o mañana" },
+  });
+
+  assert.deepEqual(capability.port.decideReservationDateRange("2026-08-23", "2026-08-25"), {
+    action: "BLOCK_RANGE_MISMATCH",
+    itemId: "gemini-range-1",
+    requestedFromLocalDate: "2026-08-23",
+    requestedToLocalDateExclusive: "2026-08-25",
+    authoritativeFromLocalDate: "2026-08-24",
+    authoritativeToLocalDateExclusive: "2026-08-26",
+  });
+  assert.equal(
+    capability.port.decideReservationDateRange("2026-08-24", "2026-08-26").action,
+    "ALLOW_RANGE",
+  );
+  capability.close();
+});

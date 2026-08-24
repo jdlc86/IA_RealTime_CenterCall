@@ -2,7 +2,10 @@ import type { RealtimeProviderCommandPort } from "./realtime-provider-command-po
 import { requireRealtimeProviderCapabilities } from "./realtime-provider-capabilities.js";
 import type { RealtimeProviderName } from "./realtime-provider-types.js";
 import { withAuthoritativeNowContext } from "./temporal-grounding.js";
-import { resolveAuthoritativeRelativeDate } from "./authoritative-relative-date.js";
+import {
+  resolveAuthoritativeRelativeDate,
+  resolveAuthoritativeRelativeDateRange,
+} from "./authoritative-relative-date.js";
 
 export type AuthoritativeTemporalContextRefresh = Readonly<{
   baseInstructions: string;
@@ -17,6 +20,13 @@ export type AuthoritativeReservationDateDecision =
   | Readonly<{ action: "BLOCK_MISMATCH"; itemId: string; authoritativeLocalDate: string; requestedLocalDate: string }>
   | Readonly<{ action: "BLOCK_AMBIGUOUS"; itemId: string; authoritativeLocalDates: readonly string[] }>;
 
+export type AuthoritativeReservationDateRangeDecision =
+  | Readonly<{ action: "NO_CALLER_CONTEXT" }>
+  | Readonly<{ action: "NO_RELATIVE_DATE_RANGE_EVIDENCE"; itemId: string }>
+  | Readonly<{ action: "ALLOW_RANGE"; itemId: string; authoritativeFromLocalDate: string; authoritativeToLocalDateExclusive: string }>
+  | Readonly<{ action: "BLOCK_RANGE_MISMATCH"; itemId: string; requestedFromLocalDate: string; requestedToLocalDateExclusive: string; authoritativeFromLocalDate: string; authoritativeToLocalDateExclusive: string }>
+  | Readonly<{ action: "BLOCK_RANGE_UNPROVEN"; itemId: string; referencedLocalDates: readonly string[] }>;
+
 /**
  * Provider-neutral capability for keeping conversational and business semantics
  * grounded in backend-owned time.
@@ -28,6 +38,10 @@ export type AuthoritativeReservationDateDecision =
 export interface AuthoritativeTemporalContextPort {
   refresh(request: AuthoritativeTemporalContextRefresh): void;
   decideReservationDate(requestedLocalDate: string): AuthoritativeReservationDateDecision;
+  decideReservationDateRange(
+    requestedFromLocalDate: string,
+    requestedToLocalDateExclusive: string,
+  ): AuthoritativeReservationDateRangeDecision;
 }
 
 type AuthoritativeCallerTurnContext = Readonly<{ itemId: string; transcript: string; now: Date }>;
@@ -70,6 +84,45 @@ class AuthoritativeCallerTurnClock {
       requestedLocalDate: requested,
     });
   }
+
+  decideReservationDateRange(
+    requestedFromLocalDate: string,
+    requestedToLocalDateExclusive: string,
+  ): AuthoritativeReservationDateRangeDecision {
+    const from = requestedFromLocalDate.trim();
+    const to = requestedToLocalDateExclusive.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+      throw new Error("Requested reservation local date range is invalid");
+    }
+    if (!this.latest) return { action: "NO_CALLER_CONTEXT" };
+    const resolved = resolveAuthoritativeRelativeDateRange(this.latest.transcript, this.latest.now);
+    if (resolved.kind === "NO_RELATIVE_DATE_RANGE_EVIDENCE") {
+      return Object.freeze({ action: "NO_RELATIVE_DATE_RANGE_EVIDENCE", itemId: this.latest.itemId });
+    }
+    if (resolved.kind === "UNPROVEN_RELATIVE_DATE_RANGE") {
+      return Object.freeze({
+        action: "BLOCK_RANGE_UNPROVEN",
+        itemId: this.latest.itemId,
+        referencedLocalDates: resolved.localDates,
+      });
+    }
+    if (resolved.fromLocalDate === from && resolved.toLocalDateExclusive === to) {
+      return Object.freeze({
+        action: "ALLOW_RANGE",
+        itemId: this.latest.itemId,
+        authoritativeFromLocalDate: resolved.fromLocalDate,
+        authoritativeToLocalDateExclusive: resolved.toLocalDateExclusive,
+      });
+    }
+    return Object.freeze({
+      action: "BLOCK_RANGE_MISMATCH",
+      itemId: this.latest.itemId,
+      requestedFromLocalDate: from,
+      requestedToLocalDateExclusive: to,
+      authoritativeFromLocalDate: resolved.fromLocalDate,
+      authoritativeToLocalDateExclusive: resolved.toLocalDateExclusive,
+    });
+  }
 }
 
 class RealtimeBackedAuthoritativeTemporalContextPort implements AuthoritativeTemporalContextPort {
@@ -91,6 +144,10 @@ class RealtimeBackedAuthoritativeTemporalContextPort implements AuthoritativeTem
   decideReservationDate(requestedLocalDate: string): AuthoritativeReservationDateDecision {
     return this.callerClock.decideReservationDate(requestedLocalDate);
   }
+
+  decideReservationDateRange(from: string, to: string): AuthoritativeReservationDateRangeDecision {
+    return this.callerClock.decideReservationDateRange(from, to);
+  }
 }
 
 class ProductOwnedAuthoritativeTemporalContextPort implements AuthoritativeTemporalContextPort {
@@ -105,6 +162,11 @@ class ProductOwnedAuthoritativeTemporalContextPort implements AuthoritativeTempo
   decideReservationDate(requestedLocalDate: string): AuthoritativeReservationDateDecision {
     if (this.closed) throw new Error("Product-owned authoritative temporal context is closed");
     return this.callerClock.decideReservationDate(requestedLocalDate);
+  }
+
+  decideReservationDateRange(from: string, to: string): AuthoritativeReservationDateRangeDecision {
+    if (this.closed) throw new Error("Product-owned authoritative temporal context is closed");
+    return this.callerClock.decideReservationDateRange(from, to);
   }
 
   close(): void {
