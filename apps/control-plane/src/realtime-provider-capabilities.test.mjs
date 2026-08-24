@@ -55,7 +55,7 @@ test("OpenAI capabilities describe product-validated semantics rather than vendo
   assert.equal(openai.toolCallCancellation, false);
 });
 
-test("Gemini claims only semantics proven by product-owned VAD/STT/interruption, immutable setup, media, output transcription, function calls and owned lifecycle", () => {
+test("Gemini claims only product-proven media, caller authority, interruption, isolated decision, bootstrap, function and lifecycle semantics", () => {
   const gemini = realtimeProviderCapabilities("GEMINI");
   assert.equal(gemini.audioInput, true);
   assert.equal(gemini.audioOutput, true);
@@ -63,6 +63,7 @@ test("Gemini claims only semantics proven by product-owned VAD/STT/interruption,
   assert.equal(gemini.interruption, true);
   assert.equal(gemini.inputTranscription, true);
   assert.equal(gemini.outputTranscription, true);
+  assert.equal(gemini.isolatedTextDecision, true);
   assert.equal(gemini.initialInstructionBootstrap, true);
   assert.equal(gemini.toolCatalogBootstrap, true);
   assert.equal(gemini.functionCalling, true);
@@ -75,6 +76,7 @@ test("Gemini claims only semantics proven by product-owned VAD/STT/interruption,
       "interruption",
       "inputTranscription",
       "outputTranscription",
+      "isolatedTextDecision",
       "initialInstructionBootstrap",
       "toolCatalogBootstrap",
       "functionCalling",
@@ -134,10 +136,10 @@ test("OpenAI is traffic-ready under the current validated baseline", () => {
   assert.equal(requireRealtimeProviderTrafficReadiness("OPENAI"), realtimeProviderCapabilities("OPENAI"));
 });
 
-test("Gemini traffic readiness remains closed after caller VAD/STT/interruption, media, output transcription, bootstrap, function-calling and lifecycle proof", () => {
+test("Gemini traffic readiness remains closed after isolated decision proof", () => {
   assert.throws(
     () => requireRealtimeProviderTrafficReadiness("GEMINI"),
-    /lacks required capabilities: governedSpeech, isolatedTextDecision, semanticToolGate, authoritativeTemporalContext/,
+    /lacks required capabilities: governedSpeech, semanticToolGate, authoritativeTemporalContext/,
   );
 });
 
@@ -160,6 +162,7 @@ test("capability requirements fail closed until remaining Gemini runtime gates a
       "interruption",
       "inputTranscription",
       "outputTranscription",
+      "isolatedTextDecision",
       "initialInstructionBootstrap",
       "toolCatalogBootstrap",
       "functionCalling",

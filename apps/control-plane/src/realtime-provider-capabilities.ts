@@ -60,7 +60,10 @@ const GEMINI_CAPABILITIES = Object.freeze({
   // Authorized interruption is also product-owned: the control plane binds the
   // captured playback response, the edge commits activityStart/audio/activityEnd
   // under START_OF_ACTIVITY_INTERRUPTS, then clears only that Telnyx playback.
-  // The session owner correlates output-transcription chunks to its active
+  // Auxiliary semantic decisions are isolated from Live: a session-scoped port
+  // calls a one-shot Gemini text model only while the exact control/media session
+  // is active and reintroduces only correlated neutral decision events. The
+  // session owner also correlates output-transcription chunks to its active
   // response and finalizes them only on turnComplete. Traffic remains blocked by
   // the remaining semantic/runtime gates below.
   audioInput: true,
@@ -72,7 +75,7 @@ const GEMINI_CAPABILITIES = Object.freeze({
   inputTranscription: true,
   outputTranscription: true,
   governedSpeech: false,
-  isolatedTextDecision: false,
+  isolatedTextDecision: true,
   semanticToolGate: false,
   initialInstructionBootstrap: true,
   toolCatalogBootstrap: true,
