@@ -197,7 +197,7 @@ async function pullAndPersistMediaEdgeDiagnostics(env: WorkerEnv, observed: Obse
   const events = (payload as { events?: unknown }).events;
   if (!Array.isArray(events)) throw new Error("Media Edge diagnostics pull omitted events");
   const port = callDiagnosticPersistencePortForEnv(env);
-  await port.writeCrossPlaneBatch([workerHangupEvent(observed), ...events]);
+  await port.writeCrossPlaneBatch(events);
   console.log(JSON.stringify({
     level: "info",
     event: "media_edge_diagnostics_persisted",
@@ -245,6 +245,11 @@ export default {
     }
 
     if (observed.eventType === "call.hangup") {
+      ctx.waitUntil(
+        callDiagnosticPersistencePortForEnv(env).writeCrossPlaneBatch([workerHangupEvent(observed)]).catch((error) => {
+          reportBackgroundFailure("worker_hangup_diagnostic_persist_failed", observed, error);
+        }),
+      );
       ctx.waitUntil(
         pullAndPersistMediaEdgeDiagnostics(env, observed).catch((error) => {
           reportBackgroundFailure("media_edge_diagnostics_pull_failed", observed, error);
