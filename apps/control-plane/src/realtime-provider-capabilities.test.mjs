@@ -55,7 +55,7 @@ test("OpenAI capabilities describe product-validated semantics rather than vendo
   assert.equal(openai.toolCallCancellation, false);
 });
 
-test("Gemini claims only product-proven media, caller authority, interruption, isolated decision, semantic gate, bootstrap, function and lifecycle semantics", () => {
+test("Gemini claims only product-proven media, caller authority, governed speech, semantic gate, bootstrap, function and lifecycle semantics", () => {
   const gemini = realtimeProviderCapabilities("GEMINI");
   assert.equal(gemini.audioInput, true);
   assert.equal(gemini.audioOutput, true);
@@ -63,6 +63,7 @@ test("Gemini claims only product-proven media, caller authority, interruption, i
   assert.equal(gemini.interruption, true);
   assert.equal(gemini.inputTranscription, true);
   assert.equal(gemini.outputTranscription, true);
+  assert.equal(gemini.governedSpeech, true);
   assert.equal(gemini.isolatedTextDecision, true);
   assert.equal(gemini.semanticToolGate, true);
   assert.equal(gemini.initialInstructionBootstrap, true);
@@ -77,6 +78,7 @@ test("Gemini claims only product-proven media, caller authority, interruption, i
       "interruption",
       "inputTranscription",
       "outputTranscription",
+      "governedSpeech",
       "isolatedTextDecision",
       "semanticToolGate",
       "initialInstructionBootstrap",
@@ -138,10 +140,10 @@ test("OpenAI is traffic-ready under the current validated baseline", () => {
   assert.equal(requireRealtimeProviderTrafficReadiness("OPENAI"), realtimeProviderCapabilities("OPENAI"));
 });
 
-test("Gemini traffic readiness remains closed after semantic gate proof", () => {
+test("Gemini traffic readiness remains closed only on authoritative temporal context", () => {
   assert.throws(
     () => requireRealtimeProviderTrafficReadiness("GEMINI"),
-    /lacks required capabilities: governedSpeech, authoritativeTemporalContext/,
+    /lacks required capabilities: authoritativeTemporalContext/,
   );
 });
 
@@ -164,6 +166,7 @@ test("capability requirements fail closed until remaining Gemini runtime gates a
       "interruption",
       "inputTranscription",
       "outputTranscription",
+      "governedSpeech",
       "isolatedTextDecision",
       "semanticToolGate",
       "initialInstructionBootstrap",

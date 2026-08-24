@@ -68,8 +68,11 @@ const GEMINI_CAPABILITIES = Object.freeze({
   // tool is authorized, provisional rejection keeps the gate closed, and release
   // is owned by the authenticated control-plane sideband. The session owner also
   // correlates output-transcription chunks to its active response and finalizes
-  // them only on turnComplete. Traffic remains blocked by the remaining
-  // governed-speech and authoritative-time runtime gates below.
+  // them only on turnComplete. Governed speech is product-owned as well: exact
+  // text crosses the authenticated sideband into isolated TTS, uses the single
+  // correlated Telnyx playback owner, and completes only on its exact drain or
+  // clear mark while Live audio is excluded. Traffic remains blocked by the
+  // authoritative-time runtime gate below.
   audioInput: true,
   audioOutput: true,
   vad: true,
@@ -78,7 +81,7 @@ const GEMINI_CAPABILITIES = Object.freeze({
   toolCallCancellation: false,
   inputTranscription: true,
   outputTranscription: true,
-  governedSpeech: false,
+  governedSpeech: true,
   isolatedTextDecision: true,
   semanticToolGate: true,
   initialInstructionBootstrap: true,
