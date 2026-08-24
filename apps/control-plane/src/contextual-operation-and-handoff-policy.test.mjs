@@ -55,14 +55,16 @@ test("inclusive accommodation needs stay in restaurant scope and receive respect
   assert.match(bootstrap, /consentimiento explícito/);
   assert.match(v29, /directAgentInstructions/);
 
-  const confirmationStart = v43.indexOf('"HUMAN_HANDOFF_CONFIRMATION_REQUIRED"');
+  const confirmationStart = v43.indexOf('const instructions = handoffOfferInstructions(event)');
   const confirmationEnd = v43.indexOf("} else if (!this.handoffClarificationIssuedV43)", confirmationStart);
   const confirmationBoundary = v43.slice(confirmationStart, confirmationEnd);
+  assert.ok(confirmationStart >= 0 && confirmationEnd > confirmationStart, "v43 confirmation wording boundary must be present");
   assert.match(v43, /INCLUSIVE_ASSISTANCE_REASONS/);
   assert.match(v43, /todo esté bien preparado para la visita/);
   assert.match(v43, /no presentes a la persona ni su necesidad como un problema/);
   assert.match(confirmationBoundary, /handoffOfferInstructions\(event\)/);
-  assert.doesNotMatch(confirmationBoundary, /exactText:/);
+  assert.match(confirmationBoundary, /optionalIsolatedTextGenerationPortFor\(this\)/);
+  assert.match(confirmationBoundary, /\.\.\.\(exactText \? \{ exactText \} : \{\}\)/);
   assert.doesNotMatch(`${bootstrap}\n${v29}\n${v43}`, /ando en silla de ruedas/i);
 });
 
