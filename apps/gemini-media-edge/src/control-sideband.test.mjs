@@ -66,6 +66,28 @@ test("Gemini session command sink may bind before control socket", () => {
   assert.equal(registry.size(), 0);
 });
 
+test("active control session requires exact identity plus both live endpoints", () => {
+  const registry = new InMemoryControlSidebandRegistry();
+  const otherCall = { tenantId: claims.tenantId, callControlId: "call-b" };
+  const otherTenant = { tenantId: "tenant-b", callControlId: claims.callControlId };
+  assert.equal(registry.isActive(claims), false);
+
+  const socketAttachment = registry.attach(claims, () => {});
+  assert.equal(registry.isActive(claims), false);
+  assert.equal(registry.isActive(otherCall), false);
+  assert.equal(registry.isActive(otherTenant), false);
+
+  const commandAttachment = registry.bindCommandSink(claims, () => {});
+  assert.equal(registry.isActive(claims), true);
+  assert.equal(registry.isActive(otherCall), false);
+  assert.equal(registry.isActive(otherTenant), false);
+
+  socketAttachment.detach();
+  assert.equal(registry.isActive(claims), false);
+  commandAttachment.detach();
+  assert.equal(registry.isActive(claims), false);
+});
+
 test("duplicate control socket and duplicate command sink fail closed", () => {
   const registry = new InMemoryControlSidebandRegistry();
   const socket = registry.attach(claims, () => {});
