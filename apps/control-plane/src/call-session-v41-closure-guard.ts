@@ -18,6 +18,7 @@ const BasePrototype = CallSessionV40.prototype as any;
 const END_CALL = "restaurant_end_call";
 const CLOSE_CONFIRMATION_PROMPT = "¿Quieres terminar la llamada?";
 const COURTESY_FOLLOWUP_INSTRUCTION = "Responde de forma breve y natural preguntando si puedes ayudar al usuario en algo más. No menciones terminar, colgar ni cerrar la llamada.";
+const COURTESY_FOLLOWUP_EXACT_TEXT = "¿Puedo ayudarte en algo más?";
 const CLOSING_GUIDANCE_START = "[[V41_CLOSING_GUIDANCE_START]]";
 const CLOSING_GUIDANCE_END = "[[V41_CLOSING_GUIDANCE_END]]";
 const CLOSING_GUIDANCE = `${CLOSING_GUIDANCE_START}\nPROTOCOLO NATURAL DE CIERRE:\n- La cortesía y la intención de cierre son dimensiones distintas. Un simple agradecimiento NO implica cierre: pregunta de forma natural si puedes ayudar en algo más.\n- Si acabas de preguntar si el usuario necesita algo más y responde negativamente (por ejemplo 'no, gracias' o 'nada más'), ese contexto YA resuelve el cierre: despídete de forma natural y termina la llamada; no vuelvas a preguntar si quiere terminar.\n- Una frase puede contener cortesía y cierre a la vez. Por ejemplo 'muchas gracias, no necesito nada más' o 'gracias, hasta luego' expresa cierre claro: usa restaurant_end_call confirmed=true.\n- Para un cierre espontáneo inequívoco usa confirmed=true. Si el controlador también detecta CLOSE hay consenso fuerte; si se abstiene sin detectar cortesía aislada ni una petición de continuar, tu confirmación semántica basta. Una petición explícita de continuar siempre prevalece.\n- Usa confirmed=false solo si la intención de finalizar es realmente ambigua; en ese caso se preguntará una vez si quiere terminar.\n- Si el usuario corrige el cierre con una nueva petición ('hasta luego... espera, una cosa más'), prevalece la nueva petición.\n- Nunca uses restaurant_input_ignored para resolver una intención de cierre.\n${CLOSING_GUIDANCE_END}`;
@@ -115,6 +116,7 @@ export class CallSession extends BaseConstructor {
     });
     realtimeCommandPortFor(session).speak({
       instructions: COURTESY_FOLLOWUP_INSTRUCTION, tools: "DISABLED", isolated: true,
+      exactText: COURTESY_FOLLOWUP_EXACT_TEXT,
       purpose: "courtesy_followup_v41", metadata: { authority: "closing_consensus_v41", courtesy: true, close_intent: "ABSTAIN" },
     });
     this.markMoreHelpQuestionV41("COURTESY_FOLLOWUP_V41");

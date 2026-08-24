@@ -12,6 +12,7 @@ const FIRST_PRESENCE_CHECK_MS = 20_000;
 const MAX_UNANSWERED_WAIT_MS = 45_000;
 const MAX_CALL_DURATION_MS = 15 * 60_000;
 const TERMINAL_TRANSPORT_DRAIN_MS = 750;
+const IGNORED_INPUT_RECOVERY_MESSAGE = "Perdona, no te he entendido. ¿Puedes repetirlo?";
 type LifecycleAssistantSpeechKind = NonNullable<Extract<LifecycleEvent, { type: "assistant_audio_started" }>["kind"]>;
 
 export class CallSession extends BaseConstructor {
@@ -130,7 +131,8 @@ export class CallSession extends BaseConstructor {
       case "SPEAK_IGNORED_RECOVERY":
         this.commandsV18().speak({
           isolated: true, tools: "DISABLED", metadata: { protected_speech_v35: "RECOVERY" },
-          instructions: "Di brevemente: \"Perdona, no te he entendido. ¿Puedes repetirlo?\"",
+          instructions: `Pronuncia exactamente esta frase y nada más: ${JSON.stringify(IGNORED_INPUT_RECOVERY_MESSAGE)}`,
+          exactText: IGNORED_INPUT_RECOVERY_MESSAGE,
         });
         break;
       case "SPEAK_TERMINAL_FAREWELL":

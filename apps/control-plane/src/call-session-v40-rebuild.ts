@@ -28,6 +28,7 @@ import {
 
 const BaseConstructor = CallSessionV39 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV39.prototype as any;
+const PROVIDER_CLEAR_LIVENESS_MESSAGE = "Perdona, parece que se cortó el audio. Te escucho.";
 
 type PendingBargeIn = { itemId: string; transcript: string; originalData: unknown };
 type DeferredConfirmedBargeIn = {
@@ -185,7 +186,8 @@ export class CallSession extends BaseConstructor {
     if (route !== "RECOVER_LIVENESS" || !session.socket) return;
     realtimeCommandPortFor(session).speak({
       tools: "DISABLED", isolated: true, purpose: "provider_clear_liveness_recovery_v40",
-      instructions: "La reproducción anterior fue cortada por una detección acústica que no llegó a confirmar una intervención del usuario. No continúes ni repitas el contenido anterior y no ejecutes ninguna herramienta. Di solo una frase breve y natural equivalente a: 'Perdona, parece que se cortó el audio. Te escucho.'.",
+      instructions: `Pronuncia exactamente esta frase y nada más: ${JSON.stringify(PROVIDER_CLEAR_LIVENESS_MESSAGE)}`,
+      exactText: PROVIDER_CLEAR_LIVENESS_MESSAGE,
     });
     session.diagnostics?.checkpoint?.("BARGE_IN_PROVIDER_CLEAR_LIVENESS_RECOVERY_V40_REBUILD", {
       source, item_id: itemId, recovery_route: route, isolated_response: true,
