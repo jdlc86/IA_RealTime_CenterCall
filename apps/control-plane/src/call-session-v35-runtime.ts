@@ -17,6 +17,7 @@ export class CallSession extends BaseConstructor {
   private atomicGreetingAwaitingVadOffV35 = false;
   private atomicGreetingResponseIdV35: string | null = null;
   private atomicGreetingInstructionsV35: string | null = null;
+  private atomicGreetingExactTextV35: string | null = null;
   private atomicGreetingWatchdogV35: ReturnType<typeof setTimeout> | null = null;
   private awaitingVadRestoreConfirmationV35 = false;
 
@@ -59,7 +60,8 @@ export class CallSession extends BaseConstructor {
     if (this.atomicGreetingActiveV35) return;
     this.atomicGreetingActiveV35 = true;
     this.atomicGreetingAwaitingVadOffV35 = true;
-    this.atomicGreetingInstructionsV35 = `Pronuncia exactamente este saludo inicial y nada más: ${JSON.stringify(session.initialGreeting)}`;
+    this.atomicGreetingExactTextV35 = String(session.initialGreeting);
+    this.atomicGreetingInstructionsV35 = `Pronuncia exactamente este saludo inicial y nada más: ${JSON.stringify(this.atomicGreetingExactTextV35)}`;
     session.greetingSent = true;
     this.commandsV35().suspendInputDetection();
     this.armAtomicGreetingWatchdogV35();
@@ -68,13 +70,14 @@ export class CallSession extends BaseConstructor {
   }
 
   private emitAtomicGreetingAfterVadDisabledV35(): void {
-    if (!this.atomicGreetingActiveV35 || !this.atomicGreetingAwaitingVadOffV35 || !this.atomicGreetingInstructionsV35) return;
+    if (!this.atomicGreetingActiveV35 || !this.atomicGreetingAwaitingVadOffV35 || !this.atomicGreetingInstructionsV35 || !this.atomicGreetingExactTextV35) return;
     this.atomicGreetingAwaitingVadOffV35 = false;
     const clientEventId = `atomic_greeting_v35_${crypto.randomUUID()}`;
     this.commandsV35().speak({
       requestId: clientEventId,
       tools: "DISABLED",
       instructions: this.atomicGreetingInstructionsV35,
+      exactText: this.atomicGreetingExactTextV35,
       metadata: { [PROTECTED_METADATA_KEY]: "GREETING" },
     });
     (this as any).diagnostics?.checkpoint?.("ATOMIC_GREETING_RESPONSE_REQUESTED_V35", { vad_confirmed_disabled: true, provider_command_port: true });
@@ -110,6 +113,7 @@ export class CallSession extends BaseConstructor {
     this.atomicGreetingAwaitingVadOffV35 = false;
     this.atomicGreetingResponseIdV35 = null;
     this.atomicGreetingInstructionsV35 = null;
+    this.atomicGreetingExactTextV35 = null;
   }
 
   private armAtomicGreetingWatchdogV35(): void {
