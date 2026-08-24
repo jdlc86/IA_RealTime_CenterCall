@@ -11,6 +11,7 @@ function fakeRealtime() {
     createSemanticResponse() {},
     submitToolResult() {},
     updateSessionPolicy() {},
+    setSemanticToolGate() {},
     createDefaultResponse() {},
     cancelResponse() {},
     clearPlayback() {},
@@ -22,7 +23,7 @@ function fakeRealtime() {
   };
 }
 
-test("OpenAI may satisfy isolated semantic decisions through its validated realtime capability", () => {
+test("OpenAI may satisfy isolated semantic decisions through its validated realtime mechanism", () => {
   const realtime = fakeRealtime();
   const port = createRealtimeBackedSemanticDecisionPort("OPENAI", realtime);
   port.request({
@@ -35,7 +36,7 @@ test("OpenAI may satisfy isolated semantic decisions through its validated realt
   assert.equal(realtime.decisions[0].requestId, "decision-1");
 });
 
-test("Gemini Live cannot be used as an isolated decision transport before that capability is proven", () => {
+test("Gemini product capability never authorizes the Gemini Live command port as isolated-decision transport", () => {
   const realtime = fakeRealtime();
   const port = createRealtimeBackedSemanticDecisionPort("GEMINI", realtime);
   assert.throws(
@@ -44,7 +45,7 @@ test("Gemini Live cannot be used as an isolated decision transport before that c
       inputText: "No, gracias",
       requestId: "decision-gemini",
     }),
-    /GEMINI lacks required capabilities: isolatedTextDecision/,
+    /Realtime-backed semantic decision is unsupported for GEMINI; install an external isolated decision port/,
   );
   assert.deepEqual(realtime.decisions, []);
 });
