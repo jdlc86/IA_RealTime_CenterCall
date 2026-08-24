@@ -8,6 +8,7 @@ import {
 import { callerTurnDispositionPortFor } from "../.test-dist/caller-turn-disposition-runtime.js";
 import { externalRealtimeProviderCommandPortFor } from "../.test-dist/realtime-provider-external-command-runtime.js";
 import { semanticToolGatePortFor } from "../.test-dist/semantic-tool-gate-runtime.js";
+import { withGovernedSpeechPort } from "../.test-dist/governed-speech-runtime.js";
 import {
   installRealtimeProviderEventIngress,
   removeRealtimeProviderEventIngress,
@@ -52,8 +53,14 @@ test("connector authenticates in header and feeds provider plus edge evidence in
   connection.close();
 });
 
-test("connector owns neutral caller disposition, provider command and semantic gate capabilities for exactly its socket lifetime", async () => {
+test("connector owns neutral caller disposition, provider command, semantic gate and governed speech capabilities for exactly its socket lifetime", async () => {
   const socket = new FakeSocket(); const host = {};
+  let fallbackSpeech = 0;
+  const fallback = {
+    speak() { fallbackSpeech += 1; },
+    requestTextDecision() {}, createSemanticResponse() {}, submitToolResult() {}, updateSessionPolicy() {}, setSemanticToolGate() {}, createDefaultResponse() {}, cancelResponse() {}, clearPlayback() {}, clearInput() {}, discardInputItem() {}, suspendInputDetection() {}, beginNonInterruptingListening() {}, restoreInputDetection() {},
+  };
+  const governed = withGovernedSpeechPort(host, "GEMINI", fallback);
   const connection = await connectGeminiMediaEdgeSideband({ ...input, capabilityHost: host }, () => {}, async () => ({ status: 101, webSocket: socket }));
   const dispositionPort = callerTurnDispositionPortFor(host);
   const commandPort = externalRealtimeProviderCommandPortFor(host, "GEMINI");
@@ -67,12 +74,17 @@ test("connector owns neutral caller disposition, provider command and semantic g
   dispositionPort.resolve({ itemId: "gemini-candidate-1", disposition: "NORMAL" });
   gatePort.arm();
   gatePort.release();
-  assert.deepEqual(JSON.parse(socket.sent.at(-3)), { type: "CALLER_TURN_DECISION", itemId: "gemini-candidate-1", decision: "NORMAL", responseId: null });
-  assert.deepEqual(JSON.parse(socket.sent.at(-2)), { type: "SEMANTIC_GATE_ARM" });
-  assert.deepEqual(JSON.parse(socket.sent.at(-1)), { type: "SEMANTIC_GATE_RELEASE" });
+  governed.speak({ requestId: "governed-1", instructions: "Pronuncia el texto", exactText: "Hola" });
+  assert.deepEqual(JSON.parse(socket.sent.at(-4)), { type: "CALLER_TURN_DECISION", itemId: "gemini-candidate-1", decision: "NORMAL", responseId: null });
+  assert.deepEqual(JSON.parse(socket.sent.at(-3)), { type: "SEMANTIC_GATE_ARM" });
+  assert.deepEqual(JSON.parse(socket.sent.at(-2)), { type: "SEMANTIC_GATE_RELEASE" });
+  assert.deepEqual(JSON.parse(socket.sent.at(-1)), { type: "GOVERNED_SPEECH", responseId: "governed-1", text: "Hola" });
+  assert.equal(fallbackSpeech, 0);
   connection.close();
   assert.equal(callerTurnDispositionPortFor(host), null);
   assert.equal(externalRealtimeProviderCommandPortFor(host, "GEMINI"), null);
+  governed.speak({ instructions: "fallback", exactText: "Después" });
+  assert.equal(fallbackSpeech, 1);
 
   const secondSocket = new FakeSocket();
   const second = await connectGeminiMediaEdgeSideband({ ...input, capabilityHost: host }, () => {}, async () => ({ status: 101, webSocket: secondSocket }));
