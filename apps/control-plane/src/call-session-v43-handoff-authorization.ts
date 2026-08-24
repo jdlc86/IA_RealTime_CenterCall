@@ -16,6 +16,7 @@ import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import { releaseSemanticGate } from "./semantic-turn-coordinator.js";
 import { conversationLifecyclePortFor } from "./conversation-lifecycle-port.js";
 import { withHandoffConversationContext } from "./handoff-conversation-context.js";
+import { optionalIsolatedTextGenerationPortFor } from "./isolated-text-generation-runtime.js";
 
 const BaseConstructor = CallSessionV42 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV42.prototype as any;
@@ -140,11 +141,11 @@ export class CallSession extends BaseConstructor {
     });
   }
 
-  private rejectUnauthorizedHandoffV43(
+  private async rejectUnauthorizedHandoffV43(
     event: SemanticToolEvent,
     source: "OFFER_REQUIRED" | "CALLER_REJECTED",
     offerWasAlreadyPending: boolean,
-  ): void {
+  ): Promise<void> {
     const session = this as any;
 
     if (source === "CALLER_REJECTED") {
@@ -168,13 +169,23 @@ export class CallSession extends BaseConstructor {
       });
     } else if (!offerWasAlreadyPending) {
       this.handoffClarificationIssuedV43 = false;
+      const instructions = handoffOfferInstructions(event);
+      const isolatedGeneration = optionalIsolatedTextGenerationPortFor(this);
+      const exactText = isolatedGeneration
+        ? await isolatedGeneration.generate({
+            instructions,
+            inputText: "Redacta únicamente el mensaje final que se dirá al usuario. No añadas etiquetas, explicaciones ni herramientas.",
+            maxOutputTokens: 96,
+          })
+        : undefined;
       this.emitHandoffToolOutputV43(
         event,
         "HUMAN_HANDOFF_CONFIRMATION_REQUIRED",
         "No transfieras todavía. Explica con naturalidad que buscas una confirmación fiable del equipo del restaurante y pregunta si desea que le transfieras. Espera una respuesta explícita del usuario.",
       );
       realtimeCommandPortFor(session).speak({
-        instructions: handoffOfferInstructions(event),
+        instructions,
+        ...(exactText ? { exactText } : {}),
         tools: "DISABLED",
         isolated: true,
         purpose: "human_handoff_confirmation_v43",
@@ -323,7 +334,7 @@ export class CallSession extends BaseConstructor {
         this.explicitPendingOfferRejectionV43 = false;
 
         if (!decision.allowed) {
-          this.rejectUnauthorizedHandoffV43(event, decision.source, offerWasAlreadyPending);
+          await this.rejectUnauthorizedHandoffV43(event, decision.source, offerWasAlreadyPending);
           return;
         }
 
