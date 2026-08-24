@@ -1,6 +1,6 @@
 import type { GovernedSpeechPort } from "./governed-speech-runtime.js";
 import type { RealtimeProviderCommandPort, RealtimeSpeechRequest } from "./realtime-provider-command-port.js";
-import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
+import type { AssistantSpeechKind, RealtimeProviderEvent } from "./realtime-provider-event.js";
 import type { SemanticToolGatePort } from "./semantic-tool-gate-port.js";
 import { geminiGovernedSpeechDescriptor } from "./gemini-governed-speech-descriptor.js";
 import {
@@ -13,7 +13,7 @@ export type GeminiMediaEdgeSidebandOutbound =
   | Readonly<{ type: "TOOL_RESULT"; callId: string; toolName: string; output: unknown }>
   | Readonly<{ type: "PLAYBACK_BINDING"; responseId: string; kind: "NORMAL" }>
   | Readonly<{ type: "PLAYBACK_DRAIN"; responseId: string }>
-  | Readonly<{ type: "GOVERNED_SPEECH"; responseId: string; text: string; kind?: "GREETING" | "RECOVERY" }>
+  | Readonly<{ type: "GOVERNED_SPEECH"; responseId: string; text: string; kind?: Exclude<AssistantSpeechKind, "NORMAL"> }>
   | Readonly<{ type: "CALLER_TURN_DECISION"; itemId: string; decision: GeminiMediaEdgeCallerDecision; responseId: string | null }>
   | Readonly<{ type: "SEMANTIC_GATE_ARM" }>
   | Readonly<{ type: "SEMANTIC_GATE_RELEASE" }>;
@@ -145,12 +145,12 @@ export class GeminiMediaEdgeSidebandRuntime {
       return this.edgeObservation({ type: "CALLER_SPEECH_STARTED", itemId });
     }
     if (type === "CALLER_SPEECH_STOPPED") {
-      const itemId = required(edge.itemId, "Gemini sideband caller item id");
+      const itemId = required(edge.itemId, "Gemini media edge caller item id");
       if (!this.callerContexts.has(itemId)) throw new Error(`Gemini sideband caller speech stop has no active item: ${itemId}`);
       return this.edgeObservation({ type: "CALLER_SPEECH_STOPPED" });
     }
     if (type === "CALLER_TRANSCRIPT_COMPLETED") {
-      const itemId = required(edge.itemId, "Gemini sideband caller item id");
+      const itemId = required(edge.itemId, "Gemini media edge caller item id");
       if (!this.callerContexts.has(itemId)) throw new Error(`Gemini sideband caller transcript has no active item: ${itemId}`);
       return this.edgeObservation({ type: "CALLER_TRANSCRIPT_COMPLETED", itemId, transcript: required(edge.transcript, "Gemini media edge caller transcript") });
     }
