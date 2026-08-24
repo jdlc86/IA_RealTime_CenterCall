@@ -5,6 +5,7 @@ import {
 import type { GeminiLiveSessionRuntimeObservation } from "./gemini-live-session-runtime.js";
 import { createGeminiMediaEdgeCallerTurnDispositionPort } from "./gemini-media-edge-caller-turn-disposition.js";
 import { createGeminiMediaEdgeSemanticDecisionCapability } from "./gemini-media-edge-semantic-decision.js";
+import { createGeminiMediaEdgeIsolatedGenerationCapability } from "./gemini-media-edge-isolated-generation.js";
 import {
   installCallerTurnDispositionPort,
   removeCallerTurnDispositionPort,
@@ -21,6 +22,10 @@ import {
   installSemanticToolGatePort,
   removeSemanticToolGatePort,
 } from "./semantic-tool-gate-runtime.js";
+import {
+  installIsolatedTextGenerationPort,
+  removeIsolatedTextGenerationPort,
+} from "./isolated-text-generation-runtime.js";
 import {
   deliverRealtimeProviderEvents,
   requireRealtimeProviderEventIngress,
@@ -74,8 +79,9 @@ function closeForObservationFailure(socket: WebSocket): void {
  * URL. Provider audio never traverses this connection.
  *
  * When capabilityHost is supplied, this connector owns the session-scoped Gemini
- * command port, caller disposition effect boundary, isolated semantic-decision
- * capability and product-owned semantic tool gate for exactly this sideband lifetime.
+ * command port, caller disposition effect boundary, isolated semantic-decision,
+ * isolated text-generation capability and product-owned semantic tool gate for
+ * exactly this sideband lifetime.
  */
 export async function connectGeminiMediaEdgeSideband(
   input: GeminiMediaEdgeSidebandConnectionInput,
@@ -110,11 +116,20 @@ export async function connectGeminiMediaEdgeSideband(
         capabilityHost: input.capabilityHost,
       }, fetcher)
     : null;
+  const isolatedGenerationCapability = input.capabilityHost
+    ? createGeminiMediaEdgeIsolatedGenerationCapability({
+        edgeUrl: input.edgeUrl,
+        tenantId: input.tenantId,
+        callControlId: input.callControlId,
+        controlPlaneToken: token,
+      }, fetcher)
+    : null;
 
   let commandCapabilityInstalled = false;
   let dispositionCapabilityInstalled = false;
   let semanticDecisionCapabilityInstalled = false;
   let semanticToolGateCapabilityInstalled = false;
+  let isolatedGenerationCapabilityInstalled = false;
   if (input.capabilityHost) {
     try {
       installExternalRealtimeProviderCommandPort(input.capabilityHost, "GEMINI", runtime.commandPort);
@@ -129,7 +144,15 @@ export async function connectGeminiMediaEdgeSideband(
       }
       installSemanticToolGatePort(input.capabilityHost, runtime.semanticToolGatePort);
       semanticToolGateCapabilityInstalled = true;
+      if (isolatedGenerationCapability) {
+        installIsolatedTextGenerationPort(input.capabilityHost, isolatedGenerationCapability);
+        isolatedGenerationCapabilityInstalled = true;
+      }
     } catch (error) {
+      if (isolatedGenerationCapabilityInstalled && isolatedGenerationCapability) {
+        removeIsolatedTextGenerationPort(input.capabilityHost, isolatedGenerationCapability);
+      }
+      isolatedGenerationCapability?.close();
       semanticDecisionCapability?.close();
       if (semanticToolGateCapabilityInstalled) {
         removeSemanticToolGatePort(input.capabilityHost, runtime.semanticToolGatePort);
@@ -153,6 +176,11 @@ export async function connectGeminiMediaEdgeSideband(
   const release = () => {
     if (closed) return;
     closed = true;
+    if (input.capabilityHost && isolatedGenerationCapabilityInstalled && isolatedGenerationCapability) {
+      removeIsolatedTextGenerationPort(input.capabilityHost, isolatedGenerationCapability);
+      isolatedGenerationCapabilityInstalled = false;
+    }
+    isolatedGenerationCapability?.close();
     semanticDecisionCapability?.close();
     if (input.capabilityHost && semanticToolGateCapabilityInstalled) {
       removeSemanticToolGatePort(input.capabilityHost, runtime.semanticToolGatePort);
