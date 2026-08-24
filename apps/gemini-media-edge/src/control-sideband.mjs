@@ -88,6 +88,7 @@ export class InMemoryControlSidebandRegistry {
     const { key, session } = this.entry(claims); if (session.commandSink && session.commandSink !== sink) throw new Error("Gemini media edge control command sink already bound"); session.commandSink = sink;
     return Object.freeze({ detach: () => { if (this.sessions.get(key) !== session || session.commandSink !== sink) return; session.commandSink = null; this.cleanup(key, session); } });
   }
+  isActive(claims) { const session = this.sessions.get(controlSessionKey(claims)); return Boolean(session?.send && session?.commandSink); }
   emit(claims, event) { const session = this.sessions.get(controlSessionKey(claims)); if (!session?.send) return false; session.send(event); return true; }
   command(claims, value) { const session = this.sessions.get(controlSessionKey(claims)); if (!session?.commandSink) throw new Error("Gemini media edge control sideband is not bound to an active Gemini session"); session.commandSink(canonicalControlCommand(value)); }
   size() { return this.sessions.size; }
