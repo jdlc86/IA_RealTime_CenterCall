@@ -61,6 +61,17 @@ test("sideband normalizes product-owned input detection confirmations", () => {
   }]);
 });
 
+test("sideband playback clear carries the exact active physical response identity", () => {
+  const { runtime, sent } = runtimeHarness();
+  assert.throws(() => runtime.commandPort.clearPlayback(), /requires active correlated playback/);
+  runtime.observe({
+    type: "PLAYBACK_EVENT",
+    event: { type: "ASSISTANT_AUDIO_STARTED", responseId: "governed-1", kind: "GREETING" },
+  });
+  runtime.commandPort.clearPlayback();
+  assert.deepEqual(sent, [{ type: "PLAYBACK_CLEAR", responseId: "governed-1" }]);
+});
+
 test("sideband governed speech requires exact text and preserves or mints response identity", () => {
   const { runtime, sent } = runtimeHarness();
   assert.throws(() => runtime.governedSpeechPort.speak({ instructions: "say something" }), /exact text is required/);

@@ -98,6 +98,25 @@ export function completeGovernedSpeechPlayback(options) {
   }
 }
 
+export function requestCorrelatedPlaybackClear(options) {
+  const responseId = required(options?.command?.responseId, "Gemini playback clear response id");
+  const playback = options?.playback;
+  if (!playback || typeof playback.activeResponseId !== "function" || typeof playback.requestClear !== "function") {
+    throw new Error("Gemini playback clear owner is required");
+  }
+  if (typeof options?.sendClear !== "function" || typeof options?.sendMark !== "function") {
+    throw new Error("Gemini playback clear transport is required");
+  }
+  const activeResponseId = playback.activeResponseId();
+  if (activeResponseId !== responseId) {
+    throw new Error(`Gemini playback clear identity mismatch: expected ${activeResponseId ?? "<none>"}`);
+  }
+  const mark = playback.requestClear(responseId);
+  options.sendClear();
+  options.sendMark(mark);
+  return mark;
+}
+
 export function applyCallerInputControlCommand(command, owner, emitControlEvent) {
   if (!owner || typeof owner.clear !== "function" || typeof owner.suspend !== "function" || typeof owner.restore !== "function") {
     throw new Error("Gemini caller input control owner is required");
@@ -161,6 +180,15 @@ export function createGeminiMediaEdgeRuntime(options) {
       }
       if (command.type === "PLAYBACK_BINDING") { emitPlaybackChunks(state.playback.bind(command.responseId)); return; }
       if (command.type === "PLAYBACK_DRAIN") { const mark = state.playback.finish(command.responseId); if (mark) { assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "mark", mark: { name: mark } }); } return; }
+      if (command.type === "PLAYBACK_CLEAR") {
+        requestCorrelatedPlaybackClear({
+          command,
+          playback: state.playback,
+          sendClear: () => { assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "clear" }); },
+          sendMark: (mark) => { assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "mark", mark: { name: mark } }); },
+        });
+        return;
+      }
       if (command.type === "GOVERNED_SPEECH") {
         return executeGovernedSpeechPlayback({
           command,
@@ -197,9 +225,12 @@ export function createGeminiMediaEdgeRuntime(options) {
           // first. Only after all provider sends succeed may Telnyx playout clear.
           state.semanticGate.preArm(command.itemId);
           commitDeferredCallerTurn(state.gemini, turn, assertBackpressure);
-          assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "clear" });
-          const clearMark = state.playback.requestClear(responseId);
-          assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "mark", mark: { name: clearMark } });
+          requestCorrelatedPlaybackClear({
+            command: { type: "PLAYBACK_CLEAR", responseId },
+            playback: state.playback,
+            sendClear: () => { assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "clear" }); },
+            sendMark: (mark) => { assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "mark", mark: { name: mark } }); },
+          });
           return;
         }
         throw new Error("Gemini caller turn decision is unsupported");

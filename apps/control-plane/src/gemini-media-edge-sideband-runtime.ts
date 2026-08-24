@@ -13,6 +13,7 @@ export type GeminiMediaEdgeSidebandOutbound =
   | Readonly<{ type: "TOOL_RESULT"; callId: string; toolName: string; output: unknown }>
   | Readonly<{ type: "PLAYBACK_BINDING"; responseId: string; kind: "NORMAL" }>
   | Readonly<{ type: "PLAYBACK_DRAIN"; responseId: string }>
+  | Readonly<{ type: "PLAYBACK_CLEAR"; responseId: string }>
   | Readonly<{
       type: "GOVERNED_SPEECH";
       responseId: string;
@@ -45,9 +46,10 @@ function outboundToolResult(message: Record<string, unknown>): GeminiMediaEdgeSi
   if (!("result" in body)) throw new Error("Gemini sideband FunctionResponse result is required");
   return Object.freeze({ type: "TOOL_RESULT", callId: required(response.id, "Gemini sideband FunctionResponse id"), toolName: required(response.name, "Gemini sideband FunctionResponse name"), output: structuredClone(body.result) });
 }
-function mediaEdgeInputCommandPort(
+function mediaEdgeCommandPort(
   delegate: RealtimeProviderCommandPort,
   send: GeminiMediaEdgeSidebandSend,
+  activePlaybackResponseId: () => string | null,
 ): RealtimeProviderCommandPort {
   const port: RealtimeProviderCommandPort = {
     speak(request) { delegate.speak(request); },
@@ -58,7 +60,11 @@ function mediaEdgeInputCommandPort(
     setSemanticToolGate(armed) { delegate.setSemanticToolGate(armed); },
     createDefaultResponse() { delegate.createDefaultResponse(); },
     cancelResponse(responseId) { delegate.cancelResponse(responseId); },
-    clearPlayback() { delegate.clearPlayback(); },
+    clearPlayback() {
+      const responseId = activePlaybackResponseId();
+      if (!responseId) throw new Error("Gemini playback clear requires active correlated playback");
+      send(Object.freeze({ type: "PLAYBACK_CLEAR", responseId }));
+    },
     clearInput() { send(Object.freeze({ type: "CALLER_INPUT_CLEAR" })); },
     discardInputItem(itemId) { delegate.discardInputItem(itemId); },
     suspendInputDetection() { send(Object.freeze({ type: "INPUT_DETECTION_SUSPEND" })); },
@@ -95,7 +101,7 @@ export class GeminiMediaEdgeSidebandRuntime {
     this.send = send;
     this.runtime = new GeminiLiveSessionRuntime({ send: (message) => send(outboundToolResult(message)) }, { model: "external-media-edge" });
     this.runtime.adoptExternalSetupSent();
-    this.commandPort = mediaEdgeInputCommandPort(this.runtime.commandPort, this.send);
+    this.commandPort = mediaEdgeCommandPort(this.runtime.commandPort, this.send, () => this.activePlaybackResponseId);
     this.semanticToolGatePort = Object.freeze({
       arm: () => this.send(Object.freeze({ type: "SEMANTIC_GATE_ARM" })),
       release: () => this.send(Object.freeze({ type: "SEMANTIC_GATE_RELEASE" })),

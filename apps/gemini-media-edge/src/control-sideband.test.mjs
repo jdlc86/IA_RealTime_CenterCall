@@ -29,10 +29,11 @@ test("Gemini sideband preserves provider evidence while stripping audio bytes", 
   });
 });
 
-test("control command admits correlated tool results, playback bindings and drains", () => {
+test("control command admits correlated tool results, playback bindings, drains and clears", () => {
   assert.deepEqual(canonicalControlCommand({ type: "TOOL_RESULT", callId: "fc1", toolName: "restaurant_business_info", output: { ok: true } }), { type: "TOOL_RESULT", callId: "fc1", toolName: "restaurant_business_info", output: { ok: true } });
   assert.deepEqual(canonicalControlCommand({ type: "PLAYBACK_BINDING", responseId: "gemini-response-7", kind: "NORMAL" }), { type: "PLAYBACK_BINDING", responseId: "gemini-response-7", kind: "NORMAL" });
   assert.deepEqual(canonicalControlCommand({ type: "PLAYBACK_DRAIN", responseId: "gemini-response-7" }), { type: "PLAYBACK_DRAIN", responseId: "gemini-response-7" });
+  assert.deepEqual(canonicalControlCommand({ type: "PLAYBACK_CLEAR", responseId: "gemini-response-7" }), { type: "PLAYBACK_CLEAR", responseId: "gemini-response-7" });
   assert.throws(() => canonicalControlCommand({ type: "PLAYBACK_BINDING", responseId: "gemini-response-7", kind: "SEMANTIC" }), /unsupported/);
   assert.throws(() => canonicalControlCommand({ type: "SPEAK" }), /unsupported/);
 });

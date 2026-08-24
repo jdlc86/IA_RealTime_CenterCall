@@ -39,6 +39,9 @@ export function canonicalControlCommand(value) {
   if (message.type === "PLAYBACK_DRAIN") {
     return Object.freeze({ type: "PLAYBACK_DRAIN", responseId: required(message.responseId, "Gemini media edge playback drain response id") });
   }
+  if (message.type === "PLAYBACK_CLEAR") {
+    return Object.freeze({ type: "PLAYBACK_CLEAR", responseId: required(message.responseId, "Gemini media edge playback clear response id") });
+  }
   if (message.type === "GOVERNED_SPEECH") {
     const kind = governedSpeechKind(message.kind);
     const purpose = message.purpose == null

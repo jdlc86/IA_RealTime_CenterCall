@@ -7,6 +7,7 @@ import {
   completeGovernedSpeechPlayback,
   executeGovernedSpeechPlayback,
   Pcm16Resampler24To16,
+  requestCorrelatedPlaybackClear,
   swapPcm16Endianness,
 } from "./runtime.mjs";
 import { GovernedSpeechPlaybackCoordinator } from "./governed-speech-playback-coordinator.mjs";
@@ -218,6 +219,52 @@ test("governed speech reserves before TTS and rejects Live audio ownership", asy
   assert.throws(() => coordinator.assertProviderAudioAllowed(), /forbidden/);
   finishSynthesis({ text: "Texto exacto", pcm16le: Buffer.from([1, 2]), sampleRateHertz: 16_000, encoding: "PCM16_LE" });
   await execution;
+});
+
+test("authorized governed clear supersedes drain and completes only on its exact returned mark", async () => {
+  const playback = new BoundPlaybackGate(64 * 1024);
+  const coordinator = new GovernedSpeechPlaybackCoordinator();
+  const controlEvents = [];
+  const drainMarks = [];
+  const clearTransport = [];
+  const emitControlEvent = (event) => { controlEvents.push(event); return true; };
+  const context = await executeGovernedSpeechPlayback({
+    command: { type: "GOVERNED_SPEECH", responseId: "governed-clear-1", text: "Hola", kind: "GREETING" },
+    synthesize: async ({ text }) => ({ text, pcm16le: Buffer.from([1, 2]), sampleRateHertz: 16_000, encoding: "PCM16_LE" }),
+    coordinator,
+    playback,
+    assertSessionActive() {},
+    emitControlEvent,
+    emitPlaybackChunks(chunks, onFirstQueued) {
+      for (const chunk of chunks) {
+        playback.noteQueued(chunk.responseId);
+        onFirstQueued();
+        emitControlEvent({ type: "PLAYBACK_EVENT", event: { type: "ASSISTANT_AUDIO_STARTED", responseId: chunk.responseId, kind: chunk.kind } });
+      }
+    },
+    sendDrainMark(mark) { drainMarks.push(mark); },
+  });
+
+  assert.throws(
+    () => requestCorrelatedPlaybackClear({
+      command: { type: "PLAYBACK_CLEAR", responseId: "other" }, playback, sendClear() {}, sendMark() {},
+    }),
+    /identity mismatch/,
+  );
+  const clearMark = requestCorrelatedPlaybackClear({
+    command: { type: "PLAYBACK_CLEAR", responseId: context.responseId },
+    playback,
+    sendClear() { clearTransport.push("clear"); },
+    sendMark(mark) { clearTransport.push(mark); },
+  });
+  assert.deepEqual(clearTransport, ["clear", clearMark]);
+  assert.equal(playback.observeReturnedMark(drainMarks[0]), null);
+  const cleared = playback.observeReturnedMark(clearMark);
+  completeGovernedSpeechPlayback({ context, event: cleared, coordinator, emitControlEvent });
+  assert.deepEqual(controlEvents.slice(-2), [
+    { type: "PLAYBACK_EVENT", event: { type: "ASSISTANT_AUDIO_CLEARED", responseId: "governed-clear-1", kind: "GREETING" } },
+    { type: "GOVERNED_EVENT", event: { type: "ASSISTANT_RESPONSE_COMPLETED", responseId: "governed-clear-1", kind: "GREETING", status: "completed" } },
+  ]);
 });
 
 test("physical playback owner preserves governed handoff kind through Telnyx drain", () => {
