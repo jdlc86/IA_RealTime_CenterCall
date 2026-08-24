@@ -112,10 +112,33 @@ where event_id is null
 
 ## Forbidden-content smoke check — expected zero
 
+Do not flag technical booleans merely because their key contains words such as `transcript`, `reservation` or `phone`. Check exact forbidden content-bearing keys and PII/media-shaped string values instead.
+
 ```sql
-select count(*) as suspicious_rows
-from public.call_diagnostic_events
-where details::text ~* '(transcript|audio_payload|base64|authorization|api[_-]?key|secret|credential|customer_phone|caller_phone|reservation_code)';
+with detail_values as (
+  select e.id, lower(d.key) as key, d.value
+  from public.call_diagnostic_events e
+  cross join lateral jsonb_each_text(e.details) as d(key, value)
+)
+select count(distinct id) as suspicious_rows
+from detail_values
+where key = any (array[
+    'raw_transcript', 'transcript_text', 'transcript_value',
+    'audio_payload', 'audio_base64', 'base64_audio',
+    'authorization', 'api_key', 'secret', 'credential', 'credential_url', 'token',
+    'phone_number', 'customer_phone', 'caller_phone',
+    'email', 'email_address', 'address',
+    'provider_body', 'prompt', 'instruction'
+  ])
+   or value ~* '^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$'
+   or (
+     key ~ '(phone|caller|customer|destination|contact)'
+     and regexp_replace(value, '[^0-9+]', '', 'g') ~ '^\+?[0-9]{9,15}$'
+   )
+   or (
+     length(value) >= 128
+     and value ~ '^[A-Za-z0-9+/=]+$'
+   );
 ```
 
 For failures, diagnose from this table first. `STT_FAILED` carries only a stable `error_code`, optional HTTP status and bounded timing/audio metrics; provider error bodies and transcript text are intentionally absent.
