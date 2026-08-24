@@ -62,7 +62,8 @@ Invoke-Gcloud @(
   'builds', 'submit', $sourceRoot,
   '--tag', $taggedImage,
   '--region', $Region,
-  '--project', $ProjectId
+  '--project', $ProjectId,
+  '--suppress-logs'
 )
 
 $digest = (& $gcloud artifacts docker images describe $taggedImage --project $ProjectId --format 'value(image_summary.digest)').Trim()
