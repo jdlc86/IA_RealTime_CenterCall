@@ -9,7 +9,7 @@ import {
 const FALLBACK_TOOL_GATE_BY_HOST = new WeakMap<object, SemanticToolGatePort>();
 const EXTERNAL_TOOL_GATE_BY_HOST = new WeakMap<object, SemanticToolGatePort>();
 
-function requireHost(host: RealtimeProviderHost): object {
+function requireHost(host: object): object {
   if (!host || typeof host !== "object") throw new Error("Semantic tool gate host is required");
   return host;
 }
@@ -23,11 +23,11 @@ function requirePort(port: SemanticToolGatePort): SemanticToolGatePort {
 
 /**
  * Installs provider-specific semantic gate enforcement for exactly one session.
- * The caller/core still owns when the gate is armed; this capability only owns
- * how the selected transport enforces arm/release without leaking provider wire.
+ * Registry ownership only needs stable host object identity; it does not require
+ * provider wire methods. The caller/core still owns when the gate is armed.
  */
 export function installSemanticToolGatePort(
-  host: RealtimeProviderHost,
+  host: object,
   port: SemanticToolGatePort,
 ): void {
   const key = requireHost(host);
@@ -38,7 +38,7 @@ export function installSemanticToolGatePort(
 }
 
 export function removeSemanticToolGatePort(
-  host: RealtimeProviderHost,
+  host: object,
   port?: SemanticToolGatePort,
 ): void {
   const key = requireHost(host);
