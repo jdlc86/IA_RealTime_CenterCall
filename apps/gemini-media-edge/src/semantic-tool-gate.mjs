@@ -24,6 +24,10 @@ function providerProducedSemanticOutput(message) {
  * semantic output before selecting exactly one function. The gate remains closed
  * after that selection until the authenticated control plane explicitly releases
  * it after its own public-tool authorization. Any provider deviation fails closed.
+ *
+ * A tool result delivered while the gate remains armed means the control plane
+ * rejected that provisional selection and is asking the provider to choose again.
+ * Only the exact correlated provisional selection is cleared; speech remains gated.
  */
 export class GeminiSemanticToolGate {
   constructor() {
@@ -86,6 +90,21 @@ export class GeminiSemanticToolGate {
           : "Gemini semantic output arrived before semantic tool selection",
       );
     }
+    return this.snapshot();
+  }
+
+  rejectProvisionalSelection(callId, toolName) {
+    if (!this.activeItemId) throw new Error("Gemini semantic gate is not armed");
+    const id = required(callId, "Gemini semantic gate rejected function call id");
+    const name = required(toolName, "Gemini semantic gate rejected function name");
+    if (!this.selectedCallId || !this.selectedTool) {
+      throw new Error("Gemini semantic gate has no provisional tool selection to reject");
+    }
+    if (this.selectedCallId !== id || this.selectedTool !== name) {
+      throw new Error("Gemini semantic gate rejected tool identity mismatch");
+    }
+    this.selectedTool = null;
+    this.selectedCallId = null;
     return this.snapshot();
   }
 
