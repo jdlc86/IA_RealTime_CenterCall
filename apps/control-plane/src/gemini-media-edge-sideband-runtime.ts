@@ -1,5 +1,5 @@
 import type { GovernedSpeechPort } from "./governed-speech-runtime.js";
-import type { RealtimeProviderCommandPort } from "./realtime-provider-command-port.js";
+import type { RealtimeProviderCommandPort, RealtimeSpeechRequest } from "./realtime-provider-command-port.js";
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
 import type { SemanticToolGatePort } from "./semantic-tool-gate-port.js";
 import {
@@ -64,7 +64,7 @@ export class GeminiMediaEdgeSidebandRuntime {
       release: () => this.send(Object.freeze({ type: "SEMANTIC_GATE_RELEASE" })),
     });
     this.governedSpeechPort = Object.freeze({
-      speak: (request) => {
+      speak: (request: RealtimeSpeechRequest) => {
         const text = required(request?.exactText, "Gemini governed speech exact text");
         const responseId = request?.requestId
           ? required(request.requestId, "Gemini governed speech response id")
