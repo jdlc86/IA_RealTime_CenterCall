@@ -32,8 +32,8 @@ export type GeminiMediaEdgeCallerContext = Readonly<{ itemId: string; playbackRe
 function object(value: unknown, field: string): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field} is invalid`); return value as Record<string, unknown>; }
 function required(value: unknown, field: string): string { if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`); return value.trim(); }
 function optionalId(value: unknown, field: string): string | null { if (value == null) return null; return required(value, field); }
-function governedEventKind(value: unknown): "NORMAL" | "GREETING" | "RECOVERY" {
-  if (value === "NORMAL" || value === "GREETING" || value === "RECOVERY") return value;
+function governedEventKind(value: unknown): AssistantSpeechKind {
+  if (value === "NORMAL" || value === "GREETING" || value === "RECOVERY" || value === "TERMINAL" || value === "PRESENCE" || value === "HANDOFF") return value;
   throw new Error("Gemini governed event kind is unsupported");
 }
 function outboundToolResult(message: Record<string, unknown>): GeminiMediaEdgeSidebandOutbound {
@@ -85,7 +85,7 @@ export class GeminiMediaEdgeSidebandRuntime {
   private readonly send: GeminiMediaEdgeSidebandSend;
   private readonly callerContexts = new Map<string, GeminiMediaEdgeCallerContext>();
   private activePlaybackResponseId: string | null = null;
-  private activePlaybackKind: "NORMAL" | "GREETING" | "RECOVERY" | null = null;
+  private activePlaybackKind: AssistantSpeechKind | null = null;
   readonly commandPort: RealtimeProviderCommandPort;
   readonly semanticToolGatePort: SemanticToolGatePort;
   readonly governedSpeechPort: GovernedSpeechPort;

@@ -220,6 +220,22 @@ test("governed speech reserves before TTS and rejects Live audio ownership", asy
   await execution;
 });
 
+test("physical playback owner preserves governed handoff kind through Telnyx drain", () => {
+  const playback = new BoundPlaybackGate(64 * 1024);
+  playback.queue(Buffer.from([1, 2]));
+  const chunks = playback.bind("handoff-1", "HANDOFF");
+  assert.deepEqual(chunks.map(({ responseId, kind, pcm }) => ({ responseId, kind, pcm: [...pcm] })), [
+    { responseId: "handoff-1", kind: "HANDOFF", pcm: [1, 2] },
+  ]);
+  playback.noteQueued("handoff-1");
+  const mark = playback.finish("handoff-1");
+  assert.deepEqual(playback.observeReturnedMark(mark), {
+    type: "ASSISTANT_AUDIO_STOPPED",
+    responseId: "handoff-1",
+    kind: "HANDOFF",
+  });
+});
+
 test("governed speech rejects a stale session after late TTS without playback", async () => {
   const playback = new BoundPlaybackGate(64 * 1024);
   const coordinator = new GovernedSpeechPlaybackCoordinator();

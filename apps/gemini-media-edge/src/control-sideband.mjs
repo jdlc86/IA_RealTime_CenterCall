@@ -13,11 +13,11 @@ function object(value, field) {
 }
 function governedSpeechKind(value) {
   if (value == null) return null;
-  if (value === "GREETING" || value === "RECOVERY") return value;
+  if (["GREETING", "RECOVERY", "TERMINAL", "PRESENCE", "HANDOFF"].includes(value)) return value;
   throw new Error("Gemini governed speech kind is unsupported");
 }
 function governedLifecycleKind(value) {
-  if (value === "NORMAL" || value === "GREETING" || value === "RECOVERY") return value;
+  if (["NORMAL", "GREETING", "RECOVERY", "TERMINAL", "PRESENCE", "HANDOFF"].includes(value)) return value;
   throw new Error("Gemini governed lifecycle kind is unsupported");
 }
 export function controlSessionKey(claims) {

@@ -13,11 +13,22 @@ function required(value: unknown, field: string): string {
   return value.trim();
 }
 
-function protectedKind(request: RealtimeSpeechRequest): AssistantSpeechKind {
-  const value = request.metadata?.protected_speech_v35;
-  if (value == null) return "NORMAL";
-  if (value === "GREETING" || value === "RECOVERY") return value;
-  throw new Error("Gemini governed speech protected kind is unsupported");
+function governedKind(request: RealtimeSpeechRequest): AssistantSpeechKind {
+  const protectedValue = request.metadata?.protected_speech_v35;
+  if (protectedValue != null) {
+    if (protectedValue === "GREETING" || protectedValue === "RECOVERY") return protectedValue;
+    throw new Error("Gemini governed speech protected kind is unsupported");
+  }
+
+  const handoffValue = request.metadata?.human_handoff_v37;
+  if (handoffValue != null) {
+    if (handoffValue === "ANNOUNCEMENT" || handoffValue === "FAILURE_TERMINAL") return "HANDOFF";
+    throw new Error("Gemini governed speech handoff kind is unsupported");
+  }
+
+  if (request.purpose === "presence_recovery_v18" || request.purpose === "presence_check") return "PRESENCE";
+  if (request.purpose === "terminal_farewell" || request.purpose === "repeated_ignored_input_close") return "TERMINAL";
+  return "NORMAL";
 }
 
 export function geminiGovernedSpeechDescriptor(
@@ -32,7 +43,7 @@ export function geminiGovernedSpeechDescriptor(
   return Object.freeze({
     responseId,
     text,
-    kind: protectedKind(request),
+    kind: governedKind(request),
     ...(purpose ? { purpose } : {}),
   });
 }

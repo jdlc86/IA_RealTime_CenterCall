@@ -30,6 +30,24 @@ test("governed speech descriptor defaults ordinary governed speech to NORMAL and
   });
 });
 
+test("governed speech descriptor preserves product-owned presence, terminal and handoff kinds", () => {
+  assert.equal(geminiGovernedSpeechDescriptor({
+    instructions: "Pregunta si sigue ahí.",
+    exactText: "¿Sigues ahí?",
+    purpose: "presence_recovery_v18",
+  }).kind, "PRESENCE");
+  assert.equal(geminiGovernedSpeechDescriptor({
+    instructions: "Despídete.",
+    exactText: "Hasta pronto.",
+    purpose: "terminal_farewell",
+  }).kind, "TERMINAL");
+  assert.equal(geminiGovernedSpeechDescriptor({
+    instructions: "Anuncia la transferencia.",
+    exactText: "Te transfiero ahora.",
+    metadata: { human_handoff_v37: "ANNOUNCEMENT" },
+  }).kind, "HANDOFF");
+});
+
 test("governed speech descriptor fails closed on missing exact text or unsupported protected metadata", () => {
   assert.throws(
     () => geminiGovernedSpeechDescriptor({ instructions: "Genera algo" }),
@@ -42,5 +60,13 @@ test("governed speech descriptor fails closed on missing exact text or unsupport
       metadata: { protected_speech_v35: "TERMINAL" },
     }),
     /protected kind is unsupported/,
+  );
+  assert.throws(
+    () => geminiGovernedSpeechDescriptor({
+      instructions: "Pronuncia exactamente el texto.",
+      exactText: "Hola.",
+      metadata: { human_handoff_v37: "UNKNOWN" },
+    }),
+    /handoff kind is unsupported/,
   );
 });

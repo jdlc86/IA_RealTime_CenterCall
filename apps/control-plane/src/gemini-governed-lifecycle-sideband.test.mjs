@@ -41,12 +41,21 @@ test("governed lifecycle sideband preserves correlated protected response events
   }]);
 });
 
-test("governed lifecycle sideband fails closed on unsupported kind or event type", () => {
+test("governed lifecycle sideband preserves handoff identity and fails closed on unsupported input", () => {
   const sideband = runtime();
+  assert.deepEqual(sideband.observe({
+    type: "GOVERNED_EVENT",
+    event: { type: "ASSISTANT_RESPONSE_STARTED", responseId: "handoff-1", kind: "HANDOFF", purpose: "human_handoff_announcement_v37" },
+  }).events, [{
+    type: "ASSISTANT_RESPONSE_STARTED",
+    responseId: "handoff-1",
+    kind: "HANDOFF",
+    purpose: "human_handoff_announcement_v37",
+  }]);
   assert.throws(
     () => sideband.observe({
       type: "GOVERNED_EVENT",
-      event: { type: "ASSISTANT_RESPONSE_STARTED", responseId: "x", kind: "TERMINAL" },
+      event: { type: "ASSISTANT_RESPONSE_STARTED", responseId: "x", kind: "SEMANTIC" },
     }),
     /kind is unsupported/,
   );

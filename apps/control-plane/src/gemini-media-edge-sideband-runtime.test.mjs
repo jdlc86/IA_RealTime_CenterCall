@@ -85,6 +85,21 @@ test("sideband governed speech requires exact text and preserves or mints respon
   assert.equal(sent.at(-1).type, "GOVERNED_SPEECH");
   assert.match(sent.at(-1).responseId, /^gemini_governed_speech_[0-9a-f-]{36}$/);
   assert.equal(sent.at(-1).text, "¿Deseas que te transfiera?");
+
+  runtime.governedSpeechPort.speak({
+    requestId: "handoff-response-1",
+    instructions: "Anuncia la transferencia.",
+    exactText: "Te transfiero ahora.",
+    purpose: "human_handoff_announcement_v37",
+    metadata: { human_handoff_v37: "ANNOUNCEMENT" },
+  });
+  assert.deepEqual(sent.at(-1), {
+    type: "GOVERNED_SPEECH",
+    responseId: "handoff-response-1",
+    text: "Te transfiero ahora.",
+    kind: "HANDOFF",
+    purpose: "human_handoff_announcement_v37",
+  });
 });
 
 test("sideband returns owner response binding and completion drain", () => {
