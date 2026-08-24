@@ -4,6 +4,12 @@ import type {
 } from "./authoritative-temporal-context-port.js";
 import { authoritativeTemporalContextPortFor } from "./authoritative-temporal-context-runtime.js";
 import { realtimeCommandPortFor } from "./realtime-provider-runtime.js";
+import type { RealtimeProviderCommandPort } from "./realtime-provider-command-port.js";
+
+export type ReservationDateAuthorityCommandPort = Pick<
+  RealtimeProviderCommandPort,
+  "submitToolResult" | "createDefaultResponse"
+>;
 
 type BlockedTemporalDateDecision = Extract<
   AuthoritativeReservationDateDecision,
@@ -95,6 +101,7 @@ function rangeRejectionOutput(decision: BlockedTemporalDateRangeDecision): Recor
 export function enforceReservationRelativeDateAuthority(
   session: object,
   request: ReservationRelativeDateAuthorityRequest,
+  commandPort?: ReservationDateAuthorityCommandPort,
 ): ReservationRelativeDateAuthorityOutcome {
   const decision = authoritativeTemporalContextPortFor(session as any)
     .decideReservationDate(request.requestedLocalDate);
@@ -123,7 +130,7 @@ export function enforceReservationRelativeDateAuthority(
     reservation_write_attempted: false,
     authority_owner: "authoritative_temporal_context_port",
   });
-  const realtime = realtimeCommandPortFor(session as any);
+  const realtime = commandPort ?? realtimeCommandPortFor(session as any);
   realtime.submitToolResult({
     callId: request.callId,
     toolName: request.toolName,
@@ -136,6 +143,7 @@ export function enforceReservationRelativeDateAuthority(
 export function enforceReservationRelativeDateRangeAuthority(
   session: object,
   request: ReservationRelativeDateRangeAuthorityRequest,
+  commandPort?: ReservationDateAuthorityCommandPort,
 ): ReservationRelativeDateRangeAuthorityOutcome {
   const decision = authoritativeTemporalContextPortFor(session as any).decideReservationDateRange(
     request.requestedFromLocalDate,
@@ -163,7 +171,7 @@ export function enforceReservationRelativeDateRangeAuthority(
     semantic_decision_consumed: true,
     authority_owner: "authoritative_temporal_context_port",
   });
-  const realtime = realtimeCommandPortFor(session as any);
+  const realtime = commandPort ?? realtimeCommandPortFor(session as any);
   realtime.submitToolResult({
     callId: request.callId,
     toolName: request.toolName,
