@@ -66,3 +66,24 @@ export function createGeminiIsolatedDecisionClient(options = {}) {
     },
   });
 }
+
+/**
+ * Executes an auxiliary decision only while the exact tenant/call control session
+ * is actively attached to the media edge. This prevents the shared control-plane
+ * credential from becoming a cross-call classifier oracle.
+ */
+export async function decideForActiveGeminiControlSession(controlRegistry, client, value) {
+  if (!controlRegistry || typeof controlRegistry.isActive !== "function") throw new Error("Gemini control session registry is required");
+  if (!client || typeof client.decide !== "function") throw new Error("Gemini isolated decision client is required");
+  const tenantId = required(value?.tenantId, "Gemini isolated decision tenant_id");
+  const callControlId = required(value?.callControlId, "Gemini isolated decision call_control_id");
+  const claims = Object.freeze({ tenantId, callControlId });
+  if (controlRegistry.isActive(claims) !== true) {
+    throw new Error("Gemini isolated decision requires an active control session");
+  }
+  return client.decide({
+    instructions: value?.instructions,
+    inputText: value?.inputText,
+    maxOutputTokens: value?.maxOutputTokens,
+  });
+}
