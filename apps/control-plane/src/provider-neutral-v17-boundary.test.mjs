@@ -5,14 +5,17 @@ import { readFileSync } from "node:fs";
 const v17 = readFileSync(new URL("./call-session-v17.ts", import.meta.url), "utf8");
 const bootstrap = readFileSync(new URL("./direct-agent-realtime-bootstrap.ts", import.meta.url), "utf8");
 
-test("V17 installs public tools through the provider-neutral session policy port", () => {
-  assert.match(v17, /realtimeCommandPortFor\(this as any\)\.updateSessionPolicy\(/);
+test("V17 installs public tools through the provider-neutral bootstrap policy boundary", () => {
+  assert.match(v17, /applyRealtimeSessionBootstrapPolicy\(this as any,/);
   assert.match(v17, /directAgentRealtimeBootstrapPolicy\(this as any\)/);
   assert.match(v17, /\.\.\.bootstrap/);
   assert.match(v17, /toolChoice:\s*"AUTO"/);
+  assert.match(v17, /startup_policy_mode:\s*startupPolicy\.mode/);
+  assert.match(v17, /immutable_provider_bootstrap:/);
   assert.match(bootstrap, /RealtimeFunctionToolDefinition/);
   assert.match(bootstrap, /DIRECT_AGENT_TOOLS/);
 
+  assert.doesNotMatch(v17, /realtimeCommandPortFor\(this as any\)\.updateSessionPolicy\(/);
   assert.doesNotMatch(v17, /session\.update/);
   assert.doesNotMatch(v17, /\(this as any\)\.send\s*\(/);
 });

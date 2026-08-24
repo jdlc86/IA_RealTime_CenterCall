@@ -14,7 +14,7 @@ test("v26 consumes provider-neutral tool-selection events on its inbound boundar
 
 test("v26 has no direct OpenAI wire dependency after post-tool and session gates", () => {
   assert.match(source, /installRealtimeToolResultPolicy/);
-  assert.match(source, /updateSessionPolicy/);
+  assert.match(source, /applyRealtimeSessionBootstrapPolicy/);
   assert.match(source, /REPLACE_DEFAULT_RESPONSE/);
   assert.match(source, /DIRECT_POST_TOOL_RESPONSE_GOVERNED_V26/);
   assert.match(source, /LEGACY_CORE_INTENT_EVENT_BLOCKED_V26/);

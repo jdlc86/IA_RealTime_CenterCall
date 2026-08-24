@@ -57,6 +57,25 @@ por eso cada perfil declara explícitamente los mismos nombres de bindings. Los
 recursos y secretos reales deben configurarse por separado en Cloudflare antes
 del primer despliegue de cada perfil.
 
+### Canary Gemini por entorno y tenant
+
+Todos los perfiles se publican sin bindings Gemini y por tanto permanecen
+desactivados. Para admitir un único tenant canario en `preview` o en la prueba
+controlada de producción hay que configurar:
+
+- `GEMINI_REALTIME_ENABLED=true`;
+- `GEMINI_CANARY_TENANT_ID=<tenant_id exacto>`;
+- `GEMINI_MEDIA_EDGE_URL=wss://<cloud-run>/telnyx/gemini`;
+- `MEDIA_EDGE_CREDENTIAL_HMAC_SECRET` (el mismo secreto que Cloud Run);
+- `MEDIA_EDGE_CONTROL_PLANE_TOKEN` (el mismo secreto que Cloud Run).
+
+La admisión exige simultáneamente un entorno `preview` o `production`, el flag
+explícito y la coincidencia exacta del tenant. Desarrollo siempre rechaza Gemini.
+La ausencia del tenant canario o de cualquiera de los secretos también falla
+cerrada. El ingress activo no ejecuta `streaming_start` hasta completar credencial,
+bootstrap, arranque del CallSession real y sideband autenticado. La configuración
+de Cloud Run está en `../gemini-media-edge/deploy/cloud-run/README.md`.
+
 Workers Builds usa el Version command para subir una versión candidata de las
 ramas no productivas sin promoverla. Sólo el Deploy command de la rama `main`
 actualiza el tráfico. Ambos ejecutan la batería completa y los dry-runs antes de

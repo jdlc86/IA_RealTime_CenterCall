@@ -20,6 +20,8 @@ function assertBindings(environment) {
 test("default Wrangler profile is the existing production Worker", () => {
   assert.equal(config.name, "ia-realtime-centercall");
   assert.equal(config.vars.ENVIRONMENT, "production");
+  assert.equal(config.vars.GEMINI_REALTIME_ENABLED, undefined);
+  assert.equal(config.vars.GEMINI_CANARY_TENANT_ID, undefined);
   assert.equal(config.workers_dev, true);
   assert.equal(config.preview_urls, true);
   assertBindings(config);
@@ -28,11 +30,14 @@ test("default Wrangler profile is the existing production Worker", () => {
 test("preview and dev profiles use isolated Worker names and explicit non-inherited bindings", () => {
   assert.equal(config.env.preview.name, "ia-realtime-centercall-preview");
   assert.equal(config.env.preview.vars.ENVIRONMENT, "preview");
+  assert.equal(config.env.preview.vars.GEMINI_REALTIME_ENABLED, undefined);
+  assert.equal(config.env.preview.vars.GEMINI_CANARY_TENANT_ID, undefined);
   assert.equal(config.env.preview.preview_urls, true);
   assertBindings(config.env.preview);
 
   assert.equal(config.env.dev.name, "ia-realtime-centercall-dev");
   assert.equal(config.env.dev.vars.ENVIRONMENT, "dev");
+  assert.equal(config.env.dev.vars.GEMINI_REALTIME_ENABLED, undefined);
   assert.equal(config.env.dev.preview_urls, false);
   assertBindings(config.env.dev);
 

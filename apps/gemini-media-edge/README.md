@@ -8,7 +8,7 @@ This service is the continuous audio hot path only:
 
 `Telnyx Media WebSocket <-> Gemini Media Edge <-> Gemini Live WebSocket`
 
-It validates the Telnyx stream format, reorders inbound media by `media.chunk`, converts RTP L16 network byte order to Gemini PCM16 little-endian at 16 kHz, and converts Gemini PCM16 24 kHz output back to Telnyx L16/16 kHz through one stateful resampler per call.
+It validates the Telnyx stream format, reorders inbound media by `media.chunk`, preserves Telnyx WebSocket L16 as headerless PCM16 little-endian at 16 kHz, and converts Gemini PCM16 24 kHz output back to the same Telnyx L16/16 kHz wire representation through one stateful resampler per call.
 
 Cloudflare remains the control plane and Gemini remains traffic-disabled until the product readiness gates are satisfied.
 
@@ -18,7 +18,7 @@ The media edge no longer accepts a process-wide static ingress bearer. Each WebS
 
 Admission is deliberately split in phases:
 
-1. the Bearer credential is authenticated on WebSocket upgrade, but is **not consumed**;
+1. the signed credential from Telnyx's `x-telnyx-streaming-auth-token` WebSocket header is authenticated on upgrade, but is **not consumed**;
 2. the first Telnyx `start` identity frame must contain the exact bound `start.call_control_id` and mono `L16/16000` format;
 3. only after that identity check succeeds is the credential consumed atomically;
 4. the pre-registered immutable bootstrap must match the same credential/tenant/call/expiry and is consumed one-shot;
@@ -43,6 +43,14 @@ Required environment variables:
 - `MEDIA_EDGE_CONTROL_PLANE_TOKEN` (at least 32 bytes; protects bootstrap registration)
 - `MEDIA_EDGE_PUBLIC_URL` (exact `wss://` URL bound into issued credentials)
 - `MEDIA_EDGE_SINGLE_INSTANCE=true`
+- `GOOGLE_CLOUD_PROJECT_ID`
+- `GOOGLE_SPEECH_LANGUAGE_CODES` (comma-separated BCP-47 codes)
+- `GOOGLE_SPEECH_MODEL` (`telephony_short` for the short inbound telephone turns used here)
+- `GOOGLE_TTS_VOICE_NAME`
+- `MEDIA_EDGE_VAD_START_RMS`
+- `MEDIA_EDGE_VAD_STOP_RMS`
+- `MEDIA_EDGE_VAD_MIN_SPEECH_MS`
+- `MEDIA_EDGE_VAD_MIN_SILENCE_MS`
 
 Optional:
 
@@ -50,7 +58,11 @@ Optional:
 - `MEDIA_EDGE_MAX_BUFFERED_BYTES`
 - `PORT` (defaults to `8080`)
 
-`GET /healthz` contains no credentials.
+`GET /ready` contains no credentials. The endpoint deliberately avoids Cloud
+Run's reserved `/healthz` path.
+
+The reproducible Google Cloud setup and real canary sequence are documented in
+[`deploy/cloud-run/README.md`](deploy/cloud-run/README.md).
 
 ## Validation
 
@@ -60,4 +72,8 @@ npm run check
 docker build .
 ```
 
-Do not enable Gemini traffic merely because this container builds. Remaining work includes wiring the bootstrap registration into the admitted ingress provisioning transaction, authoritative STT/VAD composition, tool/control-plane event transport, lifecycle/hangup wiring, durable replay/bootstrap storage for multi-instance deployment, and E2E validation.
+The admitted ingress now composes bootstrap registration, the real CallSession,
+authenticated sideband readiness and Telnyx `streaming_start` in that order. A
+single exact tenant can therefore run a controlled real E2E. Horizontal scaling
+still requires durable shared credential/bootstrap/session ownership, and the
+single-instance canary must be validated before increasing traffic.

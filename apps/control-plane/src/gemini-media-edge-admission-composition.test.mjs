@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { requireGeminiMediaEdgeProvisioningReady } from "../.test-dist/gemini-media-edge-admission-composition.js";
+import { authorizeRealtimeProviderTraffic } from "../.test-dist/realtime-provider-traffic-admission.js";
 
 function selection(provider) {
   return {
@@ -70,4 +71,30 @@ test("invalid Gemini provisioning input cannot move credential issuance ahead of
   );
 
   assert.equal(issued, 0);
+});
+
+test("an issued preview canary grant permits exactly one bound credential result", async () => {
+  const selected = selection("GEMINI");
+  const admission = authorizeRealtimeProviderTraffic(selected, {
+    environment: "preview",
+    geminiEnabled: "true",
+    geminiCanaryTenantId: "tenant-madrid",
+  });
+  let issued = 0;
+
+  const provisioned = await requireGeminiMediaEdgeProvisioningReady(
+    selected,
+    provisioning,
+    (claims) => {
+      issued += 1;
+      assert.equal(claims.tenantId, "tenant-madrid");
+      return { credentialId: "credential-preview-1", streamAuthToken: "signed-preview-token" };
+    },
+    admission,
+  );
+
+  assert.equal(issued, 1);
+  assert.equal(provisioned.credentialId, "credential-preview-1");
+  assert.equal(provisioned.contract.binding.provider, "GEMINI");
+  assert.equal(provisioned.contract.secret.streamAuthToken, "signed-preview-token");
 });

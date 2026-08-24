@@ -24,6 +24,11 @@ import {
   requireEnabledRealtimeProvider,
   type RealtimeProviderName,
 } from "./realtime-provider-selector.js";
+import type { RealtimeProviderSelection } from "./realtime-provider-selector.js";
+import {
+  requireRealtimeProviderTrafficAdmission,
+  type RealtimeProviderTrafficAdmission,
+} from "./realtime-provider-traffic-admission.js";
 
 export type RealtimeToolResultPolicyDecision =
   | { action: "PASS" }
@@ -154,6 +159,13 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
 
 const RUNTIME_BY_HOST = new WeakMap<object, RealtimeProviderCommandRuntime>();
 const PROVIDER_BY_HOST = new WeakMap<object, RealtimeProviderName>();
+const TRAFFIC_ADMISSION_BY_HOST = new WeakMap<object, RealtimeProviderTrafficAdmission>();
+
+function requireProviderTrafficAuthorized(host: object, provider: RealtimeProviderName): void {
+  const admission = TRAFFIC_ADMISSION_BY_HOST.get(host);
+  if (admission?.provider === provider) return;
+  requireEnabledRealtimeProvider(provider);
+}
 
 function createProviderCommandPort(provider: RealtimeProviderName, host: RealtimeProviderHost): RealtimeProviderCommandPort {
   let port: RealtimeProviderCommandPort;
@@ -187,6 +199,41 @@ export function bindRealtimeProvider(host: RealtimeProviderHost, provider: Realt
   PROVIDER_BY_HOST.set(host, provider);
 }
 
+/**
+ * Binds an explicitly admitted provider without changing the global enabled set.
+ * The opaque admission must match the immutable tenant/provider selection and is
+ * retained only for the lifetime of this real CallSession instance.
+ */
+export function bindAdmittedRealtimeProvider(
+  host: RealtimeProviderHost,
+  selection: RealtimeProviderSelection,
+  admission: RealtimeProviderTrafficAdmission,
+): void {
+  if (!isRegisteredRealtimeProvider(selection.provider)) {
+    throw new Error(`Realtime provider is not registered: ${String(selection.provider)}`);
+  }
+  requireRealtimeProviderTrafficAdmission(selection, admission);
+  requireRealtimeProviderTrafficReadiness(selection.provider);
+
+  const existingProvider = PROVIDER_BY_HOST.get(host);
+  if (existingProvider && existingProvider !== selection.provider) {
+    throw new Error(`Realtime provider already bound as ${existingProvider}`);
+  }
+  const existingAdmission = TRAFFIC_ADMISSION_BY_HOST.get(host);
+  if (existingAdmission && (
+    existingAdmission.provider !== admission.provider
+    || existingAdmission.tenantId !== admission.tenantId
+    || existingAdmission.selectionSource !== admission.selectionSource
+    || existingAdmission.environment !== admission.environment
+    || existingAdmission.scope !== admission.scope
+  )) {
+    throw new Error("Realtime provider traffic admission is already bound to another scope");
+  }
+
+  PROVIDER_BY_HOST.set(host, selection.provider);
+  if (!existingAdmission) TRAFFIC_ADMISSION_BY_HOST.set(host, admission);
+}
+
 export function realtimeProviderFor(host: RealtimeProviderHost): RealtimeProviderName {
   return PROVIDER_BY_HOST.get(host) ?? DEFAULT_REALTIME_PROVIDER;
 }
@@ -199,7 +246,7 @@ function commandRuntimeFor(host: RealtimeProviderHost): RealtimeProviderCommandR
   let runtime = RUNTIME_BY_HOST.get(host);
   if (!runtime) {
     const provider = realtimeProviderFor(host);
-    requireEnabledRealtimeProvider(provider);
+    requireProviderTrafficAuthorized(host, provider);
     requireRealtimeProviderTrafficReadiness(provider);
     runtime = new RealtimeProviderCommandRuntime(provider, createProviderCommandPort(provider, host));
     RUNTIME_BY_HOST.set(host, runtime);

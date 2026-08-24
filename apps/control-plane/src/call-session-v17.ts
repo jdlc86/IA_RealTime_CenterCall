@@ -14,6 +14,7 @@ import {
   DIRECT_AGENT_TOOL_NAMES,
   directAgentRealtimeBootstrapPolicy,
 } from "./direct-agent-realtime-bootstrap.js";
+import { applyRealtimeSessionBootstrapPolicy } from "./realtime-session-bootstrap-policy.js";
 
 const BaseConstructor = CallSessionV16 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV16.prototype as any;
@@ -27,7 +28,7 @@ export class CallSession extends BaseConstructor {
     if (isStart && response.ok && !this.agentToolsInstalledV17) {
       this.agentToolsInstalledV17 = true;
       const bootstrap = directAgentRealtimeBootstrapPolicy(this as any);
-      realtimeCommandPortFor(this as any).updateSessionPolicy({
+      const startupPolicy = applyRealtimeSessionBootstrapPolicy(this as any, {
         ...bootstrap,
         toolChoice: "AUTO",
       });
@@ -40,6 +41,8 @@ export class CallSession extends BaseConstructor {
         backend_authority_preserved: true,
         provider_command_port: true,
         shared_bootstrap_policy: true,
+        startup_policy_mode: startupPolicy.mode,
+        immutable_provider_bootstrap: startupPolicy.mode === "IMMUTABLE_BOOTSTRAP",
       });
     }
     return response;

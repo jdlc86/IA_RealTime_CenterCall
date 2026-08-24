@@ -3,6 +3,29 @@ function required(value, field) {
   return value.trim();
 }
 
+function modelResourceName(value) {
+  const model = required(value, "Gemini Live model");
+  const identifier = model.startsWith("models/") ? model.slice("models/".length) : model;
+  if (!/^[A-Za-z0-9._-]+$/.test(identifier)) {
+    throw new Error("Gemini Live model resource name is invalid");
+  }
+  return `models/${identifier}`;
+}
+
+function geminiParametersJsonSchema(value) {
+  if (Array.isArray(value)) return value.map(geminiParametersJsonSchema);
+  if (!value || typeof value !== "object") return value;
+  const result = {};
+  for (const [key, item] of Object.entries(value)) {
+    // Gemini's FunctionDeclaration JSON-schema subset does not expose
+    // uniqueItems. The backend remains the authority that validates tool
+    // arguments, so dropping this model hint cannot authorize an effect.
+    if (key === "uniqueItems") continue;
+    result[key] = geminiParametersJsonSchema(item);
+  }
+  return result;
+}
+
 function safeEpoch(value, field) {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`${field} must be a positive safe integer`);
@@ -52,11 +75,11 @@ export function buildGeminiInitialSetup(bootstrap, model) {
   const declarations = value.tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
-    parameters: structuredClone(tool.parameters),
+    parametersJsonSchema: geminiParametersJsonSchema(tool.parameters),
   }));
   return Object.freeze({
     setup: {
-      model: required(model, "Gemini Live model"),
+      model: modelResourceName(model),
       systemInstruction: { parts: [{ text: value.instructions }] },
       tools: [{ functionDeclarations: declarations }],
       generationConfig: { responseModalities: ["AUDIO"] },
@@ -84,7 +107,13 @@ export class InMemoryBootstrapRegistry {
     const now = safeEpoch(nowEpochMs, "Gemini media edge bootstrap nowEpochMs");
     if (now >= bootstrap.notAfterEpochMs) throw new Error("Gemini media edge bootstrap expired");
     this.prune(now);
-    if (this.entries.has(bootstrap.credentialId)) throw new Error("Gemini media edge bootstrap already registered");
+    const existing = this.entries.get(bootstrap.credentialId);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(bootstrap)) {
+        throw new Error("Gemini media edge bootstrap already registered with different content");
+      }
+      return existing;
+    }
     this.entries.set(bootstrap.credentialId, bootstrap);
     return bootstrap;
   }

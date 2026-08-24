@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   ACTIVE_REALTIME_PROVIDER,
   adaptRealtimeProviderEvents,
+  bindAdmittedRealtimeProvider,
   bindRealtimeProvider,
   installRealtimeToolResultObserver,
   installRealtimeToolResultPolicy,
@@ -12,6 +13,8 @@ import {
   realtimeProviderFor,
   stageConsolidatedCallerTurnForNextResponse,
 } from "../.test-dist/realtime-provider-runtime.js";
+import { authorizeRealtimeProviderTraffic } from "../.test-dist/realtime-provider-traffic-admission.js";
+import { installExternalRealtimeProviderCommandPort } from "../.test-dist/realtime-provider-external-command-runtime.js";
 import { decideDirectPostToolResponse } from "../.test-dist/post-booking-conversation-policy.js";
 
 function host() {
@@ -39,6 +42,27 @@ test("G1 rejects registered Gemini until its traffic gates are enabled", () => {
   const h = host();
   assert.throws(() => bindRealtimeProvider(h, "GEMINI"), /registered but not enabled for traffic/);
   assert.equal(realtimeProviderFor(h), "OPENAI");
+});
+
+test("an opaque exact-tenant admission binds Gemini without global enablement", () => {
+  const h = host();
+  const selection = {
+    tenantId: "tenant-canary",
+    provider: "GEMINI",
+    source: "TENANT_CONFIG",
+    overrideKey: "unused",
+  };
+  const admission = authorizeRealtimeProviderTraffic(selection, {
+    environment: "production",
+    geminiEnabled: "true",
+    geminiCanaryTenantId: "tenant-canary",
+  });
+  const spoken = [];
+  installExternalRealtimeProviderCommandPort(h, "GEMINI", { speak(request) { spoken.push(request); } });
+  bindAdmittedRealtimeProvider(h, selection, admission);
+  realtimeCommandPortFor(h).speak({ instructions: "hola", exactText: "Hola" });
+  assert.equal(realtimeProviderFor(h), "GEMINI");
+  assert.deepEqual(spoken, [{ instructions: "hola", exactText: "Hola" }]);
 });
 
 test("G1 provider binding is immutable even before command runtime creation", () => {

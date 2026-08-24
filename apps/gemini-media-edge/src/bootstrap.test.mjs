@@ -23,9 +23,9 @@ const claims = Object.freeze({
 test("immutable setup carries system instruction, tools and deferred manual activity configuration", () => {
   assert.deepEqual(buildGeminiInitialSetup(bootstrap, "gemini-live-model"), {
     setup: {
-      model: "gemini-live-model",
+      model: "models/gemini-live-model",
       systemInstruction: { parts: [{ text: "Eres Lucía." }] },
-      tools: [{ functionDeclarations: [{ name: "restaurant_conversation", description: "Conversación", parameters: { type: "object", properties: {}, additionalProperties: false } }] }],
+      tools: [{ functionDeclarations: [{ name: "restaurant_conversation", description: "Conversación", parametersJsonSchema: { type: "object", properties: {}, additionalProperties: false } }] }],
       generationConfig: { responseModalities: ["AUDIO"] },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
@@ -49,6 +49,64 @@ test("bootstrap registry binds policy to exact credential, tenant, call and expi
   assert.deepEqual(registry.consumeForClaims(claims, 1_500), bootstrap);
   assert.equal(registry.size(), 0);
   assert.throws(() => registry.consumeForClaims(claims, 1_501), /not registered/);
+});
+
+test("immutable setup uses the Gemini WebSocket model resource contract exactly once", () => {
+  assert.equal(buildGeminiInitialSetup(bootstrap, "gemini-live-model").setup.model, "models/gemini-live-model");
+  assert.equal(buildGeminiInitialSetup(bootstrap, "models/gemini-live-model").setup.model, "models/gemini-live-model");
+  assert.throws(() => buildGeminiInitialSetup(bootstrap, "publishers/google/models/gemini-live-model"), /resource name is invalid/);
+});
+
+test("tool declarations use Gemini JSON schema without unsupported uniqueness hints", () => {
+  const setup = buildGeminiInitialSetup({
+    ...bootstrap,
+    tools: [{
+      type: "function",
+      name: "restaurant_business_info",
+      description: "Consulta datos",
+      parameters: {
+        type: "object",
+        properties: {
+          topics: {
+            type: "array",
+            minItems: 1,
+            maxItems: 5,
+            uniqueItems: true,
+            items: { type: "string", enum: ["HOURS", "LOCATION"] },
+          },
+        },
+        required: ["topics"],
+        additionalProperties: false,
+      },
+    }],
+  }, "gemini-live-model");
+  const declaration = setup.setup.tools[0].functionDeclarations[0];
+  assert.equal("parameters" in declaration, false);
+  assert.deepEqual(declaration.parametersJsonSchema, {
+    type: "object",
+    properties: {
+      topics: {
+        type: "array",
+        minItems: 1,
+        maxItems: 5,
+        items: { type: "string", enum: ["HOURS", "LOCATION"] },
+      },
+    },
+    required: ["topics"],
+    additionalProperties: false,
+  });
+});
+
+test("an identical webhook retry may register the same bootstrap idempotently", () => {
+  const registry = new InMemoryBootstrapRegistry();
+  const first = registry.register(bootstrap, 1_000);
+  const second = registry.register(structuredClone(bootstrap), 1_001);
+  assert.equal(second, first);
+  assert.equal(registry.size(), 1);
+  assert.throws(
+    () => registry.register({ ...bootstrap, instructions: "Different policy" }, 1_002),
+    /different content/,
+  );
 });
 
 test("wrong call cannot consume registered bootstrap", () => {

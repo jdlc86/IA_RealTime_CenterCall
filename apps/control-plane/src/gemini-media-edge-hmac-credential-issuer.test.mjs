@@ -47,7 +47,7 @@ test("issuer creates v1 credential with only the authenticated edge binding", as
   assert.equal(verified, true);
 });
 
-test("provisioning adapter injects a unique credential id and returns only stream auth", async () => {
+test("provisioning adapter returns the credential id required by bootstrap registration", async () => {
   const issue = createGeminiMediaEdgeHmacCredentialIssuer(secret, () => "cred-provisioned-1");
   const result = await issue({
     provider: "GEMINI",
@@ -57,7 +57,8 @@ test("provisioning adapter injects a unique credential id and returns only strea
     targetLegs: "self",
     notAfterEpochMs: 2_000_000_000_000,
   });
-  assert.deepEqual(Object.keys(result), ["streamAuthToken"]);
+  assert.deepEqual(Object.keys(result), ["credentialId", "streamAuthToken"]);
+  assert.equal(result.credentialId, "cred-provisioned-1");
   const [, payload] = result.streamAuthToken.split(".");
   const decoded = JSON.parse(decodeBase64Url(payload).toString("utf8"));
   assert.equal(decoded.credentialId, "cred-provisioned-1");

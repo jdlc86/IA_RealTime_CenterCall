@@ -104,6 +104,6 @@ export function createGeminiMediaEdgeHmacCredentialIssuer(
       Object.freeze({ credentialId, ...claims }),
       secret,
     );
-    return Object.freeze({ streamAuthToken });
+    return Object.freeze({ credentialId, streamAuthToken });
   };
 }

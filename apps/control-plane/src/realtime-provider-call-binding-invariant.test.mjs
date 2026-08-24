@@ -9,6 +9,7 @@ import {
 
 const runtimeSource = readFileSync(new URL("./realtime-provider-runtime.ts", import.meta.url), "utf8");
 const selectionSource = readFileSync(new URL("./call-session-v49-provider-selection.ts", import.meta.url), "utf8");
+const compositionSource = readFileSync(new URL("./realtime-provider-call-session-composition.ts", import.meta.url), "utf8");
 
 function host() {
   return { send() {} };
@@ -41,9 +42,11 @@ test("tenant provider selection occurs only on call start before the inherited c
   assert.match(selectionSource, /const isStart = request\.method === "POST"/);
   assert.match(selectionSource, /if \(isStart\) \{/);
   assert.match(selectionSource, /selectRealtimeProvider\(config, kv\)/);
-  assert.match(selectionSource, /bindRealtimeProvider\(this as any, provider\)/);
+  assert.match(selectionSource, /prepareRealtimeProviderCallSession\(this as any, selection, callControlId\)/);
+  assert.match(compositionSource, /bindRealtimeProvider\(host, selection\.provider\)/);
+  assert.match(compositionSource, /bindAdmittedRealtimeProvider\(host, selection, admission\)/);
 
-  const bindIndex = selectionSource.indexOf("bindRealtimeProvider(this as any, provider)");
+  const bindIndex = selectionSource.indexOf("prepareRealtimeProviderCallSession(this as any, selection, callControlId)");
   const superIndex = selectionSource.indexOf("await super.fetch(request)");
   assert.ok(bindIndex >= 0 && superIndex >= 0 && bindIndex < superIndex);
 });

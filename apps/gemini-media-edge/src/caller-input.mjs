@@ -8,15 +8,15 @@ function required(value, field) {
 function decodePayload(payload) {
   const normalized = required(payload, "Gemini caller audio payload");
   const bytes = Buffer.from(normalized, "base64");
-  if (bytes.length === 0 || bytes.length % 2 !== 0) throw new Error("Gemini caller audio requires complete PCM16_BE samples");
+  if (bytes.length === 0 || bytes.length % 2 !== 0) throw new Error("Gemini caller audio requires complete PCM16_LE samples");
   return { normalized, bytes };
 }
 
-function rmsPcm16Be(bytes) {
+function rmsPcm16Le(bytes) {
   let sumSquares = 0;
   const samples = bytes.length / 2;
   for (let offset = 0; offset < bytes.length; offset += 2) {
-    const sample = bytes.readInt16BE(offset) / 32768;
+    const sample = bytes.readInt16LE(offset) / 32768;
     sumSquares += sample * sample;
   }
   return Math.sqrt(sumSquares / samples);
@@ -39,7 +39,7 @@ export class TelnyxSampleCountVad {
   observe(payload) {
     const { normalized, bytes } = decodePayload(payload);
     const sampleCount = bytes.length / 2;
-    const rms = rmsPcm16Be(bytes);
+    const rms = rmsPcm16Le(bytes);
     this.processedSamples += sampleCount;
     let boundary = null;
     let shouldBufferPayload = this.state === "SPEECH";
@@ -57,10 +57,15 @@ export class TelnyxSampleCountVad {
           this.onsetPayloads = [];
         }
       } else {
+        if (this.candidateSpeechSamples === 0) {
+          this.noiseFloorRms = this.noiseFloorRms === null
+            ? rms
+            : (this.noiseFloorRms * 0.95) + (rms * 0.05);
+        }
         this.candidateSpeechSamples = 0;
         this.onsetPayloads = [];
       }
-    } else if (rms <= this.config.stopRms) {
+    } else if (rms <= this.effectiveStopRms()) {
       this.candidateSilenceSamples += sampleCount;
       shouldBufferPayload = true;
       if (this.candidateSilenceSamples >= this.minSilenceSamples) {
@@ -80,12 +85,18 @@ export class TelnyxSampleCountVad {
     this.candidateSpeechSamples = 0;
     this.candidateSilenceSamples = 0;
     this.processedSamples ??= 0;
+    this.noiseFloorRms = null;
     this.onsetPayloads = [];
     return this.snapshot();
   }
 
+  effectiveStopRms() {
+    if (this.noiseFloorRms === null) return this.config.stopRms;
+    return Math.min(this.config.startRms * 0.9, Math.max(this.config.stopRms, this.noiseFloorRms * 1.5));
+  }
+
   snapshot() {
-    return Object.freeze({ state: this.state, candidateSpeechSamples: this.candidateSpeechSamples, candidateSilenceSamples: this.candidateSilenceSamples, processedSamples: this.processedSamples });
+    return Object.freeze({ state: this.state, candidateSpeechSamples: this.candidateSpeechSamples, candidateSilenceSamples: this.candidateSilenceSamples, processedSamples: this.processedSamples, noiseFloorRms: this.noiseFloorRms, effectiveStopRms: this.effectiveStopRms() });
   }
 }
 
@@ -113,7 +124,7 @@ export class AuthoritativeCallerInputOwner {
 
   async observe(payload, playbackResponseId = null) {
     if (!this.inputDetectionEnabled) {
-      return Object.freeze({ events: Object.freeze([]), snapshot: this.snapshot() });
+      return Object.freeze({ events: Object.freeze([]), snapshot: this.snapshot(), acoustic: null });
     }
     const before = this.vad.snapshot();
     const acoustic = this.vad.observe(payload);
@@ -161,7 +172,7 @@ export class AuthoritativeCallerInputOwner {
         const exactPayloads = Object.freeze([...candidate.payloads]);
         const evidence = await this.transcribe({ itemId: candidate.itemId, payloads: exactPayloads });
         if (this.revision !== flight.revision || !this.inputDetectionEnabled) {
-          return Object.freeze({ events: Object.freeze([]), snapshot: this.snapshot() });
+          return Object.freeze({ events: Object.freeze([]), snapshot: this.snapshot(), acoustic: Object.freeze({ rms: acoustic.rms, vad: acoustic.snapshot }) });
         }
         if (!this.active || this.active.itemId !== candidate.itemId) throw new Error(`Gemini caller transcription became stale: ${candidate.itemId}`);
         if (required(evidence?.itemId, "Gemini caller transcript item id") !== candidate.itemId) throw new Error(`Gemini caller transcript identity mismatch: expected ${candidate.itemId}`);
@@ -178,7 +189,7 @@ export class AuthoritativeCallerInputOwner {
         if (this.transcriptionInFlight === flight) this.transcriptionInFlight = null;
       }
     }
-    return Object.freeze({ events: Object.freeze(events), snapshot: this.snapshot() });
+    return Object.freeze({ events: Object.freeze(events), snapshot: this.snapshot(), acoustic: Object.freeze({ rms: acoustic.rms, vad: acoustic.snapshot }) });
   }
 
   resolve(itemId, decision) {

@@ -3,6 +3,7 @@ import {
   type InboundRealtimeRoute,
 } from "./inbound-realtime-route.js";
 import type { RealtimeProviderSelection } from "./realtime-provider-selector.js";
+import type { RealtimeProviderTrafficAdmission } from "./realtime-provider-traffic-admission.js";
 
 export type OpenAIInboundRealtimeRoute = InboundRealtimeRoute & Readonly<{
   provider: "OPENAI";
@@ -57,7 +58,8 @@ export function composePlannedInboundRealtimeTransport<T>(
 export function requireInboundRealtimeTransportReady<T>(
   selection: RealtimeProviderSelection,
   factories: InboundRealtimeTransportFactories<T>,
+  admission?: RealtimeProviderTrafficAdmission,
 ): T {
-  const route = requireInboundRealtimeRouteReady(selection);
+  const route = requireInboundRealtimeRouteReady(selection, admission);
   return composePlannedInboundRealtimeTransport(route, factories);
 }

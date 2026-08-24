@@ -16,6 +16,11 @@ export type TelnyxGeminiStreamingStartRequest = Readonly<{
   clientState?: string;
 }>;
 
+export type TelnyxGeminiInboundAnswerRequest = Readonly<{
+  callControlId: string;
+  commandId: string;
+}>;
+
 export type TelnyxGeminiStreamingStopRequest = Readonly<{
   callControlId: string;
   commandId: string;
@@ -56,7 +61,7 @@ async function responseDetail(response: Response): Promise<string> {
 }
 
 /**
- * Telnyx Call Control boundary for the future Gemini media plane.
+ * Telnyx Call Control boundary for the admitted Gemini media plane.
  *
  * This runtime does not host media. It only asks Telnyx to connect an admitted
  * call leg to an externally-owned, authenticated WSS media edge. The media edge
@@ -75,6 +80,40 @@ export class TelnyxGeminiStreamingRuntime {
 
   private apiKey(): string {
     return required(this.host.env?.TELNYX_API_KEY, "TELNYX_API_KEY");
+  }
+
+  /**
+   * Telnyx requires an inbound call to be answered before any subsequent Call
+   * Control command. This command intentionally carries no stream policy: the
+   * authenticated L16 stream remains owned by streaming_start below.
+   */
+  async answer(request: TelnyxGeminiInboundAnswerRequest): Promise<TelnyxGeminiStreamingCommandResult> {
+    try {
+      const callControlId = required(request.callControlId, "Telnyx call_control_id");
+      const commandId = required(request.commandId, "Telnyx answer command_id");
+      const response = await this.fetcher(
+        `https://api.telnyx.com/v2/calls/${encodeURIComponent(callControlId)}/actions/answer`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.apiKey()}`,
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({ command_id: commandId }),
+        },
+      );
+      if (response.ok) return { ok: true, httpStatus: response.status, alreadyEnded: false };
+      const detail = await responseDetail(response);
+      return {
+        ok: false,
+        httpStatus: response.status,
+        alreadyEnded: response.status === 422 && /\b90018\b/.test(detail),
+        error: `Telnyx answer HTTP ${response.status}${detail ? `: ${detail}` : ""}`,
+      };
+    } catch (error) {
+      return { ok: false, alreadyEnded: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   async start(request: TelnyxGeminiStreamingStartRequest): Promise<TelnyxGeminiStreamingCommandResult> {

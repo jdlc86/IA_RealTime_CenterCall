@@ -51,7 +51,7 @@ class FakeGeminiSocket extends EventEmitter {
 
 function audioFrame(sample, samples = 320) {
   const bytes = Buffer.alloc(samples * 2);
-  for (let index = 0; index < samples; index += 1) bytes.writeInt16BE(sample, index * 2);
+  for (let index = 0; index < samples; index += 1) bytes.writeInt16LE(sample, index * 2);
   return bytes.toString("base64");
 }
 
@@ -99,6 +99,9 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
     }
     return true;
   });
+  let preMediaCommandSettled = false;
+  const preMediaCommand = registry.command(claims, { type: "INPUT_DETECTION_SUSPEND" })
+    .finally(() => { preMediaCommandSettled = true; });
 
   const runtime = createGeminiMediaEdgeRuntime({
     geminiApiKey: "synthetic-api-key-never-sent",
@@ -132,7 +135,7 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
   const address = server.address();
   assert.ok(address && typeof address === "object");
   const telnyx = new WebSocket(`ws://127.0.0.1:${address.port}/media`, {
-    headers: { Authorization: "Bearer synthetic-media-credential" },
+    headers: { "x-telnyx-streaming-auth-token": "synthetic-media-credential" },
   });
   telnyx.on("message", (raw) => { telnyxFrames.push(JSON.parse(raw.toString("utf8"))); });
 
@@ -148,13 +151,27 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
       },
     }));
     await eventually(() => gemini, "Gemini socket was not created after authorized media start");
-    assert.equal(registry.isActive(claims), true);
-    trace.push({ stage: "SIDEBAND_AND_MEDIA_ATTACHED", tenantId: claims.tenantId, callControlId: claims.callControlId });
+    assert.equal(registry.isActive(claims), false);
+    assert.equal(preMediaCommandSettled, false);
 
     gemini.open();
     assert.equal(gemini.sent.length, 1);
+    assert.equal(gemini.sent[0].setup.model, "models/gemini-3.1-flash-live-preview");
+    assert.equal("parametersJsonSchema" in gemini.sent[0].setup.tools[0].functionDeclarations[0], true);
+    assert.equal("parameters" in gemini.sent[0].setup.tools[0].functionDeclarations[0], false);
     assert.equal(gemini.sent[0].setup.systemInstruction.parts[0].text, bootstrap.instructions);
+    assert.equal(registry.isActive(claims), false);
+    assert.equal(preMediaCommandSettled, false);
     gemini.receive({ setupComplete: {} });
+    await preMediaCommand;
+    assert.equal(registry.isActive(claims), true);
+    assert.equal(preMediaCommandSettled, true);
+    assert.deepEqual(controlFrames.find((frame) => frame.type === "INPUT_DETECTION_EVENT"), {
+      type: "INPUT_DETECTION_EVENT",
+      event: { type: "INPUT_DETECTION_UPDATED", present: true, settings: null },
+    });
+    registry.command(claims, { type: "INPUT_DETECTION_RESTORE" });
+    trace.push({ stage: "SIDEBAND_AND_MEDIA_ATTACHED", tenantId: claims.tenantId, callControlId: claims.callControlId });
 
     const voiced = audioFrame(12_000);
     const silence = audioFrame(0);
@@ -234,6 +251,11 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
       purpose: "human_handoff_announcement_v37",
     });
     trace.push({ stage: "GOVERNED_EXACT_TEXT_SYNTHESIZED", responseId: "handoff-response-synthetic-1" });
+    const governedMedia = await eventually(
+      () => telnyxFrames.find((frame) => frame.event === "media" && Buffer.from(frame.media.payload, "base64").length === 4),
+      "Governed little-endian PCM did not reach Telnyx playback",
+    );
+    assert.deepEqual([...Buffer.from(governedMedia.media.payload, "base64")], [0x01, 0x02, 0x03, 0x04]);
     const governedMark = await eventually(
       () => telnyxFrames.filter((frame) => frame.event === "mark").find((frame) => frame.mark.name !== normalMark.mark.name),
       "Governed playback drain mark was not emitted",

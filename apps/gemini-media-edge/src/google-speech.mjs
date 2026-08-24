@@ -11,17 +11,12 @@ function segment(value, field) {
   return normalized;
 }
 
-function decodeL16Payload(payload) {
+function decodePcm16LittleEndianPayload(payload) {
   const normalized = required(payload, "Google Speech audio payload");
   let bytes;
   try { bytes = Buffer.from(normalized, "base64"); } catch { throw new Error("Google Speech audio payload is invalid"); }
   if (bytes.length === 0 || bytes.length % 2 !== 0) throw new Error("Google Speech requires complete PCM16 samples");
-  const output = Buffer.allocUnsafe(bytes.length);
-  for (let index = 0; index < bytes.length; index += 2) {
-    output[index] = bytes[index + 1];
-    output[index + 1] = bytes[index];
-  }
-  return output;
+  return bytes;
 }
 
 function transcriptFromResponse(value) {
@@ -62,14 +57,18 @@ export function createCloudRunAccessTokenProvider(fetcher = fetch, now = () => D
 
 /**
  * Google Speech-to-Text v2 adapter for one completed Telnyx caller candidate.
- * Input is exact Telnyx L16/PCM16 big-endian 16 kHz mono. Google LINEAR16 is
- * little-endian, so byte order is converted explicitly before recognition.
+ * Input is exact Telnyx WebSocket L16/PCM16 little-endian 16 kHz mono. Google
+ * LINEAR16 accepts the same byte order, so samples are forwarded unchanged.
  */
 export function createGoogleSpeechV2Transcriber(options) {
   const projectId = segment(options?.projectId, "GOOGLE_CLOUD_PROJECT_ID");
   const location = segment(options?.location ?? "global", "GOOGLE_SPEECH_LOCATION");
   const recognizer = segment(options?.recognizer ?? "_", "GOOGLE_SPEECH_RECOGNIZER");
-  const model = options?.model == null ? null : segment(options.model, "GOOGLE_SPEECH_MODEL");
+  // The implicit recognizer (`_`) currently rejects requests whose inline
+  // RecognitionConfig omits model, despite the REST field being documented as
+  // optional. This edge handles short telephone turns, so keep the compatible
+  // telephony model explicit and deterministic.
+  const model = segment(options?.model ?? "telephony_short", "GOOGLE_SPEECH_MODEL");
   const languageCodes = Array.isArray(options?.languageCodes)
     ? options.languageCodes.map((value) => required(value, "Google Speech language code"))
     : [];
@@ -80,14 +79,14 @@ export function createGoogleSpeechV2Transcriber(options) {
   return async function transcribe(request) {
     const itemId = required(request?.itemId, "Google Speech caller item id");
     if (!Array.isArray(request?.payloads) || request.payloads.length === 0) throw new Error("Google Speech requires buffered caller audio");
-    const content = Buffer.concat(request.payloads.map(decodeL16Payload)).toString("base64");
+    const content = Buffer.concat(request.payloads.map(decodePcm16LittleEndianPayload)).toString("base64");
     let token;
     try { token = required(await options.accessTokenProvider(), "Google Speech access token"); }
     catch { throw new Error("Google Speech access token acquisition failed"); }
     const config = {
       explicitDecodingConfig: { encoding: "LINEAR16", sampleRateHertz: 16_000, audioChannelCount: 1 },
       languageCodes,
-      ...(model ? { model } : {}),
+      model,
     };
     const endpoint = `https://speech.googleapis.com/v2/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(location)}/recognizers/${encodeURIComponent(recognizer)}:recognize`;
     let response;

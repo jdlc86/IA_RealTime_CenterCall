@@ -1,5 +1,9 @@
 import { requireRealtimeProviderTrafficReadiness } from "./realtime-provider-capabilities.js";
 import type { RealtimeProviderSelection } from "./realtime-provider-selector.js";
+import {
+  requireRealtimeProviderTrafficAdmission,
+  type RealtimeProviderTrafficAdmission,
+} from "./realtime-provider-traffic-admission.js";
 import { requireEnabledRealtimeProvider, type RealtimeProviderName } from "./realtime-provider-types.js";
 
 export type InboundRealtimeTransport = "OPENAI_DIRECT_SIP" | "GEMINI_MEDIA_BRIDGE";
@@ -33,8 +37,10 @@ export function planInboundRealtimeRoute(selection: RealtimeProviderSelection): 
  */
 export function requireInboundRealtimeRouteReady(
   selection: RealtimeProviderSelection,
+  admission?: RealtimeProviderTrafficAdmission,
 ): InboundRealtimeRoute {
-  requireEnabledRealtimeProvider(selection.provider);
+  if (admission) requireRealtimeProviderTrafficAdmission(selection, admission);
+  else requireEnabledRealtimeProvider(selection.provider);
   requireRealtimeProviderTrafficReadiness(selection.provider);
   return planInboundRealtimeRoute(selection);
 }

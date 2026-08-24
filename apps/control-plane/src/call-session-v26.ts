@@ -4,6 +4,7 @@ import {
   installRealtimeToolResultPolicy,
   realtimeCommandPortFor,
 } from "./realtime-provider-runtime.js";
+import { applyRealtimeSessionBootstrapPolicy } from "./realtime-session-bootstrap-policy.js";
 import { decideDirectPostToolResponse } from "./post-booking-conversation-policy";
 import { claimClassifierBootstrap } from "./classifier-bootstrap-authority.js";
 
@@ -317,7 +318,7 @@ export class CallSession extends BaseConstructor {
 
     if (isStart && response.ok && !this.directRuntimePolicyInstalledV26) {
       this.directRuntimePolicyInstalledV26 = true;
-      realtimeCommandPortFor(this as any).updateSessionPolicy({
+      const startupPolicy = applyRealtimeSessionBootstrapPolicy(this as any, {
         instructions: directAgentInstructions(this as any),
         toolChoice: "AUTO",
       });
@@ -329,6 +330,8 @@ export class CallSession extends BaseConstructor {
         post_tool_response_policy: "structured_terminal_continuation+reservation_conflict_recovery+reservation_unavailable_recovery+missing_information_collection+capacity_alternative_search+human_assistance_offer",
         direct_post_tool_response_boundary: this.postToolResponseBoundaryInstalledV26,
         explicit_farewell_requires_second_confirmation: false,
+        startup_policy_mode: startupPolicy.mode,
+        immutable_provider_bootstrap: startupPolicy.mode === "IMMUTABLE_BOOTSTRAP",
       });
     }
 

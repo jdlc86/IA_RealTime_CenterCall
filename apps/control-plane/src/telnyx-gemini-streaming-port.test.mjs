@@ -10,6 +10,26 @@ function response(status, body = "") {
   return new Response(status === 204 ? null : body, { status });
 }
 
+test("Gemini inbound admission answers the Telnyx call before a separate authenticated stream", async () => {
+  const calls = [];
+  const runtime = new TelnyxGeminiStreamingRuntime(
+    host({ TELNYX_API_KEY: "tel-key" }),
+    async (url, init) => {
+      calls.push({ url: String(url), init });
+      return response(200, JSON.stringify({ data: { result: "ok" } }));
+    },
+  );
+
+  const result = await runtime.answer({
+    callControlId: "call/1",
+    commandId: "answer-1",
+  });
+
+  assert.deepEqual(result, { ok: true, httpStatus: 200, alreadyEnded: false });
+  assert.match(calls[0].url, /\/calls\/call%2F1\/actions\/answer$/);
+  assert.deepEqual(JSON.parse(calls[0].init.body), { command_id: "answer-1" });
+});
+
 test("Gemini streaming_start fixes the Telnyx media contract and authenticates the WSS edge", async () => {
   const calls = [];
   const runtime = new TelnyxGeminiStreamingRuntime(

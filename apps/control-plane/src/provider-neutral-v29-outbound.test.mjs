@@ -6,8 +6,9 @@ const source = readFileSync(new URL("./call-session-v29.ts", import.meta.url), "
 
 test("v29 routes semantic outputs and session policy through provider-neutral runtime", () => {
   assert.match(source, /installRealtimeToolResultObserver/);
-  assert.match(source, /updateSessionPolicy\(/);
+  assert.match(source, /applyRealtimeSessionBootstrapPolicy\(/);
   assert.match(source, /toolChoice:\s*"AUTO"/);
+  assert.match(source, /immutable_provider_bootstrap/);
   assert.match(source, /submitToolResult\(/);
   assert.match(source, /toolName:\s*INPUT_IGNORED/);
 

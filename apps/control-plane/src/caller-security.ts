@@ -147,13 +147,14 @@ export class CallerSecurityService {
     return Array.from(new Uint8Array(signature)).map((b) => b.toString(16).padStart(2, "0")).join("");
   }
 
-  async evaluateInbound(tenantId: string, callerPhone: string): Promise<InboundSecurityDecision> {
+  async evaluateInbound(tenantId: string, callerPhone: string, eventKey: string): Promise<InboundSecurityDecision> {
     const callerKey = await this.callerKey(tenantId, callerPhone);
-    const rows = await this.rpc<InboundSecurityDecision>("evaluate_inbound_call_security", {
+    const rows = await this.rpc<InboundSecurityDecision>("evaluate_inbound_call_security_v2", {
+      p_event_key: requireString(eventKey, "eventKey"),
       p_tenant_id: tenantId,
       p_caller_key: callerKey,
     });
-    if (!rows[0]) throw new Error("evaluate_inbound_call_security returned empty payload");
+    if (!rows[0]) throw new Error("evaluate_inbound_call_security_v2 returned empty payload");
     return rows[0];
   }
 

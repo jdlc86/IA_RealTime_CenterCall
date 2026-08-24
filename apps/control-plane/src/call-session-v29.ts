@@ -8,6 +8,7 @@ import {
   realtimeAssistantResponseActiveFor,
   realtimeCommandPortFor,
 } from "./realtime-provider-runtime.js";
+import { applyRealtimeSessionBootstrapPolicy } from "./realtime-session-bootstrap-policy.js";
 import {
   armCallerDirectedSemanticAuthority,
   armSemanticGate,
@@ -46,7 +47,7 @@ export class CallSession extends BaseConstructor {
     const response = await super.fetch(request);
     if (isStart && response.ok) {
       this.installObservabilityV29();
-      realtimeCommandPortFor(this as any).updateSessionPolicy({
+      const startupPolicy = applyRealtimeSessionBootstrapPolicy(this as any, {
         instructions: directAgentInstructions(this as any),
         toolChoice: "AUTO",
       });
@@ -61,6 +62,8 @@ export class CallSession extends BaseConstructor {
         single_public_tool_per_caller_turn: true,
         provider_command_boundary: "realtime_command_port",
         tool_authorization_boundary: "semantic_tool_authorization_port",
+        startup_policy_mode: startupPolicy.mode,
+        immutable_provider_bootstrap: startupPolicy.mode === "IMMUTABLE_BOOTSTRAP",
       });
     }
     return response;

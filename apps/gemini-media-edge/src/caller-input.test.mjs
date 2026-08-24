@@ -4,7 +4,7 @@ import { AuthoritativeCallerInputOwner, TelnyxSampleCountVad } from "./caller-in
 
 function frame(sample, samples = 320) {
   const bytes = Buffer.alloc(samples * 2);
-  for (let index = 0; index < samples; index += 1) bytes.writeInt16BE(sample, index * 2);
+  for (let index = 0; index < samples; index += 1) bytes.writeInt16LE(sample, index * 2);
   return bytes.toString("base64");
 }
 
@@ -74,6 +74,19 @@ test("candidate cannot be resolved before authoritative transcript completion", 
   await owner.observe(voiced);
   await owner.observe(voiced);
   assert.throws(() => owner.resolve("gemini-candidate-1", "NORMAL"), /no authoritative transcript/);
+});
+
+test("sample-count VAD learns elevated line noise and still closes the caller turn", () => {
+  const vad = new TelnyxSampleCountVad(config);
+  const elevatedNoise = frame(3_300);
+  for (let index = 0; index < 20; index += 1) assert.equal(vad.observe(elevatedNoise).boundary, null);
+  assert.ok(vad.snapshot().noiseFloorRms > config.stopRms);
+  assert.ok(vad.snapshot().effectiveStopRms > config.stopRms);
+  assert.ok(vad.snapshot().effectiveStopRms < config.startRms);
+  assert.equal(vad.observe(voiced).boundary, null);
+  assert.equal(vad.observe(voiced).boundary.type, "SPEECH_START");
+  assert.equal(vad.observe(elevatedNoise).boundary, null);
+  assert.equal(vad.observe(elevatedNoise).boundary.type, "SPEECH_END");
 });
 
 test("product-owned input suspension drops caller media and restore starts a fresh candidate", async () => {

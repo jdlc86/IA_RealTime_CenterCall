@@ -5,6 +5,7 @@ import {
   type GeminiMediaEdgeSessionContract,
 } from "./gemini-media-edge-session-contract.js";
 import type { RealtimeProviderSelection } from "./realtime-provider-selector.js";
+import type { RealtimeProviderTrafficAdmission } from "./realtime-provider-traffic-admission.js";
 import type { TelnyxGeminiStreamingTargetLegs } from "./telnyx-gemini-streaming-port.js";
 
 export type GeminiMediaEdgeProvisioningInput = Readonly<{
@@ -16,9 +17,19 @@ export type GeminiMediaEdgeProvisioningInput = Readonly<{
 
 export type GeminiMediaEdgeCredentialClaims = GeminiMediaEdgeSessionBinding;
 
+export type GeminiMediaEdgeIssuedCredential = Readonly<{
+  credentialId: string;
+  streamAuthToken: string;
+}>;
+
 export type GeminiMediaEdgeCredentialIssuer = (
   claims: GeminiMediaEdgeCredentialClaims,
-) => Promise<Readonly<{ streamAuthToken: string }>> | Readonly<{ streamAuthToken: string }>;
+) => Promise<GeminiMediaEdgeIssuedCredential> | GeminiMediaEdgeIssuedCredential;
+
+export type GeminiMediaEdgeProvisionedSession = Readonly<{
+  credentialId: string;
+  contract: GeminiMediaEdgeSessionContract;
+}>;
 
 function required(value: unknown, field: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`);
@@ -60,12 +71,12 @@ function provisionalClaims(
 }
 
 /**
- * Production-safe provisioning boundary for a future Gemini call.
+ * Production-safe provisioning boundary for an admitted Gemini canary call.
  *
  * Traffic admission is evaluated before credential issuance. Because credential
  * issuers may persist state or mint an externally usable capability, invoking an
- * issuer is itself considered a provider-side effect. Gemini currently fails this
- * admission boundary and therefore the issuer must remain untouched.
+ * issuer is itself considered a provider-side effect. A non-admitted tenant fails
+ * this boundary and therefore leaves the issuer untouched.
  *
  * This function does not execute Telnyx streaming_start or open any WebSocket.
  */
@@ -73,18 +84,23 @@ export async function requireGeminiMediaEdgeProvisioningReady(
   selection: RealtimeProviderSelection,
   input: GeminiMediaEdgeProvisioningInput,
   issueCredential: GeminiMediaEdgeCredentialIssuer,
-): Promise<GeminiMediaEdgeSessionContract> {
-  const route = requireInboundRealtimeRouteReady(selection);
+  admission?: RealtimeProviderTrafficAdmission,
+): Promise<GeminiMediaEdgeProvisionedSession> {
+  const route = requireInboundRealtimeRouteReady(selection, admission);
   if (route.provider !== "GEMINI" || route.transport !== "GEMINI_MEDIA_BRIDGE") {
     throw new Error(`Gemini media edge provisioning requires GEMINI_MEDIA_BRIDGE, got ${route.provider}/${route.transport}`);
   }
 
   const claims = provisionalClaims(selection, input);
   const credential = await issueCredential(claims);
+  const credentialId = required(credential?.credentialId, "Gemini media edge issued credential id");
   const streamAuthToken = required(credential?.streamAuthToken, "Gemini media edge issued stream auth token");
 
-  return createGeminiMediaEdgeSessionContract({
-    ...claims,
-    streamAuthToken,
+  return Object.freeze({
+    credentialId,
+    contract: createGeminiMediaEdgeSessionContract({
+      ...claims,
+      streamAuthToken,
+    }),
   });
 }

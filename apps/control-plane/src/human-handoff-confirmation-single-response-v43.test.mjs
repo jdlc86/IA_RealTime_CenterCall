@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 async function source(name) {
-  return readFile(new URL(`./${name}`, import.meta.url), "utf8");
+  return (await readFile(new URL(`./${name}`, import.meta.url), "utf8")).replace(/\r\n?/g, "\n");
 }
 
 test("v43 handoff confirmation is emitted once with tools disabled", async () => {

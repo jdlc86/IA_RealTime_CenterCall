@@ -8,8 +8,9 @@ import {
   completeGovernedSpeechPlayback,
   executeGovernedSpeechPlayback,
   Pcm16Resampler24To16,
+  requirePcm16LittleEndian,
   requestCorrelatedPlaybackClear,
-  swapPcm16Endianness,
+  telnyxStreamingCredential,
 } from "./runtime.mjs";
 import { GovernedSpeechPlaybackCoordinator } from "./governed-speech-playback-coordinator.mjs";
 
@@ -18,15 +19,29 @@ class FakeSocket {
   send(value) { this.sent.push(JSON.parse(value)); }
 }
 
-test("PCM16 endian conversion is deterministic and reversible", () => {
-  const source = Buffer.from([0x12, 0x34, 0xab, 0xcd]);
-  const swapped = swapPcm16Endianness(source);
-  assert.deepEqual([...swapped], [0x34, 0x12, 0xcd, 0xab]);
-  assert.deepEqual([...swapPcm16Endianness(swapped)], [...source]);
+test("media upgrade authenticates the header defined by the Telnyx streaming contract", () => {
+  assert.equal(
+    telnyxStreamingCredential({ headers: { "x-telnyx-streaming-auth-token": " signed-one-shot-credential " } }),
+    "signed-one-shot-credential",
+  );
+  assert.throws(
+    () => telnyxStreamingCredential({ headers: { authorization: "Bearer signed-one-shot-credential" } }),
+    /missing Telnyx streaming auth token/,
+  );
+  assert.throws(
+    () => telnyxStreamingCredential({ headers: { "x-telnyx-streaming-auth-token": "   " } }),
+    /missing Telnyx streaming auth token/,
+  );
 });
 
-test("PCM16 endian conversion rejects incomplete samples", () => {
-  assert.throws(() => swapPcm16Endianness(Buffer.from([1])), /complete 16-bit samples/);
+test("Telnyx WebSocket L16 preserves PCM16 little-endian byte order", () => {
+  const source = Buffer.from([0x12, 0x34, 0xab, 0xcd]);
+  assert.deepEqual([...requirePcm16LittleEndian(source, "Telnyx L16 payload")], [...source]);
+});
+
+test("PCM16 little-endian contract rejects empty and incomplete samples", () => {
+  assert.throws(() => requirePcm16LittleEndian(Buffer.alloc(0)), /complete 16-bit little-endian samples/);
+  assert.throws(() => requirePcm16LittleEndian(Buffer.from([1])), /complete 16-bit little-endian samples/);
 });
 
 test("24 to 16 kHz resampler is stateful across provider chunk boundaries", () => {
@@ -48,7 +63,7 @@ test("authorized deferred caller turn emits only activityStart, audio, activityE
   commitDeferredCallerTurn(socket, { itemId: "gemini-candidate-1", mediaPayloads: [l16] }, () => {});
   assert.deepEqual(socket.sent, [
     { realtimeInput: { activityStart: {} } },
-    { realtimeInput: { audio: { data: Buffer.from([0x34, 0x12, 0xcd, 0xab]).toString("base64"), mimeType: "audio/pcm;rate=16000" } } },
+    { realtimeInput: { audio: { data: Buffer.from([0x12, 0x34, 0xab, 0xcd]).toString("base64"), mimeType: "audio/pcm;rate=16000" } } },
     { realtimeInput: { activityEnd: {} } },
   ]);
   assert.equal(JSON.stringify(socket.sent).includes("text"), false);

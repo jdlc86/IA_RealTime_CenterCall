@@ -42,6 +42,8 @@ test("canonical bootstrap carries the final semantic and temporal invariants bef
 
 test("V17 consumes the shared bootstrap instead of owning a duplicate catalog", () => {
   assert.match(v17Source, /directAgentRealtimeBootstrapPolicy/);
+  assert.match(v17Source, /applyRealtimeSessionBootstrapPolicy/);
+  assert.doesNotMatch(v17Source, /realtimeCommandPortFor\(this as any\)\.updateSessionPolicy/);
   assert.doesNotMatch(v17Source, /const\s+AGENT_TOOLS\s*:/);
   assert.doesNotMatch(v17Source, /function\s+agentInstructions\s*\(/);
 });

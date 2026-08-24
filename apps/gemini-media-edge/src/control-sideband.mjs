@@ -138,22 +138,59 @@ export function governedControlEnvelope(event) {
 }
 
 export class InMemoryControlSidebandRegistry {
-  constructor() { this.sessions = new Map(); }
-  entry(claims) { const key = controlSessionKey(claims); let session = this.sessions.get(key); if (!session) { session = { claims, send: null, sendActive: null, commandSink: null }; this.sessions.set(key, session); } return { key, session }; }
+  constructor(options = {}) {
+    this.sessions = new Map();
+    this.maxPendingCommands = options.maxPendingCommands ?? 32;
+    if (!Number.isSafeInteger(this.maxPendingCommands) || this.maxPendingCommands < 1 || this.maxPendingCommands > 256) {
+      throw new Error("Gemini media edge pending control command limit is invalid");
+    }
+  }
+  entry(claims) { const key = controlSessionKey(claims); let session = this.sessions.get(key); if (!session) { session = { claims, send: null, sendActive: null, commandSink: null, commandTail: Promise.resolve(), commandDraining: false, commandFailure: null, pendingCommands: [] }; this.sessions.set(key, session); } return { key, session }; }
+  rejectPending(session, error) { const pending = session.pendingCommands.splice(0); for (const item of pending) item.reject(error); }
   cleanup(key, session) { if (this.sessions.get(key) === session && !session.send && !session.commandSink) this.sessions.delete(key); }
   attach(claims, send, sendActive = () => true) {
     if (typeof send !== "function") throw new Error("Gemini media edge control sender is required");
     if (typeof sendActive !== "function") throw new Error("Gemini media edge control sender liveness is required");
     const { key, session } = this.entry(claims); if (session.send) throw new Error("Gemini media edge control sideband already attached"); session.send = send; session.sendActive = sendActive;
-    return Object.freeze({ detach: () => { if (this.sessions.get(key) !== session) return; session.send = null; session.sendActive = null; this.cleanup(key, session); } });
+    return Object.freeze({ detach: () => { if (this.sessions.get(key) !== session) return; session.send = null; session.sendActive = null; if (!session.commandSink) this.rejectPending(session, new Error("Gemini media edge control sideband detached before media session")); this.cleanup(key, session); } });
   }
   bindCommandSink(claims, sink) {
     if (typeof sink !== "function") throw new Error("Gemini media edge control command sink is required");
     const { key, session } = this.entry(claims); if (session.commandSink && session.commandSink !== sink) throw new Error("Gemini media edge control command sink already bound"); session.commandSink = sink;
+    const pending = session.pendingCommands.splice(0);
+    if (pending.length) {
+      session.commandDraining = true;
+      let tail = session.commandTail;
+      for (const item of pending) {
+        const run = tail.then(() => sink(item.command));
+        run.then(item.resolve, item.reject);
+        tail = run;
+      }
+      session.commandTail = tail;
+      tail.then(
+        () => { session.commandDraining = false; },
+        (error) => { session.commandDraining = false; session.commandFailure = error; },
+      );
+    }
     return Object.freeze({ detach: () => { if (this.sessions.get(key) !== session || session.commandSink !== sink) return; session.commandSink = null; this.cleanup(key, session); } });
   }
   isActive(claims) { const session = this.sessions.get(controlSessionKey(claims)); if (!session?.send || !session?.sendActive || !session?.commandSink) return false; try { return session.sendActive() === true; } catch { return false; } }
   emit(claims, event) { const session = this.sessions.get(controlSessionKey(claims)); if (!session?.send || !session?.sendActive) return false; try { if (session.sendActive() !== true) return false; } catch { return false; } return session.send(event) !== false; }
-  command(claims, value) { const session = this.sessions.get(controlSessionKey(claims)); if (!session?.commandSink) throw new Error("Gemini media edge control sideband is not bound to an active Gemini session"); return session.commandSink(canonicalControlCommand(value)); }
+  command(claims, value) {
+    const session = this.sessions.get(controlSessionKey(claims));
+    if (!session) throw new Error("Gemini media edge control sideband is not attached");
+    if (session.commandFailure) throw session.commandFailure;
+    const command = canonicalControlCommand(value);
+    if (session.commandSink && !session.commandDraining) return session.commandSink(command);
+    if (session.commandSink) {
+      const run = session.commandTail.then(() => session.commandSink(command));
+      session.commandTail = run;
+      run.catch((error) => { session.commandFailure = error; });
+      return run;
+    }
+    if (!session.send) throw new Error("Gemini media edge control sideband is not attached");
+    if (session.pendingCommands.length >= this.maxPendingCommands) throw new Error("Gemini media edge pending control command limit exceeded");
+    return new Promise((resolve, reject) => session.pendingCommands.push({ command, resolve, reject }));
+  }
   size() { return this.sessions.size; }
 }

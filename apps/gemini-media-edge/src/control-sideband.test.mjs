@@ -96,6 +96,51 @@ test("Gemini session command sink may bind before control socket", () => {
   assert.equal(registry.size(), 0);
 });
 
+test("bounded commands issued after sideband attach drain in order when media binds", async () => {
+  const commands = [];
+  const registry = new InMemoryControlSidebandRegistry({ maxPendingCommands: 3 });
+  const socketAttachment = registry.attach(claims, () => true);
+  const first = registry.command(claims, { type: "INPUT_DETECTION_SUSPEND" });
+  const second = registry.command(claims, { type: "CALLER_INPUT_CLEAR" });
+  const commandAttachment = registry.bindCommandSink(claims, async (command) => { commands.push(command); });
+  await Promise.all([first, second]);
+  assert.deepEqual(commands, [
+    { type: "INPUT_DETECTION_SUSPEND" },
+    { type: "CALLER_INPUT_CLEAR" },
+  ]);
+  socketAttachment.detach();
+  commandAttachment.detach();
+});
+
+test("pre-media command queue is bounded and rejected if sideband detaches", async () => {
+  const registry = new InMemoryControlSidebandRegistry({ maxPendingCommands: 1 });
+  const socketAttachment = registry.attach(claims, () => true);
+  const pending = registry.command(claims, { type: "INPUT_DETECTION_SUSPEND" });
+  assert.throws(
+    () => registry.command(claims, { type: "CALLER_INPUT_CLEAR" }),
+    /pending control command limit exceeded/,
+  );
+  socketAttachment.detach();
+  await assert.rejects(pending, /detached before media session/);
+});
+
+test("a failed queued command prevents later pre-media commands from executing", async () => {
+  const executed = [];
+  const registry = new InMemoryControlSidebandRegistry();
+  const socketAttachment = registry.attach(claims, () => true);
+  const first = registry.command(claims, { type: "INPUT_DETECTION_SUSPEND" });
+  const second = registry.command(claims, { type: "CALLER_INPUT_CLEAR" });
+  const commandAttachment = registry.bindCommandSink(claims, async (command) => {
+    executed.push(command);
+    throw new Error("media command failed");
+  });
+  await assert.rejects(first, /media command failed/);
+  await assert.rejects(second, /media command failed/);
+  assert.deepEqual(executed, [{ type: "INPUT_DETECTION_SUSPEND" }]);
+  socketAttachment.detach();
+  commandAttachment.detach();
+});
+
 test("control registry propagates an attached sender that can no longer deliver", () => {
   const registry = new InMemoryControlSidebandRegistry();
   let open = true;

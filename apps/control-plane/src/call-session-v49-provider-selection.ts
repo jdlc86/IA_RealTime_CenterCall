@@ -8,7 +8,11 @@ import {
   type RealtimeProviderSelection,
 } from "./realtime-provider-selector.js";
 import { parseRealtimeProviderAffinity } from "./realtime-provider-affinity.js";
-import { bindRealtimeProvider } from "./realtime-provider-runtime.js";
+import {
+  closeRealtimeProviderCallSessionOnFailedStart,
+  prepareRealtimeProviderCallSession,
+  realtimeProviderCallSessionStatus,
+} from "./realtime-provider-call-session-composition.js";
 
 const BaseConstructor = CallSessionV48 as unknown as new (...args: any[]) => any;
 
@@ -27,14 +31,27 @@ export class CallSession extends BaseConstructor {
   private realtimeProviderSelectionV49: RealtimeProviderSelection | null = null;
 
   async fetch(request: Request): Promise<Response> {
-    const isStart = request.method === "POST" && new URL(request.url).pathname === "/start";
+    const pathname = new URL(request.url).pathname;
+    const isStart = request.method === "POST" && pathname === "/start";
+
+    if (request.method === "GET" && pathname === "/realtime-provider/status") {
+      const status = realtimeProviderCallSessionStatus(this as any);
+      return Response.json({
+        ok: true,
+        provider: status.provider,
+        sideband_ready: status.sidebandReady,
+        immutable_call_binding: true,
+      }, { headers: { "Cache-Control": "no-store" } });
+    }
 
     if (isStart) {
       let tenantId = "";
+      let callControlId = "";
       let suppliedAffinity: StartProviderAffinity = {};
       try {
-        const body = await request.clone().json() as { tenant_id?: unknown } & StartProviderAffinity;
+        const body = await request.clone().json() as { tenant_id?: unknown; call_id?: unknown } & StartProviderAffinity;
         tenantId = typeof body.tenant_id === "string" ? body.tenant_id.trim() : "";
+        callControlId = typeof body.call_id === "string" ? body.call_id.trim() : "";
         suppliedAffinity = body;
       } catch {
         tenantId = "";
@@ -96,7 +113,13 @@ export class CallSession extends BaseConstructor {
 
       const provider = this.realtimeProviderSelectionV49?.provider ?? DEFAULT_REALTIME_PROVIDER;
       try {
-        bindRealtimeProvider(this as any, provider);
+        const selection = this.realtimeProviderSelectionV49 ?? {
+          tenantId,
+          provider,
+          source: "DEFAULT" as const,
+          overrideKey: "legacy-default",
+        };
+        await prepareRealtimeProviderCallSession(this as any, selection, callControlId);
       } catch (error) {
         (this as any).diagnostics?.fail?.(
           "REALTIME_PROVIDER_BINDING_REJECTED_G1",
@@ -111,6 +134,8 @@ export class CallSession extends BaseConstructor {
     }
 
     const response = await super.fetch(request);
+
+    if (isStart && !response.ok) closeRealtimeProviderCallSessionOnFailedStart(this as any);
 
     if (isStart && response.ok) {
       const selected = this.realtimeProviderSelectionV49;
