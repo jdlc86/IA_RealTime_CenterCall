@@ -17,6 +17,16 @@ test("sideband setupComplete advances the existing Gemini session owner", () => 
   assert.deepEqual(sent, []);
 });
 
+test("sideband semantic tool gate emits only explicit ARM and RELEASE control commands", () => {
+  const { runtime, sent } = runtimeHarness();
+  runtime.semanticToolGatePort.arm();
+  runtime.semanticToolGatePort.release();
+  assert.deepEqual(sent, [
+    { type: "SEMANTIC_GATE_ARM" },
+    { type: "SEMANTIC_GATE_RELEASE" },
+  ]);
+});
+
 test("sideband returns owner response binding and completion drain", () => {
   const { runtime, sent } = runtimeHarness(); ready(runtime);
   runtime.observe({ type: "GEMINI_EVENT", message: { serverContent: { modelTurn: {} } } });
