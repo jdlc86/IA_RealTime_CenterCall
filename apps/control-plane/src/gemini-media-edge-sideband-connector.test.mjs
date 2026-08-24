@@ -50,6 +50,7 @@ test("connector authenticates in header and feeds provider plus edge evidence in
   assert.deepEqual(JSON.parse(socket.sent.at(-1)), { type: "PLAYBACK_BINDING", responseId: "gemini-response-1", kind: "NORMAL" });
   socket.emit("message", JSON.stringify({ type: "PLAYBACK_EVENT", event: { type: "ASSISTANT_AUDIO_STARTED", kind: "NORMAL", responseId: "gemini-response-1" } }));
   socket.emit("message", JSON.stringify({ type: "CALLER_EVENT", event: { type: "CALLER_SPEECH_STARTED", itemId: "gemini-candidate-1", playbackResponseIdAtStart: "gemini-response-1" } }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(observations.at(-1).events, [{ type: "CALLER_SPEECH_STARTED", itemId: "gemini-candidate-1" }]);
   connection.close();
 });
@@ -128,6 +129,31 @@ test("host-aware connector routes one normalized Gemini event through the instal
   assert.deepEqual(received, [{ type: "CALLER_SPEECH_STARTED", itemId: "gemini-candidate-9" }]);
   connection.close();
   removeRealtimeProviderEventIngress(host, ingress);
+});
+
+test("connector serializes whole observations and drops queued delivery after close", async () => {
+  const socket = new FakeSocket();
+  const received = [];
+  let releaseFirst;
+  const firstPending = new Promise((resolve) => { releaseFirst = resolve; });
+  const connection = await connectGeminiMediaEdgeSideband(input, async (observation) => {
+    received.push(observation.events[0]?.type);
+    if (received.length === 1) await firstPending;
+  }, async () => ({ status: 101, webSocket: socket }));
+
+  socket.emit("message", JSON.stringify({ type: "CALLER_EVENT", event: {
+    type: "CALLER_SPEECH_STARTED", itemId: "gemini-candidate-serial", playbackResponseIdAtStart: null,
+  } }));
+  socket.emit("message", JSON.stringify({ type: "CALLER_EVENT", event: {
+    type: "CALLER_SPEECH_STOPPED", itemId: "gemini-candidate-serial",
+  } }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(received, ["CALLER_SPEECH_STARTED"]);
+
+  connection.close();
+  releaseFirst();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(received, ["CALLER_SPEECH_STARTED"]);
 });
 
 test("connector fails closed when upgrade does not return a WebSocket", async () => {

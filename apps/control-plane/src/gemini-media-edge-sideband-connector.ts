@@ -200,6 +200,7 @@ export async function connectGeminiMediaEdgeSideband(
   }
 
   let closed = false;
+  let observationTail: Promise<void> = Promise.resolve();
   const release = () => {
     if (closed) return;
     closed = true;
@@ -237,15 +238,25 @@ export async function connectGeminiMediaEdgeSideband(
     runtime.close();
   };
 
+  const failObservation = () => {
+    closeForObservationFailure(socket);
+    release();
+  };
+
   socket.accept();
   socket.addEventListener("message", (event: MessageEvent) => {
     try {
       const text = typeof event.data === "string" ? event.data : "";
       if (!text) throw new Error("Gemini media edge sideband requires text frames");
       const observation = runtime.observe(JSON.parse(text));
-      Promise.resolve(observe(observation)).catch(() => closeForObservationFailure(socket));
+      observationTail = observationTail
+        .then(async () => {
+          if (closed) return;
+          await observe(observation);
+        })
+        .catch(failObservation);
     } catch {
-      closeForObservationFailure(socket);
+      failObservation();
     }
   });
   socket.addEventListener("close", release);
