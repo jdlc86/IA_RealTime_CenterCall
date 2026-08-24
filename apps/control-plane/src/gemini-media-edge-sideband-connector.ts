@@ -4,6 +4,7 @@ import {
 } from "./gemini-media-edge-sideband-runtime.js";
 import type { GeminiLiveSessionRuntimeObservation } from "./gemini-live-session-runtime.js";
 import { createGeminiMediaEdgeCallerTurnDispositionPort } from "./gemini-media-edge-caller-turn-disposition.js";
+import { createGeminiMediaEdgeSemanticDecisionCapability } from "./gemini-media-edge-semantic-decision.js";
 import {
   installCallerTurnDispositionPort,
   removeCallerTurnDispositionPort,
@@ -12,6 +13,10 @@ import {
   installExternalRealtimeProviderCommandPort,
   removeExternalRealtimeProviderCommandPort,
 } from "./realtime-provider-external-command-runtime.js";
+import {
+  installSemanticDecisionPort,
+  removeSemanticDecisionPort,
+} from "./semantic-decision-runtime.js";
 import {
   deliverRealtimeProviderEvents,
   requireRealtimeProviderEventIngress,
@@ -64,9 +69,9 @@ function closeForObservationFailure(socket: WebSocket): void {
  * Authentication remains in the Authorization header; no token is placed in the
  * URL. Provider audio never traverses this connection.
  *
- * When capabilityHost is supplied, this connector owns both session-scoped
- * provider capabilities for exactly this sideband lifetime: the neutral caller
- * disposition effect boundary and the Gemini provider command port.
+ * When capabilityHost is supplied, this connector owns the session-scoped Gemini
+ * command port, caller disposition effect boundary and isolated semantic-decision
+ * capability for exactly this sideband lifetime.
  */
 export async function connectGeminiMediaEdgeSideband(
   input: GeminiMediaEdgeSidebandConnectionInput,
@@ -92,9 +97,19 @@ export async function connectGeminiMediaEdgeSideband(
   const dispositionPort = input.capabilityHost
     ? createGeminiMediaEdgeCallerTurnDispositionPort(runtime)
     : null;
+  const semanticDecisionCapability = input.capabilityHost
+    ? createGeminiMediaEdgeSemanticDecisionCapability({
+        edgeUrl: input.edgeUrl,
+        tenantId: input.tenantId,
+        callControlId: input.callControlId,
+        controlPlaneToken: token,
+        capabilityHost: input.capabilityHost,
+      }, fetcher)
+    : null;
 
   let commandCapabilityInstalled = false;
   let dispositionCapabilityInstalled = false;
+  let semanticDecisionCapabilityInstalled = false;
   if (input.capabilityHost) {
     try {
       installExternalRealtimeProviderCommandPort(input.capabilityHost, "GEMINI", runtime.commandPort);
@@ -103,7 +118,15 @@ export async function connectGeminiMediaEdgeSideband(
         installCallerTurnDispositionPort(input.capabilityHost, dispositionPort);
         dispositionCapabilityInstalled = true;
       }
+      if (semanticDecisionCapability) {
+        installSemanticDecisionPort(input.capabilityHost, semanticDecisionCapability.port);
+        semanticDecisionCapabilityInstalled = true;
+      }
     } catch (error) {
+      semanticDecisionCapability?.close();
+      if (semanticDecisionCapabilityInstalled && semanticDecisionCapability) {
+        removeSemanticDecisionPort(input.capabilityHost, semanticDecisionCapability.port);
+      }
       if (dispositionCapabilityInstalled && dispositionPort) {
         removeCallerTurnDispositionPort(input.capabilityHost, dispositionPort);
       }
@@ -120,6 +143,11 @@ export async function connectGeminiMediaEdgeSideband(
   const release = () => {
     if (closed) return;
     closed = true;
+    semanticDecisionCapability?.close();
+    if (input.capabilityHost && semanticDecisionCapabilityInstalled && semanticDecisionCapability) {
+      removeSemanticDecisionPort(input.capabilityHost, semanticDecisionCapability.port);
+      semanticDecisionCapabilityInstalled = false;
+    }
     if (input.capabilityHost && dispositionCapabilityInstalled && dispositionPort) {
       removeCallerTurnDispositionPort(input.capabilityHost, dispositionPort);
       dispositionCapabilityInstalled = false;
