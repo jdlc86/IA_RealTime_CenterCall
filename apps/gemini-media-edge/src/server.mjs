@@ -6,6 +6,7 @@ import { createHmacCredentialVerifier, InMemoryOneShotCredentialConsumer } from 
 import { InMemoryBootstrapRegistry } from "./bootstrap.mjs";
 import { InMemoryControlSidebandRegistry } from "./control-sideband.mjs";
 import { createCloudRunAccessTokenProvider, createGoogleSpeechV2Transcriber } from "./google-speech.mjs";
+import { createGoogleTextToSpeechSynthesizer } from "./google-text-to-speech.mjs";
 import { createGeminiIsolatedDecisionClient, decideForActiveGeminiControlSession } from "./isolated-decision.mjs";
 import { createGeminiIsolatedGenerationClient, generateForActiveGeminiControlSession } from "./isolated-generation.mjs";
 
@@ -32,6 +33,18 @@ const authoritativeTranscribe = createGoogleSpeechV2Transcriber({
   languageCodes: languageCodes(process.env.GOOGLE_SPEECH_LANGUAGE_CODES),
   accessTokenProvider,
 });
+let governedSpeechSynthesizer = null;
+async function synthesizeGovernedSpeech(request) {
+  if (!governedSpeechSynthesizer) {
+    governedSpeechSynthesizer = createGoogleTextToSpeechSynthesizer({
+      projectId: process.env.GOOGLE_CLOUD_PROJECT_ID,
+      languageCode: process.env.GOOGLE_TTS_LANGUAGE_CODE ?? "es-ES",
+      voiceName: process.env.GOOGLE_TTS_VOICE_NAME,
+      accessTokenProvider,
+    });
+  }
+  return governedSpeechSynthesizer(request);
+}
 const callerVadConfig = Object.freeze({
   startRms: positiveNumber(process.env.MEDIA_EDGE_VAD_START_RMS, "MEDIA_EDGE_VAD_START_RMS"),
   stopRms: positiveNumber(process.env.MEDIA_EDGE_VAD_STOP_RMS, "MEDIA_EDGE_VAD_STOP_RMS", { allowZero: true }),
@@ -40,7 +53,7 @@ const callerVadConfig = Object.freeze({
 });
 if (callerVadConfig.startRms > 1 || callerVadConfig.stopRms > callerVadConfig.startRms) throw new Error("Media edge VAD RMS configuration is invalid");
 
-const runtime = createGeminiMediaEdgeRuntime({ geminiApiKey: process.env.GEMINI_API_KEY, verifyCredential, consumeCredentialOnce: (credentialId, notAfterEpochMs, nowEpochMs) => credentialConsumer.consume(credentialId, notAfterEpochMs, nowEpochMs), consumeBootstrapForClaims: (claims, nowEpochMs) => bootstrapRegistry.consumeForClaims(claims, nowEpochMs), bindControlSession: (claims, sink) => controlRegistry.bindCommandSink(claims, sink), emitControlEvent: (claims, event) => controlRegistry.emit(claims, event), authoritativeTranscribe, callerVadConfig, model: process.env.GEMINI_LIVE_MODEL, maxBufferedBytes: process.env.MEDIA_EDGE_MAX_BUFFERED_BYTES ? Number(process.env.MEDIA_EDGE_MAX_BUFFERED_BYTES) : undefined });
+const runtime = createGeminiMediaEdgeRuntime({ geminiApiKey: process.env.GEMINI_API_KEY, verifyCredential, consumeCredentialOnce: (credentialId, notAfterEpochMs, nowEpochMs) => credentialConsumer.consume(credentialId, notAfterEpochMs, nowEpochMs), consumeBootstrapForClaims: (claims, nowEpochMs) => bootstrapRegistry.consumeForClaims(claims, nowEpochMs), bindControlSession: (claims, sink) => controlRegistry.bindCommandSink(claims, sink), emitControlEvent: (claims, event) => controlRegistry.emit(claims, event), authoritativeTranscribe, synthesizeGovernedSpeech, callerVadConfig, model: process.env.GEMINI_LIVE_MODEL, maxBufferedBytes: process.env.MEDIA_EDGE_MAX_BUFFERED_BYTES ? Number(process.env.MEDIA_EDGE_MAX_BUFFERED_BYTES) : undefined });
 const controlWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 256 * 1024 });
 controlWss.on("connection", (socket, request) => { const url = new URL(request.url, "http://localhost"); const claims = { tenantId: required(url.searchParams.get("tenant_id"), "control tenant_id"), callControlId: required(url.searchParams.get("call_control_id"), "control call_control_id") }; let attachment; try { attachment = controlRegistry.attach(claims, (event) => { if (socket.readyState === 1) socket.send(JSON.stringify(event)); }); } catch { socket.close(1008, "control session already attached"); return; } socket.on("message", (raw) => { try { controlRegistry.command(claims, JSON.parse(raw.toString("utf8"))); } catch { socket.close(1008, "invalid control command"); } }); socket.on("close", attachment.detach); socket.on("error", attachment.detach); });
 
