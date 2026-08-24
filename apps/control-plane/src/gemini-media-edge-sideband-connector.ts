@@ -18,6 +18,10 @@ import {
   removeSemanticDecisionPort,
 } from "./semantic-decision-runtime.js";
 import {
+  installSemanticToolGatePort,
+  removeSemanticToolGatePort,
+} from "./semantic-tool-gate-runtime.js";
+import {
   deliverRealtimeProviderEvents,
   requireRealtimeProviderEventIngress,
 } from "./realtime-provider-event-ingress-runtime.js";
@@ -70,8 +74,8 @@ function closeForObservationFailure(socket: WebSocket): void {
  * URL. Provider audio never traverses this connection.
  *
  * When capabilityHost is supplied, this connector owns the session-scoped Gemini
- * command port, caller disposition effect boundary and isolated semantic-decision
- * capability for exactly this sideband lifetime.
+ * command port, caller disposition effect boundary, isolated semantic-decision
+ * capability and product-owned semantic tool gate for exactly this sideband lifetime.
  */
 export async function connectGeminiMediaEdgeSideband(
   input: GeminiMediaEdgeSidebandConnectionInput,
@@ -110,6 +114,7 @@ export async function connectGeminiMediaEdgeSideband(
   let commandCapabilityInstalled = false;
   let dispositionCapabilityInstalled = false;
   let semanticDecisionCapabilityInstalled = false;
+  let semanticToolGateCapabilityInstalled = false;
   if (input.capabilityHost) {
     try {
       installExternalRealtimeProviderCommandPort(input.capabilityHost, "GEMINI", runtime.commandPort);
@@ -122,8 +127,13 @@ export async function connectGeminiMediaEdgeSideband(
         installSemanticDecisionPort(input.capabilityHost, semanticDecisionCapability.port);
         semanticDecisionCapabilityInstalled = true;
       }
+      installSemanticToolGatePort(input.capabilityHost, runtime.semanticToolGatePort);
+      semanticToolGateCapabilityInstalled = true;
     } catch (error) {
       semanticDecisionCapability?.close();
+      if (semanticToolGateCapabilityInstalled) {
+        removeSemanticToolGatePort(input.capabilityHost, runtime.semanticToolGatePort);
+      }
       if (semanticDecisionCapabilityInstalled && semanticDecisionCapability) {
         removeSemanticDecisionPort(input.capabilityHost, semanticDecisionCapability.port);
       }
@@ -144,6 +154,10 @@ export async function connectGeminiMediaEdgeSideband(
     if (closed) return;
     closed = true;
     semanticDecisionCapability?.close();
+    if (input.capabilityHost && semanticToolGateCapabilityInstalled) {
+      removeSemanticToolGatePort(input.capabilityHost, runtime.semanticToolGatePort);
+      semanticToolGateCapabilityInstalled = false;
+    }
     if (input.capabilityHost && semanticDecisionCapabilityInstalled && semanticDecisionCapability) {
       removeSemanticDecisionPort(input.capabilityHost, semanticDecisionCapability.port);
       semanticDecisionCapabilityInstalled = false;
