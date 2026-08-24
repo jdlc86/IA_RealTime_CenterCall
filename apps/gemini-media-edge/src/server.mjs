@@ -6,6 +6,7 @@ import { createHmacCredentialVerifier, InMemoryOneShotCredentialConsumer } from 
 import { InMemoryBootstrapRegistry } from "./bootstrap.mjs";
 import { InMemoryControlSidebandRegistry } from "./control-sideband.mjs";
 import { createCloudRunAccessTokenProvider, createGoogleSpeechV2Transcriber } from "./google-speech.mjs";
+import { createGeminiIsolatedDecisionClient, decideForActiveGeminiControlSession } from "./isolated-decision.mjs";
 
 function required(value, field) { if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`); return value.trim(); }
 function positiveNumber(value, field, options = {}) { const number = Number(value); if (!Number.isFinite(number) || (options.allowZero ? number < 0 : number <= 0)) throw new Error(`${field} must be a valid number`); return number; }
@@ -18,6 +19,7 @@ const port = Number(process.env.PORT ?? "8080"); if (!Number.isSafeInteger(port)
 if (process.env.MEDIA_EDGE_SINGLE_INSTANCE !== "true") throw new Error("MEDIA_EDGE_SINGLE_INSTANCE=true is required until durable shared credential/bootstrap stores are configured");
 const controlPlaneToken = required(process.env.MEDIA_EDGE_CONTROL_PLANE_TOKEN, "MEDIA_EDGE_CONTROL_PLANE_TOKEN"); if (Buffer.byteLength(controlPlaneToken, "utf8") < 32) throw new Error("MEDIA_EDGE_CONTROL_PLANE_TOKEN must be at least 32 bytes");
 const credentialConsumer = new InMemoryOneShotCredentialConsumer(); const bootstrapRegistry = new InMemoryBootstrapRegistry(); const controlRegistry = new InMemoryControlSidebandRegistry();
+const isolatedDecision = createGeminiIsolatedDecisionClient({ apiKey: process.env.GEMINI_API_KEY, model: process.env.GEMINI_DECISION_MODEL });
 const verifyCredential = createHmacCredentialVerifier(process.env.MEDIA_EDGE_CREDENTIAL_HMAC_SECRET, process.env.MEDIA_EDGE_PUBLIC_URL);
 const accessTokenProvider = createCloudRunAccessTokenProvider();
 const authoritativeTranscribe = createGoogleSpeechV2Transcriber({
@@ -43,6 +45,20 @@ controlWss.on("connection", (socket, request) => { const url = new URL(request.u
 const server = http.createServer(async (request, response) => {
   if (request.url === "/healthz" && request.method === "GET") { response.writeHead(200, { "content-type": "application/json; charset=utf-8" }); response.end(JSON.stringify({ ok: true, service: "gemini-media-edge", activeSessions: runtime.activeSessions(), controlSessions: controlRegistry.size() })); return; }
   if (request.url === "/internal/bootstrap" && request.method === "POST") { if (!controlAuthorization(request, controlPlaneToken)) { response.writeHead(401, { "content-type": "application/json; charset=utf-8" }); response.end(JSON.stringify({ ok: false, error: "unauthorized" })); return; } try { const bootstrap = bootstrapRegistry.register(await readJsonBody(request), Date.now()); response.writeHead(201, { "content-type": "application/json; charset=utf-8" }); response.end(JSON.stringify({ ok: true, credentialId: bootstrap.credentialId })); } catch { response.writeHead(400, { "content-type": "application/json; charset=utf-8" }); response.end(JSON.stringify({ ok: false, error: "invalid_bootstrap" })); } return; }
+  if (request.url === "/internal/semantic-decision" && request.method === "POST") {
+    if (!controlAuthorization(request, controlPlaneToken)) { response.writeHead(401, { "content-type": "application/json; charset=utf-8" }); response.end(JSON.stringify({ ok: false, error: "unauthorized" })); return; }
+    try {
+      const text = await decideForActiveGeminiControlSession(controlRegistry, isolatedDecision, await readJsonBody(request, 64 * 1024));
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      response.end(JSON.stringify({ ok: true, text }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      const status = message.includes("active control session") ? 409 : message.includes("required") || message.includes("invalid") ? 400 : 502;
+      response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      response.end(JSON.stringify({ ok: false, error: status === 409 ? "inactive_session" : status === 400 ? "invalid_request" : "isolated_decision_failed" }));
+    }
+    return;
+  }
   response.writeHead(404, { "content-type": "text/plain; charset=utf-8" }); response.end("not found");
 });
 server.on("upgrade", (request, socket, head) => { const url = new URL(request.url, "http://localhost"); if (url.pathname === "/internal/control") { if (!controlAuthorization(request, controlPlaneToken)) { try { socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n"); } catch {} socket.destroy(); return; } controlWss.handleUpgrade(request, socket, head, (client) => controlWss.emit("connection", client, request)); return; } void runtime.handleUpgrade(request, socket, head); });
