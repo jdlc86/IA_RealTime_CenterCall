@@ -33,6 +33,8 @@ export function canonicalControlCommand(value) {
     if (message.decision !== "INTERRUPT" && responseId) throw new Error("Gemini media edge non-interruption decision must not carry response id");
     return Object.freeze({ type: "CALLER_TURN_DECISION", itemId, decision: message.decision, responseId });
   }
+  if (message.type === "SEMANTIC_GATE_ARM") return Object.freeze({ type: "SEMANTIC_GATE_ARM" });
+  if (message.type === "SEMANTIC_GATE_RELEASE") return Object.freeze({ type: "SEMANTIC_GATE_RELEASE" });
   throw new Error("Gemini media edge control command type is unsupported");
 }
 
