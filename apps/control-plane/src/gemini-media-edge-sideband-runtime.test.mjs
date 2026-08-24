@@ -27,6 +27,30 @@ test("sideband semantic tool gate emits only explicit ARM and RELEASE control co
   ]);
 });
 
+test("sideband governed speech requires exact text and preserves or mints response identity", () => {
+  const { runtime, sent } = runtimeHarness();
+  assert.throws(() => runtime.governedSpeechPort.speak({ instructions: "say something" }), /exact text is required/);
+
+  runtime.governedSpeechPort.speak({
+    requestId: "protected-response-1",
+    instructions: "Pronuncia exactamente el texto.",
+    exactText: "Hola.",
+  });
+  assert.deepEqual(sent.at(-1), {
+    type: "GOVERNED_SPEECH",
+    responseId: "protected-response-1",
+    text: "Hola.",
+  });
+
+  runtime.governedSpeechPort.speak({
+    instructions: "Pronuncia exactamente el texto.",
+    exactText: "¿Deseas que te transfiera?",
+  });
+  assert.equal(sent.at(-1).type, "GOVERNED_SPEECH");
+  assert.match(sent.at(-1).responseId, /^gemini_governed_speech_[0-9a-f-]{36}$/);
+  assert.equal(sent.at(-1).text, "¿Deseas que te transfiera?");
+});
+
 test("sideband returns owner response binding and completion drain", () => {
   const { runtime, sent } = runtimeHarness(); ready(runtime);
   runtime.observe({ type: "GEMINI_EVENT", message: { serverContent: { modelTurn: {} } } });
