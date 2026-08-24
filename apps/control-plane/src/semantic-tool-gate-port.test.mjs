@@ -34,11 +34,11 @@ test("OpenAI semantic tool gate uses the neutral gate command rather than sessio
   assert.deepEqual(realtime.policies, []);
 });
 
-test("Gemini cannot silently emulate the semantic gate through unsupported Live session mutation", () => {
+test("Gemini semantic gate capability authorizes only the neutral gate command, never session policy mutation", () => {
   const realtime = fakeRealtime();
   const gate = createRealtimeBackedSemanticToolGatePort("GEMINI", realtime);
-  assert.throws(() => gate.arm(), /GEMINI lacks required capabilities: semanticToolGate/);
-  assert.throws(() => gate.release(), /GEMINI lacks required capabilities: semanticToolGate/);
-  assert.deepEqual(realtime.gates, []);
+  gate.arm();
+  gate.release();
+  assert.deepEqual(realtime.gates, [true, false]);
   assert.deepEqual(realtime.policies, []);
 });
