@@ -71,8 +71,12 @@ const GEMINI_CAPABILITIES = Object.freeze({
   // them only on turnComplete. Governed speech is product-owned as well: exact
   // text crosses the authenticated sideband into isolated TTS, uses the single
   // correlated Telnyx playback owner, and completes only on its exact drain or
-  // clear mark while Live audio is excluded. Traffic remains blocked by the
-  // authoritative-time runtime gate below.
+  // clear mark while Live audio is excluded. Authoritative time is product-owned:
+  // immutable setup carries the initial Madrid snapshot, the exact caller turn
+  // refreshes a session-scoped clock, reservation date/range effects are checked
+  // deterministically, and correlated tool results carry a fresh snapshot. This
+  // does not claim or use Gemini runtime instruction mutation. Live traffic remains
+  // independently blocked by ENABLED_REALTIME_PROVIDERS.
   audioInput: true,
   audioOutput: true,
   vad: true,
@@ -86,7 +90,7 @@ const GEMINI_CAPABILITIES = Object.freeze({
   semanticToolGate: true,
   initialInstructionBootstrap: true,
   toolCatalogBootstrap: true,
-  authoritativeTemporalContext: false,
+  authoritativeTemporalContext: true,
   runtimeInstructionPolicyUpdate: false,
   runtimeToolCatalogUpdate: false,
   correlatedResponseLifecycle: true,

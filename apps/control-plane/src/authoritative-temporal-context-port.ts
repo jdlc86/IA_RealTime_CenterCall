@@ -134,7 +134,10 @@ class RealtimeBackedAuthoritativeTemporalContextPort implements AuthoritativeTem
   ) {}
 
   refresh(request: AuthoritativeTemporalContextRefresh): void {
-    requireRealtimeProviderCapabilities(this.provider, ["authoritativeTemporalContext"]);
+    requireRealtimeProviderCapabilities(this.provider, [
+      "authoritativeTemporalContext",
+      "runtimeInstructionPolicyUpdate",
+    ]);
     this.realtime.updateSessionPolicy({
       instructions: withAuthoritativeNowContext(request.baseInstructions, request.now ?? new Date()),
     });

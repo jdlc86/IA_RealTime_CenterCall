@@ -45,13 +45,13 @@ test("OpenAI temporal context preserves current authoritative instruction behavi
   });
 });
 
-test("Gemini temporal context fails before writing to Live until a provider-specific strategy is proven", () => {
+test("Gemini temporal context rejects the generic instruction-mutation strategy even after product-owned semantics are proven", () => {
   const realtime = fakeRealtime();
   const port = createRealtimeBackedAuthoritativeTemporalContextPort("GEMINI", realtime);
 
   assert.throws(
     () => port.refresh({ baseInstructions: "Eres Lucía." }),
-    /GEMINI lacks required capabilities: authoritativeTemporalContext/,
+    /GEMINI lacks required capabilities: runtimeInstructionPolicyUpdate/,
   );
   assert.deepEqual(realtime.policies, []);
 });
