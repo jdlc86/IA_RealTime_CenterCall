@@ -7,6 +7,7 @@ import { InMemoryBootstrapRegistry } from "./bootstrap.mjs";
 import { InMemoryControlSidebandRegistry } from "./control-sideband.mjs";
 import { createCloudRunAccessTokenProvider, createGoogleSpeechV2Transcriber } from "./google-speech.mjs";
 import { createGeminiIsolatedDecisionClient, decideForActiveGeminiControlSession } from "./isolated-decision.mjs";
+import { createGeminiIsolatedGenerationClient, generateForActiveGeminiControlSession } from "./isolated-generation.mjs";
 
 function required(value, field) { if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`); return value.trim(); }
 function positiveNumber(value, field, options = {}) { const number = Number(value); if (!Number.isFinite(number) || (options.allowZero ? number < 0 : number <= 0)) throw new Error(`${field} must be a valid number`); return number; }
@@ -20,6 +21,7 @@ if (process.env.MEDIA_EDGE_SINGLE_INSTANCE !== "true") throw new Error("MEDIA_ED
 const controlPlaneToken = required(process.env.MEDIA_EDGE_CONTROL_PLANE_TOKEN, "MEDIA_EDGE_CONTROL_PLANE_TOKEN"); if (Buffer.byteLength(controlPlaneToken, "utf8") < 32) throw new Error("MEDIA_EDGE_CONTROL_PLANE_TOKEN must be at least 32 bytes");
 const credentialConsumer = new InMemoryOneShotCredentialConsumer(); const bootstrapRegistry = new InMemoryBootstrapRegistry(); const controlRegistry = new InMemoryControlSidebandRegistry();
 const isolatedDecision = createGeminiIsolatedDecisionClient({ apiKey: process.env.GEMINI_API_KEY, model: process.env.GEMINI_DECISION_MODEL });
+const isolatedGeneration = createGeminiIsolatedGenerationClient({ apiKey: process.env.GEMINI_API_KEY, model: process.env.GEMINI_GENERATION_MODEL });
 const verifyCredential = createHmacCredentialVerifier(process.env.MEDIA_EDGE_CREDENTIAL_HMAC_SECRET, process.env.MEDIA_EDGE_PUBLIC_URL);
 const accessTokenProvider = createCloudRunAccessTokenProvider();
 const authoritativeTranscribe = createGoogleSpeechV2Transcriber({
@@ -56,6 +58,20 @@ const server = http.createServer(async (request, response) => {
       const status = message.includes("active control session") ? 409 : message.includes("required") || message.includes("invalid") ? 400 : 502;
       response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
       response.end(JSON.stringify({ ok: false, error: status === 409 ? "inactive_session" : status === 400 ? "invalid_request" : "isolated_decision_failed" }));
+    }
+    return;
+  }
+  if (request.url === "/internal/isolated-generation" && request.method === "POST") {
+    if (!controlAuthorization(request, controlPlaneToken)) { response.writeHead(401, { "content-type": "application/json; charset=utf-8" }); response.end(JSON.stringify({ ok: false, error: "unauthorized" })); return; }
+    try {
+      const text = await generateForActiveGeminiControlSession(controlRegistry, isolatedGeneration, await readJsonBody(request, 64 * 1024));
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      response.end(JSON.stringify({ ok: true, text }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      const status = message.includes("active control session") ? 409 : message.includes("required") || message.includes("invalid") || message.includes("configured limit") ? 400 : 502;
+      response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      response.end(JSON.stringify({ ok: false, error: status === 409 ? "inactive_session" : status === 400 ? "invalid_request" : "isolated_generation_failed" }));
     }
     return;
   }
