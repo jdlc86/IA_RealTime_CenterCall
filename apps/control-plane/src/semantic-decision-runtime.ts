@@ -9,7 +9,7 @@ import {
 const FALLBACK_DECISION_PORT_BY_HOST = new WeakMap<object, SemanticDecisionPort>();
 const EXTERNAL_DECISION_PORT_BY_HOST = new WeakMap<object, SemanticDecisionPort>();
 
-function requireHost(host: RealtimeProviderHost): object {
+function requireHost(host: object): object {
   if (!host || typeof host !== "object") throw new Error("Semantic decision host is required");
   return host;
 }
@@ -21,11 +21,11 @@ function requirePort(port: SemanticDecisionPort): SemanticDecisionPort {
 
 /**
  * Installs a session-scoped isolated decision capability owned outside the realtime
- * media provider. This is the composition seam for providers whose live session
- * must not be used for auxiliary classification turns.
+ * media provider. Installation/removal need only stable object identity; the
+ * realtime-backed fallback still requires a full RealtimeProviderHost.
  */
 export function installSemanticDecisionPort(
-  host: RealtimeProviderHost,
+  host: object,
   port: SemanticDecisionPort,
 ): void {
   const key = requireHost(host);
@@ -36,7 +36,7 @@ export function installSemanticDecisionPort(
 }
 
 export function removeSemanticDecisionPort(
-  host: RealtimeProviderHost,
+  host: object,
   port?: SemanticDecisionPort,
 ): void {
   const key = requireHost(host);
