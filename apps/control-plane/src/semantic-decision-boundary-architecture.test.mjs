@@ -28,6 +28,9 @@ test("semantic decision runtime is the explicit session-scoped compatibility bou
   const runtime = readFileSync(new URL("./semantic-decision-runtime.ts", import.meta.url), "utf8");
   const port = readFileSync(new URL("./semantic-decision-port.ts", import.meta.url), "utf8");
   assert.match(runtime, /semanticDecisionPortFor/);
-  assert.match(port, /isolatedTextDecision/);
-  assert.match(port, /requireRealtimeProviderCapabilities/);
+  assert.match(runtime, /EXTERNAL_DECISION_PORT_BY_HOST/);
+  assert.match(runtime, /installSemanticDecisionPort/);
+  assert.match(port, /provider\s*!==\s*"OPENAI"/);
+  assert.match(port, /install an external isolated decision port/);
+  assert.doesNotMatch(port, /requireRealtimeProviderCapabilities/);
 });
