@@ -1,7 +1,7 @@
 import { WebSocket, WebSocketServer } from "ws";
 import { requireTelnyxStartForCredential } from "./credential.mjs";
 import { buildGeminiInitialSetup, isGeminiSetupComplete } from "./bootstrap.mjs";
-import { callerControlEnvelope, geminiControlEnvelope, governedControlEnvelope } from "./control-sideband.mjs";
+import { callerControlEnvelope, geminiControlEnvelope, governedControlEnvelope, inputDetectionControlEnvelope } from "./control-sideband.mjs";
 import { AuthoritativeCallerInputOwner } from "./caller-input.mjs";
 import { TelnyxPlaybackOwner } from "./playback.mjs";
 import { GeminiSemanticToolGate } from "./semantic-tool-gate.mjs";
@@ -98,6 +98,25 @@ export function completeGovernedSpeechPlayback(options) {
   }
 }
 
+export function applyCallerInputControlCommand(command, owner, emitControlEvent) {
+  if (!owner || typeof owner.clear !== "function" || typeof owner.suspend !== "function" || typeof owner.restore !== "function") {
+    throw new Error("Gemini caller input control owner is required");
+  }
+  if (typeof emitControlEvent !== "function") throw new Error("Gemini input detection lifecycle emitter is required");
+  if (command?.type === "CALLER_INPUT_CLEAR") { owner.clear(); return true; }
+  if (command?.type === "INPUT_DETECTION_SUSPEND") {
+    owner.suspend();
+    emitControlEvent(inputDetectionControlEnvelope(false));
+    return true;
+  }
+  if (command?.type === "INPUT_DETECTION_RESTORE") {
+    owner.restore();
+    emitControlEvent(inputDetectionControlEnvelope(true));
+    return true;
+  }
+  return false;
+}
+
 export function commitDeferredCallerTurn(gemini, turn, assertBackpressure) {
   if (!turn || !Array.isArray(turn.mediaPayloads) || turn.mediaPayloads.length === 0) throw new Error("Gemini caller turn has no replayable audio");
   assertBackpressure(gemini, "Gemini Live"); safeSend(gemini, { realtimeInput: { activityStart: {} } });
@@ -129,11 +148,13 @@ export function createGeminiMediaEdgeRuntime(options) {
     const state = { telnyx, gemini: null, claims, bootstrap: null, controlAttachment: null, authorized: false, started: false, setupSent: false, setupComplete: false, streamId: null, nextChunk: 1, buffered: new Map(), resampler: new Pcm16Resampler24To16(), playback: new BoundPlaybackGate(maxBufferedBytes), governedPlayback: new GovernedSpeechPlaybackCoordinator(), governedContext: null, callerInput: new AuthoritativeCallerInputOwner(options.authoritativeTranscribe, options.callerVadConfig, options.callerInputOptions), semanticGate: new GeminiSemanticToolGate(), closed: false, telnyxChain: Promise.resolve() }; sessions.add(state);
     const closeBoth = () => { if (state.closed) return; state.closed = true; state.buffered.clear(); state.playback.reset(); state.governedPlayback.reset(); state.governedContext = null; try { state.controlAttachment?.detach?.(); } catch {} state.controlAttachment = null; sessions.delete(state); try { if (telnyx.readyState === OPEN || telnyx.readyState === CONNECTING) telnyx.close(); } catch {} try { if (state.gemini?.readyState === OPEN || state.gemini?.readyState === CONNECTING) state.gemini.close(); } catch {} };
     const assertBackpressure = (socket, label) => { if (socket.bufferedAmount > maxBufferedBytes) throw new Error(`${label} backpressure limit exceeded`); };
+    const emitRequiredControlEvent = (event, error) => { if (options.emitControlEvent?.(state.claims, event) !== true) throw new Error(error); };
     const emitPlaybackChunks = (chunks, onFirstQueued = null) => { for (const chunk of chunks) { assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "media", media: { payload: encodeBase64(swapPcm16Endianness(chunk.pcm)) } }); const noted = state.playback.noteQueued(chunk.responseId); if (noted.first) { onFirstQueued?.(); const delivered = options.emitControlEvent?.(state.claims, { type: "PLAYBACK_EVENT", event: { type: "ASSISTANT_AUDIO_STARTED", kind: chunk.kind, responseId: chunk.responseId } }); if (onFirstQueued && delivered !== true) throw new Error("Governed speech playback start requires active control sideband"); } } };
     const submitControlCommand = (command) => {
       if (!state.setupComplete || state.gemini?.readyState !== OPEN) throw new Error("Gemini Live control command requires setupComplete");
       if (command.type === "SEMANTIC_GATE_ARM") { state.semanticGate.confirmArm(); return; }
       if (command.type === "SEMANTIC_GATE_RELEASE") { state.semanticGate.release(); return; }
+      if (applyCallerInputControlCommand(command, state.callerInput, (event) => emitRequiredControlEvent(event, "Input detection update requires active control sideband"))) return;
       if (command.type === "TOOL_RESULT") {
         if (state.semanticGate.snapshot().armed) state.semanticGate.rejectProvisionalSelection(command.callId, command.toolName);
         assertBackpressure(state.gemini, "Gemini Live"); safeSend(state.gemini, { toolResponse: { functionResponses: [{ id: command.callId, name: command.toolName, response: { result: command.output } }] } }); return;

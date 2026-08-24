@@ -62,6 +62,9 @@ export function canonicalControlCommand(value) {
   }
   if (message.type === "SEMANTIC_GATE_ARM") return Object.freeze({ type: "SEMANTIC_GATE_ARM" });
   if (message.type === "SEMANTIC_GATE_RELEASE") return Object.freeze({ type: "SEMANTIC_GATE_RELEASE" });
+  if (message.type === "CALLER_INPUT_CLEAR") return Object.freeze({ type: "CALLER_INPUT_CLEAR" });
+  if (message.type === "INPUT_DETECTION_SUSPEND") return Object.freeze({ type: "INPUT_DETECTION_SUSPEND" });
+  if (message.type === "INPUT_DETECTION_RESTORE") return Object.freeze({ type: "INPUT_DETECTION_RESTORE" });
   throw new Error("Gemini media edge control command type is unsupported");
 }
 
@@ -101,6 +104,19 @@ export function callerControlEnvelope(event) {
   const value = object(event, "Gemini caller control event");
   if (!["CALLER_SPEECH_STARTED", "CALLER_SPEECH_STOPPED", "CALLER_TRANSCRIPT_COMPLETED"].includes(value.type)) throw new Error("Gemini caller control event type is unsupported");
   return Object.freeze({ type: "CALLER_EVENT", event: structuredClone(value) });
+}
+export function inputDetectionControlEnvelope(enabled) {
+  if (typeof enabled !== "boolean") throw new Error("Gemini input detection state is invalid");
+  return Object.freeze({
+    type: "INPUT_DETECTION_EVENT",
+    event: Object.freeze({
+      type: "INPUT_DETECTION_UPDATED",
+      present: true,
+      settings: enabled
+        ? Object.freeze({ createResponse: false, interruptResponse: false })
+        : null,
+    }),
+  });
 }
 export function governedControlEnvelope(event) {
   const value = object(event, "Gemini governed lifecycle event");

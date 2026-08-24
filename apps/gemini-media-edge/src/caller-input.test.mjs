@@ -75,3 +75,36 @@ test("candidate cannot be resolved before authoritative transcript completion", 
   await owner.observe(voiced);
   assert.throws(() => owner.resolve("gemini-candidate-1", "NORMAL"), /no authoritative transcript/);
 });
+
+test("product-owned input suspension drops caller media and restore starts a fresh candidate", async () => {
+  let transcriptions = 0;
+  const owner = new AuthoritativeCallerInputOwner(async (request) => {
+    transcriptions += 1;
+    return { itemId: request.itemId, transcript: "hola" };
+  }, config);
+
+  owner.suspend();
+  assert.equal(owner.snapshot().inputDetectionEnabled, false);
+  assert.deepEqual((await owner.observe(voiced)).events, []);
+  assert.deepEqual((await owner.observe(voiced)).events, []);
+  assert.equal(owner.snapshot().activeItemId, null);
+  assert.equal(transcriptions, 0);
+
+  owner.restore();
+  assert.equal(owner.snapshot().inputDetectionEnabled, true);
+  await owner.observe(voiced);
+  const started = await owner.observe(voiced);
+  assert.equal(started.events[0].itemId, "gemini-candidate-1");
+});
+
+test("caller input clear invalidates an active candidate without reusing its identity", async () => {
+  const owner = new AuthoritativeCallerInputOwner(async (request) => ({ itemId: request.itemId, transcript: "hola" }), config);
+  await owner.observe(voiced);
+  await owner.observe(voiced);
+  assert.equal(owner.snapshot().activeItemId, "gemini-candidate-1");
+  owner.clear();
+  assert.equal(owner.snapshot().activeItemId, null);
+  await owner.observe(voiced);
+  const next = await owner.observe(voiced);
+  assert.equal(next.events[0].itemId, "gemini-candidate-2");
+});

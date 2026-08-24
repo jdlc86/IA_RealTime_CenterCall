@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canonicalControlCommand, geminiControlEnvelope, InMemoryControlSidebandRegistry } from "./control-sideband.mjs";
+import { canonicalControlCommand, geminiControlEnvelope, inputDetectionControlEnvelope, InMemoryControlSidebandRegistry } from "./control-sideband.mjs";
 
 const claims = { tenantId: "tenant-a", callControlId: "call-a" };
 
@@ -46,6 +46,24 @@ test("governed speech control command requires bounded exact text and correlatio
   assert.throws(() => canonicalControlCommand({ type: "GOVERNED_SPEECH", responseId: "speech-7", text: "" }), /text is required/);
   assert.throws(() => canonicalControlCommand({ type: "GOVERNED_SPEECH", responseId: "speech-7", text: "x".repeat(2001) }), /configured limit/);
   assert.throws(() => canonicalControlCommand({ type: "GOVERNED_SPEECH", responseId: "speech-7", text: "Hola", purpose: "x".repeat(201) }), /configured limit/);
+});
+
+test("control protocol admits product-owned caller input lifecycle commands", () => {
+  assert.deepEqual(canonicalControlCommand({ type: "CALLER_INPUT_CLEAR" }), { type: "CALLER_INPUT_CLEAR" });
+  assert.deepEqual(canonicalControlCommand({ type: "INPUT_DETECTION_SUSPEND" }), { type: "INPUT_DETECTION_SUSPEND" });
+  assert.deepEqual(canonicalControlCommand({ type: "INPUT_DETECTION_RESTORE" }), { type: "INPUT_DETECTION_RESTORE" });
+  assert.deepEqual(inputDetectionControlEnvelope(false), {
+    type: "INPUT_DETECTION_EVENT",
+    event: { type: "INPUT_DETECTION_UPDATED", present: true, settings: null },
+  });
+  assert.deepEqual(inputDetectionControlEnvelope(true), {
+    type: "INPUT_DETECTION_EVENT",
+    event: {
+      type: "INPUT_DETECTION_UPDATED",
+      present: true,
+      settings: { createResponse: false, interruptResponse: false },
+    },
+  });
 });
 
 test("control socket may attach before Gemini session command sink", () => {

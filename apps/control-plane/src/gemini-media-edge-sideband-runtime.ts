@@ -22,7 +22,10 @@ export type GeminiMediaEdgeSidebandOutbound =
     }>
   | Readonly<{ type: "CALLER_TURN_DECISION"; itemId: string; decision: GeminiMediaEdgeCallerDecision; responseId: string | null }>
   | Readonly<{ type: "SEMANTIC_GATE_ARM" }>
-  | Readonly<{ type: "SEMANTIC_GATE_RELEASE" }>;
+  | Readonly<{ type: "SEMANTIC_GATE_RELEASE" }>
+  | Readonly<{ type: "CALLER_INPUT_CLEAR" }>
+  | Readonly<{ type: "INPUT_DETECTION_SUSPEND" }>
+  | Readonly<{ type: "INPUT_DETECTION_RESTORE" }>;
 export type GeminiMediaEdgeSidebandSend = (message: GeminiMediaEdgeSidebandOutbound) => void;
 export type GeminiMediaEdgeCallerContext = Readonly<{ itemId: string; playbackResponseIdAtStart: string | null }>;
 
@@ -41,6 +44,28 @@ function outboundToolResult(message: Record<string, unknown>): GeminiMediaEdgeSi
   const body = object(response.response, "Gemini sideband FunctionResponse response");
   if (!("result" in body)) throw new Error("Gemini sideband FunctionResponse result is required");
   return Object.freeze({ type: "TOOL_RESULT", callId: required(response.id, "Gemini sideband FunctionResponse id"), toolName: required(response.name, "Gemini sideband FunctionResponse name"), output: structuredClone(body.result) });
+}
+function mediaEdgeInputCommandPort(
+  delegate: RealtimeProviderCommandPort,
+  send: GeminiMediaEdgeSidebandSend,
+): RealtimeProviderCommandPort {
+  const port: RealtimeProviderCommandPort = {
+    speak(request) { delegate.speak(request); },
+    requestTextDecision(request) { delegate.requestTextDecision(request); },
+    createSemanticResponse(request) { delegate.createSemanticResponse(request); },
+    submitToolResult(request) { delegate.submitToolResult(request); },
+    updateSessionPolicy(update) { delegate.updateSessionPolicy(update); },
+    setSemanticToolGate(armed) { delegate.setSemanticToolGate(armed); },
+    createDefaultResponse() { delegate.createDefaultResponse(); },
+    cancelResponse(responseId) { delegate.cancelResponse(responseId); },
+    clearPlayback() { delegate.clearPlayback(); },
+    clearInput() { send(Object.freeze({ type: "CALLER_INPUT_CLEAR" })); },
+    discardInputItem(itemId) { delegate.discardInputItem(itemId); },
+    suspendInputDetection() { send(Object.freeze({ type: "INPUT_DETECTION_SUSPEND" })); },
+    beginNonInterruptingListening() { send(Object.freeze({ type: "INPUT_DETECTION_RESTORE" })); },
+    restoreInputDetection() { send(Object.freeze({ type: "INPUT_DETECTION_RESTORE" })); },
+  };
+  return Object.freeze(port);
 }
 function playbackBinding(events: readonly RealtimeProviderEvent[]): GeminiMediaEdgeSidebandOutbound | null {
   const started = events.filter((event): event is Extract<RealtimeProviderEvent, { type: "ASSISTANT_RESPONSE_STARTED" }> => event.type === "ASSISTANT_RESPONSE_STARTED");
@@ -70,7 +95,7 @@ export class GeminiMediaEdgeSidebandRuntime {
     this.send = send;
     this.runtime = new GeminiLiveSessionRuntime({ send: (message) => send(outboundToolResult(message)) }, { model: "external-media-edge" });
     this.runtime.adoptExternalSetupSent();
-    this.commandPort = this.runtime.commandPort;
+    this.commandPort = mediaEdgeInputCommandPort(this.runtime.commandPort, this.send);
     this.semanticToolGatePort = Object.freeze({
       arm: () => this.send(Object.freeze({ type: "SEMANTIC_GATE_ARM" })),
       release: () => this.send(Object.freeze({ type: "SEMANTIC_GATE_RELEASE" })),
@@ -100,6 +125,7 @@ export class GeminiMediaEdgeSidebandRuntime {
     if (frame.type === "CALLER_EVENT") return this.observeCallerEvent(frame.event);
     if (frame.type === "PLAYBACK_EVENT") return this.observePlaybackEvent(frame.event);
     if (frame.type === "GOVERNED_EVENT") return this.observeGovernedEvent(frame.event);
+    if (frame.type === "INPUT_DETECTION_EVENT") return this.observeInputDetectionEvent(frame.event);
     throw new Error("Gemini media edge sideband frame type is unsupported");
   }
 
@@ -211,6 +237,25 @@ export class GeminiMediaEdgeSidebandRuntime {
       return this.edgeObservation({ type, kind, responseId } as RealtimeProviderEvent);
     }
     throw new Error("Gemini media edge playback event type is unsupported");
+  }
+
+  private observeInputDetectionEvent(value: unknown): GeminiLiveSessionRuntimeObservation {
+    const edge = object(value, "Gemini media edge input detection event");
+    if (edge.type !== "INPUT_DETECTION_UPDATED" || edge.present !== true) {
+      throw new Error("Gemini media edge input detection event is unsupported");
+    }
+    if (edge.settings === null) {
+      return this.edgeObservation({ type: "INPUT_DETECTION_UPDATED", present: true, settings: null });
+    }
+    const settings = object(edge.settings, "Gemini media edge input detection settings");
+    if (settings.createResponse !== false || settings.interruptResponse !== false) {
+      throw new Error("Gemini media edge input detection settings are unsupported");
+    }
+    return this.edgeObservation({
+      type: "INPUT_DETECTION_UPDATED",
+      present: true,
+      settings: { createResponse: false, interruptResponse: false },
+    });
   }
 
   private edgeObservation(event: RealtimeProviderEvent): GeminiLiveSessionRuntimeObservation {

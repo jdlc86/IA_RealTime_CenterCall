@@ -27,6 +27,40 @@ test("sideband semantic tool gate emits only explicit ARM and RELEASE control co
   ]);
 });
 
+test("sideband routes caller input controls to the product-owned media edge", () => {
+  const { runtime, sent } = runtimeHarness();
+  runtime.commandPort.suspendInputDetection();
+  runtime.commandPort.clearInput();
+  runtime.commandPort.beginNonInterruptingListening({ interruptResponse: false });
+  runtime.commandPort.restoreInputDetection({ interruptResponse: true });
+  assert.deepEqual(sent, [
+    { type: "INPUT_DETECTION_SUSPEND" },
+    { type: "CALLER_INPUT_CLEAR" },
+    { type: "INPUT_DETECTION_RESTORE" },
+    { type: "INPUT_DETECTION_RESTORE" },
+  ]);
+});
+
+test("sideband normalizes product-owned input detection confirmations", () => {
+  const { runtime } = runtimeHarness();
+  assert.deepEqual(runtime.observe({
+    type: "INPUT_DETECTION_EVENT",
+    event: { type: "INPUT_DETECTION_UPDATED", present: true, settings: null },
+  }).events, [{ type: "INPUT_DETECTION_UPDATED", present: true, settings: null }]);
+  assert.deepEqual(runtime.observe({
+    type: "INPUT_DETECTION_EVENT",
+    event: {
+      type: "INPUT_DETECTION_UPDATED",
+      present: true,
+      settings: { createResponse: false, interruptResponse: false },
+    },
+  }).events, [{
+    type: "INPUT_DETECTION_UPDATED",
+    present: true,
+    settings: { createResponse: false, interruptResponse: false },
+  }]);
+});
+
 test("sideband governed speech requires exact text and preserves or mints response identity", () => {
   const { runtime, sent } = runtimeHarness();
   assert.throws(() => runtime.governedSpeechPort.speak({ instructions: "say something" }), /exact text is required/);

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   BoundPlaybackGate,
+  applyCallerInputControlCommand,
   commitDeferredCallerTurn,
   completeGovernedSpeechPlayback,
   executeGovernedSpeechPlayback,
@@ -239,4 +240,32 @@ test("governed speech rejects a stale session after late TTS without playback", 
   assert.equal(emitted, false);
   assert.equal(playback.snapshot().pendingBytes, 0);
   assert.deepEqual(coordinator.snapshot(), { pendingResponseId: null, activeResponseId: null });
+});
+
+test("runtime caller-input controls mutate only the product-owned edge owner", () => {
+  const calls = [];
+  const events = [];
+  const owner = {
+    clear() { calls.push("clear"); },
+    suspend() { calls.push("suspend"); },
+    restore() { calls.push("restore"); },
+  };
+  const emit = (event) => { events.push(event); };
+
+  assert.equal(applyCallerInputControlCommand({ type: "INPUT_DETECTION_SUSPEND" }, owner, emit), true);
+  assert.equal(applyCallerInputControlCommand({ type: "CALLER_INPUT_CLEAR" }, owner, emit), true);
+  assert.equal(applyCallerInputControlCommand({ type: "INPUT_DETECTION_RESTORE" }, owner, emit), true);
+  assert.equal(applyCallerInputControlCommand({ type: "TOOL_RESULT" }, owner, emit), false);
+  assert.deepEqual(calls, ["suspend", "clear", "restore"]);
+  assert.deepEqual(events, [
+    { type: "INPUT_DETECTION_EVENT", event: { type: "INPUT_DETECTION_UPDATED", present: true, settings: null } },
+    {
+      type: "INPUT_DETECTION_EVENT",
+      event: {
+        type: "INPUT_DETECTION_UPDATED",
+        present: true,
+        settings: { createResponse: false, interruptResponse: false },
+      },
+    },
+  ]);
 });
