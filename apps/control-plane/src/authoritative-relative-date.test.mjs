@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   madridCalendarDate,
   resolveAuthoritativeRelativeDate,
+  resolveAuthoritativeRelativeDateRange,
 } from "../.test-dist/authoritative-relative-date.js";
 
 test("Madrid relative date uses the fresh backend day on both sides of midnight", () => {
@@ -63,5 +64,73 @@ test("conflicting relative dates are ambiguous and unsupported language remains 
   });
   assert.deepEqual(resolveAuthoritativeRelativeDate("cuando haya una mesa tranquila", now), {
     kind: "NO_RELATIVE_DATE_EVIDENCE",
+  });
+});
+
+test("relative ranges use the fresh Madrid day across rollover", () => {
+  assert.deepEqual(resolveAuthoritativeRelativeDateRange(
+    "hoy o mañana",
+    new Date("2026-08-23T21:59:00Z"),
+  ), {
+    kind: "RESOLVED",
+    fromLocalDate: "2026-08-23",
+    toLocalDateExclusive: "2026-08-25",
+    evidence: ["mañana", "hoy"],
+  });
+  assert.deepEqual(resolveAuthoritativeRelativeDateRange(
+    "hoy o mañana",
+    new Date("2026-08-23T22:01:00Z"),
+  ), {
+    kind: "RESOLVED",
+    fromLocalDate: "2026-08-24",
+    toLocalDateExclusive: "2026-08-26",
+    evidence: ["mañana", "hoy"],
+  });
+});
+
+test("continuous relative endpoints resolve but discontinuous alternatives never broaden silently", () => {
+  const monday = new Date("2026-08-24T10:00:00Z");
+  assert.deepEqual(resolveAuthoritativeRelativeDateRange("entre mañana y el viernes", monday), {
+    kind: "RESOLVED",
+    fromLocalDate: "2026-08-25",
+    toLocalDateExclusive: "2026-08-29",
+    evidence: ["mañana", "el viernes"],
+  });
+  assert.deepEqual(resolveAuthoritativeRelativeDateRange("el lunes o el viernes", monday), {
+    kind: "UNPROVEN_RELATIVE_DATE_RANGE",
+    localDates: ["2026-08-24", "2026-08-28"],
+    evidence: ["el lunes", "el viernes"],
+  });
+});
+
+test("week and weekend ranges are bounded by Madrid calendar dates", () => {
+  const monday = new Date("2026-08-24T10:00:00Z");
+  assert.deepEqual(resolveAuthoritativeRelativeDateRange("la semana que viene", monday), {
+    kind: "RESOLVED",
+    fromLocalDate: "2026-08-31",
+    toLocalDateExclusive: "2026-09-07",
+    evidence: ["semana que viene"],
+  });
+  assert.deepEqual(resolveAuthoritativeRelativeDateRange("este fin de semana", monday), {
+    kind: "RESOLVED",
+    fromLocalDate: "2026-08-29",
+    toLocalDateExclusive: "2026-08-31",
+    evidence: ["este fin de semana"],
+  });
+  assert.deepEqual(resolveAuthoritativeRelativeDateRange("este fin de semana", new Date("2026-08-30T10:00:00Z")), {
+    kind: "RESOLVED",
+    fromLocalDate: "2026-08-30",
+    toLocalDateExclusive: "2026-08-31",
+    evidence: ["este fin de semana"],
+  });
+});
+
+test("absolute or single relative dates are not invented as flexible ranges", () => {
+  const now = new Date("2026-08-24T10:00:00Z");
+  assert.deepEqual(resolveAuthoritativeRelativeDateRange("el 28 de agosto", now), {
+    kind: "NO_RELATIVE_DATE_RANGE_EVIDENCE",
+  });
+  assert.deepEqual(resolveAuthoritativeRelativeDateRange("mañana", now), {
+    kind: "NO_RELATIVE_DATE_RANGE_EVIDENCE",
   });
 });

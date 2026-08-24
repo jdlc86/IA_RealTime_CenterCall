@@ -3,6 +3,11 @@ export type AuthoritativeRelativeDateDecision =
   | Readonly<{ kind: "RESOLVED"; localDate: string; evidence: readonly string[] }>
   | Readonly<{ kind: "AMBIGUOUS"; localDates: readonly string[]; evidence: readonly string[] }>;
 
+export type AuthoritativeRelativeDateRangeDecision =
+  | Readonly<{ kind: "NO_RELATIVE_DATE_RANGE_EVIDENCE" }>
+  | Readonly<{ kind: "RESOLVED"; fromLocalDate: string; toLocalDateExclusive: string; evidence: readonly string[] }>
+  | Readonly<{ kind: "UNPROVEN_RELATIVE_DATE_RANGE"; localDates: readonly string[]; evidence: readonly string[] }>;
+
 const MADRID_TIMEZONE = "Europe/Madrid";
 const WEEKDAY_BY_NAME: Readonly<Record<string, number>> = Object.freeze({
   domingo: 0,
@@ -53,6 +58,11 @@ function addLocalDays(localDate: string, days: number): string {
 function localWeekday(localDate: string): number {
   const [year, month, day] = localDate.split("-").map(Number);
   return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+}
+
+function localDayOrdinal(localDate: string): number {
+  const [year, month, day] = localDate.split("-").map(Number);
+  return Math.floor(Date.UTC(year, month - 1, day) / 86_400_000);
 }
 
 function record(
@@ -129,4 +139,80 @@ export function resolveAuthoritativeRelativeDate(
 
 export function madridCalendarDate(now: Date = new Date()): string {
   return madridLocalDate(now);
+}
+
+/**
+ * Resolves only bounded continuous ranges. Discontinuous alternatives remain
+ * unproven so a from/to search cannot silently include dates the caller omitted.
+ */
+export function resolveAuthoritativeRelativeDateRange(
+  callerTranscript: string,
+  now: Date = new Date(),
+): AuthoritativeRelativeDateRangeDecision {
+  const transcript = normalizedSpanish(callerTranscript);
+  if (!transcript) return { kind: "NO_RELATIVE_DATE_RANGE_EVIDENCE" };
+  const currentLocalDate = madridLocalDate(now);
+  const currentWeekday = localWeekday(currentLocalDate);
+
+  if (/\b(?:la )?(?:proxima semana|semana (?:que viene|proxima))\b/.test(transcript)) {
+    const daysUntilNextMonday = ((8 - currentWeekday) % 7) || 7;
+    const fromLocalDate = addLocalDays(currentLocalDate, daysUntilNextMonday);
+    return Object.freeze({
+      kind: "RESOLVED",
+      fromLocalDate,
+      toLocalDateExclusive: addLocalDays(fromLocalDate, 7),
+      evidence: Object.freeze(["semana que viene"]),
+    });
+  }
+
+  if (/\besta semana\b/.test(transcript)) {
+    const daysUntilMonday = ((8 - currentWeekday) % 7) || 7;
+    return Object.freeze({
+      kind: "RESOLVED",
+      fromLocalDate: currentLocalDate,
+      toLocalDateExclusive: addLocalDays(currentLocalDate, daysUntilMonday),
+      evidence: Object.freeze(["esta semana"]),
+    });
+  }
+
+  const nextWeekend = /\b(?:el )?(?:proximo fin de semana|fin de semana que viene)\b/.test(transcript);
+  const currentWeekend = /\b(?:este|el) fin de semana\b/.test(transcript);
+  if (nextWeekend || currentWeekend) {
+    let daysUntilSaturday = (6 - currentWeekday + 7) % 7;
+    if (nextWeekend && (currentWeekday === 0 || currentWeekday === 6)) daysUntilSaturday += 7;
+    if (currentWeekend && currentWeekday === 0) {
+      return Object.freeze({
+        kind: "RESOLVED",
+        fromLocalDate: currentLocalDate,
+        toLocalDateExclusive: addLocalDays(currentLocalDate, 1),
+        evidence: Object.freeze(["este fin de semana"]),
+      });
+    }
+    const fromLocalDate = addLocalDays(currentLocalDate, daysUntilSaturday);
+    return Object.freeze({
+      kind: "RESOLVED",
+      fromLocalDate,
+      toLocalDateExclusive: addLocalDays(fromLocalDate, 2),
+      evidence: Object.freeze([nextWeekend ? "próximo fin de semana" : "este fin de semana"]),
+    });
+  }
+
+  const individual = resolveAuthoritativeRelativeDate(callerTranscript, now);
+  if (individual.kind !== "AMBIGUOUS") return { kind: "NO_RELATIVE_DATE_RANGE_EVIDENCE" };
+  const localDates = [...individual.localDates].sort();
+  const contiguous = localDayOrdinal(localDates.at(-1)!) - localDayOrdinal(localDates[0]) === localDates.length - 1;
+  const continuousConnector = /\b(?:entre|desde|de)\b.+\b(?:y|hasta|a)\b/.test(transcript);
+  if (!contiguous && !continuousConnector) {
+    return Object.freeze({
+      kind: "UNPROVEN_RELATIVE_DATE_RANGE",
+      localDates: Object.freeze(localDates),
+      evidence: individual.evidence,
+    });
+  }
+  return Object.freeze({
+    kind: "RESOLVED",
+    fromLocalDate: localDates[0],
+    toLocalDateExclusive: addLocalDays(localDates.at(-1)!, 1),
+    evidence: individual.evidence,
+  });
 }
