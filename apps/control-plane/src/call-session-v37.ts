@@ -20,6 +20,7 @@ import { humanHandoffTransportPortFor } from "./human-handoff-transport-port.js"
 import { callTerminationPortFor } from "./call-termination-port.js";
 import { sessionTaskRuntimeFor } from "./session-task-runtime.js";
 import { buildHumanHandoffAnnouncementInstructions } from "./human-handoff-announcement-policy.js";
+import { optionalIsolatedTextGenerationPortFor } from "./isolated-text-generation-runtime.js";
 
 const BaseConstructor = CallSessionV36 as unknown as new (...args: any[]) => any;
 const BasePrototype = CallSessionV36.prototype as any;
@@ -245,21 +246,35 @@ export class CallSession extends BaseConstructor {
     return true;
   }
 
-  private emitHandoffSpeechV37(kind: HumanHandoffSpeechKind, text?: string): void {
+  private async emitHandoffSpeechV37(kind: HumanHandoffSpeechKind, text?: string): Promise<void> {
     const runtime = this.handoffRuntimeV37();
     const handoff = runtime.beginSpeech(kind);
     if (!handoff) return;
     const purpose = kind === "ANNOUNCEMENT" ? ANNOUNCEMENT_PURPOSE : FAILURE_PURPOSE;
     const commands = realtimeCommandPortFor(this as any);
+    let exactSpeech = kind !== "ANNOUNCEMENT";
+    let isolatedTextGeneration = false;
     if (kind === "ANNOUNCEMENT") {
       const destinationLabel = runtime.getConfig()?.destination.label ?? "el equipo del restaurante";
+      const instructions = buildHumanHandoffAnnouncementInstructions({
+        reason: handoff.reason,
+        summary: handoff.summary,
+        destinationLabel,
+      });
+      const isolatedGeneration = optionalIsolatedTextGenerationPortFor(this);
+      const exactText = isolatedGeneration
+        ? await isolatedGeneration.generate({
+            instructions,
+            inputText: "Redacta únicamente la frase final que se dirá al caller. No añadas etiquetas, explicaciones ni herramientas.",
+            maxOutputTokens: 96,
+          })
+        : undefined;
+      exactSpeech = Boolean(exactText);
+      isolatedTextGeneration = Boolean(isolatedGeneration);
       commands.speak({
         requestId: `human_handoff_${crypto.randomUUID()}`,
-        instructions: buildHumanHandoffAnnouncementInstructions({
-          reason: handoff.reason,
-          summary: handoff.summary,
-          destinationLabel,
-        }),
+        instructions,
+        ...(exactText ? { exactText } : {}),
         isolated: true,
         tools: "DISABLED",
         purpose,
@@ -282,8 +297,9 @@ export class CallSession extends BaseConstructor {
       handoff_id: handoff.id,
       kind,
       vad_disabled: true,
-      exact_speech: kind !== "ANNOUNCEMENT",
+      exact_speech: exactSpeech,
       announcement_contextual: kind === "ANNOUNCEMENT",
+      isolated_text_generation: isolatedTextGeneration,
       provider_boundary: "realtime_provider_runtime",
     });
   }
@@ -392,7 +408,15 @@ export class CallSession extends BaseConstructor {
       callback_required: true,
       lucia_conversation_resumes: false,
     });
-    this.emitHandoffSpeechV37("FAILURE_TERMINAL", config.failurePolicy.message);
+    try {
+      await this.emitHandoffSpeechV37("FAILURE_TERMINAL", config.failurePolicy.message);
+    } catch (error) {
+      (this as any).diagnostics?.fail?.("HUMAN_HANDOFF_FAILURE_SPEECH_FAILED_V37", "HANDOFF_FAILURE_SPEECH_UNAVAILABLE", {
+        handoff_id: handoff.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await this.terminateAfterHandoffFailureV37("failure_message_unavailable");
+    }
   }
 
   private async terminateAfterHandoffFailureV37(trigger: string): Promise<void> {
@@ -538,7 +562,17 @@ export class CallSession extends BaseConstructor {
         && event.present
         && event.settings === null
       ) {
-        if (runtime.getConfig()) this.emitHandoffSpeechV37("ANNOUNCEMENT");
+        if (runtime.getConfig()) {
+          try {
+            await this.emitHandoffSpeechV37("ANNOUNCEMENT");
+          } catch (error) {
+            (this as any).diagnostics?.fail?.("HUMAN_HANDOFF_ANNOUNCEMENT_FAILED_V37", "HANDOFF_ANNOUNCEMENT_UNAVAILABLE", {
+              handoff_id: handoff.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            await this.failHandoffV37("FAILED", "ANNOUNCEMENT_SPEECH_UNAVAILABLE");
+          }
+        }
         continue;
       }
 

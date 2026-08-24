@@ -37,6 +37,11 @@ test("handoff announcement treats contextual text as untrusted data", () => {
 test("V37 uses contextual announcement policy while terminal failure remains exact speech", async () => {
   const source = await readFile(new URL("./call-session-v37.ts", import.meta.url), "utf8");
   assert.match(source, /buildHumanHandoffAnnouncementInstructions/);
+  assert.match(source, /optionalIsolatedTextGenerationPortFor\(this\)/);
+  assert.match(source, /await isolatedGeneration\.generate/);
+  assert.match(source, /\.\.\.\(exactText \? \{ exactText \} : \{\}\)/);
+  assert.match(source, /ANNOUNCEMENT_SPEECH_UNAVAILABLE/);
+  assert.match(source, /failure_message_unavailable/);
   assert.match(source, /announcement_contextual: kind === "ANNOUNCEMENT"/);
   assert.doesNotMatch(source, /emitHandoffSpeechV37\("ANNOUNCEMENT", config\.successMessage\)/);
   assert.match(source, /emitHandoffSpeechV37\("FAILURE_TERMINAL", config\.failurePolicy\.message\)/);
