@@ -164,6 +164,7 @@ export class GeminiMediaEdgeSidebandRuntime {
     }
 
     this.send(Object.freeze({ type: "CALLER_TURN_DECISION", itemId: id, decision: wireDecision, responseId }));
+    if (wireDecision !== "IGNORE") this.runtime.noteCallerTurnCommitted();
     this.callerContexts.delete(id);
     return context;
   }

@@ -91,6 +91,7 @@ test("disabled Gemini technical rehearsal preserves one identity trace from sele
         callerTurn: { itemId: event.itemId, transcript: event.transcript },
       });
       callerTurnDispositionPortFor(host).resolve({ itemId: event.itemId, disposition: "NORMAL" });
+      externalRealtimeProviderCommandPortFor(host, "GEMINI").createDefaultResponse();
       semanticToolGatePortFor(host).arm();
       trace.push({ stage: "CALLER_ITEM_COMMITTED", itemId: event.itemId, disposition: "NORMAL" });
       trace.push({ stage: "SEMANTIC_GATE_ARMED", itemId: event.itemId });

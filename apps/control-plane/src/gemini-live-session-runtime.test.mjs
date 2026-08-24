@@ -105,6 +105,41 @@ test("post-tool default response is consumed exactly once by Gemini provider-own
   assert.equal(h.sent.length, afterToolResponse);
 });
 
+test("committed caller audio consumes exactly one inherited default response without synthetic input", () => {
+  const { runtime, h } = startedRuntime();
+  const before = h.sent.length;
+
+  runtime.noteCallerTurnCommitted();
+  runtime.commandPort.createDefaultResponse();
+
+  assert.equal(h.sent.length, before);
+  assert.throws(
+    () => runtime.commandPort.createDefaultResponse(),
+    /default response creation has no proven neutral mapping/,
+  );
+  assert.equal(h.sent.length, before);
+});
+
+test("one inherited default response coalesces caller and post-tool provider-owned continuation", () => {
+  const { runtime, h } = startedRuntime();
+  runtime.noteCallerTurnCommitted();
+  runtime.observe(wire({ toolCall: { functionCalls: [{ id: "fc-coalesced", name: "reservation_search" }] } }));
+  runtime.commandPort.submitToolResult({
+    callId: "fc-coalesced",
+    toolName: "reservation_search",
+    output: { ok: true },
+  });
+  const afterToolResponse = h.sent.length;
+
+  runtime.commandPort.createDefaultResponse();
+
+  assert.equal(h.sent.length, afterToolResponse);
+  assert.throws(
+    () => runtime.commandPort.createDefaultResponse(),
+    /default response creation has no proven neutral mapping/,
+  );
+});
+
 test("default response without a preceding FunctionResponse still fails closed", () => {
   const { runtime, h } = startedRuntime();
   const before = h.sent.length;

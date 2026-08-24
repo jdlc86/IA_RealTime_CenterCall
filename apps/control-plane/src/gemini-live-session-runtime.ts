@@ -35,7 +35,7 @@ export type GeminiLiveCallerActivityBoundary = Readonly<{
 }>;
 
 class OwnedGeminiCommandPort implements RealtimeProviderCommandPort {
-  private providerOwnedContinuationPending = false;
+  private readonly providerOwnedContinuationReasons = new Set<"CALLER_TURN" | "TOOL_RESULT">();
 
   constructor(
     private readonly delegate: GeminiLiveCommandAdapter,
@@ -46,24 +46,35 @@ class OwnedGeminiCommandPort implements RealtimeProviderCommandPort {
   requestTextDecision(request: RealtimeTextDecisionRequest): void { this.delegate.requestTextDecision(request); }
   createSemanticResponse(request: RealtimeSemanticResponseRequest): void { this.delegate.createSemanticResponse(request); }
 
+  noteCallerTurnCommitted(): void {
+    if (this.providerOwnedContinuationReasons.has("CALLER_TURN")) {
+      throw new Error("Gemini Live caller turn continuation is already pending");
+    }
+    this.providerOwnedContinuationReasons.add("CALLER_TURN");
+  }
+
   submitToolResult(request: RealtimeToolResultRequest): void {
     if (!request.callId) throw new Error("Gemini Live owned tool response requires callId");
     this.owner.assertPendingToolCall(request.callId);
     this.delegate.submitToolResult(request);
     this.owner.noteToolResponseSubmitted(request.callId);
-    this.providerOwnedContinuationPending = true;
+    this.providerOwnedContinuationReasons.add("TOOL_RESULT");
   }
 
   updateSessionPolicy(update: RealtimeSessionPolicyUpdate): void { this.delegate.updateSessionPolicy(update); }
   setSemanticToolGate(armed: boolean): void { this.delegate.setSemanticToolGate(armed); }
 
   createDefaultResponse(): void {
-    if (this.providerOwnedContinuationPending) {
+    if (this.providerOwnedContinuationReasons.size > 0) {
       const snapshot = this.owner.snapshot();
-      if (snapshot.state === "TOOL_WAIT" || snapshot.state === "GENERATING") {
-        if (snapshot.pendingToolCallIds.length === 0) this.providerOwnedContinuationPending = false;
-        return;
+      if (this.providerOwnedContinuationReasons.has("TOOL_RESULT")) {
+        if (snapshot.state !== "TOOL_WAIT" && snapshot.state !== "GENERATING") {
+          throw new Error(`Gemini Live tool continuation is invalid while session state is ${snapshot.state}`);
+        }
+        if (snapshot.pendingToolCallIds.length > 0) return;
       }
+      this.providerOwnedContinuationReasons.clear();
+      return;
     }
     this.delegate.createDefaultResponse();
   }
@@ -92,6 +103,7 @@ export class GeminiLiveSessionRuntime {
   private readonly owner = new GeminiLiveSessionOwner();
   private readonly callerActivity = new GeminiLiveCallerActivityOwner();
   private readonly adapter: GeminiLiveCommandAdapter;
+  private readonly ownedCommandPort: OwnedGeminiCommandPort;
   readonly commandPort: RealtimeProviderCommandPort;
 
   constructor(
@@ -99,7 +111,8 @@ export class GeminiLiveSessionRuntime {
     private readonly initialSetup: GeminiLiveInitialSetup,
   ) {
     this.adapter = new GeminiLiveCommandAdapter(host);
-    this.commandPort = new OwnedGeminiCommandPort(this.adapter, this.owner);
+    this.ownedCommandPort = new OwnedGeminiCommandPort(this.adapter, this.owner);
+    this.commandPort = this.ownedCommandPort;
   }
 
   start(): GeminiLiveSessionSnapshot {
@@ -147,6 +160,11 @@ export class GeminiLiveSessionRuntime {
     this.host.send({ realtimeInput: { activityEnd: {} } });
     const stopped = this.callerActivity.end();
     return Object.freeze({ event: stopped.event, itemId: stopped.itemId });
+  }
+
+  /** Records that authenticated caller audio was committed and will make Live continue automatically. */
+  noteCallerTurnCommitted(): void {
+    this.ownedCommandPort.noteCallerTurnCommitted();
   }
 
   observe(data: unknown): GeminiLiveSessionRuntimeObservation {

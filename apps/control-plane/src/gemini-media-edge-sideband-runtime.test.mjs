@@ -130,6 +130,9 @@ test("normal caller decision requires current response and playback to be idle",
   runtime.observe({ type: "CALLER_EVENT", event: { type: "CALLER_TRANSCRIPT_COMPLETED", itemId: "gemini-candidate-1", transcript: "Quiero reservar" } });
   assert.deepEqual(runtime.resolveCallerTurn("gemini-candidate-1", "NORMAL"), { itemId: "gemini-candidate-1", playbackResponseIdAtStart: null });
   assert.deepEqual(sent, [{ type: "CALLER_TURN_DECISION", itemId: "gemini-candidate-1", decision: "NORMAL", responseId: null }]);
+  runtime.commandPort.createDefaultResponse();
+  assert.deepEqual(sent, [{ type: "CALLER_TURN_DECISION", itemId: "gemini-candidate-1", decision: "NORMAL", responseId: null }]);
+  assert.throws(() => runtime.commandPort.createDefaultResponse(), /default response creation/);
   assert.equal(runtime.callerContext("gemini-candidate-1"), null);
 });
 
@@ -174,6 +177,7 @@ test("ignore discards either normal or overlapping caller candidates without pro
   runtime.observe({ type: "CALLER_EVENT", event: { type: "CALLER_TRANSCRIPT_COMPLETED", itemId: "gemini-candidate-1", transcript: "ruido" } });
   runtime.resolveCallerTurn("gemini-candidate-1", "IGNORE");
   assert.deepEqual(sent, [{ type: "CALLER_TURN_DECISION", itemId: "gemini-candidate-1", decision: "IGNORE", responseId: null }]);
+  assert.throws(() => runtime.commandPort.createDefaultResponse(), /default response creation/);
 });
 
 test("sideband tool call preserves provider identity through owner and FunctionResponse", () => {
