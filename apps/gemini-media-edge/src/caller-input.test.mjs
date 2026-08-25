@@ -4,7 +4,7 @@ import { AuthoritativeCallerInputOwner, TelnyxSampleCountVad } from "./caller-in
 
 function frame(sample, samples = 320) {
   const bytes = Buffer.alloc(samples * 2);
-  for (let index = 0; index < samples; index += 1) bytes.writeInt16BE(sample, index * 2);
+  for (let index = 0; index < samples; index += 1) bytes.writeInt16LE(sample, index * 2);
   return bytes.toString("base64");
 }
 
@@ -12,7 +12,7 @@ const voiced = frame(12_000);
 const silence = frame(0);
 const config = { startRms: 0.2, stopRms: 0.05, minSpeechMs: 40, minSilenceMs: 40 };
 
-test("sample-count VAD decodes Telnyx L16 network byte order and uses media samples rather than arrival time", () => {
+test("sample-count VAD decodes verified Telnyx WebSocket L16 little-endian and uses media samples", () => {
   const vad = new TelnyxSampleCountVad(config);
   assert.equal(vad.observe(voiced).boundary, null);
   const started = vad.observe(voiced);
@@ -23,7 +23,18 @@ test("sample-count VAD decodes Telnyx L16 network byte order and uses media samp
   assert.equal(vad.snapshot().processedSamples, 1_280);
 });
 
-test("authoritative owner buffers canonical PCM16 little-endian and emits completed transcript only after STT", async () => {
+test("production VAD threshold accepts moderate telephone speech levels", () => {
+  const vad = new TelnyxSampleCountVad({ startRms: 0.04, stopRms: 0.015, minSpeechMs: 40, minSilenceMs: 160 });
+  const moderateSpeech = frame(1_800);
+  assert.equal(vad.observe(moderateSpeech).boundary, null);
+  const started = vad.observe(moderateSpeech);
+  assert.equal(started.boundary.type, "SPEECH_START");
+  assert.ok(started.rms > 0.04);
+  for (let index = 0; index < 7; index += 1) assert.equal(vad.observe(silence).boundary, null);
+  assert.equal(vad.observe(silence).boundary.type, "SPEECH_END");
+});
+
+test("authoritative owner buffers exact PCM16 little-endian and emits completed transcript only after STT", async () => {
   const requests = [];
   const owner = new AuthoritativeCallerInputOwner(async (request) => {
     requests.push(request);
