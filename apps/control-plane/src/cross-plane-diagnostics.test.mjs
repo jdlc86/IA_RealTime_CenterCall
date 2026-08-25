@@ -33,6 +33,22 @@ test("cross-plane diagnostics preserve only bounded technical evidence", () => {
   assert.equal(JSON.stringify(event).includes("transcript"), false);
 });
 
+test("cross-plane diagnostics preserve safe semantic tool identity and direct-output authority", () => {
+  const event = normalizeCrossPlaneDiagnosticEvent({
+    ...baseEvent(),
+    plane: "media_edge",
+    component: "gemini-media-edge",
+    stage: "SEMANTIC_PRESELECTION_COMPLETED",
+    severity: "info",
+    error_code: null,
+    tool_name: "restaurant_conversation",
+    details: { direct_model_output_allowed: true },
+  });
+  assert.equal(event.tool_name, "restaurant_conversation");
+  assert.equal(event.details?.direct_model_output_allowed, true);
+  assert.equal(JSON.stringify(event).includes("transcript"), false);
+});
+
 test("cross-plane diagnostics reject transcript, audio and credential fields", () => {
   assert.throws(
     () => normalizeCrossPlaneDiagnosticEvent({ ...baseEvent(), transcript: "hola soy Ana" }),
