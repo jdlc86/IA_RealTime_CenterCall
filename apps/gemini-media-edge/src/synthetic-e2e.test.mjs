@@ -114,6 +114,13 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
     bindControlSession: (identity, sink) => registry.bindCommandSink(identity, sink),
     isControlSessionActive: (identity) => registry.isActive(identity),
     emitControlEvent: (identity, frame) => registry.emit(identity, frame),
+    semanticPreselect: async ({ claims: identity, bootstrap: activeBootstrap, transcript }) => {
+      assert.equal(identity.tenantId, claims.tenantId);
+      assert.equal(identity.callControlId, claims.callControlId);
+      assert.equal(activeBootstrap, bootstrap);
+      assert.equal(transcript, "¿A qué hora abren?");
+      return { selectedTool: "restaurant_business_info", directModelOutputAllowed: false };
+    },
     authoritativeTranscribe: async (request) => ({ itemId: request.itemId, transcript: "¿A qué hora abren?" }),
     synthesizeGovernedSpeech: async ({ text }) => ({
       text,
@@ -188,9 +195,9 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
     );
     const itemId = transcriptFrame.event.itemId;
 
-    registry.command(claims, { type: "CALLER_TURN_DECISION", itemId, decision: "NORMAL", responseId: null });
+    await registry.command(claims, { type: "CALLER_TURN_DECISION", itemId, decision: "NORMAL", responseId: null });
     trace.push({ stage: "CALLER_ITEM_COMMITTED", itemId, disposition: "NORMAL" });
-    registry.command(claims, { type: "SEMANTIC_GATE_ARM" });
+    await registry.command(claims, { type: "SEMANTIC_GATE_ARM" });
     trace.push({ stage: "SEMANTIC_GATE_ARMED", itemId });
     const committedCallerFrames = gemini.sent.slice(1).map((message) => Object.keys(message.realtimeInput)[0]);
     assert.equal(committedCallerFrames[0], "activityStart");
