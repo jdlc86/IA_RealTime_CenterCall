@@ -160,6 +160,20 @@ export function commitDeferredCallerTurn(gemini, turn, assertBackpressure) {
   assertBackpressure(gemini, "Gemini Live"); safeSend(gemini, { realtimeInput: { activityEnd: {} } });
 }
 
+export async function preselectAndCommitDeferredCallerTurn(options) {
+  const gate = options?.semanticGate;
+  const itemId = required(options?.itemId, "Gemini semantic preselection caller item id");
+  if (!gate || typeof gate.preArm !== "function" || typeof gate.preselect !== "function") throw new Error("Gemini semantic preselection gate is required");
+  if (typeof options?.semanticPreselect !== "function") throw new Error("Gemini semantic preselection function is required");
+  if (typeof options?.commit !== "function") throw new Error("Gemini semantic preselection commit function is required");
+  gate.preArm(itemId);
+  const selection = await options.semanticPreselect({ itemId, transcript: required(options?.turn?.transcript, "Gemini semantic preselection transcript") });
+  gate.preselect(itemId, selection);
+  options.assertStillActive?.();
+  options.commit();
+  return selection;
+}
+
 export function createGeminiMediaEdgeRuntime(options) {
   const apiKey = required(options.geminiApiKey, "GEMINI_API_KEY");
   if (typeof options.verifyCredential !== "function") throw new Error("Gemini media edge credential verifier is required");
@@ -168,6 +182,7 @@ export function createGeminiMediaEdgeRuntime(options) {
   if (typeof options.authoritativeTranscribe !== "function") throw new Error("Gemini media edge authoritative transcriber is required");
   if (typeof options.synthesizeGovernedSpeech !== "function") throw new Error("Gemini media edge governed speech synthesizer is required");
   if (typeof options.isControlSessionActive !== "function") throw new Error("Gemini media edge control-session authority is required");
+  if (typeof options.semanticPreselect !== "function") throw new Error("Gemini media edge semantic preselection authority is required");
   if (!options.callerVadConfig || typeof options.callerVadConfig !== "object") throw new Error("Gemini media edge caller VAD configuration is required");
   const model = required(options.model ?? "gemini-3.1-flash-live-preview", "GEMINI_LIVE_MODEL");
   const maxBufferedBytes = Number(options.maxBufferedBytes ?? 1_048_576);
@@ -188,6 +203,26 @@ export function createGeminiMediaEdgeRuntime(options) {
     const assertBackpressure = (socket, label) => assertMediaEdgeSocketWritable(socket, label, maxBufferedBytes);
     const emitRequiredControlEvent = (event, error) => { if (options.emitControlEvent?.(state.claims, event) !== true) throw new Error(error); };
     const emitPlaybackChunks = (chunks, onFirstQueued = null) => { for (const chunk of chunks) { assertBackpressure(telnyx, "Telnyx"); const pcm16le = requirePcm16LittleEndian(chunk.pcm, "Telnyx playback PCM16"); safeSend(telnyx, { event: "media", media: { payload: encodeBase64(pcm16le) } }); const noted = state.playback.noteQueued(chunk.responseId); if (noted.first) { onFirstQueued?.(); const delivered = options.emitControlEvent?.(state.claims, { type: "PLAYBACK_EVENT", event: { type: "ASSISTANT_AUDIO_STARTED", kind: chunk.kind, responseId: chunk.responseId } }); if (onFirstQueued && delivered !== true) throw new Error("Governed speech playback start requires active control sideband"); } } };
+    const commitPreselectedTurn = (command, turn) => preselectAndCommitDeferredCallerTurn({
+      semanticGate: state.semanticGate,
+      itemId: command.itemId,
+      turn,
+      semanticPreselect: ({ itemId, transcript }) => options.semanticPreselect({ claims: state.claims, bootstrap: state.bootstrap, itemId, transcript }),
+      assertStillActive: () => {
+        if (state.closed || options.isControlSessionActive(state.claims) !== true) throw new Error("Gemini semantic preselection session is no longer active");
+      },
+      commit: () => commitDeferredCallerTurn(state.gemini, turn, assertBackpressure),
+    }).then((selection) => {
+      diagnose("SEMANTIC_PRESELECTION_COMPLETED", {
+        itemId: command.itemId,
+        selectedTool: selection.selectedTool,
+        directModelOutputAllowed: selection.directModelOutputAllowed,
+      });
+      return selection;
+    }).catch((error) => {
+      closeBoth("SEMANTIC_PRESELECTION_FAILED");
+      throw error;
+    });
     const submitControlCommand = (command) => {
       if (!state.setupComplete || state.gemini?.readyState !== OPEN) throw new Error("Gemini Live control command requires setupComplete");
       if (command.type === "SEMANTIC_GATE_ARM") { state.semanticGate.confirmArm(); return; }
@@ -230,27 +265,25 @@ export function createGeminiMediaEdgeRuntime(options) {
           // A candidate may have begun while an older playback was active and be
           // downgraded to NORMAL after that exact playback fully drained. The
           // authenticated control plane owns that temporal decision; only current
-          // physical playback must be idle here.
-          state.semanticGate.preArm(command.itemId);
-          commitDeferredCallerTurn(state.gemini, turn, assertBackpressure);
-          return;
+          // physical playback must be idle here. The semantic gate is pre-armed
+          // synchronously, but audio stays deferred until isolated preselection.
+          return commitPreselectedTurn(command, turn);
         }
         if (command.decision === "INTERRUPT") {
           const responseId = required(command.responseId, "Gemini interruption response id");
           if (state.playback.activeResponseId() !== responseId) throw new Error(`Gemini interruption playback identity mismatch: expected ${state.playback.activeResponseId() ?? "<none>"}`);
           const turn = state.callerInput.resolve(command.itemId, "INTERRUPT");
           if (turn.playbackResponseIdAtStart !== responseId) throw new Error(`Gemini interruption caller identity mismatch: expected ${turn.playbackResponseIdAtStart ?? "<none>"}`);
-          // Preserve the proven effect order: commit authorized activity to Gemini
-          // first. Only after all provider sends succeed may Telnyx playout clear.
-          state.semanticGate.preArm(command.itemId);
-          commitDeferredCallerTurn(state.gemini, turn, assertBackpressure);
-          requestCorrelatedPlaybackClear({
-            command: { type: "PLAYBACK_CLEAR", responseId },
-            playback: state.playback,
-            sendClear: () => { assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "clear" }); },
-            sendMark: (mark) => { assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "mark", mark: { name: mark } }); },
+          // Preserve effect order: isolated semantic preselection and authorized
+          // caller activity commit must both succeed before Telnyx playout clears.
+          return commitPreselectedTurn(command, turn).then(() => {
+            requestCorrelatedPlaybackClear({
+              command: { type: "PLAYBACK_CLEAR", responseId },
+              playback: state.playback,
+              sendClear: () => { assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "clear" }); },
+              sendMark: (mark) => { assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "mark", mark: { name: mark } }); },
+            });
           });
-          return;
         }
         throw new Error("Gemini caller turn decision is unsupported");
       }
