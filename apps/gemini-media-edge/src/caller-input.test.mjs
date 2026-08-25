@@ -4,7 +4,7 @@ import { AuthoritativeCallerInputOwner, TelnyxSampleCountVad } from "./caller-in
 
 function frame(sample, samples = 320) {
   const bytes = Buffer.alloc(samples * 2);
-  for (let index = 0; index < samples; index += 1) bytes.writeInt16LE(sample, index * 2);
+  for (let index = 0; index < samples; index += 1) bytes.writeInt16BE(sample, index * 2);
   return bytes.toString("base64");
 }
 
@@ -12,7 +12,7 @@ const voiced = frame(12_000);
 const silence = frame(0);
 const config = { startRms: 0.2, stopRms: 0.05, minSpeechMs: 40, minSilenceMs: 40 };
 
-test("sample-count VAD uses media samples rather than arrival time", () => {
+test("sample-count VAD decodes Telnyx L16 network byte order and uses media samples rather than arrival time", () => {
   const vad = new TelnyxSampleCountVad(config);
   assert.equal(vad.observe(voiced).boundary, null);
   const started = vad.observe(voiced);
@@ -23,7 +23,7 @@ test("sample-count VAD uses media samples rather than arrival time", () => {
   assert.equal(vad.snapshot().processedSamples, 1_280);
 });
 
-test("authoritative owner buffers exact onset and emits completed transcript only after STT", async () => {
+test("authoritative owner buffers canonical PCM16 little-endian and emits completed transcript only after STT", async () => {
   const requests = [];
   const owner = new AuthoritativeCallerInputOwner(async (request) => {
     requests.push(request);
@@ -40,6 +40,8 @@ test("authoritative owner buffers exact onset and emits completed transcript onl
   assert.equal(requests.length, 1);
   assert.equal(requests[0].itemId, "gemini-candidate-1");
   assert.equal(requests[0].payloads.length, 5);
+  const firstBuffered = Buffer.from(requests[0].payloads[0], "base64");
+  assert.equal(firstBuffered.readInt16LE(0), 12_000);
   assert.deepEqual(completed.events, [
     { type: "CALLER_SPEECH_STOPPED", itemId: "gemini-candidate-1" },
     { type: "CALLER_TRANSCRIPT_COMPLETED", itemId: "gemini-candidate-1", transcript: "hola mundo", playbackResponseIdAtStart: null },
@@ -58,6 +60,7 @@ test("playback identity is captured on first acoustic evidence, before speech th
   const released = owner.resolve("gemini-candidate-1", "INTERRUPT");
   assert.equal(released.playbackResponseIdAtStart, "gemini-response-original");
   assert.equal(released.mediaPayloads.length, 4);
+  assert.equal(Buffer.from(released.mediaPayloads[0], "base64").readInt16LE(0), 12_000);
 });
 
 test("STT identity mismatch fails closed and discards candidate", async () => {
