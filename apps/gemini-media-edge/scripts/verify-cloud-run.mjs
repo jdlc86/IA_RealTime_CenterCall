@@ -47,8 +47,16 @@ async function expectUnauthorizedWebSocket(url, label) {
 const { edge, origin, control } = edgeUrls(process.argv[2] ?? process.env.GEMINI_MEDIA_EDGE_URL);
 const healthUrl = new URL("/ready", origin);
 const healthResponse = await fetch(healthUrl, { headers: { Accept: "application/json" }, cache: "no-store" });
-if (!healthResponse.ok) throw new Error(`Cloud Run health check failed with HTTP ${healthResponse.status}`);
-const health = await healthResponse.json();
+let health = null;
+try { health = await healthResponse.json(); } catch {}
+if (!healthResponse.ok) {
+  const category = typeof health?.semanticDecision?.failureCategory === "string"
+    ? health.semanticDecision.failureCategory
+    : typeof health?.semanticDecision?.status === "string"
+      ? health.semanticDecision.status.toUpperCase()
+      : "UNAVAILABLE";
+  throw new Error(`Cloud Run health check failed with HTTP ${healthResponse.status}; semanticDecision=${category}`);
+}
 if (health?.ok !== true || health?.service !== "gemini-media-edge") {
   throw new Error("Cloud Run health response does not identify gemini-media-edge");
 }
@@ -69,6 +77,7 @@ console.log(JSON.stringify({
   ok: true,
   service: health.service,
   healthStatus: healthResponse.status,
+  semanticDecisionStatus: health.semanticDecision?.status ?? null,
   bootstrapUnauthenticatedStatus: bootstrapResponse.status,
   mediaIngressUnauthenticatedStatus: 401,
   controlSidebandUnauthenticatedStatus: 401,
