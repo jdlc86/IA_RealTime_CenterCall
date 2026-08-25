@@ -88,6 +88,15 @@ export class AuthoritativeCallerInputOwner extends CoreAuthoritativeCallerInputO
         return result;
       } catch (error) {
         const failure = classifySttFailure(error);
+        if (failure.errorCode === "STT_EMPTY_TRANSCRIPT") {
+          this.emitDiagnostic("STT_EMPTY_TRANSCRIPT", {
+            component: "google-speech",
+            itemId,
+            durationMs: Date.now() - startedAt,
+            ...metrics,
+          });
+          return Object.freeze({ itemId, transcript: "" });
+        }
         this.emitDiagnostic("STT_FAILED", {
           component: "google-speech",
           itemId,

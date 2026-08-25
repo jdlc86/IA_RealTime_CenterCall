@@ -83,6 +83,27 @@ test("STT identity mismatch fails closed and discards candidate", async () => {
   assert.equal(owner.snapshot().activeItemId, null);
 });
 
+test("empty STT evidence becomes an ignorable caller candidate without closing input", async () => {
+  const owner = new AuthoritativeCallerInputOwner(async () => {
+    throw new Error("Google Speech returned no transcript");
+  }, config);
+  await owner.observe(voiced, "gemini-response-1");
+  await owner.observe(voiced, "gemini-response-1");
+  await owner.observe(silence, "gemini-response-1");
+  const completed = await owner.observe(silence, "gemini-response-1");
+
+  assert.deepEqual(completed.events, [
+    { type: "CALLER_SPEECH_STOPPED", itemId: "gemini-candidate-1" },
+    { type: "CALLER_TRANSCRIPT_COMPLETED", itemId: "gemini-candidate-1", transcript: "", playbackResponseIdAtStart: "gemini-response-1" },
+  ]);
+  assert.equal(owner.snapshot().transcriptReady, true);
+  assert.throws(() => owner.resolve("gemini-candidate-1", "INTERRUPT"), /no authoritative transcript/);
+  const ignored = owner.resolve("gemini-candidate-1", "IGNORE");
+  assert.equal(ignored.transcript, "");
+  assert.equal(owner.snapshot().activeItemId, null);
+  assert.equal(owner.snapshot().inputDetectionEnabled, true);
+});
+
 test("candidate cannot be resolved before authoritative transcript completion", async () => {
   const owner = new AuthoritativeCallerInputOwner(async (request) => ({ itemId: request.itemId, transcript: "texto" }), config);
   await owner.observe(voiced);

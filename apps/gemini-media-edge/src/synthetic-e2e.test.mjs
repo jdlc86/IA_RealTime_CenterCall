@@ -72,12 +72,14 @@ async function eventually(predicate, message) {
 
 test("synthetic media E2E traces authorized caller audio, tools, playout and governed cleanup", async () => {
   const trace = [];
+  const diagnostics = [];
   const controlFrames = [];
   const telnyxFrames = [];
   const registry = new InMemoryControlSidebandRegistry();
   let gemini = null;
   let credentialConsumptions = 0;
   let bootstrapConsumptions = 0;
+  let transcriptionAttempts = 0;
 
   const controlAttachment = registry.attach(claims, (frame) => {
     controlFrames.push(frame);
@@ -114,6 +116,7 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
     bindControlSession: (identity, sink) => registry.bindCommandSink(identity, sink),
     isControlSessionActive: (identity) => registry.isActive(identity),
     emitControlEvent: (identity, frame) => registry.emit(identity, frame),
+    observeDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
     semanticPreselect: async ({ claims: identity, bootstrap: activeBootstrap, transcript }) => {
       assert.equal(identity.tenantId, claims.tenantId);
       assert.equal(identity.callControlId, claims.callControlId);
@@ -121,7 +124,11 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
       assert.equal(transcript, "¿A qué hora abren?");
       return { selectedTool: "restaurant_business_info", directModelOutputAllowed: false };
     },
-    authoritativeTranscribe: async (request) => ({ itemId: request.itemId, transcript: "¿A qué hora abren?" }),
+    authoritativeTranscribe: async (request) => {
+      transcriptionAttempts += 1;
+      if (transcriptionAttempts === 1) return { itemId: request.itemId, transcript: "¿A qué hora abren?" };
+      throw new Error("Google Speech returned no transcript");
+    },
     synthesizeGovernedSpeech: async ({ text }) => ({
       text,
       pcm16le: Buffer.from([0x01, 0x02, 0x03, 0x04]),
@@ -260,6 +267,31 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
       () => controlFrames.find((frame) => frame.type === "PLAYBACK_EVENT" && frame.event.type === "ASSISTANT_AUDIO_STOPPED" && frame.event.responseId === "normal-response-synthetic-1"),
       "Normal playback completion was not correlated",
     );
+
+    const beforeEmptyCandidate = controlFrames.length;
+    for (const [offset, payload] of [voiced, voiced, silence, silence].entries()) {
+      telnyx.send(JSON.stringify({
+        event: "media",
+        stream_id: "stream-synthetic-1",
+        media: { track: "inbound", chunk: String(offset + 5), payload },
+      }));
+    }
+    const emptyTranscriptFrame = await eventually(
+      () => controlFrames.slice(beforeEmptyCandidate).find((frame) =>
+        frame.type === "CALLER_EVENT" && frame.event.type === "CALLER_TRANSCRIPT_COMPLETED"),
+      "Empty caller transcript was not surfaced for neutral ignore resolution",
+    );
+    assert.equal(emptyTranscriptFrame.event.transcript, "");
+    await registry.command(claims, {
+      type: "CALLER_TURN_DECISION",
+      itemId: emptyTranscriptFrame.event.itemId,
+      decision: "IGNORE",
+      responseId: null,
+    });
+    assert.equal(runtime.activeSessions(), 1);
+    assert.equal(diagnostics.some((entry) => entry.stage === "STT_EMPTY_TRANSCRIPT"), true);
+    assert.equal(diagnostics.some((entry) => entry.stage === "STT_FAILED"), false);
+    assert.equal(diagnostics.some((entry) => entry.stage === "MEDIA_SESSION_CLOSING"), false);
 
     await registry.command(claims, {
       type: "GOVERNED_SPEECH",

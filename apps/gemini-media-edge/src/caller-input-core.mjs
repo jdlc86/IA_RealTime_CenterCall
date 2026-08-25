@@ -178,7 +178,8 @@ export class AuthoritativeCallerInputOwner {
         }
         if (!this.active || this.active.itemId !== candidate.itemId) throw new Error(`Gemini caller transcription became stale: ${candidate.itemId}`);
         if (required(evidence?.itemId, "Gemini caller transcript item id") !== candidate.itemId) throw new Error(`Gemini caller transcript identity mismatch: expected ${candidate.itemId}`);
-        const transcript = required(evidence?.transcript, "Gemini caller authoritative transcript").replace(/\s+/g, " ").trim();
+        if (typeof evidence?.transcript !== "string") throw new Error("Gemini caller authoritative transcript is required");
+        const transcript = evidence.transcript.replace(/\s+/g, " ").trim();
         candidate.transcript = transcript;
         events.push(Object.freeze({ type: "CALLER_SPEECH_STOPPED", itemId: candidate.itemId }));
         events.push(Object.freeze({ type: "CALLER_TRANSCRIPT_COMPLETED", itemId: candidate.itemId, transcript, playbackResponseIdAtStart: candidate.playbackResponseIdAtStart }));
@@ -196,8 +197,10 @@ export class AuthoritativeCallerInputOwner {
 
   resolve(itemId, decision) {
     const candidate = this.requireMatching(itemId);
-    if (!candidate.transcript) throw new Error(`Gemini caller candidate ${candidate.itemId} has no authoritative transcript`);
     if (!["NORMAL", "INTERRUPT", "IGNORE"].includes(decision)) throw new Error("Gemini caller decision is invalid");
+    if (candidate.transcript === null || (!candidate.transcript && decision !== "IGNORE")) {
+      throw new Error(`Gemini caller candidate ${candidate.itemId} has no authoritative transcript`);
+    }
     const result = Object.freeze({ itemId: candidate.itemId, transcript: candidate.transcript, mediaPayloads: Object.freeze([...candidate.payloads]), playbackResponseIdAtStart: candidate.playbackResponseIdAtStart, decision });
     this.active = null;
     this.provisionalPlaybackResponseId = undefined;
@@ -226,7 +229,7 @@ export class AuthoritativeCallerInputOwner {
 
   buffer(payload) {
     const candidate = this.requireActive();
-    if (candidate.transcript) throw new Error(`Gemini caller candidate ${candidate.itemId} is already completed`);
+    if (candidate.transcript !== null) throw new Error(`Gemini caller candidate ${candidate.itemId} is already completed`);
     const normalized = required(payload, "Gemini caller candidate payload");
     if (candidate.payloads.length >= this.maxBufferedChunks) throw new Error(`Gemini caller candidate ${candidate.itemId} exceeded buffered chunk limit`);
     const next = candidate.payloadChars + normalized.length;
@@ -237,5 +240,5 @@ export class AuthoritativeCallerInputOwner {
 
   requireActive() { if (!this.active) throw new Error("Gemini caller candidate is not active"); return this.active; }
   requireMatching(itemId) { const candidate = this.requireActive(); const normalized = required(itemId, "Gemini caller item id"); if (normalized !== candidate.itemId) throw new Error(`Gemini caller candidate identity mismatch: expected ${candidate.itemId}`); return candidate; }
-  snapshot() { return Object.freeze({ activeItemId: this.active?.itemId ?? null, sequence: this.sequence, bufferedChunks: this.active?.payloads.length ?? 0, bufferedPayloadChars: this.active?.payloadChars ?? 0, transcriptReady: Boolean(this.active?.transcript), transcriptionInFlightItemId: this.transcriptionInFlight?.itemId ?? null, provisionalPlaybackResponseId: this.provisionalPlaybackResponseId ?? null, inputDetectionEnabled: this.inputDetectionEnabled }); }
+  snapshot() { return Object.freeze({ activeItemId: this.active?.itemId ?? null, sequence: this.sequence, bufferedChunks: this.active?.payloads.length ?? 0, bufferedPayloadChars: this.active?.payloadChars ?? 0, transcriptReady: this.active ? this.active.transcript !== null : false, transcriptionInFlightItemId: this.transcriptionInFlight?.itemId ?? null, provisionalPlaybackResponseId: this.provisionalPlaybackResponseId ?? null, inputDetectionEnabled: this.inputDetectionEnabled }); }
 }
