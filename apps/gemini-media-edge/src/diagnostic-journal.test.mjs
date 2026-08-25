@@ -55,6 +55,28 @@ test("STT failure stores only stable category, status and bounded metrics", () =
   assert.equal(serialized.includes("transcript"), false);
 });
 
+test("semantic preselection stores only safe selected-tool identity and direct-output authority", () => {
+  const journal = new InMemoryDiagnosticJournal({ ttlMs: 60_000 });
+  const event = journal.record({
+    tenantId: "restaurante-centro",
+    callControlId: "v3:test",
+    stage: "SEMANTIC_PRESELECTION_COMPLETED",
+    itemId: "gemini-candidate-1",
+    selectedTool: "restaurant_conversation",
+    directModelOutputAllowed: true,
+    transcript: "quiero hacer una reserva",
+    prompt: "private classifier prompt",
+    providerBody: "private provider body",
+  }, 2_100_000);
+  const serialized = JSON.stringify(event);
+  assert.equal(event.tool_name, "restaurant_conversation");
+  assert.equal(event.details.direct_model_output_allowed, true);
+  assert.equal(serialized.includes("quiero hacer una reserva"), false);
+  assert.equal(serialized.includes("private classifier prompt"), false);
+  assert.equal(serialized.includes("private provider body"), false);
+  assert.equal(serialized.includes("transcript"), false);
+});
+
 test("diagnostic journal is bounded and expires old calls", () => {
   const journal = new InMemoryDiagnosticJournal({ maxCalls: 1, maxEventsPerCall: 2, ttlMs: 60_000 });
   journal.record({ tenantId: "tenant-a", callControlId: "call-a", stage: "MEDIA_SOCKET_AUTHORIZED" }, 3_000_000);

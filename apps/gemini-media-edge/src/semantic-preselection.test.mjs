@@ -12,16 +12,34 @@ function bootstrap() {
     tools: [
       { type: "function", name: "restaurant_conversation", description: "Ask a follow-up or continue ordinary conversation.", parameters: { type: "object", properties: {} } },
       { type: "function", name: "restaurant_business_info", description: "Read authoritative business information.", parameters: { type: "object", properties: { topic: { type: "string" } }, required: ["topic"] } },
-      { type: "function", name: "restaurant_reservation_create", description: "Create an authoritative reservation.", parameters: { type: "object", properties: { date: { type: "string" }, time: { type: "string" }, party_size: { type: "integer" } }, required: ["date", "time", "party_size"] } },
+      {
+        type: "function",
+        name: "restaurant_reservation_create",
+        description: "Create or continue a reservation after the caller has chosen a concrete date and time; partial arguments are accepted so the backend can continue a multi-turn draft.",
+        parameters: {
+          type: "object",
+          properties: {
+            party_size: { type: "integer" },
+            starts_at: { type: "string" },
+            confirm: { type: "boolean" },
+          },
+          additionalProperties: false,
+        },
+      },
     ],
   };
 }
 
-test("preselection request exposes only bootstrap tool identities and required field names, never transcript in instructions", () => {
+test("preselection request reflects production-like partial reservation schemas without treating empty required as readiness", () => {
   const request = buildSemanticPreselectionRequest(bootstrap(), "quiero hacer una reserva");
   assert.equal(request.inputText, "quiero hacer una reserva");
   assert.equal(request.instructions.includes("quiero hacer una reserva"), false);
-  assert.equal(request.instructions.includes("Required inputs: date, time, party_size."), true);
+  assert.equal(request.instructions.includes("Declared required inputs: topic."), true);
+  assert.equal(request.instructions.includes("restaurant_reservation_create: Create or continue a reservation after the caller has chosen a concrete date and time"), true);
+  assert.equal(request.instructions.includes("Declared required inputs: none."), true);
+  assert.equal(request.instructions.includes("Available input fields: party_size, starts_at, confirm."), true);
+  assert.equal(request.instructions.includes("Missing or empty required fields never mean that an intent-only turn is semantically ready"), true);
+  assert.equal(request.instructions.includes("supports progressive or partial arguments must not be preselected"), true);
   assert.equal(request.responseMimeType, "application/json");
   assert.deepEqual(request.allowedToolNames, [
     "restaurant_conversation",
@@ -56,11 +74,13 @@ test("isolated resolver preserves exact schema-constrained decision contract", a
   const result = await resolveSemanticPreselection(async (request) => {
     calls.push(request);
     return '{"selectedTool":"restaurant_conversation"}';
-  }, bootstrap(), "quiero reservar");
+  }, bootstrap(), "quiero hacer una reserva");
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].inputText, "quiero reservar");
+  assert.equal(calls[0].inputText, "quiero hacer una reserva");
   assert.equal(calls[0].maxOutputTokens, 64);
   assert.equal(calls[0].responseMimeType, "application/json");
+  assert.equal(calls[0].instructions.includes("Declared required inputs: none."), true);
+  assert.equal(calls[0].instructions.includes("Available input fields: party_size, starts_at, confirm."), true);
   assert.deepEqual(calls[0].responseJsonSchema.properties.selectedTool.enum, [
     "restaurant_conversation",
     "restaurant_business_info",

@@ -79,6 +79,9 @@ function safeDetails(input) {
     const safe = boundedNumber(value);
     if (safe !== null) details[key] = safe;
   }
+  if (typeof input.directModelOutputAllowed === "boolean") {
+    details.direct_model_output_allowed = input.directModelOutputAllowed;
+  }
   return Object.freeze(details);
 }
 
@@ -152,6 +155,7 @@ export class InMemoryDiagnosticJournal {
       response_id: safeOpaque(input.responseId),
       item_id: safeOpaque(input.itemId),
       stream_id: safeOpaque(input.streamId),
+      tool_name: safeDetailCode(input.toolName ?? input.selectedTool),
       elapsed_ms: Math.max(0, now - bucket.startedAtEpochMs),
       duration_ms: boundedInteger(input.durationMs, 3_600_000),
       audio_duration_ms: boundedInteger(input.audioDurationMs, 3_600_000),
