@@ -14,6 +14,9 @@ test("Gemini semantic gate requires pre-authorized caller ownership before contr
     armed: true,
     activeItemId: "item-1",
     confirmed: false,
+    preselectedTool: null,
+    directModelOutputAllowed: false,
+    directModelOutputObserved: false,
     selectedTool: null,
     selectedCallId: null,
   });
@@ -70,6 +73,9 @@ test("Gemini semantic gate keeps speech closed while a provisional tool selectio
     armed: true,
     activeItemId: "item-1",
     confirmed: true,
+    preselectedTool: null,
+    directModelOutputAllowed: false,
+    directModelOutputObserved: false,
     selectedTool: null,
     selectedCallId: null,
   });
@@ -113,6 +119,9 @@ test("Gemini semantic gate releases only after control-plane confirmation and pr
     armed: false,
     activeItemId: null,
     confirmed: false,
+    preselectedTool: null,
+    directModelOutputAllowed: false,
+    directModelOutputObserved: false,
     selectedTool: null,
     selectedCallId: null,
   });
