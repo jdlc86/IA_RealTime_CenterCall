@@ -3,6 +3,10 @@ function required(value, field) {
   return value.trim();
 }
 
+const GEMINI_TOOL_DESCRIPTION_SUFFIXES = Object.freeze({
+  restaurant_reservation_create: "Gemini Live compatibility: this is a progressive multi-turn operation. Invoke it as soon as the caller starts or continues a reservation, even when date, time, party size, name, contact or confirmation are still missing; the backend reports missing information and remains the only authority for completion.",
+});
+
 function modelResourceName(value) {
   const model = required(value, "Gemini Live model");
   const identifier = model.startsWith("models/") ? model.slice("models/".length) : model;
@@ -24,6 +28,11 @@ function geminiParametersJsonSchema(value) {
     result[key] = geminiParametersJsonSchema(item);
   }
   return result;
+}
+
+function geminiToolDescription(tool) {
+  const suffix = GEMINI_TOOL_DESCRIPTION_SUFFIXES[tool.name];
+  return suffix ? `${tool.description} ${suffix}` : tool.description;
 }
 
 function safeEpoch(value, field) {
@@ -74,7 +83,8 @@ export function buildGeminiInitialSetup(bootstrap, model) {
   const value = canonicalBootstrap(bootstrap);
   const declarations = value.tools.map((tool) => ({
     name: tool.name,
-    description: tool.description,
+    description: geminiToolDescription(tool),
+    behavior: "BLOCKING",
     parametersJsonSchema: geminiParametersJsonSchema(tool.parameters),
   }));
   return Object.freeze({

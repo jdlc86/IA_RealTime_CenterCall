@@ -13,13 +13,36 @@ function providerServerContent(message) {
   return server && typeof server === "object" && !Array.isArray(server) ? server : null;
 }
 
+function providerPartHasSemanticOutput(part) {
+  if (!part || typeof part !== "object" || Array.isArray(part)) return true;
+  if (part.thought === true) return false;
+
+  if (typeof part.text === "string" && part.text.trim().length > 0) return true;
+
+  const inline = part.inlineData ?? part.inline_data;
+  if (inline !== undefined) {
+    if (!inline || typeof inline !== "object" || Array.isArray(inline)) return true;
+    if (typeof inline.data === "string" && inline.data.length > 0) return true;
+    if (Object.keys(inline).length > 0) return true;
+  }
+
+  const ignoredMetadataKeys = new Set([
+    "thought",
+    "thoughtSignature",
+    "thought_signature",
+    "partMetadata",
+    "part_metadata",
+  ]);
+  return Object.keys(part).some((key) => !ignoredMetadataKeys.has(key));
+}
+
 function providerModelTurnHasSemanticOutput(modelTurn) {
   if (modelTurn === undefined || modelTurn === null) return false;
   if (typeof modelTurn !== "object" || Array.isArray(modelTurn)) return true;
   const parts = modelTurn.parts;
   if (parts === undefined) return false;
   if (!Array.isArray(parts)) return true;
-  return parts.length > 0;
+  return parts.some(providerPartHasSemanticOutput);
 }
 
 function providerProducedSemanticOutput(message) {

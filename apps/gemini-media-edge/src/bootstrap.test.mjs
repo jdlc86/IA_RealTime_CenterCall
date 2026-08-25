@@ -20,12 +20,12 @@ const claims = Object.freeze({
   notAfterEpochMs: 2_000,
 });
 
-test("immutable setup carries system instruction, tools and deferred manual activity configuration", () => {
+test("immutable setup carries system instruction, blocking tools and deferred manual activity configuration", () => {
   assert.deepEqual(buildGeminiInitialSetup(bootstrap, "gemini-live-model"), {
     setup: {
       model: "models/gemini-live-model",
       systemInstruction: { parts: [{ text: "Eres Lucía." }] },
-      tools: [{ functionDeclarations: [{ name: "restaurant_conversation", description: "Conversación", parametersJsonSchema: { type: "object", properties: {}, additionalProperties: false } }] }],
+      tools: [{ functionDeclarations: [{ name: "restaurant_conversation", description: "Conversación", behavior: "BLOCKING", parametersJsonSchema: { type: "object", properties: {}, additionalProperties: false } }] }],
       generationConfig: { responseModalities: ["AUDIO"] },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
@@ -35,6 +35,26 @@ test("immutable setup carries system instruction, tools and deferred manual acti
       },
     },
   });
+});
+
+test("Gemini-only reservation declaration preserves the OpenAI progressive backend contract", () => {
+  const originalDescription = "Crea o continúa una reserva multivuelta cuando el cliente ha elegido una fecha y hora concretas. Úsala también para recopilar progresivamente los demás datos; el backend indicará qué falta.";
+  const setup = buildGeminiInitialSetup({
+    ...bootstrap,
+    tools: [{
+      type: "function",
+      name: "restaurant_reservation_create",
+      description: originalDescription,
+      parameters: { type: "object", properties: { starts_at: { type: "string" } }, additionalProperties: false },
+    }],
+  }, "gemini-live-model");
+  const declaration = setup.setup.tools[0].functionDeclarations[0];
+  assert.equal(declaration.description.startsWith(originalDescription), true);
+  assert.equal(declaration.description.includes("progressive multi-turn operation"), true);
+  assert.equal(declaration.description.includes("as soon as the caller starts or continues a reservation"), true);
+  assert.equal(declaration.description.includes("backend reports missing information"), true);
+  assert.equal(declaration.behavior, "BLOCKING");
+  assert.equal(bootstrap.tools[0].description, "Conversación");
 });
 
 test("bootstrap rejects activity policies that would bypass deferred semantic authorization", () => {
@@ -82,6 +102,7 @@ test("tool declarations use Gemini JSON schema without unsupported uniqueness hi
   }, "gemini-live-model");
   const declaration = setup.setup.tools[0].functionDeclarations[0];
   assert.equal("parameters" in declaration, false);
+  assert.equal(declaration.behavior, "BLOCKING");
   assert.deepEqual(declaration.parametersJsonSchema, {
     type: "object",
     properties: {

@@ -42,7 +42,7 @@ test("Gemini semantic gate forbids assistant semantic output before tool selecti
   );
 });
 
-test("Gemini semantic gate ignores structural empty model turns while waiting for the real governed tool call", () => {
+test("Gemini semantic gate ignores structural and thinking-only model turns while waiting for the real governed tool call", () => {
   const gate = new GeminiSemanticToolGate();
   gate.preArm("item-reservation");
   gate.preselect("item-reservation", {
@@ -53,6 +53,8 @@ test("Gemini semantic gate ignores structural empty model turns while waiting fo
 
   assert.doesNotThrow(() => gate.observeProviderMessage({ serverContent: { modelTurn: {} } }));
   assert.doesNotThrow(() => gate.observeProviderMessage({ serverContent: { modelTurn: { parts: [] } } }));
+  assert.doesNotThrow(() => gate.observeProviderMessage({ serverContent: { modelTurn: { parts: [{ thought: true, text: "internal reasoning", thoughtSignature: "sig" }] } } }));
+  assert.doesNotThrow(() => gate.observeProviderMessage({ serverContent: { modelTurn: { parts: [{ thoughtSignature: "sig-only" }] } } }));
   assert.equal(gate.snapshot().directModelOutputObserved, false);
   assert.equal(gate.snapshot().selectedTool, null);
 
@@ -61,16 +63,28 @@ test("Gemini semantic gate ignores structural empty model turns while waiting fo
   assert.equal(gate.snapshot().selectedCallId, "fc-reservation");
 });
 
-test("Gemini semantic gate still fails closed on actual or malformed model-turn output for governed tools", () => {
-  const actual = new GeminiSemanticToolGate();
-  actual.preArm("item-actual");
-  actual.preselect("item-actual", {
+test("Gemini semantic gate still fails closed on actual audio, text or malformed model-turn output for governed tools", () => {
+  const actualText = new GeminiSemanticToolGate();
+  actualText.preArm("item-actual-text");
+  actualText.preselect("item-actual-text", {
     selectedTool: "restaurant_reservation_create",
     directModelOutputAllowed: false,
   });
-  actual.confirmArm();
+  actualText.confirmArm();
   assert.throws(
-    () => actual.observeProviderMessage({ serverContent: { modelTurn: { parts: [{ text: "Necesito más datos" }] } } }),
+    () => actualText.observeProviderMessage({ serverContent: { modelTurn: { parts: [{ text: "Necesito más datos" }] } } }),
+    /bypassed a governed preselected tool/,
+  );
+
+  const actualAudio = new GeminiSemanticToolGate();
+  actualAudio.preArm("item-actual-audio");
+  actualAudio.preselect("item-actual-audio", {
+    selectedTool: "restaurant_reservation_create",
+    directModelOutputAllowed: false,
+  });
+  actualAudio.confirmArm();
+  assert.throws(
+    () => actualAudio.observeProviderMessage({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: "AA==" } }] } } }),
     /bypassed a governed preselected tool/,
   );
 
