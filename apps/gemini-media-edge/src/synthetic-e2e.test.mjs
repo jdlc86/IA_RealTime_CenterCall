@@ -297,6 +297,15 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
       "Empty caller transcript was not surfaced for neutral ignore resolution",
     );
     assert.equal(emptyTranscriptFrame.event.transcript, "");
+    await eventually(
+      () => diagnostics.find((entry) => entry.stage === "EMPTY_CALLER_TURN_AUTO_IGNORED"),
+      "Empty caller transcript was not auto-resolved as neutral input",
+    );
+    assert.equal(runtime.activeSessions(), 1);
+    assert.equal(diagnostics.some((entry) => entry.stage === "STT_EMPTY_TRANSCRIPT"), true);
+    assert.equal(diagnostics.some((entry) => entry.stage === "STT_FAILED"), false);
+    assert.equal(diagnostics.some((entry) => entry.stage === "MEDIA_SESSION_CLOSING"), false);
+
     await registry.command(claims, {
       type: "CALLER_TURN_DECISION",
       itemId: emptyTranscriptFrame.event.itemId,
@@ -304,9 +313,23 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
       responseId: null,
     });
     assert.equal(runtime.activeSessions(), 1);
-    assert.equal(diagnostics.some((entry) => entry.stage === "STT_EMPTY_TRANSCRIPT"), true);
-    assert.equal(diagnostics.some((entry) => entry.stage === "STT_FAILED"), false);
-    assert.equal(diagnostics.some((entry) => entry.stage === "MEDIA_SESSION_CLOSING"), false);
+
+    const beforeSecondEmptyCandidate = controlFrames.length;
+    for (const [offset, payload] of [voiced, voiced, silence, silence].entries()) {
+      telnyx.send(JSON.stringify({
+        event: "media",
+        stream_id: "stream-synthetic-1",
+        media: { track: "inbound", chunk: String(offset + 9), payload },
+      }));
+    }
+    const secondEmptyTranscriptFrame = await eventually(
+      () => controlFrames.slice(beforeSecondEmptyCandidate).find((frame) =>
+        frame.type === "CALLER_EVENT" && frame.event.type === "CALLER_TRANSCRIPT_COMPLETED"),
+      "Input did not recover after an auto-ignored empty caller turn",
+    );
+    assert.equal(secondEmptyTranscriptFrame.event.itemId, "gemini-candidate-3");
+    assert.equal(secondEmptyTranscriptFrame.event.transcript, "");
+    assert.equal(runtime.activeSessions(), 1);
 
     await registry.command(claims, {
       type: "GOVERNED_SPEECH",

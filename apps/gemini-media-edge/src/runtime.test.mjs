@@ -187,7 +187,14 @@ test("governed speech reaches correlated Telnyx drain before response completion
   });
 
   assert.deepEqual(syntheses, ["Hola, soy Lucía."]);
-  assert.deepEqual(context, { responseId: "governed-greeting-1", kind: "GREETING", purpose: "initial_greeting" });
+  assert.deepEqual(context, {
+    responseId: "governed-greeting-1",
+    kind: "GREETING",
+    purpose: "initial_greeting",
+    sampleCount: 2,
+    audioDurationMs: 0,
+    rms: Math.sqrt((((0x0201 / 32768) ** 2) + ((0x0403 / 32768) ** 2)) / 2),
+  });
   assert.equal(telnyxAudio.length, 1);
   assert.deepEqual([...telnyxAudio[0].pcm], [0x01, 0x02, 0x03, 0x04]);
   assert.deepEqual(controlEvents, [
