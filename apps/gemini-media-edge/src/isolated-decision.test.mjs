@@ -2,11 +2,24 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createGeminiIsolatedDecisionClient } from "./isolated-decision.mjs";
 
+test("isolated decision defaults to the supported low-latency classifier model", async () => {
+  const calls = [];
+  const client = createGeminiIsolatedDecisionClient({
+    apiKey: "secret-api-key",
+    fetcher: async (url) => {
+      calls.push(url);
+      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: "OK" }] } }] }), { status: 200 });
+    },
+  });
+  assert.equal(await client.decide({ instructions: "Classify.", inputText: "hola" }), "OK");
+  assert.deepEqual(calls, ["https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent"]);
+});
+
 test("isolated decision uses a one-shot generateContent request without leaking API key into URL", async () => {
   const calls = [];
   const client = createGeminiIsolatedDecisionClient({
     apiKey: "secret-api-key",
-    model: "gemini-2.5-flash-lite",
+    model: "gemini-3.1-flash-lite",
     fetcher: async (url, init) => {
       calls.push({ url, init });
       return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: "IGNORE_CONFIRMED" }] } }] }), {
@@ -24,7 +37,7 @@ test("isolated decision uses a one-shot generateContent request without leaking 
 
   assert.equal(result, "IGNORE_CONFIRMED");
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent");
+  assert.equal(calls[0].url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent");
   assert.equal(calls[0].url.includes("secret-api-key"), false);
   assert.equal(calls[0].init.headers["x-goog-api-key"], "secret-api-key");
   const body = JSON.parse(calls[0].init.body);
@@ -37,7 +50,7 @@ test("isolated decision forwards bounded structured-output schema for semantic c
   const calls = [];
   const client = createGeminiIsolatedDecisionClient({
     apiKey: "secret-api-key",
-    model: "gemini-2.5-flash-lite",
+    model: "gemini-3.1-flash-lite",
     fetcher: async (url, init) => {
       calls.push({ url, init });
       return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: "{\"selectedTool\":\"restaurant_conversation\"}" }] } }] }), { status: 200 });

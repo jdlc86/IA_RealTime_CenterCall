@@ -44,7 +44,7 @@ function responseText(value) {
  */
 export function createGeminiIsolatedDecisionClient(options = {}) {
   const apiKey = required(options.apiKey, "GEMINI_API_KEY");
-  const model = required(options.model ?? "gemini-2.5-flash-lite", "GEMINI_DECISION_MODEL");
+  const model = required(options.model ?? "gemini-3.1-flash-lite", "GEMINI_DECISION_MODEL");
   const fetcher = options.fetcher ?? fetch;
   if (typeof fetcher !== "function") throw new Error("Gemini isolated decision fetcher is required");
 
