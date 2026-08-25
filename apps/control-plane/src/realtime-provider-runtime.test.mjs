@@ -24,6 +24,15 @@ function host() {
 
 function wire(event) { return JSON.stringify(event); }
 function responseCreates(events) { return events.filter((event) => event?.type === "response.create"); }
+function externalPort(overrides = {}) {
+  return {
+    speak() {}, requestTextDecision() {}, createSemanticResponse() {}, submitToolResult() {},
+    updateSessionPolicy() {}, setSemanticToolGate() {}, createDefaultResponse() {}, cancelResponse() {},
+    clearPlayback() {}, clearInput() {}, discardInputItem() {}, suspendInputDetection() {},
+    beginNonInterruptingListening() {}, restoreInputDetection() {},
+    ...overrides,
+  };
+}
 
 test("provider runtime keeps OpenAI as the active traffic baseline during G1", () => {
   assert.equal(ACTIVE_REALTIME_PROVIDER, "OPENAI");
@@ -63,6 +72,73 @@ test("an opaque exact-tenant admission binds Gemini without global enablement", 
   realtimeCommandPortFor(h).speak({ instructions: "hola", exactText: "Hola" });
   assert.equal(realtimeProviderFor(h), "GEMINI");
   assert.deepEqual(spoken, [{ instructions: "hola", exactText: "Hola" }]);
+});
+
+test("Gemini deterministic replacement bypasses FunctionResponse while OpenAI wire remains unchanged", () => {
+  const gemini = host();
+  const selection = {
+    tenantId: "tenant-canary",
+    provider: "GEMINI",
+    source: "TENANT_CONFIG",
+    overrideKey: "unused",
+  };
+  const admission = authorizeRealtimeProviderTraffic(selection, {
+    environment: "production",
+    geminiEnabled: "true",
+    geminiCanaryTenantId: "tenant-canary",
+  });
+  const effects = [];
+  installExternalRealtimeProviderCommandPort(gemini, "GEMINI", externalPort({
+    speak(request) { effects.push({ type: "speak", request }); },
+    submitToolResult(request) { effects.push({ type: "tool_result", request }); },
+    createDefaultResponse() { effects.push({ type: "generation" }); },
+    bypassDeterministicToolContinuation(request, context) { effects.push({ type: "bypass", request, context }); },
+  }));
+  bindAdmittedRealtimeProvider(gemini, selection, admission);
+  installRealtimeToolResultPolicy(gemini, () => ({
+    action: "REPLACE_DEFAULT_RESPONSE",
+    speech: { instructions: "OpenAI conserva la generación actual." },
+    geminiDeterministic: {
+      speech: { instructions: "Pregunta exacta.", exactText: "¿A qué nombre hago la reserva?" },
+      continuationContext: "RESERVATION_CUSTOMER_NAME",
+    },
+  }));
+  observeRealtimeAssistantResponseStarted(gemini, "gemini-response-1");
+  const geminiPort = realtimeCommandPortFor(gemini);
+  const toolResult = {
+    callId: "fc-real-1",
+    toolName: "restaurant_reservation_create",
+    output: { ok: true, status: "AVAILABLE_NEEDS_CONTACT" },
+  };
+  geminiPort.submitToolResult(toolResult);
+  geminiPort.createDefaultResponse();
+  assert.deepEqual(effects, [{
+    type: "bypass",
+    request: toolResult,
+    context: "RESERVATION_CUSTOMER_NAME",
+  }]);
+  observeRealtimeAssistantResponseCompleted(gemini, "gemini-response-1");
+  assert.deepEqual(effects.at(-1), {
+    type: "speak",
+    request: { instructions: "Pregunta exacta.", exactText: "¿A qué nombre hago la reserva?" },
+  });
+  assert.equal(effects.some((effect) => effect.type === "tool_result" || effect.type === "generation"), false);
+
+  const openai = host();
+  installRealtimeToolResultPolicy(openai, () => ({
+    action: "REPLACE_DEFAULT_RESPONSE",
+    speech: { instructions: "OpenAI conserva la generación actual." },
+    geminiDeterministic: {
+      speech: { instructions: "Pregunta exacta.", exactText: "No debe usarse en OpenAI." },
+      continuationContext: "RESERVATION_CUSTOMER_NAME",
+    },
+  }));
+  const openaiPort = realtimeCommandPortFor(openai);
+  openaiPort.submitToolResult(toolResult);
+  openaiPort.createDefaultResponse();
+  assert.equal(openai.events[0]?.type, "conversation.item.create");
+  assert.equal(openai.events[1]?.type, "response.create");
+  assert.equal(openai.events[1]?.response?.instructions, "OpenAI conserva la generación actual.");
 });
 
 test("G1 provider binding is immutable even before command runtime creation", () => {

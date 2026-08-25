@@ -2,6 +2,10 @@ import type { GovernedSpeechPort } from "./governed-speech-runtime.js";
 import type { RealtimeProviderCommandPort, RealtimeSpeechRequest } from "./realtime-provider-command-port.js";
 import type { AssistantSpeechKind, RealtimeProviderEvent } from "./realtime-provider-event.js";
 import type { SemanticToolGatePort } from "./semantic-tool-gate-port.js";
+import type {
+  RealtimeDeterministicContinuationContext,
+  RealtimeDeterministicToolContinuationPort,
+} from "./realtime-deterministic-tool-continuation.js";
 import { geminiGovernedSpeechDescriptor } from "./gemini-governed-speech-descriptor.js";
 import {
   GeminiLiveSessionRuntime,
@@ -11,6 +15,13 @@ import {
 export type GeminiMediaEdgeCallerDecision = "NORMAL" | "INTERRUPT" | "IGNORE";
 export type GeminiMediaEdgeSidebandOutbound =
   | Readonly<{ type: "TOOL_RESULT"; callId: string; toolName: string; output: unknown }>
+  | Readonly<{
+      type: "DETERMINISTIC_TOOL_BYPASS";
+      callId: string;
+      toolName: string;
+      responseId: string;
+      continuationContext: RealtimeDeterministicContinuationContext;
+    }>
   | Readonly<{ type: "PLAYBACK_BINDING"; responseId: string; kind: "NORMAL" }>
   | Readonly<{ type: "PLAYBACK_DRAIN"; responseId: string }>
   | Readonly<{ type: "PLAYBACK_CLEAR"; responseId: string }>
@@ -47,29 +58,31 @@ function outboundToolResult(message: Record<string, unknown>): GeminiMediaEdgeSi
   return Object.freeze({ type: "TOOL_RESULT", callId: required(response.id, "Gemini sideband FunctionResponse id"), toolName: required(response.name, "Gemini sideband FunctionResponse name"), output: structuredClone(body.result) });
 }
 function mediaEdgeCommandPort(
-  delegate: RealtimeProviderCommandPort,
+  delegate: () => RealtimeProviderCommandPort,
   send: GeminiMediaEdgeSidebandSend,
   activePlaybackResponseId: () => string | null,
-): RealtimeProviderCommandPort {
-  const port: RealtimeProviderCommandPort = {
-    speak(request) { delegate.speak(request); },
-    requestTextDecision(request) { delegate.requestTextDecision(request); },
-    createSemanticResponse(request) { delegate.createSemanticResponse(request); },
-    submitToolResult(request) { delegate.submitToolResult(request); },
-    updateSessionPolicy(update) { delegate.updateSessionPolicy(update); },
-    setSemanticToolGate(armed) { delegate.setSemanticToolGate(armed); },
-    createDefaultResponse() { delegate.createDefaultResponse(); },
-    cancelResponse(responseId) { delegate.cancelResponse(responseId); },
+  bypassDeterministicToolContinuation: RealtimeDeterministicToolContinuationPort["bypassDeterministicToolContinuation"],
+): RealtimeProviderCommandPort & RealtimeDeterministicToolContinuationPort {
+  const port: RealtimeProviderCommandPort & RealtimeDeterministicToolContinuationPort = {
+    speak(request) { delegate().speak(request); },
+    requestTextDecision(request) { delegate().requestTextDecision(request); },
+    createSemanticResponse(request) { delegate().createSemanticResponse(request); },
+    submitToolResult(request) { delegate().submitToolResult(request); },
+    updateSessionPolicy(update) { delegate().updateSessionPolicy(update); },
+    setSemanticToolGate(armed) { delegate().setSemanticToolGate(armed); },
+    createDefaultResponse() { delegate().createDefaultResponse(); },
+    cancelResponse(responseId) { delegate().cancelResponse(responseId); },
     clearPlayback() {
       const responseId = activePlaybackResponseId();
       if (!responseId) throw new Error("Gemini playback clear requires active correlated playback");
       send(Object.freeze({ type: "PLAYBACK_CLEAR", responseId }));
     },
     clearInput() { send(Object.freeze({ type: "CALLER_INPUT_CLEAR" })); },
-    discardInputItem(itemId) { delegate.discardInputItem(itemId); },
+    discardInputItem(itemId) { delegate().discardInputItem(itemId); },
     suspendInputDetection() { send(Object.freeze({ type: "INPUT_DETECTION_SUSPEND" })); },
     beginNonInterruptingListening() { send(Object.freeze({ type: "INPUT_DETECTION_RESTORE" })); },
     restoreInputDetection() { send(Object.freeze({ type: "INPUT_DETECTION_RESTORE" })); },
+    bypassDeterministicToolContinuation,
   };
   return Object.freeze(port);
 }
@@ -87,7 +100,7 @@ function playbackDrain(events: readonly RealtimeProviderEvent[]): GeminiMediaEdg
 }
 
 export class GeminiMediaEdgeSidebandRuntime {
-  private readonly runtime: GeminiLiveSessionRuntime;
+  private runtime: GeminiLiveSessionRuntime;
   private readonly send: GeminiMediaEdgeSidebandSend;
   private readonly callerContexts = new Map<string, GeminiMediaEdgeCallerContext>();
   private activePlaybackResponseId: string | null = null;
@@ -101,7 +114,12 @@ export class GeminiMediaEdgeSidebandRuntime {
     this.send = send;
     this.runtime = new GeminiLiveSessionRuntime({ send: (message) => send(outboundToolResult(message)) }, { model: "external-media-edge" });
     this.runtime.adoptExternalSetupSent();
-    this.commandPort = mediaEdgeCommandPort(this.runtime.commandPort, this.send, () => this.activePlaybackResponseId);
+    this.commandPort = mediaEdgeCommandPort(
+      () => this.runtime.commandPort,
+      this.send,
+      () => this.activePlaybackResponseId,
+      (request, continuationContext) => this.bypassDeterministicToolContinuation(request, continuationContext),
+    );
     this.semanticToolGatePort = Object.freeze({
       arm: () => this.send(Object.freeze({ type: "SEMANTIC_GATE_ARM" })),
       release: () => this.send(Object.freeze({ type: "SEMANTIC_GATE_RELEASE" })),
@@ -132,6 +150,7 @@ export class GeminiMediaEdgeSidebandRuntime {
     if (frame.type === "PLAYBACK_EVENT") return this.observePlaybackEvent(frame.event);
     if (frame.type === "GOVERNED_EVENT") return this.observeGovernedEvent(frame.event);
     if (frame.type === "INPUT_DETECTION_EVENT") return this.observeInputDetectionEvent(frame.event);
+    if (frame.type === "PROVIDER_SESSION_RESET") return this.observeProviderSessionReset(frame.event);
     throw new Error("Gemini media edge sideband frame type is unsupported");
   }
 
@@ -182,6 +201,54 @@ export class GeminiMediaEdgeSidebandRuntime {
     this.activePlaybackResponseId = null;
     this.activePlaybackKind = null;
     return this.runtime.close();
+  }
+
+  private bypassDeterministicToolContinuation(
+    request: Parameters<RealtimeDeterministicToolContinuationPort["bypassDeterministicToolContinuation"]>[0],
+    continuationContext: RealtimeDeterministicContinuationContext,
+  ): void {
+    const callId = required(request.callId, "Gemini deterministic tool call id");
+    const toolName = required(request.toolName, "Gemini deterministic tool name");
+    const snapshot = this.runtime.snapshot();
+    if (!snapshot.pendingToolCallIds.includes(callId)) {
+      throw new Error(`Gemini deterministic tool bypass does not match a pending call: ${callId}`);
+    }
+    const responseId = required(snapshot.activeResponseId, "Gemini deterministic provider response id");
+    this.send(Object.freeze({
+      type: "DETERMINISTIC_TOOL_BYPASS",
+      callId,
+      toolName,
+      responseId,
+      continuationContext,
+    }));
+  }
+
+  private observeProviderSessionReset(value: unknown): GeminiLiveSessionRuntimeObservation {
+    const edge = object(value, "Gemini provider session reset event");
+    const callId = required(edge.callId, "Gemini provider session reset call id");
+    const responseId = required(edge.responseId, "Gemini provider session reset response id");
+    const before = this.runtime.snapshot();
+    if (before.activeResponseId !== responseId || !before.pendingToolCallIds.includes(callId)) {
+      throw new Error("Gemini provider session reset identity mismatch");
+    }
+    this.runtime.close();
+    this.runtime = new GeminiLiveSessionRuntime(
+      { send: (message) => this.send(outboundToolResult(message)) },
+      { model: "external-media-edge" },
+    );
+    const snapshot = this.runtime.adoptExternalSetupSent();
+    const completed: RealtimeProviderEvent = {
+        type: "ASSISTANT_RESPONSE_COMPLETED",
+        kind: "NORMAL",
+        responseId,
+        status: "interrupted",
+      };
+    return Object.freeze({
+      events: Object.freeze([completed]),
+      transcriptionChunks: Object.freeze([]),
+      cancelledToolCallIds: Object.freeze([callId]),
+      snapshot,
+    });
   }
 
   private observeCallerEvent(value: unknown): GeminiLiveSessionRuntimeObservation {

@@ -133,6 +133,10 @@ test("missing starts_at collects date first, not date and time together", () => 
   assert.equal(decision.action, "COLLECT");
   if (decision.action !== "COLLECT") return;
   assert.equal(decision.exactText, "¿Para qué día quieres hacer la reserva?");
+  assert.deepEqual(decision.geminiDeterministic, {
+    exactText: "¿Para qué día quieres hacer la reserva?",
+    continuationContext: "RESERVATION_STARTS_AT_DATE",
+  });
   assert.doesNotMatch(decision.exactText, /hora/i);
 });
 
@@ -231,7 +235,7 @@ test("direct marketing completion deterministically returns to more-help questio
   assert.match(decision.instructions, EXPECTED_FOLLOW_UP);
 });
 
-test("direct non-terminal confirmation state remains model-driven", () => {
+test("marketing confirmation remains model-driven while reservation confirmation is deterministic for Gemini", () => {
   assert.deepEqual(
     decideDirectPostToolResponse("restaurant_marketing_preferences", {
       ok: true,
@@ -239,13 +243,53 @@ test("direct non-terminal confirmation state remains model-driven", () => {
     }),
     { action: "DEFAULT", reason: "NON_TERMINAL" },
   );
-  assert.deepEqual(
-    decideDirectPostToolResponse("restaurant_reservation_create", {
-      ok: true,
-      status: "READY_TO_CONFIRM",
-    }),
-    { action: "DEFAULT", reason: "NON_TERMINAL" },
-  );
+  const ready = decideDirectPostToolResponse("restaurant_reservation_create", {
+    ok: true,
+    status: "READY_TO_CONFIRM",
+    reservation: {
+      party_size: 4,
+      starts_at: "2026-09-04T19:00:00.000Z",
+      customer_name: "Juan López",
+    },
+  });
+  assert.equal(ready.action, "GEMINI_DETERMINISTIC");
+  if (ready.action !== "GEMINI_DETERMINISTIC") return;
+  assert.equal(ready.reason, "RESERVATION_READY_TO_CONFIRM");
+  assert.equal(ready.continuationContext, "RESERVATION_CONFIRMATION");
+  assert.match(ready.exactText, /4 personas/);
+  assert.match(ready.exactText, /Juan López/);
+  assert.match(ready.exactText, /¿Confirmas que haga la reserva\?/);
+});
+
+test("available reservation asks for contact without a second Gemini generation", () => {
+  const decision = decideDirectPostToolResponse("restaurant_reservation_create", {
+    ok: true,
+    status: "AVAILABLE_NEEDS_CONTACT",
+    missing: ["customer_name", "customer_phone"],
+  });
+  assert.deepEqual(decision, {
+    action: "GEMINI_DETERMINISTIC",
+    reason: "RESERVATION_AVAILABLE_NEEDS_CONTACT",
+    exactText: "¿A qué nombre hago la reserva?",
+    continuationContext: "RESERVATION_CUSTOMER_NAME",
+    instructions: "Pronuncia exactamente: \"¿A qué nombre hago la reserva?\" Espera el siguiente turno del cliente.",
+  });
+});
+
+test("booked reservation carries a Gemini-only deterministic terminal utterance", () => {
+  const decision = decideDirectPostToolResponse("restaurant_reservation_create", {
+    ok: true,
+    stage: "BOOKED",
+    party_size: 4,
+    starts_at: "2026-09-04T19:00:00.000Z",
+    reservation_code: "R-123456",
+  });
+  assert.equal(decision.action, "GOVERN");
+  if (decision.action !== "GOVERN") return;
+  assert.equal(decision.reason, "BOOKED");
+  assert.equal(decision.geminiDeterministic?.continuationContext, "GENERAL");
+  assert.match(decision.geminiDeterministic?.exactText ?? "", /R-123456/);
+  assert.match(decision.geminiDeterministic?.exactText ?? "", /¿Necesitas algo más/);
 });
 
 test("duplicate semantic tool rejection produces a tool-free continuation instead of silence", () => {

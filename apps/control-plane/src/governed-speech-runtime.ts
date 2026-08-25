@@ -3,6 +3,10 @@ import type {
   RealtimeSpeechRequest,
 } from "./realtime-provider-command-port.js";
 import type { RealtimeProviderName } from "./realtime-provider-selector.js";
+import {
+  deterministicToolContinuationPort,
+  type RealtimeDeterministicToolContinuationPort,
+} from "./realtime-deterministic-tool-continuation.js";
 
 export interface GovernedSpeechPort {
   speak(request: RealtimeSpeechRequest): void;
@@ -81,7 +85,7 @@ export function withGovernedSpeechPort(
   requireHost(host);
   if (!delegate || typeof delegate.speak !== "function") throw new Error("Realtime provider command port is required");
 
-  return {
+  const decorated: RealtimeProviderCommandPort & Partial<RealtimeDeterministicToolContinuationPort> = {
     speak(request) {
       const external = governedSpeechPortFor(host, provider);
       if (external) external.speak(request);
@@ -101,4 +105,11 @@ export function withGovernedSpeechPort(
     beginNonInterruptingListening(settings) { delegate.beginNonInterruptingListening(settings); },
     restoreInputDetection(settings) { delegate.restoreInputDetection(settings); },
   };
+  const deterministic = deterministicToolContinuationPort(delegate);
+  if (deterministic) {
+    decorated.bypassDeterministicToolContinuation = (request, context) => {
+      deterministic.bypassDeterministicToolContinuation(request, context);
+    };
+  }
+  return decorated;
 }

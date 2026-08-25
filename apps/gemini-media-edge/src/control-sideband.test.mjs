@@ -49,6 +49,29 @@ test("governed speech control command requires bounded exact text and correlatio
   assert.throws(() => canonicalControlCommand({ type: "GOVERNED_SPEECH", responseId: "speech-7", text: "Hola", purpose: "x".repeat(201) }), /configured limit/);
 });
 
+test("control command admits only bounded deterministic provider reset context", () => {
+  assert.deepEqual(canonicalControlCommand({
+    type: "DETERMINISTIC_TOOL_BYPASS",
+    callId: "fc-real-1",
+    toolName: "restaurant_reservation_create",
+    responseId: "gemini-response-1",
+    continuationContext: "RESERVATION_CUSTOMER_NAME",
+  }), {
+    type: "DETERMINISTIC_TOOL_BYPASS",
+    callId: "fc-real-1",
+    toolName: "restaurant_reservation_create",
+    responseId: "gemini-response-1",
+    continuationContext: "RESERVATION_CUSTOMER_NAME",
+  });
+  assert.throws(() => canonicalControlCommand({
+    type: "DETERMINISTIC_TOOL_BYPASS",
+    callId: "fc-real-1",
+    toolName: "restaurant_reservation_create",
+    responseId: "gemini-response-1",
+    continuationContext: "customer_name=Ana",
+  }), /context is unsupported/);
+});
+
 test("control protocol admits product-owned caller input lifecycle commands", () => {
   assert.deepEqual(canonicalControlCommand({ type: "CALLER_INPUT_CLEAR" }), { type: "CALLER_INPUT_CLEAR" });
   assert.deepEqual(canonicalControlCommand({ type: "INPUT_DETECTION_SUSPEND" }), { type: "INPUT_DETECTION_SUSPEND" });

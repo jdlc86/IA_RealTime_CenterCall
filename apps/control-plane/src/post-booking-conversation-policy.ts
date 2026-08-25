@@ -1,3 +1,6 @@
+import { formatMadridReservationSpeech } from "./reservation-search-output-localization.js";
+import type { RealtimeDeterministicContinuationContext } from "./realtime-deterministic-tool-continuation.js";
+
 const BOOKED_MARKER = "La reserva está confirmada por el backend.";
 const MARKETING_RESULT_MARKER = "Responde de forma breve usando únicamente este resultado autorizado de preferencias comerciales:";
 const TERMINAL_RESULT_MARKERS = [
@@ -53,6 +56,10 @@ export type DirectPostToolResponseDecision =
         | "RESERVATION_MODIFY_COMPLETED"
         | "BUSINESS_INFO_COMPLETED";
       instructions: string;
+      geminiDeterministic?: Readonly<{
+        exactText: string;
+        continuationContext: RealtimeDeterministicContinuationContext;
+      }>;
     }
   | {
       action: "RECOVER";
@@ -67,6 +74,17 @@ export type DirectPostToolResponseDecision =
       collectSlot: ReservationCollectionSlot;
       instructions: string;
       exactText?: string;
+      geminiDeterministic?: Readonly<{
+        exactText: string;
+        continuationContext: RealtimeDeterministicContinuationContext;
+      }>;
+    }
+  | {
+      action: "GEMINI_DETERMINISTIC";
+      reason: "RESERVATION_AVAILABLE_NEEDS_CONTACT" | "RESERVATION_READY_TO_CONFIRM";
+      exactText: string;
+      continuationContext: RealtimeDeterministicContinuationContext;
+      instructions: string;
     }
   | {
       action: "CONTINUE";
@@ -109,7 +127,9 @@ function slotUnavailableInstructions(exactText: string): string {
     "No anuncies una alternativa hasta que la búsqueda del backend la confirme.";
 }
 
-function governed(reason: Extract<DirectPostToolResponseDecision, { action: "GOVERN" }>["reason"]): DirectPostToolResponseDecision {
+function governed(
+  reason: Extract<DirectPostToolResponseDecision, { action: "GOVERN" }>["reason"],
+): Extract<DirectPostToolResponseDecision, { action: "GOVERN" }> {
   return { action: "GOVERN", reason, instructions: STRUCTURED_CONTINUATION_INSTRUCTIONS };
 }
 
@@ -132,6 +152,15 @@ function reservationMissingInformationSpeech(slot: ReservationCollectionSlot): s
   return "Necesito un dato más para continuar con la reserva. ¿Puedes indicarme la información que falta?";
 }
 
+function continuationContextForSlot(slot: ReservationCollectionSlot): RealtimeDeterministicContinuationContext {
+  if (slot === "starts_at_date") return "RESERVATION_STARTS_AT_DATE";
+  if (slot === "starts_at_time") return "RESERVATION_STARTS_AT_TIME";
+  if (slot === "party_size") return "RESERVATION_PARTY_SIZE";
+  if (slot === "customer_name") return "RESERVATION_CUSTOMER_NAME";
+  if (slot === "customer_phone") return "RESERVATION_CUSTOMER_PHONE";
+  return "GENERAL";
+}
+
 function collectMissingInformation(missing: string[]): DirectPostToolResponseDecision {
   const collectSlot = nextReservationCollectionSlot(missing);
   const exactText = reservationMissingInformationSpeech(collectSlot);
@@ -141,6 +170,10 @@ function collectMissingInformation(missing: string[]): DirectPostToolResponseDec
     missing,
     collectSlot,
     exactText,
+    geminiDeterministic: {
+      exactText,
+      continuationContext: continuationContextForSlot(collectSlot),
+    },
     instructions:
       `Pronuncia exactamente: ${JSON.stringify(exactText)} ` +
       "Pregunta solo ese dato y ningún otro en esta respuesta. " +
@@ -159,6 +192,36 @@ function clarifyUnprovenReservationTime(missing: string[]): DirectPostToolRespon
       "Responde con naturalidad al significado del último turno. Explica brevemente que no has podido asociar con seguridad una hora concreta a la reserva y pide que la aclare. " +
       "No uses una frase fija ni repitas mecánicamente la pregunta anterior. No llames herramientas en esta respuesta y espera un nuevo turno del cliente.",
   };
+}
+
+function safeSpokenField(value: unknown, maxLength: number): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+  return normalized && normalized.length <= maxLength ? normalized : null;
+}
+
+function positivePartySize(value: unknown): number | null {
+  return Number.isSafeInteger(value) && Number(value) > 0 && Number(value) <= 100 ? Number(value) : null;
+}
+
+function readyToConfirmSpeech(payload: Record<string, unknown>): string | null {
+  const reservation = recordOf(payload.reservation);
+  if (!reservation) return null;
+  const partySize = positivePartySize(reservation.party_size);
+  const startsAt = safeSpokenField(reservation.starts_at, 80);
+  const customerName = safeSpokenField(reservation.customer_name, 120);
+  const spokenStartsAt = startsAt ? formatMadridReservationSpeech(startsAt) : null;
+  if (!partySize || !spokenStartsAt || !customerName) return null;
+  return `Tengo disponibilidad para ${partySize} personas el ${spokenStartsAt}, a nombre de ${customerName}. ¿Confirmas que haga la reserva?`;
+}
+
+function bookedSpeech(payload: Record<string, unknown>): string | null {
+  const partySize = positivePartySize(payload.party_size);
+  const startsAt = safeSpokenField(payload.starts_at, 80);
+  const reservationCode = safeSpokenField(payload.reservation_code, 32);
+  const spokenStartsAt = startsAt ? formatMadridReservationSpeech(startsAt) : null;
+  if (!partySize || !spokenStartsAt || !reservationCode || !/^[A-Za-z0-9-]+$/.test(reservationCode)) return null;
+  return `La reserva ha quedado confirmada para ${partySize} personas el ${spokenStartsAt}. Tu código de reserva es ${reservationCode}. ${CONTINUATION_QUESTION}`;
 }
 
 export function decideDirectPostToolResponse(
@@ -216,6 +279,34 @@ export function decideDirectPostToolResponse(
     if (missing.length > 0) return collectMissingInformation(missing);
   }
 
+  if (toolName === "restaurant_reservation_create" && status === "AVAILABLE_NEEDS_CONTACT") {
+    const missing = stringArrayField(payload, "missing");
+    const collectSlot = nextReservationCollectionSlot(missing);
+    if (missing.length > 0 && (collectSlot === "customer_name" || collectSlot === "customer_phone")) {
+      const exactText = reservationMissingInformationSpeech(collectSlot);
+      return {
+        action: "GEMINI_DETERMINISTIC",
+        reason: "RESERVATION_AVAILABLE_NEEDS_CONTACT",
+        exactText,
+        continuationContext: continuationContextForSlot(collectSlot),
+        instructions: `Pronuncia exactamente: ${JSON.stringify(exactText)} Espera el siguiente turno del cliente.`,
+      };
+    }
+  }
+
+  if (toolName === "restaurant_reservation_create" && (status === "READY_TO_CONFIRM" || status === "AVAILABLE_NEEDS_CONFIRMATION")) {
+    const exactText = readyToConfirmSpeech(payload);
+    if (exactText) {
+      return {
+        action: "GEMINI_DETERMINISTIC",
+        reason: "RESERVATION_READY_TO_CONFIRM",
+        exactText,
+        continuationContext: "RESERVATION_CONFIRMATION",
+        instructions: `Pronuncia exactamente: ${JSON.stringify(exactText)} Espera una confirmación explícita del cliente.`,
+      };
+    }
+  }
+
   if (
     (toolName === "restaurant_reservation_create" || toolName === "restaurant_reservation_modify") &&
     status === "TIME_EVIDENCE_REQUIRED"
@@ -225,7 +316,11 @@ export function decideDirectPostToolResponse(
 
   if (toolName === "restaurant_reservation_create" && stage === "BOOKED") {
     if (payload.ask_marketing_consent === true) return { action: "DEFAULT", reason: "MARKETING_CONSENT_PENDING" };
-    return governed("BOOKED");
+    const decision = governed("BOOKED");
+    const exactText = bookedSpeech(payload);
+    return exactText
+      ? { ...decision, geminiDeterministic: { exactText, continuationContext: "GENERAL" } }
+      : decision;
   }
 
   if (toolName === "restaurant_marketing_preferences" && (status === "MARKETING_UPDATED" || status === "MARKETING_STATUS")) return governed("MARKETING_COMPLETED");

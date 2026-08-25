@@ -75,6 +75,14 @@ function safeDetails(input) {
     ["effective_stop_rms", input.effectiveStopRms],
     ["close_code", input.closeCode],
     ["http_status", input.httpStatus],
+    ["observed_ms", input.observedMs],
+    ["p50_ms", input.p50Ms],
+    ["p95_ms", input.p95Ms],
+    ["latency_sample_count", input.sampleCount],
+    ["provider_epoch", input.providerEpoch],
+    ["post_tool_model_generations", input.postToolModelGenerations],
+    ["post_tool_discarded_model_output", input.postToolDiscardedModelOutput],
+    ["playback_authorities", input.playbackAuthorities],
   ];
   for (const [key, value] of numericFields) {
     const safe = boundedNumber(value);
@@ -84,6 +92,7 @@ function safeDetails(input) {
     details.authorized = input.directModelOutputAllowed;
     details.direct_model_output_allowed = input.directModelOutputAllowed;
   }
+  if (typeof input.overBudget === "boolean") details.over_budget = input.overBudget;
   return Object.freeze(details);
 }
 

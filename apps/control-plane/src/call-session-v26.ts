@@ -217,19 +217,26 @@ export class CallSession extends BaseConstructor {
           tools_disabled: true,
           timing_heuristic: false,
         });
+        const speech = {
+          instructions: decision.instructions,
+          tools: "DISABLED" as const,
+          purpose: "direct_post_tool_terminal_v26",
+          metadata: {
+            authority: "direct_agent_runtime_v26",
+            tool,
+            reason: decision.reason,
+            exact_continuation_question: true,
+          },
+        };
         return {
           action: "REPLACE_DEFAULT_RESPONSE",
-          speech: {
-            instructions: decision.instructions,
-            tools: "DISABLED",
-            purpose: "direct_post_tool_terminal_v26",
-            metadata: {
-              authority: "direct_agent_runtime_v26",
-              tool,
-              reason: decision.reason,
-              exact_continuation_question: true,
+          speech,
+          ...(decision.geminiDeterministic ? {
+            geminiDeterministic: {
+              speech: { ...speech, exactText: decision.geminiDeterministic.exactText },
+              continuationContext: decision.geminiDeterministic.continuationContext,
             },
-          },
+          } : {}),
         };
       }
 
@@ -276,21 +283,55 @@ export class CallSession extends BaseConstructor {
           second_tool_same_turn_forbidden: true,
           timing_heuristic: false,
         });
+        const speech = {
+          instructions: decision.instructions,
+          ...(decision.exactText ? { exactText: decision.exactText } : {}),
+          tools: "DISABLED" as const,
+          purpose: "reservation_missing_information_v26",
+          metadata: {
+            authority: "direct_agent_runtime_v26",
+            tool,
+            reason: decision.reason,
+            missing: decision.missing,
+            second_tool_same_turn_forbidden: true,
+          },
+        };
         return {
           action: "REPLACE_DEFAULT_RESPONSE",
+          speech,
+          ...(decision.geminiDeterministic ? {
+            geminiDeterministic: {
+              speech: { ...speech, exactText: decision.geminiDeterministic.exactText },
+              continuationContext: decision.geminiDeterministic.continuationContext,
+            },
+          } : {}),
+        };
+      }
+
+      if (decision.action === "GEMINI_DETERMINISTIC") {
+        session.diagnostics?.checkpoint?.("GEMINI_DETERMINISTIC_POST_TOOL_RESPONSE_SELECTED_V56", {
+          tool,
+          reason: decision.reason,
+          provider_scope: "GEMINI",
+          post_tool_model_generations: 0,
+          post_tool_discarded_model_output: 0,
+          playback_authorities: 1,
+        });
+        return {
+          action: "GEMINI_DETERMINISTIC_RESPONSE",
           speech: {
             instructions: decision.instructions,
             exactText: decision.exactText,
             tools: "DISABLED",
-            purpose: "reservation_missing_information_v26",
+            purpose: "gemini_deterministic_reservation_state_v56",
             metadata: {
               authority: "direct_agent_runtime_v26",
               tool,
               reason: decision.reason,
-              missing: decision.missing,
-              second_tool_same_turn_forbidden: true,
+              post_tool_model_generations: 0,
             },
           },
+          continuationContext: decision.continuationContext,
         };
       }
 

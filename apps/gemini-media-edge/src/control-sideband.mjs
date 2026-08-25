@@ -20,6 +20,18 @@ function governedLifecycleKind(value) {
   if (["NORMAL", "GREETING", "RECOVERY", "TERMINAL", "PRESENCE", "HANDOFF"].includes(value)) return value;
   throw new Error("Gemini governed lifecycle kind is unsupported");
 }
+function deterministicContinuationContext(value) {
+  if ([
+    "GENERAL",
+    "RESERVATION_STARTS_AT_DATE",
+    "RESERVATION_STARTS_AT_TIME",
+    "RESERVATION_PARTY_SIZE",
+    "RESERVATION_CUSTOMER_NAME",
+    "RESERVATION_CUSTOMER_PHONE",
+    "RESERVATION_CONFIRMATION",
+  ].includes(value)) return value;
+  throw new Error("Gemini deterministic continuation context is unsupported");
+}
 export function controlSessionKey(claims) {
   return `${required(claims?.tenantId, "control tenant_id")}\u0000${required(claims?.callControlId, "control call_control_id")}`;
 }
@@ -30,6 +42,15 @@ export function canonicalControlCommand(value) {
     const toolName = required(message.toolName, "Gemini media edge control tool name");
     if (!("output" in message)) throw new Error("Gemini media edge control tool output is required");
     return Object.freeze({ type: "TOOL_RESULT", callId, toolName, output: structuredClone(message.output) });
+  }
+  if (message.type === "DETERMINISTIC_TOOL_BYPASS") {
+    return Object.freeze({
+      type: "DETERMINISTIC_TOOL_BYPASS",
+      callId: required(message.callId, "Gemini deterministic tool call id"),
+      toolName: required(message.toolName, "Gemini deterministic tool name"),
+      responseId: required(message.responseId, "Gemini deterministic provider response id"),
+      continuationContext: deterministicContinuationContext(message.continuationContext),
+    });
   }
   if (message.type === "PLAYBACK_BINDING") {
     const responseId = required(message.responseId, "Gemini media edge playback response id");

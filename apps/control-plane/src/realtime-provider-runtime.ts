@@ -8,6 +8,10 @@ import type {
   RealtimeToolResultRequest,
 } from "./realtime-provider-command-port.js";
 import type { RealtimeProviderEvent } from "./realtime-provider-event.js";
+import {
+  deterministicToolContinuationPort,
+  type RealtimeDeterministicContinuationContext,
+} from "./realtime-deterministic-tool-continuation.js";
 import { realtimeCommandPortFor as openAIRealtimeCommandPortFor } from "./openai-realtime-command-adapter.js";
 import { adaptOpenAIRealtimeEvent } from "./openai-realtime-event-adapter.js";
 import { externalRealtimeProviderCommandPortFor } from "./realtime-provider-external-command-runtime.js";
@@ -32,7 +36,19 @@ import {
 
 export type RealtimeToolResultPolicyDecision =
   | { action: "PASS" }
-  | { action: "REPLACE_DEFAULT_RESPONSE"; speech: RealtimeSpeechRequest };
+  | {
+      action: "REPLACE_DEFAULT_RESPONSE";
+      speech: RealtimeSpeechRequest;
+      geminiDeterministic?: Readonly<{
+        speech: RealtimeSpeechRequest & { exactText: string };
+        continuationContext: RealtimeDeterministicContinuationContext;
+      }>;
+    }
+  | {
+      action: "GEMINI_DETERMINISTIC_RESPONSE";
+      speech: RealtimeSpeechRequest & { exactText: string };
+      continuationContext: RealtimeDeterministicContinuationContext;
+    };
 export type RealtimeToolResultPolicy = (request: RealtimeToolResultRequest) => RealtimeToolResultPolicyDecision;
 export type RealtimeToolResultTransform = (request: RealtimeToolResultRequest) => RealtimeToolResultRequest;
 export type RealtimeToolResultObserver = (request: RealtimeToolResultRequest) => void;
@@ -75,7 +91,21 @@ class RealtimeProviderCommandRuntime implements RealtimeProviderCommandPort {
     const governed = this.toolResultTransforms.reduce((current, transform) => transform(current), request);
     for (const observer of this.toolResultObservers) observer(governed);
     const decision = this.toolResultPolicy?.(governed) ?? { action: "PASS" as const };
-    this.pendingDefaultResponseReplacement = decision.action === "REPLACE_DEFAULT_RESPONSE" ? decision.speech : null;
+    const deterministic = this.provider === "GEMINI"
+      ? decision.action === "GEMINI_DETERMINISTIC_RESPONSE"
+        ? { speech: decision.speech, continuationContext: decision.continuationContext }
+        : decision.action === "REPLACE_DEFAULT_RESPONSE"
+          ? decision.geminiDeterministic ?? null
+          : null
+      : null;
+    this.pendingDefaultResponseReplacement = deterministic?.speech
+      ?? (decision.action === "REPLACE_DEFAULT_RESPONSE" ? decision.speech : null);
+    if (deterministic) {
+      const capability = deterministicToolContinuationPort(this.delegate);
+      if (!capability) throw new Error("Gemini deterministic tool continuation capability is not installed");
+      capability.bypassDeterministicToolContinuation(governed, deterministic.continuationContext);
+      return;
+    }
     this.delegate.submitToolResult(governed);
   }
 

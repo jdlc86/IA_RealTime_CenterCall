@@ -11,6 +11,7 @@ import {
   Pcm16Resampler24To16,
   requirePcm16LittleEndian,
   requestCorrelatedPlaybackClear,
+  resetPlaybackForDeterministicProviderRotation,
   telnyxStreamingCredential,
 } from "./runtime.mjs";
 import { GovernedSpeechPlaybackCoordinator } from "./governed-speech-playback-coordinator.mjs";
@@ -19,6 +20,30 @@ class FakeSocket {
   constructor() { this.readyState = 1; this.bufferedAmount = 0; this.sent = []; }
   send(value) { this.sent.push(JSON.parse(value)); }
 }
+
+test("deterministic provider rotation is allowed only before any provider audio starts", () => {
+  const silent = new BoundPlaybackGate();
+  silent.bind("response-silent");
+  resetPlaybackForDeterministicProviderRotation(silent, "response-silent");
+  assert.equal(silent.snapshot().binding, null);
+
+  const audible = new BoundPlaybackGate();
+  audible.queue(Buffer.from([0x01, 0x02]));
+  const [chunk] = audible.bind("response-audible");
+  audible.noteQueued(chunk.responseId);
+  assert.throws(
+    () => resetPlaybackForDeterministicProviderRotation(audible, "response-audible"),
+    /cannot discard provider audio/,
+  );
+  assert.equal(audible.snapshot().playback.started, true);
+
+  const other = new BoundPlaybackGate();
+  other.bind("response-current");
+  assert.throws(
+    () => resetPlaybackForDeterministicProviderRotation(other, "response-stale"),
+    /identity mismatch/,
+  );
+});
 
 test("governed speech failures are reduced to safe stable categories", () => {
   const cases = [

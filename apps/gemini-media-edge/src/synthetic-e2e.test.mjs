@@ -77,6 +77,7 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
   const telnyxFrames = [];
   const registry = new InMemoryControlSidebandRegistry();
   let gemini = null;
+  const geminiSockets = [];
   let credentialConsumptions = 0;
   let bootstrapConsumptions = 0;
   let transcriptionAttempts = 0;
@@ -138,6 +139,7 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
     callerVadConfig: { startRms: 0.2, stopRms: 0.05, minSpeechMs: 40, minSilenceMs: 40 },
     createGeminiSocket: () => {
       gemini = new FakeGeminiSocket();
+      geminiSockets.push(gemini);
       return gemini;
     },
   });
@@ -283,6 +285,97 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
       "Normal playback completion was not correlated",
     );
 
+    // A deterministic reservation result must not be submitted to the old
+    // BLOCKING Gemini session. Rotate the provider session before any provider
+    // audio exists, acknowledge the exact tool/response identities, and let
+    // governed speech start while the replacement session is connecting.
+    const previousGemini = gemini;
+    previousGemini.receive({ toolCall: { functionCalls: [{
+      id: "reservation-tool-synthetic-1",
+      name: "restaurant_business_info",
+      args: { topics: ["HOURS"] },
+    }] } });
+    await eventually(
+      () => controlFrames.find((frame) => frame.type === "GEMINI_EVENT" && frame.message.toolCall?.functionCalls?.[0]?.id === "reservation-tool-synthetic-1"),
+      "Deterministic tool call was not emitted",
+    );
+    await registry.command(claims, {
+      type: "PLAYBACK_BINDING",
+      responseId: "deterministic-response-synthetic-1",
+      kind: "NORMAL",
+    });
+    const previousSentCount = previousGemini.sent.length;
+    await registry.command(claims, {
+      type: "DETERMINISTIC_TOOL_BYPASS",
+      callId: "reservation-tool-synthetic-1",
+      toolName: "restaurant_business_info",
+      responseId: "deterministic-response-synthetic-1",
+      continuationContext: "RESERVATION_CONFIRMATION",
+    });
+    assert.equal(geminiSockets.length, 2);
+    assert.notEqual(gemini, previousGemini);
+    assert.equal(previousGemini.sent.length, previousSentCount);
+    assert.equal(previousGemini.sent.some((message) =>
+      message.toolResponse?.functionResponses?.some((response) => response.id === "reservation-tool-synthetic-1")), false);
+    assert.deepEqual(
+      controlFrames.find((frame) => frame.type === "PROVIDER_SESSION_RESET"),
+      {
+        type: "PROVIDER_SESSION_RESET",
+        event: {
+          callId: "reservation-tool-synthetic-1",
+          responseId: "deterministic-response-synthetic-1",
+          continuationContext: "RESERVATION_CONFIRMATION",
+        },
+      },
+    );
+    assert.equal(diagnostics.some((entry) =>
+      entry.stage === "DETERMINISTIC_POST_TOOL_PROVIDER_RESET"
+      && entry.postToolModelGenerations === 0
+      && entry.postToolDiscardedModelOutput === 0
+      && entry.playbackAuthorities === 1), true);
+
+    const mediaBeforeDeterministicSpeech = telnyxFrames.filter((frame) => frame.event === "media").length;
+    await registry.command(claims, {
+      type: "GOVERNED_SPEECH",
+      responseId: "deterministic-response-synthetic-1",
+      text: "Perfecto, ¿confirmas la reserva?",
+      purpose: "gemini_deterministic_reservation_state_v56",
+    });
+    const deterministicMedia = await eventually(
+      () => telnyxFrames.filter((frame) => frame.event === "media")[mediaBeforeDeterministicSpeech],
+      "Deterministic governed speech did not start during Gemini reconnect",
+    );
+    const latencyDiagnostic = diagnostics.find((entry) => entry.stage === "DETERMINISTIC_SPEECH_END_TO_AUDIO_START");
+    assert.ok(latencyDiagnostic);
+    assert.equal(Number.isSafeInteger(latencyDiagnostic.observedMs), true);
+    assert.equal(latencyDiagnostic.p50Ms, latencyDiagnostic.observedMs);
+    assert.equal(latencyDiagnostic.p95Ms, latencyDiagnostic.observedMs);
+    assert.equal(latencyDiagnostic.overBudget, false);
+    assert.deepEqual([...Buffer.from(deterministicMedia.media.payload, "base64")], [0x01, 0x02, 0x03, 0x04]);
+    assert.equal(telnyxFrames.filter((frame) => frame.event === "media").length, mediaBeforeDeterministicSpeech + 1);
+    const deterministicMark = await eventually(
+      () => telnyxFrames.filter((frame) => frame.event === "mark").find((frame) =>
+        frame.mark.name !== normalMark.mark.name),
+      "Deterministic governed playback drain mark was not emitted",
+    );
+    telnyx.send(JSON.stringify({ event: "mark", stream_id: "stream-synthetic-1", mark: deterministicMark.mark }));
+    await eventually(
+      () => controlFrames.find((frame) => frame.type === "GOVERNED_EVENT" && frame.event.type === "ASSISTANT_RESPONSE_COMPLETED" && frame.event.responseId === "deterministic-response-synthetic-1"),
+      "Deterministic governed playback completion was not correlated",
+    );
+
+    gemini.open();
+    assert.equal(gemini.sent.length, 1);
+    const replacementInstruction = gemini.sent[0].setup.systemInstruction.parts[0].text;
+    assert.equal(replacementInstruction.startsWith(bootstrap.instructions), true);
+    assert.equal(replacementInstruction.includes("waiting for explicit confirmation"), true);
+    assert.equal(replacementInstruction.includes("Perfecto, ¿confirmas la reserva?"), false);
+    gemini.receive({ setupComplete: {} });
+    await eventually(
+      () => diagnostics.some((entry) => entry.stage === "GEMINI_SETUP_COMPLETE" && entry.providerEpoch === 2),
+      "Replacement Gemini session did not complete setup",
+    );
+
     const beforeEmptyCandidate = controlFrames.length;
     for (const [offset, payload] of [voiced, voiced, silence, silence].entries()) {
       telnyx.send(JSON.stringify({
@@ -345,7 +438,8 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
     );
     assert.deepEqual([...Buffer.from(governedMedia.media.payload, "base64")], [0x01, 0x02, 0x03, 0x04]);
     const governedMark = await eventually(
-      () => telnyxFrames.filter((frame) => frame.event === "mark").find((frame) => frame.mark.name !== normalMark.mark.name),
+      () => telnyxFrames.filter((frame) => frame.event === "mark").find((frame) =>
+        frame.mark.name !== normalMark.mark.name && frame.mark.name !== deterministicMark.mark.name),
       "Governed playback drain mark was not emitted",
     );
     telnyx.send(JSON.stringify({ event: "mark", stream_id: "stream-synthetic-1", mark: governedMark.mark }));
@@ -363,7 +457,7 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
     assert.equal(bootstrapConsumptions, 1);
     assert.equal(registry.size(), 0);
     assert.equal(registry.isActive({ ...claims, callControlId: "other-call" }), false);
-    assert.equal(gemini.sent.filter((message) => "clientContent" in message).length, 1);
+    assert.equal(geminiSockets.flatMap((socket) => socket.sent).filter((message) => "clientContent" in message).length, 1);
     assert.equal(trace.some((entry) => entry.stage === "SIDEBAND_AND_MEDIA_ATTACHED"), true);
     assert.equal(trace.some((entry) => entry.stage === "TOOL_RESULT_DELIVERED"), true);
     assert.deepEqual(

@@ -188,6 +188,62 @@ test("sideband tool call preserves provider identity through owner and FunctionR
   assert.deepEqual(sent.at(-1), { type: "TOOL_RESULT", callId: "fc-edge-1", toolName: "restaurant_business_info", output: { ok: true } });
 });
 
+test("deterministic tool result resets the provider without emitting a FunctionResponse and preserves continuity", () => {
+  const { runtime, sent } = runtimeHarness(); ready(runtime);
+  runtime.observe({
+    type: "GEMINI_EVENT",
+    message: { toolCall: { functionCalls: [{ id: "fc-edge-deterministic-1", name: "restaurant_reservation_create", args: {} }] } },
+  });
+  runtime.commandPort.bypassDeterministicToolContinuation(
+    {
+      callId: "fc-edge-deterministic-1",
+      toolName: "restaurant_reservation_create",
+      output: { ok: true, status: "AVAILABLE_NEEDS_CONTACT", missing: ["customer_name"] },
+    },
+    "RESERVATION_CUSTOMER_NAME",
+  );
+  assert.deepEqual(sent, [
+    { type: "PLAYBACK_BINDING", responseId: "gemini-response-1", kind: "NORMAL" },
+    {
+      type: "DETERMINISTIC_TOOL_BYPASS",
+      callId: "fc-edge-deterministic-1",
+      toolName: "restaurant_reservation_create",
+      responseId: "gemini-response-1",
+      continuationContext: "RESERVATION_CUSTOMER_NAME",
+    },
+  ]);
+  assert.equal(sent.some((message) => message.type === "TOOL_RESULT"), false);
+
+  const reset = runtime.observe({
+    type: "PROVIDER_SESSION_RESET",
+    event: { callId: "fc-edge-deterministic-1", responseId: "gemini-response-1" },
+  });
+  assert.deepEqual(reset.events, [{
+    type: "ASSISTANT_RESPONSE_COMPLETED",
+    kind: "NORMAL",
+    responseId: "gemini-response-1",
+    status: "interrupted",
+  }]);
+  assert.equal(reset.snapshot.state, "SETUP_SENT");
+
+  ready(runtime);
+  runtime.observe({
+    type: "GEMINI_EVENT",
+    message: { toolCall: { functionCalls: [{ id: "fc-edge-deterministic-2", name: "restaurant_reservation_create", args: { customer_name: "Juan" } }] } },
+  });
+  runtime.commandPort.submitToolResult({
+    callId: "fc-edge-deterministic-2",
+    toolName: "restaurant_reservation_create",
+    output: { ok: true, status: "READY_TO_CONFIRM" },
+  });
+  assert.deepEqual(sent.at(-1), {
+    type: "TOOL_RESULT",
+    callId: "fc-edge-deterministic-2",
+    toolName: "restaurant_reservation_create",
+    output: { ok: true, status: "READY_TO_CONFIRM" },
+  });
+});
+
 test("sideband rejects unsupported envelopes and stale tools", () => {
   const { runtime } = runtimeHarness(); ready(runtime);
   assert.throws(() => runtime.observe({ type: "OPENAI_EVENT", message: {} }), /frame type is unsupported/);

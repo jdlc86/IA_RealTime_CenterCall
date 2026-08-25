@@ -96,6 +96,32 @@ test("semantic preselection uses backward-compatible safe details without adding
   assert.equal(serialized.includes("transcript"), false);
 });
 
+test("deterministic latency diagnostics retain bounded aggregates and no conversational data", () => {
+  const journal = new InMemoryDiagnosticJournal({ ttlMs: 60_000 });
+  const event = journal.record({
+    tenantId: "restaurante-centro",
+    callControlId: "v3:test",
+    stage: "DETERMINISTIC_SPEECH_END_TO_AUDIO_START",
+    responseId: "response-1",
+    durationMs: 812,
+    observedMs: 812,
+    p50Ms: 780,
+    p95Ms: 1_140,
+    sampleCount: 17,
+    overBudget: false,
+    transcript: "Juan López",
+  }, 2_200_000);
+  assert.equal(event.duration_ms, 812);
+  assert.deepEqual(event.details, {
+    observed_ms: 812,
+    p50_ms: 780,
+    p95_ms: 1_140,
+    latency_sample_count: 17,
+    over_budget: false,
+  });
+  assert.equal(JSON.stringify(event).includes("Juan López"), false);
+});
+
 test("diagnostic journal is bounded and expires old calls", () => {
   const journal = new InMemoryDiagnosticJournal({ maxCalls: 1, maxEventsPerCall: 2, ttlMs: 60_000 });
   journal.record({ tenantId: "tenant-a", callControlId: "call-a", stage: "MEDIA_SOCKET_AUTHORIZED" }, 3_000_000);
