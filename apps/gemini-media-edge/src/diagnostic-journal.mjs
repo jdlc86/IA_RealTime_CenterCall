@@ -60,6 +60,7 @@ function safeDetails(input) {
     ["kind", input.kind ?? input.selectedTool],
     ["type", input.type],
     ["providerErrorCode", input.providerErrorCode],
+    ["failureCategory", input.failureCategory],
   ];
   for (const [key, value] of codeFields) {
     const safe = safeDetailCode(value);

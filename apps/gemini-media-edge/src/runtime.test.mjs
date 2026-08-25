@@ -4,6 +4,7 @@ import {
   BoundPlaybackGate,
   applyCallerInputControlCommand,
   assertMediaEdgeSocketWritable,
+  classifyGovernedSpeechFailure,
   commitDeferredCallerTurn,
   completeGovernedSpeechPlayback,
   executeGovernedSpeechPlayback,
@@ -18,6 +19,25 @@ class FakeSocket {
   constructor() { this.readyState = 1; this.bufferedAmount = 0; this.sent = []; }
   send(value) { this.sent.push(JSON.parse(value)); }
 }
+
+test("governed speech failures are reduced to safe stable categories", () => {
+  const cases = [
+    ["Gemini governed speech requires idle Telnyx playback", "PLAYBACK_NOT_IDLE"],
+    ["Google Text-to-Speech returned unsupported audio container", "TTS_CONTRACT_INVALID"],
+    ["Google Text-to-Speech synthesis failed with HTTP 503", "TTS_FAILED"],
+    ["Gemini playback binding already owned by response-1", "PLAYBACK_BIND_FAILED"],
+    ["Governed speech response start requires active control sideband", "CONTROL_SIDEBAND_INACTIVE"],
+    ["Telnyx socket is not open", "TELNYX_SOCKET_NOT_WRITABLE"],
+    ["Governed speech produced no Telnyx playback start", "PLAYBACK_START_EVENT_FAILED"],
+    ["Governed speech produced no correlated Telnyx drain mark", "PLAYBACK_DRAIN_MARK_FAILED"],
+    ["Gemini playback drain identity mismatch: expected response-1", "PLAYBACK_IDENTITY_MISMATCH"],
+    ["Governed speech session is no longer active", "SESSION_INACTIVE"],
+    ["unexpected internal failure text that must not be persisted", "UNKNOWN_GOVERNED_SPEECH_FAILURE"],
+  ];
+  for (const [message, category] of cases) {
+    assert.equal(classifyGovernedSpeechFailure(new Error(message)), category);
+  }
+});
 
 test("media upgrade authenticates the header defined by the Telnyx streaming contract", () => {
   assert.equal(

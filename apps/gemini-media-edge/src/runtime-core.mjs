@@ -25,6 +25,23 @@ export function telnyxStreamingCredential(request) {
 }
 function playbackKind(value) { if (value == null || value === "NORMAL") return "NORMAL"; if (["GREETING", "RECOVERY", "TERMINAL", "PRESENCE", "HANDOFF"].includes(value)) return value; throw new Error("Gemini playback kind is unsupported"); }
 
+export function classifyGovernedSpeechFailure(error) {
+  const message = error instanceof Error ? error.message : "";
+  if (/session (?:is no longer active|closed)/i.test(message)) return "SESSION_INACTIVE";
+  if (/control sideband/i.test(message)) return "CONTROL_SIDEBAND_INACTIVE";
+  if (/(?:socket is not open|backpressure limit exceeded)/i.test(message)) return "TELNYX_SOCKET_NOT_WRITABLE";
+  if (/(?:identity mismatch|drain identity mismatch)/i.test(message)) return "PLAYBACK_IDENTITY_MISMATCH";
+  if (/(?:requires idle Telnyx playback|already owns)/i.test(message)) return "PLAYBACK_NOT_IDLE";
+  if (/(?:binding already owned|binding kind mismatch)/i.test(message)) return "PLAYBACK_BIND_FAILED";
+  if (/(?:returned (?:an )?invalid|returned unsupported|invalid WAV|truncated WAV|incomplete WAV|invalid PCM16|unsupported WAV|unsupported audio container)/i.test(message)) {
+    return "TTS_CONTRACT_INVALID";
+  }
+  if (/(?:Text-to-Speech|speech synthesizer|synthesis)/i.test(message)) return "TTS_FAILED";
+  if (/playback start/i.test(message)) return "PLAYBACK_START_EVENT_FAILED";
+  if (/drain mark/i.test(message)) return "PLAYBACK_DRAIN_MARK_FAILED";
+  return "UNKNOWN_GOVERNED_SPEECH_FAILURE";
+}
+
 export function assertMediaEdgeSocketWritable(socket, label, maxBufferedBytes) {
   const name = required(label, "Media edge socket label");
   if (!socket || socket.readyState !== OPEN) throw new Error(`${name} socket is not open`);
@@ -255,7 +272,12 @@ export function createGeminiMediaEdgeRuntime(options) {
           emitPlaybackChunks,
           emitControlEvent: (event) => options.emitControlEvent?.(state.claims, event),
           sendDrainMark: (mark) => { assertBackpressure(telnyx, "Telnyx"); safeSend(telnyx, { event: "mark", mark: { name: mark } }); },
-        }).then((context) => { state.governedContext = context; diagnose("GOVERNED_SPEECH_QUEUED", { kind: context.kind }); }).catch((error) => { closeBoth("GOVERNED_SPEECH_FAILED"); throw error; });
+        }).then((context) => { state.governedContext = context; diagnose("GOVERNED_SPEECH_QUEUED", { kind: context.kind }); }).catch((error) => {
+          const failureCategory = classifyGovernedSpeechFailure(error);
+          diagnose("GOVERNED_SPEECH_FAILED", { severity: "error", errorCode: failureCategory, failureCategory });
+          closeBoth("GOVERNED_SPEECH_FAILED", { failureCategory });
+          throw error;
+        });
       }
       if (command.type === "CALLER_TURN_DECISION") {
         if (command.decision === "IGNORE") { state.callerInput.resolve(command.itemId, "IGNORE"); return; }

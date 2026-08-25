@@ -55,6 +55,23 @@ test("STT failure stores only stable category, status and bounded metrics", () =
   assert.equal(serialized.includes("transcript"), false);
 });
 
+test("governed speech failure stores its safe category without exception text", () => {
+  const journal = new InMemoryDiagnosticJournal({ ttlMs: 60_000 });
+  const event = journal.record({
+    tenantId: "restaurante-centro",
+    callControlId: "v3:test",
+    stage: "GOVERNED_SPEECH_FAILED",
+    severity: "error",
+    errorCode: "PLAYBACK_NOT_IDLE",
+    failureCategory: "PLAYBACK_NOT_IDLE",
+    errorMessage: "private runtime failure text",
+  }, 2_050_000);
+  const serialized = JSON.stringify(event);
+  assert.equal(event.error_code, "PLAYBACK_NOT_IDLE");
+  assert.equal(event.details.failure_category, "PLAYBACK_NOT_IDLE");
+  assert.equal(serialized.includes("private runtime failure text"), false);
+});
+
 test("semantic preselection uses backward-compatible safe details without adding a new top-level field", () => {
   const journal = new InMemoryDiagnosticJournal({ ttlMs: 60_000 });
   const event = journal.record({
