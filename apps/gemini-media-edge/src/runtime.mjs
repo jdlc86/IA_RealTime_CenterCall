@@ -32,13 +32,15 @@ export function createGeminiMediaEdgeRuntime(options) {
   };
 
   const bindControlSession = typeof options?.bindControlSession === "function"
-    ? (identity, sink) => options.bindControlSession(identity, createGeminiPostToolControlSink(sink, {
+    ? (identity, sink, playbackControl) => options.bindControlSession(identity, createGeminiPostToolControlSink(sink, {
         onArmed() {
+          const activeBindingResponseId = playbackControl?.suppressProviderAudio?.() ?? null;
           observeDiagnostic({
             stage: "POST_TOOL_PROVIDER_AUDIO_SUPPRESSION_ARMED",
             tenantId: identity.tenantId,
             callControlId: identity.callControlId,
           });
+          return activeBindingResponseId;
         },
         onBindingSuppressed() {
           observeDiagnostic({

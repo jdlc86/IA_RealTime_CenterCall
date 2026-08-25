@@ -59,7 +59,7 @@ test("governed post-tool speech waits for the silent Gemini response drain befor
       effects.push({ type: "governed", responseId: command.responseId });
     }
     return true;
-  });
+  }, { onArmed: () => playback.suppressProviderAudio() });
 
   sink(toolResult("restaurant_reservation_create", {
     ok: true,
@@ -113,7 +113,7 @@ test("governed speech may arrive before the provider binding and still waits for
     if (command.type === "PLAYBACK_DRAIN") playback.finish(command.responseId);
     if (command.type === "GOVERNED_SPEECH") playback.assertIdle();
     return true;
-  });
+  }, { onArmed: () => playback.suppressProviderAudio() });
 
   sink(toolResult("restaurant_reservation_create", {
     ok: true,
@@ -135,7 +135,7 @@ test("governed post-tool drain identity mismatch fails closed", () => {
     if (command.type === "PLAYBACK_BINDING") playback.bind(command.responseId, command.kind);
     if (command.type === "PLAYBACK_DRAIN") playback.finish(command.responseId);
     return true;
-  });
+  }, { onArmed: () => playback.suppressProviderAudio() });
 
   sink(toolResult("restaurant_reservation_create", {
     ok: true,
@@ -147,4 +147,30 @@ test("governed post-tool drain identity mismatch fails closed", () => {
     () => sink({ type: "PLAYBACK_DRAIN", responseId: "gemini-response-other" }),
     /drain identity mismatch/,
   );
+});
+
+test("post-tool suppression captures the provider binding that already owns playback", () => {
+  const playback = new BoundPlaybackGate(64 * 1024);
+  playback.bind("gemini-response-active", "NORMAL");
+  const effects = [];
+  const sink = createGeminiPostToolControlSink((command) => {
+    effects.push(command.type);
+    if (command.type === "PLAYBACK_DRAIN") playback.finish(command.responseId);
+    if (command.type === "GOVERNED_SPEECH") playback.assertIdle();
+    return true;
+  }, { onArmed: () => playback.suppressProviderAudio() });
+
+  sink(toolResult("restaurant_reservation_create", {
+    ok: true,
+    status: "MISSING_INFORMATION",
+    missing: ["starts_at", "party_size"],
+  }));
+  playback.queue(Buffer.from([1, 0, 2, 0]));
+  assert.deepEqual(playback.flush(), []);
+
+  sink({ type: "GOVERNED_SPEECH", responseId: "gemini-response-active", text: "¿Para qué día y hora?" });
+  assert.deepEqual(effects, ["TOOL_RESULT"]);
+  sink({ type: "PLAYBACK_DRAIN", responseId: "gemini-response-active" });
+  assert.deepEqual(effects, ["TOOL_RESULT", "PLAYBACK_DRAIN", "GOVERNED_SPEECH"]);
+  assert.equal(playback.activeResponseId(), null);
 });

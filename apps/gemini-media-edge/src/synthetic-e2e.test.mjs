@@ -220,29 +220,40 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
       type: "TOOL_RESULT",
       callId: "business-info-synthetic-1",
       toolName: "restaurant_business_info",
-      output: { ok: true, status: "BUSINESS_INFO_READY" },
+      output: { ok: true, status: "FOUND" },
     });
     trace.push({ stage: "TOOL_RESULT_DELIVERED", callId: "business-info-synthetic-1" });
     assert.deepEqual(gemini.sent.at(-1).toolResponse.functionResponses[0], {
       id: "business-info-synthetic-1",
       name: "restaurant_business_info",
-      response: { result: { ok: true, status: "BUSINESS_INFO_READY" } },
+      response: { result: { ok: true, status: "FOUND" } },
     });
 
+    // Reproduce the real post-tool ordering: the provider may produce audio
+    // before or after its response binding, while the Control Plane has already
+    // selected exact governed speech. Provider audio stays silent, the governed
+    // command waits for the real provider completion, and then takes playback.
     gemini.receive({ serverContent: { modelTurn: { parts: [{
       inlineData: { mimeType: "audio/pcm;rate=24000", data: providerAudio() },
     }] } } });
     registry.command(claims, { type: "PLAYBACK_BINDING", responseId: "normal-response-synthetic-1", kind: "NORMAL" });
+    assert.equal(telnyxFrames.some((frame) => frame.event === "media"), false);
+    const governedPostTool = registry.command(claims, {
+      type: "GOVERNED_SPEECH",
+      responseId: "normal-response-synthetic-1",
+      text: "Abrimos a las nueve.",
+    });
+    gemini.receive({ serverContent: { turnComplete: true } });
+    await registry.command(claims, { type: "PLAYBACK_DRAIN", responseId: "normal-response-synthetic-1" });
+    await governedPostTool;
     const normalMedia = await eventually(
       () => telnyxFrames.find((frame) => frame.event === "media"),
-      "Gemini Live audio did not reach Telnyx playback",
+      "Governed post-tool audio did not reach Telnyx playback",
     );
-    assert.ok(normalMedia.media.payload.length > 0);
-    gemini.receive({ serverContent: { turnComplete: true } });
-    registry.command(claims, { type: "PLAYBACK_DRAIN", responseId: "normal-response-synthetic-1" });
+    assert.deepEqual([...Buffer.from(normalMedia.media.payload, "base64")], [0x01, 0x02, 0x03, 0x04]);
     const normalMark = await eventually(
       () => telnyxFrames.find((frame) => frame.event === "mark"),
-      "Normal playback drain mark was not emitted",
+      "Governed post-tool playback drain mark was not emitted",
     );
     telnyx.send(JSON.stringify({ event: "mark", stream_id: "stream-synthetic-1", mark: normalMark.mark }));
     await eventually(

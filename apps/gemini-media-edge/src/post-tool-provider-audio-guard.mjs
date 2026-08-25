@@ -107,7 +107,16 @@ export function createGeminiPostToolControlSink(delegate, hooks = {}) {
         throw new Error("Gemini governed post-tool suppression cannot overlap tool results");
       }
       suppressionArmed = shouldSuppressGeminiPostToolProviderAudio(command);
-      if (suppressionArmed) hooks.onArmed?.();
+      if (suppressionArmed) {
+        const activeBindingResponseId = hooks.onArmed?.();
+        if (activeBindingResponseId != null) {
+          suppressedBindingResponseId = responseId(
+            { responseId: activeBindingResponseId },
+            "Gemini active post-tool playback response id",
+          );
+          hooks.onBindingSuppressed?.();
+        }
+      }
       return delegate(command);
     }
 
@@ -163,11 +172,19 @@ export function installGeminiPostToolPlaybackSuppression(BoundPlaybackGate) {
   const originalFinish = prototype.finish;
   const originalReset = prototype.reset;
 
+  prototype.suppressProviderAudio = function suppressProviderAudio() {
+    if (this.owner?.snapshot?.().started === true) {
+      throw new Error("Gemini post-tool provider audio suppression cannot arm after playback started");
+    }
+    this.pending = [];
+    this.pendingBytes = 0;
+    this[SUPPRESS_PROVIDER_AUDIO] = true;
+    return this.binding;
+  };
+
   prototype.bind = function guardedBind(responseIdValue, kind) {
     if (bindingContext.getStore()?.suppressProviderAudio === true) {
-      this.pending = [];
-      this.pendingBytes = 0;
-      this[SUPPRESS_PROVIDER_AUDIO] = true;
+      this.suppressProviderAudio();
     }
     return originalBind.call(this, responseIdValue, kind);
   };
