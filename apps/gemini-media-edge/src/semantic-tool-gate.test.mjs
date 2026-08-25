@@ -42,6 +42,51 @@ test("Gemini semantic gate forbids assistant semantic output before tool selecti
   );
 });
 
+test("Gemini semantic gate ignores structural empty model turns while waiting for the real governed tool call", () => {
+  const gate = new GeminiSemanticToolGate();
+  gate.preArm("item-reservation");
+  gate.preselect("item-reservation", {
+    selectedTool: "restaurant_reservation_create",
+    directModelOutputAllowed: false,
+  });
+  gate.confirmArm();
+
+  assert.doesNotThrow(() => gate.observeProviderMessage({ serverContent: { modelTurn: {} } }));
+  assert.doesNotThrow(() => gate.observeProviderMessage({ serverContent: { modelTurn: { parts: [] } } }));
+  assert.equal(gate.snapshot().directModelOutputObserved, false);
+  assert.equal(gate.snapshot().selectedTool, null);
+
+  assert.doesNotThrow(() => gate.observeProviderMessage(toolCall("fc-reservation", "restaurant_reservation_create")));
+  assert.equal(gate.snapshot().selectedTool, "restaurant_reservation_create");
+  assert.equal(gate.snapshot().selectedCallId, "fc-reservation");
+});
+
+test("Gemini semantic gate still fails closed on actual or malformed model-turn output for governed tools", () => {
+  const actual = new GeminiSemanticToolGate();
+  actual.preArm("item-actual");
+  actual.preselect("item-actual", {
+    selectedTool: "restaurant_reservation_create",
+    directModelOutputAllowed: false,
+  });
+  actual.confirmArm();
+  assert.throws(
+    () => actual.observeProviderMessage({ serverContent: { modelTurn: { parts: [{ text: "Necesito más datos" }] } } }),
+    /bypassed a governed preselected tool/,
+  );
+
+  const malformed = new GeminiSemanticToolGate();
+  malformed.preArm("item-malformed");
+  malformed.preselect("item-malformed", {
+    selectedTool: "restaurant_reservation_create",
+    directModelOutputAllowed: false,
+  });
+  malformed.confirmArm();
+  assert.throws(
+    () => malformed.observeProviderMessage({ serverContent: { modelTurn: { parts: {} } } }),
+    /bypassed a governed preselected tool/,
+  );
+});
+
 test("Gemini semantic gate admits exactly one tool decision for the caller turn", () => {
   const gate = new GeminiSemanticToolGate();
   gate.preArm("item-1");

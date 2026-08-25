@@ -13,12 +13,22 @@ function providerServerContent(message) {
   return server && typeof server === "object" && !Array.isArray(server) ? server : null;
 }
 
+function providerModelTurnHasSemanticOutput(modelTurn) {
+  if (modelTurn === undefined || modelTurn === null) return false;
+  if (typeof modelTurn !== "object" || Array.isArray(modelTurn)) return true;
+  const parts = modelTurn.parts;
+  if (parts === undefined) return false;
+  if (!Array.isArray(parts)) return true;
+  return parts.length > 0;
+}
+
 function providerProducedSemanticOutput(message) {
   const server = providerServerContent(message);
   if (!server) return false;
   const modelTurn = server.modelTurn ?? server.model_turn;
   const output = server.outputTranscription ?? server.output_transcription;
-  return modelTurn !== undefined || (typeof output?.text === "string" && output.text.trim().length > 0);
+  return providerModelTurnHasSemanticOutput(modelTurn)
+    || (typeof output?.text === "string" && output.text.trim().length > 0);
 }
 
 function providerTurnComplete(message) {

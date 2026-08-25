@@ -15,7 +15,7 @@ function bootstrap() {
       {
         type: "function",
         name: "restaurant_reservation_create",
-        description: "Create or continue a reservation after the caller has chosen a concrete date and time; partial arguments are accepted so the backend can continue a multi-turn draft.",
+        description: "Create or continue a multi-turn reservation from reservation intent; partial arguments are accepted and the backend reports missing fields.",
         parameters: {
           type: "object",
           properties: {
@@ -30,16 +30,18 @@ function bootstrap() {
   };
 }
 
-test("preselection request reflects production-like partial reservation schemas without treating empty required as readiness", () => {
+test("preselection request preserves progressive operation semantics instead of inventing a readiness gate", () => {
   const request = buildSemanticPreselectionRequest(bootstrap(), "quiero hacer una reserva");
   assert.equal(request.inputText, "quiero hacer una reserva");
   assert.equal(request.instructions.includes("quiero hacer una reserva"), false);
   assert.equal(request.instructions.includes("Declared required inputs: topic."), true);
-  assert.equal(request.instructions.includes("restaurant_reservation_create: Create or continue a reservation after the caller has chosen a concrete date and time"), true);
+  assert.equal(request.instructions.includes("restaurant_reservation_create: Create or continue a multi-turn reservation from reservation intent"), true);
   assert.equal(request.instructions.includes("Declared required inputs: none."), true);
   assert.equal(request.instructions.includes("Available input fields: party_size, starts_at, confirm."), true);
-  assert.equal(request.instructions.includes("Missing or empty required fields never mean that an intent-only turn is semantically ready"), true);
-  assert.equal(request.instructions.includes("supports progressive or partial arguments must not be preselected"), true);
+  assert.equal(request.instructions.includes("select that tool as soon as the caller starts or continues that operation"), true);
+  assert.equal(request.instructions.includes("backend owns missing-information collection"), true);
+  assert.equal(request.instructions.includes("Never use them as a semantic readiness gate"), true);
+  assert.equal(request.instructions.includes("supports progressive or partial arguments must not be preselected"), false);
   assert.equal(request.responseMimeType, "application/json");
   assert.deepEqual(request.allowedToolNames, [
     "restaurant_conversation",
@@ -73,7 +75,7 @@ test("isolated resolver preserves exact schema-constrained decision contract", a
   const calls = [];
   const result = await resolveSemanticPreselection(async (request) => {
     calls.push(request);
-    return '{"selectedTool":"restaurant_conversation"}';
+    return '{"selectedTool":"restaurant_reservation_create"}';
   }, bootstrap(), "quiero hacer una reserva");
   assert.equal(calls.length, 1);
   assert.equal(calls[0].inputText, "quiero hacer una reserva");
@@ -87,33 +89,36 @@ test("isolated resolver preserves exact schema-constrained decision contract", a
     "restaurant_reservation_create",
   ]);
   assert.deepEqual(result, {
-    selectedTool: "restaurant_conversation",
-    directModelOutputAllowed: true,
+    selectedTool: "restaurant_reservation_create",
+    directModelOutputAllowed: false,
   });
 });
 
-test("conversation preselection permits direct model output only after control-plane confirmation", () => {
+test("conversation preselection permits actual direct model output only after control-plane confirmation", () => {
   const gate = new GeminiSemanticToolGate();
   gate.preArm("item-1");
   gate.preselect("item-1", { selectedTool: "restaurant_conversation", directModelOutputAllowed: true });
   assert.throws(
-    () => gate.observeProviderMessage({ serverContent: { modelTurn: {} } }),
+    () => gate.observeProviderMessage({ serverContent: { modelTurn: { parts: [{ text: "hola" }] } } }),
     /before control-plane gate confirmation/,
   );
   gate.confirmArm();
-  assert.doesNotThrow(() => gate.observeProviderMessage({ serverContent: { modelTurn: {} } }));
+  assert.doesNotThrow(() => gate.observeProviderMessage({ serverContent: { modelTurn: { parts: [{ text: "hola" }] } } }));
   assert.equal(gate.snapshot().directModelOutputObserved, true);
   gate.observeProviderMessage({ serverContent: { turnComplete: true } });
   assert.equal(gate.snapshot().armed, false);
 });
 
-test("governed preselection still rejects direct model output without a live tool call", () => {
+test("governed preselection ignores structural model-turn envelopes but rejects actual direct output without a live tool call", () => {
   const gate = new GeminiSemanticToolGate();
   gate.preArm("item-2");
-  gate.preselect("item-2", { selectedTool: "restaurant_business_info", directModelOutputAllowed: false });
+  gate.preselect("item-2", { selectedTool: "restaurant_reservation_create", directModelOutputAllowed: false });
   gate.confirmArm();
-  assert.throws(
+  assert.doesNotThrow(
     () => gate.observeProviderMessage({ serverContent: { modelTurn: {} } }),
+  );
+  assert.throws(
+    () => gate.observeProviderMessage({ serverContent: { modelTurn: { parts: [{ text: "Necesito más datos" }] } } }),
     /bypassed a governed preselected tool/,
   );
 });
@@ -137,12 +142,15 @@ test("matching live tool call is coherent and conflicting live tool call fails c
   }), /conflicts with isolated preselection/);
 });
 
-test("un-preselected gate preserves legacy fail-closed behavior", () => {
+test("un-preselected gate ignores structural model-turn envelopes but remains fail-closed on actual output", () => {
   const gate = new GeminiSemanticToolGate();
   gate.preArm("item-5");
   gate.confirmArm();
-  assert.throws(
+  assert.doesNotThrow(
     () => gate.observeProviderMessage({ serverContent: { modelTurn: {} } }),
+  );
+  assert.throws(
+    () => gate.observeProviderMessage({ serverContent: { modelTurn: { parts: [{ text: "hola" }] } } }),
     /before semantic tool selection/,
   );
 });
