@@ -176,7 +176,7 @@ export class GeminiSemanticToolGate {
   release() {
     if (!this.activeItemId) throw new Error("Gemini semantic gate is not armed");
     if (!this.confirmed) throw new Error("Gemini semantic gate was not confirmed by the control plane");
-    if (!this.selectedTool || !this.selectedCallId) throw new Error("Gemini semantic gate cannot release before provider tool selection");
+    if (!this.selectedTool || !this.selectedCallId) throw new Error("Gemini semantic gate cannot release before tool selection");
     return this.reset();
   }
 }
