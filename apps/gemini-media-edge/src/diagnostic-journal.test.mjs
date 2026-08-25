@@ -55,7 +55,7 @@ test("STT failure stores only stable category, status and bounded metrics", () =
   assert.equal(serialized.includes("transcript"), false);
 });
 
-test("semantic preselection stores only safe selected-tool identity and direct-output authority", () => {
+test("semantic preselection uses backward-compatible safe details without adding a new top-level field", () => {
   const journal = new InMemoryDiagnosticJournal({ ttlMs: 60_000 });
   const event = journal.record({
     tenantId: "restaurante-centro",
@@ -69,7 +69,9 @@ test("semantic preselection stores only safe selected-tool identity and direct-o
     providerBody: "private provider body",
   }, 2_100_000);
   const serialized = JSON.stringify(event);
-  assert.equal(event.tool_name, "restaurant_conversation");
+  assert.equal("tool_name" in event, false);
+  assert.equal(event.details.kind, "restaurant_conversation");
+  assert.equal(event.details.authorized, true);
   assert.equal(event.details.direct_model_output_allowed, true);
   assert.equal(serialized.includes("quiero hacer una reserva"), false);
   assert.equal(serialized.includes("private classifier prompt"), false);
