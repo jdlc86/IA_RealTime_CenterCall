@@ -59,6 +59,14 @@ function providerTurnComplete(message) {
   return Boolean(server && (server.turnComplete === true || server.turn_complete === true));
 }
 
+export class GeminiSemanticGateViolation extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = "GeminiSemanticGateViolation";
+    this.code = code;
+  }
+}
+
 /**
  * Product-owned enforcement for Gemini's one-tool semantic decision invariant.
  *
@@ -177,7 +185,10 @@ export class GeminiSemanticToolGate {
         throw new Error("Gemini semantic output arrived before control-plane gate confirmation");
       }
       if (!this.directModelOutputAllowed) {
-        throw new Error("Gemini semantic output bypassed a governed preselected tool");
+        throw new GeminiSemanticGateViolation(
+          "GOVERNED_DIRECT_OUTPUT",
+          "Gemini semantic output bypassed a governed preselected tool",
+        );
       }
       this.directModelOutputObserved = true;
     }

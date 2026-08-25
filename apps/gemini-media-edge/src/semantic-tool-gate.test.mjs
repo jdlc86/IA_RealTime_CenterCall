@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { GeminiSemanticToolGate } from "./semantic-tool-gate.mjs";
+import { GeminiSemanticGateViolation, GeminiSemanticToolGate } from "./semantic-tool-gate.mjs";
 
 function toolCall(id = "fc-1", name = "restaurant_business_info") {
   return { toolCall: { functionCalls: [{ id, name, args: {} }] } };
@@ -85,7 +85,9 @@ test("Gemini semantic gate still fails closed on actual audio, text or malformed
   actualAudio.confirmArm();
   assert.throws(
     () => actualAudio.observeProviderMessage({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: "AA==" } }] } } }),
-    /bypassed a governed preselected tool/,
+    (error) => error instanceof GeminiSemanticGateViolation
+      && error.code === "GOVERNED_DIRECT_OUTPUT"
+      && /bypassed a governed preselected tool/.test(error.message),
   );
 
   const malformed = new GeminiSemanticToolGate();

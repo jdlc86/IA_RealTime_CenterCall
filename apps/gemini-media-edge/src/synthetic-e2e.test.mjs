@@ -212,6 +212,21 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
     assert.ok(committedCallerFrames.slice(1, -1).length > 0);
     assert.equal(committedCallerFrames.slice(1, -1).every((type) => type === "audio"), true);
 
+    // Gemini Live can occasionally answer a governed route directly even after
+    // correct preselection. Suppress that audio and retry once for the exact
+    // preselected function, preserving a real provider-generated call id.
+    gemini.receive({ serverContent: { modelTurn: { parts: [{
+      inlineData: { mimeType: "audio/pcm;rate=24000", data: providerAudio() },
+    }] } } });
+    assert.equal(telnyxFrames.some((frame) => frame.event === "media"), false);
+    const compatibilityRetry = gemini.sent.at(-1).clientContent;
+    assert.equal(compatibilityRetry.turnComplete, true);
+    assert.equal(compatibilityRetry.turns[0].parts[0].text.includes("restaurant_business_info"), true);
+    assert.equal(compatibilityRetry.turns[0].parts[0].text.includes("¿A qué hora abren?"), false);
+    assert.equal(diagnostics.some((entry) => entry.stage === "SEMANTIC_TOOL_RETRY_REQUESTED"), true);
+    assert.equal(diagnostics.some((entry) => entry.stage === "MEDIA_SESSION_CLOSING"), false);
+    gemini.receive({ serverContent: { turnComplete: true } });
+
     gemini.receive({ toolCall: { functionCalls: [{
       id: "business-info-synthetic-1",
       name: "restaurant_business_info",
@@ -325,7 +340,7 @@ test("synthetic media E2E traces authorized caller audio, tools, playout and gov
     assert.equal(bootstrapConsumptions, 1);
     assert.equal(registry.size(), 0);
     assert.equal(registry.isActive({ ...claims, callControlId: "other-call" }), false);
-    assert.equal(gemini.sent.some((message) => "clientContent" in message), false);
+    assert.equal(gemini.sent.filter((message) => "clientContent" in message).length, 1);
     assert.equal(trace.some((entry) => entry.stage === "SIDEBAND_AND_MEDIA_ATTACHED"), true);
     assert.equal(trace.some((entry) => entry.stage === "TOOL_RESULT_DELIVERED"), true);
     assert.deepEqual(
