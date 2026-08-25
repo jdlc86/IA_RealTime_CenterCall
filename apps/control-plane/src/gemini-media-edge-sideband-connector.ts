@@ -40,12 +40,30 @@ import {
   requireRealtimeProviderEventIngress,
 } from "./realtime-provider-event-ingress-runtime.js";
 
+export type GeminiMediaEdgeSidebandObservationFailureCategory =
+  | "FRAME_NOT_TEXT"
+  | "FRAME_JSON_INVALID"
+  | "FRAME_TYPE_UNSUPPORTED"
+  | "PROVIDER_RESET_IDENTITY_MISMATCH"
+  | "PLAYBACK_IDENTITY_MISMATCH"
+  | "PLAYBACK_KIND_MISMATCH"
+  | "CALLER_CONTEXT_INVALID"
+  | "INGRESS_REJECTED"
+  | "OBSERVATION_INVALID";
+
+export type GeminiMediaEdgeSidebandDiagnostic = Readonly<{
+  stage: "GEMINI_SIDEBAND_OBSERVATION_FAILED";
+  frameType: string;
+  failureCategory: GeminiMediaEdgeSidebandObservationFailureCategory;
+}>;
+
 export type GeminiMediaEdgeSidebandConnectionInput = Readonly<{
   edgeUrl: string;
   tenantId: string;
   callControlId: string;
   controlPlaneToken: string;
   capabilityHost?: object;
+  observeDiagnostic?: (diagnostic: GeminiMediaEdgeSidebandDiagnostic) => void;
 }>;
 
 export type GeminiMediaEdgeSidebandConnection = Readonly<{
@@ -58,9 +76,36 @@ export type GeminiMediaEdgeSidebandObservation = (
   observation: GeminiLiveSessionRuntimeObservation,
 ) => void | Promise<void>;
 
+const SAFE_FRAME_TYPES = new Set([
+  "GEMINI_EVENT",
+  "CALLER_EVENT",
+  "PLAYBACK_EVENT",
+  "GOVERNED_EVENT",
+  "INPUT_DETECTION_EVENT",
+  "PROVIDER_SESSION_RESET",
+]);
+
 function required(value: unknown, field: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`);
   return value.trim();
+}
+
+function safeFrameType(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "UNKNOWN";
+  const type = (value as Record<string, unknown>).type;
+  return typeof type === "string" && SAFE_FRAME_TYPES.has(type) ? type : "UNKNOWN";
+}
+
+export function classifyGeminiMediaEdgeObservationFailure(
+  error: unknown,
+): GeminiMediaEdgeSidebandObservationFailureCategory {
+  const message = error instanceof Error ? error.message : "";
+  if (/frame type is unsupported/i.test(message)) return "FRAME_TYPE_UNSUPPORTED";
+  if (/provider session reset identity mismatch/i.test(message)) return "PROVIDER_RESET_IDENTITY_MISMATCH";
+  if (/playback .*identity mismatch|playback already owned|caller playback identity mismatch/i.test(message)) return "PLAYBACK_IDENTITY_MISMATCH";
+  if (/playback .*kind mismatch/i.test(message)) return "PLAYBACK_KIND_MISMATCH";
+  if (/caller context|caller item|caller speech stop|caller transcript|caller playback/i.test(message)) return "CALLER_CONTEXT_INVALID";
+  return "OBSERVATION_INVALID";
 }
 
 export function geminiMediaEdgeControlUrl(input: Pick<GeminiMediaEdgeSidebandConnectionInput, "edgeUrl" | "tenantId" | "callControlId">): string {
@@ -238,26 +283,59 @@ export async function connectGeminiMediaEdgeSideband(
     runtime.close();
   };
 
-  const failObservation = () => {
+  const reportObservationFailure = (
+    frameType: string,
+    failureCategory: GeminiMediaEdgeSidebandObservationFailureCategory,
+  ) => {
+    try {
+      input.observeDiagnostic?.(Object.freeze({
+        stage: "GEMINI_SIDEBAND_OBSERVATION_FAILED",
+        frameType,
+        failureCategory,
+      }));
+    } catch {}
+  };
+
+  const failObservation = (
+    frameType: string,
+    failureCategory: GeminiMediaEdgeSidebandObservationFailureCategory,
+  ) => {
+    reportObservationFailure(frameType, failureCategory);
     closeForObservationFailure(socket);
     release();
   };
 
   socket.accept();
   socket.addEventListener("message", (event: MessageEvent) => {
-    try {
-      const text = typeof event.data === "string" ? event.data : "";
-      if (!text) throw new Error("Gemini media edge sideband requires text frames");
-      const observation = runtime.observe(JSON.parse(text));
-      observationTail = observationTail
-        .then(async () => {
-          if (closed) return;
-          await observe(observation);
-        })
-        .catch(failObservation);
-    } catch {
-      failObservation();
+    const text = typeof event.data === "string" ? event.data : "";
+    if (!text) {
+      failObservation("UNKNOWN", "FRAME_NOT_TEXT");
+      return;
     }
+
+    let frameValue: unknown;
+    try {
+      frameValue = JSON.parse(text);
+    } catch {
+      failObservation("UNKNOWN", "FRAME_JSON_INVALID");
+      return;
+    }
+    const frameType = safeFrameType(frameValue);
+
+    let observation: GeminiLiveSessionRuntimeObservation;
+    try {
+      observation = runtime.observe(frameValue);
+    } catch (error) {
+      failObservation(frameType, classifyGeminiMediaEdgeObservationFailure(error));
+      return;
+    }
+
+    observationTail = observationTail
+      .then(async () => {
+        if (closed) return;
+        await observe(observation);
+      })
+      .catch(() => failObservation(frameType, "INGRESS_REJECTED"));
   });
   socket.addEventListener("close", release);
   socket.addEventListener("error", () => { try { socket.close(1011, "sideband error"); } catch {} release(); });
