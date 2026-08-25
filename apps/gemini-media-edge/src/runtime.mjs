@@ -1,14 +1,23 @@
 export * from "./runtime-core.mjs";
 
-import { createGeminiMediaEdgeRuntime as createCoreRuntime } from "./runtime-core.mjs";
+import {
+  BoundPlaybackGate,
+  createGeminiMediaEdgeRuntime as createCoreRuntime,
+} from "./runtime-core.mjs";
 import { bindNextCallerInputDiagnosticContext } from "./caller-input.mjs";
+import {
+  createGeminiPostToolControlSink,
+  installGeminiPostToolPlaybackSuppression,
+} from "./post-tool-provider-audio-guard.mjs";
+
+installGeminiPostToolPlaybackSuppression(BoundPlaybackGate);
 
 /**
- * Observability composition wrapper around the proven media runtime. It does not
- * alter wire ordering or media ownership. The core constructs one caller-input
- * owner synchronously and immediately emits MEDIA_SOCKET_AUTHORIZED; that stage
- * binds the just-created owner to the authenticated tenant/call identity before
- * any Telnyx media can be processed.
+ * Observability and Gemini-specific playback composition wrapper around the
+ * proven media runtime. The post-tool guard only prevents Gemini Live's
+ * provider-owned automatic audio from taking Telnyx while the existing Control
+ * Plane has selected governed post-tool speech; normal provider audio is
+ * unchanged and OpenAI never traverses this module.
  */
 export function createGeminiMediaEdgeRuntime(options) {
   const downstream = typeof options?.observeDiagnostic === "function" ? options.observeDiagnostic : () => {};
@@ -21,9 +30,37 @@ export function createGeminiMediaEdgeRuntime(options) {
     }
     downstream(diagnostic);
   };
+
+  const bindControlSession = typeof options?.bindControlSession === "function"
+    ? (identity, sink) => options.bindControlSession(identity, createGeminiPostToolControlSink(sink, {
+        onArmed() {
+          observeDiagnostic({
+            stage: "POST_TOOL_PROVIDER_AUDIO_SUPPRESSION_ARMED",
+            tenantId: identity.tenantId,
+            callControlId: identity.callControlId,
+          });
+        },
+        onBindingSuppressed() {
+          observeDiagnostic({
+            stage: "POST_TOOL_PROVIDER_AUDIO_SUPPRESSION_BOUND",
+            tenantId: identity.tenantId,
+            callControlId: identity.callControlId,
+          });
+        },
+        onReleasedWithoutBinding() {
+          observeDiagnostic({
+            stage: "POST_TOOL_PROVIDER_AUDIO_SUPPRESSION_RELEASED",
+            tenantId: identity.tenantId,
+            callControlId: identity.callControlId,
+          });
+        },
+      }))
+    : undefined;
+
   return createCoreRuntime({
     ...options,
     observeDiagnostic,
+    ...(bindControlSession ? { bindControlSession } : {}),
     callerInputOptions: {
       ...(options?.callerInputOptions ?? {}),
       observeDiagnostic,
