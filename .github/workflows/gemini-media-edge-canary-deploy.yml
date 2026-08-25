@@ -91,43 +91,14 @@ jobs:
           set -euo pipefail
           REVISION="$(gcloud run services describe gemini-media-edge --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(status.latestReadyRevisionName)')"
           SERVICE_URL="$(gcloud run services describe gemini-media-edge --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(status.url)')"
-          IMAGE="$(gcloud run services describe gemini-media-edge --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(spec.template.spec.containers[0].image)')"
           test -n "$REVISION"
           test -n "$SERVICE_URL"
-          test -n "$IMAGE"
           EDGE_URL="wss://${SERVICE_URL#https://}/telnyx/gemini"
           echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
           echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
           echo "edge_url=$EDGE_URL" >> "$GITHUB_OUTPUT"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-      - name: Verify real Gemini Live function-call contract
-        id: provider_contract
-        shell: bash
-        run: |
-          set -euo pipefail
-          JOB="gemini-media-edge-provider-probe"
-          gcloud run jobs deploy "$JOB" \
-            --project "$GCP_PROJECT_ID" \
-            --region "$GCP_REGION" \
-            --image "${{ steps.deployed.outputs.image }}" \
-            --service-account "gemini-media-edge@$GCP_PROJECT_ID.iam.gserviceaccount.com" \
-            --command "node" \
-            --args "src/live-provider-contract-probe.mjs" \
-            --set-secrets "GEMINI_API_KEY=gemini-media-edge-gemini-api-key:${GEMINI_API_KEY_SECRET_VERSION}" \
-            --set-env-vars "GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview" \
-            --tasks 1 \
-            --max-retries 0 \
-            --task-timeout 30s \
-            --quiet
-          gcloud run jobs execute "$JOB" \
-            --project "$GCP_PROJECT_ID" \
-            --region "$GCP_REGION" \
-            --wait \
-            --quiet
-          echo "status=ready" >> "$GITHUB_OUTPUT"
-
-      - name: Verify deployed Cloud Run security and readiness
+      - name: Verify deployed Cloud Run security, classifier and real Gemini Live function calling
         run: npm run test:e2e:cloud-run -- "${{ steps.deployed.outputs.edge_url }}"
         working-directory: apps/gemini-media-edge
 
@@ -138,7 +109,7 @@ jobs:
             echo "### Gemini Media Edge canary"
             echo "- Source SHA: \`${GITHUB_SHA}\`"
             echo "- Revision: \`${{ steps.deployed.outputs.revision }}\`"
-            echo "- Provider function-call contract: \`${{ steps.provider_contract.outputs.status }}\`"
+            echo "- Real Gemini Live function-call contract: \`readiness-gated\`"
             echo "- Service URL: \`${{ steps.deployed.outputs.service_url }}\`"
             echo "- WSS: \`${{ steps.deployed.outputs.edge_url }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -44,21 +44,39 @@ async function expectUnauthorizedWebSocket(url, label) {
   });
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function resolveReadiness(healthUrl) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const response = await fetch(healthUrl, { headers: { Accept: "application/json" }, cache: "no-store" });
+    let health = null;
+    try { health = await response.json(); } catch {}
+    if (response.ok) return { response, health };
+    const status = typeof health?.semanticDecision?.status === "string" ? health.semanticDecision.status : null;
+    if (response.status === 503 && status === "pending" && attempt < 19) {
+      await delay(1_000);
+      continue;
+    }
+    const category = typeof health?.semanticDecision?.failureCategory === "string"
+      ? health.semanticDecision.failureCategory
+      : status
+        ? status.toUpperCase()
+        : "UNAVAILABLE";
+    throw new Error(`Cloud Run health check failed with HTTP ${response.status}; semanticDecision=${category}`);
+  }
+  throw new Error("Cloud Run readiness did not resolve");
+}
+
 const { edge, origin, control } = edgeUrls(process.argv[2] ?? process.env.GEMINI_MEDIA_EDGE_URL);
 const healthUrl = new URL("/ready", origin);
-const healthResponse = await fetch(healthUrl, { headers: { Accept: "application/json" }, cache: "no-store" });
-let health = null;
-try { health = await healthResponse.json(); } catch {}
-if (!healthResponse.ok) {
-  const category = typeof health?.semanticDecision?.failureCategory === "string"
-    ? health.semanticDecision.failureCategory
-    : typeof health?.semanticDecision?.status === "string"
-      ? health.semanticDecision.status.toUpperCase()
-      : "UNAVAILABLE";
-  throw new Error(`Cloud Run health check failed with HTTP ${healthResponse.status}; semanticDecision=${category}`);
-}
+const { response: healthResponse, health } = await resolveReadiness(healthUrl);
 if (health?.ok !== true || health?.service !== "gemini-media-edge") {
   throw new Error("Cloud Run health response does not identify gemini-media-edge");
+}
+if (health?.semanticDecision?.liveProviderContract !== "ready") {
+  throw new Error("Cloud Run readiness did not prove the real Gemini Live function-call contract");
 }
 
 const bootstrapResponse = await fetch(new URL("/internal/bootstrap", origin), {
@@ -78,6 +96,7 @@ console.log(JSON.stringify({
   service: health.service,
   healthStatus: healthResponse.status,
   semanticDecisionStatus: health.semanticDecision?.status ?? null,
+  liveProviderContract: health.semanticDecision?.liveProviderContract ?? null,
   bootstrapUnauthenticatedStatus: bootstrapResponse.status,
   mediaIngressUnauthenticatedStatus: 401,
   controlSidebandUnauthenticatedStatus: 401,

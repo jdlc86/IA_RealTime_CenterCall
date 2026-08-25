@@ -1,3 +1,6 @@
+import process from "node:process";
+import { runGeminiLiveProviderContractProbe } from "./live-provider-contract.mjs";
+
 const PROBE_TOOL = "restaurant_conversation";
 
 function safeFailureCategory(error) {
@@ -12,6 +15,11 @@ function safeFailureCategory(error) {
   return "UNKNOWN";
 }
 
+function safeLiveFailureCategory(result) {
+  const value = typeof result?.failureCategory === "string" ? result.failureCategory.trim() : "UNKNOWN";
+  return /^[A-Z0-9_]{1,80}$/.test(value) ? `LIVE_PROVIDER_${value}` : "LIVE_PROVIDER_UNKNOWN";
+}
+
 function validateProbeResponse(text) {
   let payload;
   try { payload = JSON.parse(text); }
@@ -24,7 +32,7 @@ export function semanticDecisionFailureCategory(error) {
   return safeFailureCategory(error);
 }
 
-export async function runSemanticDecisionReadinessProbe(client) {
+export async function runSemanticDecisionReadinessProbe(client, options = {}) {
   if (!client || typeof client.decide !== "function") {
     return Object.freeze({ status: "failed", failureCategory: "PROBE_REQUEST_INVALID" });
   }
@@ -44,8 +52,20 @@ export async function runSemanticDecisionReadinessProbe(client) {
       },
     });
     validateProbeResponse(text);
-    return Object.freeze({ status: "ready" });
   } catch (error) {
     return Object.freeze({ status: "failed", failureCategory: safeFailureCategory(error) });
   }
+
+  const liveProviderProbe = options.liveProviderProbe ?? runGeminiLiveProviderContractProbe;
+  if (typeof liveProviderProbe !== "function") {
+    return Object.freeze({ status: "failed", failureCategory: "LIVE_PROVIDER_CONFIGURATION" });
+  }
+  const liveProviderResult = await liveProviderProbe(options.liveProviderOptions ?? {
+    apiKey: process.env.GEMINI_API_KEY,
+    model: process.env.GEMINI_LIVE_MODEL,
+  });
+  if (liveProviderResult?.status !== "ready") {
+    return Object.freeze({ status: "failed", failureCategory: safeLiveFailureCategory(liveProviderResult) });
+  }
+  return Object.freeze({ status: "ready", liveProviderContract: "ready" });
 }
