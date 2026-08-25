@@ -8,25 +8,15 @@ function required(value, field) {
 function decodePayload(payload) {
   const normalized = required(payload, "Gemini caller audio payload");
   const bytes = Buffer.from(normalized, "base64");
-  if (bytes.length === 0 || bytes.length % 2 !== 0) throw new Error("Gemini caller audio requires complete Telnyx L16 big-endian samples");
+  if (bytes.length === 0 || bytes.length % 2 !== 0) throw new Error("Gemini caller audio requires complete PCM16_LE samples");
   return { normalized, bytes };
 }
 
-function l16PayloadToPcm16LittleEndian(payload) {
-  const { bytes } = decodePayload(payload);
-  const output = Buffer.allocUnsafe(bytes.length);
-  for (let offset = 0; offset < bytes.length; offset += 2) {
-    output[offset] = bytes[offset + 1];
-    output[offset + 1] = bytes[offset];
-  }
-  return output.toString("base64");
-}
-
-function rmsPcm16Be(bytes) {
+function rmsPcm16Le(bytes) {
   let sumSquares = 0;
   const samples = bytes.length / 2;
   for (let offset = 0; offset < bytes.length; offset += 2) {
-    const sample = bytes.readInt16BE(offset) / 32768;
+    const sample = bytes.readInt16LE(offset) / 32768;
     sumSquares += sample * sample;
   }
   return Math.sqrt(sumSquares / samples);
@@ -49,7 +39,7 @@ export class TelnyxSampleCountVad {
   observe(payload) {
     const { normalized, bytes } = decodePayload(payload);
     const sampleCount = bytes.length / 2;
-    const rms = rmsPcm16Be(bytes);
+    const rms = rmsPcm16Le(bytes);
     this.processedSamples += sampleCount;
     let boundary = null;
     let shouldBufferPayload = this.state === "SPEECH";
@@ -113,8 +103,8 @@ export class TelnyxSampleCountVad {
 /**
  * Owns one deferred caller candidate in the media plane until STT has produced
  * authoritative text and the control plane later resolves NORMAL/INTERRUPT/IGNORE.
- * Telnyx L16 is interpreted in network byte order for VAD, then buffered once in
- * canonical PCM16 little-endian form for Google STT and Gemini Live replay.
+ * Telnyx WebSocket L16 is PCM16 little-endian in the verified media-streaming
+ * transport, so the exact payload is preserved for VAD, Google STT and Gemini.
  * No activityStart/audio/activityEnd is sent to Gemini from this component.
  */
 export class AuthoritativeCallerInputOwner {
@@ -237,7 +227,7 @@ export class AuthoritativeCallerInputOwner {
   buffer(payload) {
     const candidate = this.requireActive();
     if (candidate.transcript) throw new Error(`Gemini caller candidate ${candidate.itemId} is already completed`);
-    const normalized = l16PayloadToPcm16LittleEndian(payload);
+    const normalized = required(payload, "Gemini caller candidate payload");
     if (candidate.payloads.length >= this.maxBufferedChunks) throw new Error(`Gemini caller candidate ${candidate.itemId} exceeded buffered chunk limit`);
     const next = candidate.payloadChars + normalized.length;
     if (next > this.maxBufferedPayloadChars) throw new Error(`Gemini caller candidate ${candidate.itemId} exceeded buffered payload limit`);
