@@ -10,6 +10,7 @@ import { createGoogleTextToSpeechSynthesizer } from "./google-text-to-speech.mjs
 import { createGeminiIsolatedDecisionClient, decideForActiveGeminiControlSession } from "./isolated-decision.mjs";
 import { createGeminiIsolatedGenerationClient, generateForActiveGeminiControlSession } from "./isolated-generation.mjs";
 import { resolveSemanticPreselection } from "./semantic-preselection.mjs";
+import { runSemanticDecisionReadinessProbe } from "./semantic-readiness.mjs";
 import { InMemoryDiagnosticJournal } from "./diagnostic-journal.mjs";
 
 function required(value, field) {
@@ -59,6 +60,13 @@ const bootstrapRegistry = new InMemoryBootstrapRegistry();
 const controlRegistry = new InMemoryControlSidebandRegistry();
 const diagnosticJournal = new InMemoryDiagnosticJournal();
 const isolatedDecision = createGeminiIsolatedDecisionClient({ apiKey: process.env.GEMINI_API_KEY, model: process.env.GEMINI_DECISION_MODEL });
+let semanticDecisionReadiness = Object.freeze({ status: "pending" });
+void runSemanticDecisionReadinessProbe(isolatedDecision).then((result) => {
+  semanticDecisionReadiness = result;
+  const message = { event: "gemini_semantic_decision_readiness", ...result };
+  if (result.status === "ready") console.log(JSON.stringify(message));
+  else console.error(JSON.stringify(message));
+});
 const isolatedGeneration = createGeminiIsolatedGenerationClient({ apiKey: process.env.GEMINI_API_KEY, model: process.env.GEMINI_GENERATION_MODEL });
 const verifyCredential = createHmacCredentialVerifier(process.env.MEDIA_EDGE_CREDENTIAL_HMAC_SECRET, process.env.MEDIA_EDGE_PUBLIC_URL);
 const accessTokenProvider = createCloudRunAccessTokenProvider();
@@ -166,11 +174,13 @@ controlWss.on("connection", (socket, request) => {
 const server = http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url, "http://localhost");
   if (request.url === "/ready" && request.method === "GET") {
-    response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    const ready = semanticDecisionReadiness.status === "ready";
+    response.writeHead(ready ? 200 : 503, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     response.end(JSON.stringify({
-      ok: true,
+      ok: ready,
       service: "gemini-media-edge",
       revision: process.env.K_REVISION ?? null,
+      semanticDecision: semanticDecisionReadiness,
       activeSessions: runtime.activeSessions(),
       controlSessions: controlRegistry.size(),
       diagnosticCalls: diagnosticJournal.size(),
