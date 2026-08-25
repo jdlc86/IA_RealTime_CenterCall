@@ -9,6 +9,7 @@ import { createCloudRunAccessTokenProvider, createGoogleSpeechV2Transcriber } fr
 import { createGoogleTextToSpeechSynthesizer } from "./google-text-to-speech.mjs";
 import { createGeminiIsolatedDecisionClient, decideForActiveGeminiControlSession } from "./isolated-decision.mjs";
 import { createGeminiIsolatedGenerationClient, generateForActiveGeminiControlSession } from "./isolated-generation.mjs";
+import { resolveSemanticPreselection } from "./semantic-preselection.mjs";
 import { InMemoryDiagnosticJournal } from "./diagnostic-journal.mjs";
 
 function required(value, field) {
@@ -110,6 +111,15 @@ const runtime = createGeminiMediaEdgeRuntime({
   bindControlSession: (claims, sink) => controlRegistry.bindCommandSink(claims, sink),
   isControlSessionActive: (claims) => controlRegistry.isActive(claims),
   emitControlEvent: (claims, event) => controlRegistry.emit(claims, event),
+  semanticPreselect: async ({ claims, bootstrap, transcript }) => resolveSemanticPreselection(
+    (request) => decideForActiveGeminiControlSession(controlRegistry, isolatedDecision, {
+      tenantId: claims.tenantId,
+      callControlId: claims.callControlId,
+      ...request,
+    }),
+    bootstrap,
+    transcript,
+  ),
   observeDiagnostic,
   authoritativeTranscribe,
   synthesizeGovernedSpeech,
