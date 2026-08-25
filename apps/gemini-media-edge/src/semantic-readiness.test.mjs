@@ -13,6 +13,7 @@ test("semantic readiness exercises the real structured one-shot contract with fi
   assert.deepEqual(result, { status: "ready" });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].inputText, "hola");
+  assert.equal(calls[0].responseMimeType, "application/json");
   assert.equal(calls[0].responseJsonSchema.properties.selectedTool.enum[0], "restaurant_conversation");
 });
 

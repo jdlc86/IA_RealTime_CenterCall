@@ -33,6 +33,7 @@ export async function runSemanticDecisionReadinessProbe(client) {
       instructions: `Classify the fixed synthetic input. Return JSON only. selectedTool must be exactly ${PROBE_TOOL}.`,
       inputText: "hola",
       maxOutputTokens: 32,
+      responseMimeType: "application/json",
       responseJsonSchema: {
         type: "object",
         additionalProperties: false,
