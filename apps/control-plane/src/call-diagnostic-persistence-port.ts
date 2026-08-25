@@ -18,6 +18,7 @@ export type CrossPlaneDiagnosticEvent = Readonly<{
   response_id?: string | null;
   item_id?: string | null;
   stream_id?: string | null;
+  tool_name?: string | null;
   elapsed_ms?: number | null;
   duration_ms?: number | null;
   audio_duration_ms?: number | null;
@@ -51,6 +52,7 @@ const ALLOWED_EVENT_KEYS = new Set([
   "response_id",
   "item_id",
   "stream_id",
+  "tool_name",
   "elapsed_ms",
   "duration_ms",
   "audio_duration_ms",
@@ -77,6 +79,7 @@ const SAFE_DETAIL_KEYS = new Set([
   "authorized",
   "started",
   "input_detection_enabled",
+  "direct_model_output_allowed",
   "rms",
   "noise_floor_rms",
   "effective_stop_rms",
@@ -199,6 +202,7 @@ export function normalizeCrossPlaneDiagnosticEvent(value: unknown): CrossPlaneDi
     response_id: optionalString(source.response_id, "response_id", 512, /^\S+$/),
     item_id: optionalString(source.item_id, "item_id", 512, /^\S+$/),
     stream_id: optionalString(source.stream_id, "stream_id", 512, /^\S+$/),
+    tool_name: optionalString(source.tool_name, "tool_name", 128, /^[A-Za-z0-9_.:-]+$/),
     elapsed_ms: boundedInteger(source.elapsed_ms, "elapsed_ms", 3_600_000),
     duration_ms: boundedInteger(source.duration_ms, "duration_ms", 3_600_000),
     audio_duration_ms: boundedInteger(source.audio_duration_ms, "audio_duration_ms", 3_600_000),
@@ -247,6 +251,7 @@ function createPort(env: PersistenceEnv): CallDiagnosticPersistencePort {
           response_id: event.response_id ?? null,
           item_id: event.item_id ?? null,
           stream_id: event.stream_id ?? null,
+          tool_name: event.tool_name ?? null,
           elapsed_ms: event.elapsed_ms ?? null,
           duration_ms: event.duration_ms ?? null,
           audio_duration_ms: event.audio_duration_ms ?? null,
