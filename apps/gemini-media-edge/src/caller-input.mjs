@@ -64,6 +64,7 @@ export class AuthoritativeCallerInputOwner extends CoreAuthoritativeCallerInputO
     super(transcribe, vadConfig, coreOptions);
     this.diagnosticObserver = observer;
     this.diagnosticContext = null;
+    this.firstCallerMediaObserved = false;
     if (observer) {
       pendingDiagnosticOwners.push(this);
       if (pendingDiagnosticOwners.length > 32) pendingDiagnosticOwners.shift();
@@ -123,6 +124,15 @@ export class AuthoritativeCallerInputOwner extends CoreAuthoritativeCallerInputO
 
   async observe(payload, playbackResponseId = null) {
     const result = await super.observe(payload, playbackResponseId);
+    if (result.acoustic && !this.firstCallerMediaObserved) {
+      this.firstCallerMediaObserved = true;
+      this.emitDiagnostic("CALLER_MEDIA_OBSERVED", {
+        component: "gemini-media-edge",
+        rms: result.acoustic.rms,
+        noiseFloorRms: result.acoustic.vad?.noiseFloorRms,
+        effectiveStopRms: result.acoustic.vad?.effectiveStopRms,
+      });
+    }
     for (const event of result.events ?? []) {
       if (event.type === "CALLER_SPEECH_STARTED") {
         this.emitDiagnostic("VAD_SPEECH_STARTED", {
