@@ -17,6 +17,12 @@ function hasMissingFields(value) {
     && value.missing.some((item) => typeof item === "string" && item.trim().length > 0);
 }
 
+function responseId(command, field = "Gemini post-tool playback response id") {
+  const value = typeof command?.responseId === "string" ? command.responseId.trim() : "";
+  if (!value) throw new Error(`${field} is required`);
+  return value;
+}
+
 /**
  * Mirrors only post-tool outcomes that the existing Control Plane replaces with
  * governed speech. It does not decide business semantics and deliberately
@@ -73,32 +79,66 @@ export function shouldSuppressGeminiPostToolProviderAudio(command) {
   return false;
 }
 
+function forwardAfter(delegateResult, next) {
+  if (delegateResult && typeof delegateResult.then === "function") {
+    return Promise.resolve(delegateResult).then(next);
+  }
+  return next();
+}
+
 /**
- * Marks exactly the provider response that follows a governed tool result. The
- * marker is carried only across the synchronous PLAYBACK_BINDING command into
- * the physical playback owner; it is never global per response id.
+ * Serializes Gemini Live's automatic post-tool response with the existing
+ * Control Plane governed response. Gemini may start a normal provider response
+ * after FunctionResponse even when the Control Plane has already selected exact
+ * governed speech. We keep that provider response physically silent, retain its
+ * empty playback binding until its real provider completion/drain, and only then
+ * forward the already-authorized governed speech. No provider event, function
+ * call id, or tool decision is synthesized.
  */
 export function createGeminiPostToolControlSink(delegate, hooks = {}) {
   if (typeof delegate !== "function") throw new Error("Gemini post-tool control sink delegate is required");
-  let suppressNextBinding = false;
+  let suppressionArmed = false;
+  let suppressedBindingResponseId = null;
+  let pendingGovernedSpeech = null;
 
   return (command) => {
     if (command?.type === "TOOL_RESULT") {
-      suppressNextBinding = shouldSuppressGeminiPostToolProviderAudio(command);
-      if (suppressNextBinding) hooks.onArmed?.();
+      if (suppressionArmed || suppressedBindingResponseId || pendingGovernedSpeech) {
+        throw new Error("Gemini governed post-tool suppression cannot overlap tool results");
+      }
+      suppressionArmed = shouldSuppressGeminiPostToolProviderAudio(command);
+      if (suppressionArmed) hooks.onArmed?.();
       return delegate(command);
     }
 
-    if (command?.type === "GOVERNED_SPEECH") {
-      if (suppressNextBinding) hooks.onReleasedWithoutBinding?.();
-      suppressNextBinding = false;
-      return delegate(command);
-    }
-
-    if (command?.type === "PLAYBACK_BINDING" && suppressNextBinding) {
-      suppressNextBinding = false;
+    if (command?.type === "PLAYBACK_BINDING" && suppressionArmed) {
+      if (suppressedBindingResponseId) throw new Error("Gemini governed post-tool response already has a playback binding");
+      suppressedBindingResponseId = responseId(command);
       hooks.onBindingSuppressed?.();
       return bindingContext.run(Object.freeze({ suppressProviderAudio: true }), () => delegate(command));
+    }
+
+    if (command?.type === "GOVERNED_SPEECH" && suppressionArmed) {
+      if (pendingGovernedSpeech) throw new Error("Gemini governed post-tool speech is already pending");
+      pendingGovernedSpeech = Object.freeze({ ...command });
+      hooks.onGovernedDeferred?.();
+      return true;
+    }
+
+    if (command?.type === "PLAYBACK_DRAIN" && suppressedBindingResponseId) {
+      const drainResponseId = responseId(command);
+      if (drainResponseId !== suppressedBindingResponseId) {
+        throw new Error(`Gemini governed post-tool drain identity mismatch: expected ${suppressedBindingResponseId}`);
+      }
+      const governed = pendingGovernedSpeech;
+      const drained = delegate(command);
+      return forwardAfter(drained, () => {
+        suppressionArmed = false;
+        suppressedBindingResponseId = null;
+        pendingGovernedSpeech = null;
+        hooks.onReleasedAfterDrain?.();
+        return governed ? delegate(governed) : drained;
+      });
     }
 
     return delegate(command);
@@ -123,13 +163,13 @@ export function installGeminiPostToolPlaybackSuppression(BoundPlaybackGate) {
   const originalFinish = prototype.finish;
   const originalReset = prototype.reset;
 
-  prototype.bind = function guardedBind(responseId, kind) {
+  prototype.bind = function guardedBind(responseIdValue, kind) {
     if (bindingContext.getStore()?.suppressProviderAudio === true) {
       this.pending = [];
       this.pendingBytes = 0;
       this[SUPPRESS_PROVIDER_AUDIO] = true;
     }
-    return originalBind.call(this, responseId, kind);
+    return originalBind.call(this, responseIdValue, kind);
   };
 
   prototype.queue = function guardedQueue(pcm) {
@@ -137,9 +177,9 @@ export function installGeminiPostToolPlaybackSuppression(BoundPlaybackGate) {
     return originalQueue.call(this, pcm);
   };
 
-  prototype.finish = function guardedFinish(responseId) {
+  prototype.finish = function guardedFinish(responseIdValue) {
     try {
-      return originalFinish.call(this, responseId);
+      return originalFinish.call(this, responseIdValue);
     } finally {
       if (!this.binding && !this.owner?.activeResponseId?.()) this[SUPPRESS_PROVIDER_AUDIO] = false;
     }

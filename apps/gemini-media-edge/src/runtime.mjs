@@ -47,9 +47,16 @@ export function createGeminiMediaEdgeRuntime(options) {
             callControlId: identity.callControlId,
           });
         },
-        onReleasedWithoutBinding() {
+        onGovernedDeferred() {
           observeDiagnostic({
-            stage: "POST_TOOL_PROVIDER_AUDIO_SUPPRESSION_RELEASED",
+            stage: "POST_TOOL_GOVERNED_SPEECH_DEFERRED_FOR_PROVIDER_DRAIN",
+            tenantId: identity.tenantId,
+            callControlId: identity.callControlId,
+          });
+        },
+        onReleasedAfterDrain() {
+          observeDiagnostic({
+            stage: "POST_TOOL_PROVIDER_AUDIO_SUPPRESSION_RELEASED_AFTER_DRAIN",
             tenantId: identity.tenantId,
             callControlId: identity.callControlId,
           });
