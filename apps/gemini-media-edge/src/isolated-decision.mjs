@@ -10,6 +10,24 @@ function boundedPositiveInteger(value, field, fallback, max) {
   return number;
 }
 
+function optionalStructuredResponse(request) {
+  const mime = request?.responseMimeType;
+  const schema = request?.responseJsonSchema;
+  if (mime == null && schema == null) return Object.freeze({ responseMimeType: "text/plain" });
+  const responseMimeType = required(mime, "Gemini isolated decision responseMimeType");
+  if (responseMimeType !== "application/json") throw new Error("Gemini isolated decision responseMimeType is invalid");
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    throw new Error("Gemini isolated decision responseJsonSchema is invalid");
+  }
+  let encoded;
+  try { encoded = JSON.stringify(schema); }
+  catch { throw new Error("Gemini isolated decision responseJsonSchema is invalid"); }
+  if (!encoded || Buffer.byteLength(encoded, "utf8") > 8_192) {
+    throw new Error("Gemini isolated decision responseJsonSchema is invalid");
+  }
+  return Object.freeze({ responseMimeType, responseJsonSchema: JSON.parse(encoded) });
+}
+
 function responseText(value) {
   const candidates = Array.isArray(value?.candidates) ? value.candidates : [];
   const parts = candidates.flatMap((candidate) => Array.isArray(candidate?.content?.parts) ? candidate.content.parts : []);
@@ -35,6 +53,7 @@ export function createGeminiIsolatedDecisionClient(options = {}) {
       const instructions = required(request?.instructions, "Gemini isolated decision instructions");
       const inputText = required(request?.inputText, "Gemini isolated decision input");
       const maxOutputTokens = boundedPositiveInteger(request?.maxOutputTokens, "Gemini isolated decision maxOutputTokens", 16, 256);
+      const structured = optionalStructuredResponse(request);
       const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
       let response;
       try {
@@ -51,7 +70,8 @@ export function createGeminiIsolatedDecisionClient(options = {}) {
             generationConfig: {
               temperature: 0,
               maxOutputTokens,
-              responseMimeType: "text/plain",
+              responseMimeType: structured.responseMimeType,
+              ...(structured.responseJsonSchema ? { responseJsonSchema: structured.responseJsonSchema } : {}),
             },
           }),
         });
@@ -85,5 +105,7 @@ export async function decideForActiveGeminiControlSession(controlRegistry, clien
     instructions: value?.instructions,
     inputText: value?.inputText,
     maxOutputTokens: value?.maxOutputTokens,
+    responseMimeType: value?.responseMimeType,
+    responseJsonSchema: value?.responseJsonSchema,
   });
 }

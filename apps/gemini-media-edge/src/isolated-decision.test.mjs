@@ -33,6 +33,36 @@ test("isolated decision uses a one-shot generateContent request without leaking 
   assert.deepEqual(body.generationConfig, { temperature: 0, maxOutputTokens: 8, responseMimeType: "text/plain" });
 });
 
+test("isolated decision forwards bounded structured-output schema for semantic classifiers", async () => {
+  const calls = [];
+  const client = createGeminiIsolatedDecisionClient({
+    apiKey: "secret-api-key",
+    model: "gemini-2.5-flash-lite",
+    fetcher: async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: "{\"selectedTool\":\"restaurant_conversation\"}" }] } }] }), { status: 200 });
+    },
+  });
+  const responseJsonSchema = {
+    type: "object",
+    properties: { selectedTool: { type: "string", enum: ["restaurant_conversation", "restaurant_business_info"] } },
+    required: ["selectedTool"],
+    additionalProperties: false,
+  };
+  const result = await client.decide({
+    instructions: "Choose one route.",
+    inputText: "quiero reservar",
+    maxOutputTokens: 64,
+    responseMimeType: "application/json",
+    responseJsonSchema,
+  });
+  assert.equal(result, "{\"selectedTool\":\"restaurant_conversation\"}");
+  assert.equal(calls.length, 1);
+  const body = JSON.parse(calls[0].init.body);
+  assert.equal(body.generationConfig.responseMimeType, "application/json");
+  assert.deepEqual(body.generationConfig.responseJsonSchema, responseJsonSchema);
+});
+
 test("isolated decision is fail-closed on transport, HTTP, malformed JSON and empty output", async () => {
   const request = { instructions: "classify", inputText: "hello" };
   const transport = createGeminiIsolatedDecisionClient({ apiKey: "k", fetcher: async () => { throw new Error("network"); } });
@@ -48,11 +78,13 @@ test("isolated decision is fail-closed on transport, HTTP, malformed JSON and em
   await assert.rejects(() => empty.decide(request), /returned no text/);
 });
 
-test("isolated decision validates bounded text-decision inputs before network", async () => {
+test("isolated decision validates bounded text-decision and structured-output inputs before network", async () => {
   let calls = 0;
   const client = createGeminiIsolatedDecisionClient({ apiKey: "k", fetcher: async () => { calls += 1; return new Response("{}", { status: 200 }); } });
   await assert.rejects(() => client.decide({ instructions: "", inputText: "x" }), /instructions is required/);
   await assert.rejects(() => client.decide({ instructions: "x", inputText: "" }), /input is required/);
   await assert.rejects(() => client.decide({ instructions: "x", inputText: "y", maxOutputTokens: 1000 }), /maxOutputTokens is invalid/);
+  await assert.rejects(() => client.decide({ instructions: "x", inputText: "y", responseMimeType: "text/plain", responseJsonSchema: { type: "object" } }), /responseMimeType is invalid/);
+  await assert.rejects(() => client.decide({ instructions: "x", inputText: "y", responseMimeType: "application/json", responseJsonSchema: [] }), /responseJsonSchema is invalid/);
   assert.equal(calls, 0);
 });

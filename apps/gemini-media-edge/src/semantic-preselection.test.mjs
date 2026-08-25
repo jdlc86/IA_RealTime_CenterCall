@@ -10,51 +10,62 @@ import {
 function bootstrap() {
   return {
     tools: [
-      { type: "function", name: "restaurant_conversation", description: "Ask a follow-up or continue ordinary conversation.", parameters: {} },
-      { type: "function", name: "restaurant_business_info", description: "Read authoritative business information.", parameters: {} },
-      { type: "function", name: "restaurant_reservation_create", description: "Create an authoritative reservation.", parameters: {} },
+      { type: "function", name: "restaurant_conversation", description: "Ask a follow-up or continue ordinary conversation.", parameters: { type: "object", properties: {} } },
+      { type: "function", name: "restaurant_business_info", description: "Read authoritative business information.", parameters: { type: "object", properties: { topic: { type: "string" } }, required: ["topic"] } },
+      { type: "function", name: "restaurant_reservation_create", description: "Create an authoritative reservation.", parameters: { type: "object", properties: { date: { type: "string" }, time: { type: "string" }, party_size: { type: "integer" } }, required: ["date", "time", "party_size"] } },
     ],
   };
 }
 
-test("preselection request exposes only bootstrap tool identities and no transcript in instructions", () => {
+test("preselection request exposes only bootstrap tool identities and required field names, never transcript in instructions", () => {
   const request = buildSemanticPreselectionRequest(bootstrap(), "quiero hacer una reserva");
   assert.equal(request.inputText, "quiero hacer una reserva");
   assert.equal(request.instructions.includes("quiero hacer una reserva"), false);
+  assert.equal(request.instructions.includes("Required inputs: date, time, party_size."), true);
+  assert.equal(request.responseMimeType, "application/json");
   assert.deepEqual(request.allowedToolNames, [
     "restaurant_conversation",
     "restaurant_business_info",
     "restaurant_reservation_create",
   ]);
+  assert.deepEqual(request.responseJsonSchema.properties.selectedTool.enum, request.allowedToolNames);
 });
 
-test("parser authorizes direct model output only for restaurant_conversation", () => {
-  assert.deepEqual(parseSemanticPreselection("restaurant_conversation", ["restaurant_conversation"]), {
+test("structured parser authorizes direct model output only for restaurant_conversation", () => {
+  assert.deepEqual(parseSemanticPreselection('{"selectedTool":"restaurant_conversation"}', ["restaurant_conversation"]), {
     selectedTool: "restaurant_conversation",
     directModelOutputAllowed: true,
   });
-  assert.deepEqual(parseSemanticPreselection("restaurant_business_info", ["restaurant_business_info"]), {
+  assert.deepEqual(parseSemanticPreselection('{"selectedTool":"restaurant_business_info"}', ["restaurant_business_info"]), {
     selectedTool: "restaurant_business_info",
     directModelOutputAllowed: false,
   });
 });
 
-test("parser fails closed on prose, malformed, empty and unsupported decisions", () => {
+test("structured parser fails closed on prose, malformed, extra, empty and unsupported decisions", () => {
   const allowed = ["restaurant_conversation", "restaurant_business_info"];
-  assert.throws(() => parseSemanticPreselection("Use restaurant_conversation", allowed), /unsupported tool/);
-  assert.throws(() => parseSemanticPreselection("restaurant_reservation_create", allowed), /unsupported tool/);
+  assert.throws(() => parseSemanticPreselection("Use restaurant_conversation", allowed), /invalid structured output/);
+  assert.throws(() => parseSemanticPreselection('{"selectedTool":"restaurant_conversation"', allowed), /invalid structured output/);
+  assert.throws(() => parseSemanticPreselection('{"selectedTool":"restaurant_conversation","extra":true}', allowed), /invalid structured output/);
+  assert.throws(() => parseSemanticPreselection('{"selectedTool":"restaurant_reservation_create"}', allowed), /unsupported tool/);
   assert.throws(() => parseSemanticPreselection("   ", allowed), /result is required/);
 });
 
-test("isolated resolver preserves exact closed decision contract", async () => {
+test("isolated resolver preserves exact schema-constrained decision contract", async () => {
   const calls = [];
   const result = await resolveSemanticPreselection(async (request) => {
     calls.push(request);
-    return "restaurant_conversation";
+    return '{"selectedTool":"restaurant_conversation"}';
   }, bootstrap(), "quiero reservar");
   assert.equal(calls.length, 1);
   assert.equal(calls[0].inputText, "quiero reservar");
-  assert.equal(calls[0].maxOutputTokens, 32);
+  assert.equal(calls[0].maxOutputTokens, 64);
+  assert.equal(calls[0].responseMimeType, "application/json");
+  assert.deepEqual(calls[0].responseJsonSchema.properties.selectedTool.enum, [
+    "restaurant_conversation",
+    "restaurant_business_info",
+    "restaurant_reservation_create",
+  ]);
   assert.deepEqual(result, {
     selectedTool: "restaurant_conversation",
     directModelOutputAllowed: true,
