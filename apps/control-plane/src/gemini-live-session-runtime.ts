@@ -36,6 +36,7 @@ export type GeminiLiveCallerActivityBoundary = Readonly<{
 
 class OwnedGeminiCommandPort implements RealtimeProviderCommandPort {
   private readonly providerOwnedContinuationReasons = new Set<"CALLER_TURN" | "TOOL_RESULT">();
+  private expectedToolContinuationResponseId: string | null = null;
 
   constructor(
     private readonly delegate: GeminiLiveCommandAdapter,
@@ -56,9 +57,26 @@ class OwnedGeminiCommandPort implements RealtimeProviderCommandPort {
   submitToolResult(request: RealtimeToolResultRequest): void {
     if (!request.callId) throw new Error("Gemini Live owned tool response requires callId");
     this.owner.assertPendingToolCall(request.callId);
+    const before = this.owner.snapshot();
+    if (!before.activeResponseId) {
+      throw new Error("Gemini Live owned tool response requires an active provider response");
+    }
     this.delegate.submitToolResult(request);
-    this.owner.noteToolResponseSubmitted(request.callId);
+    const after = this.owner.noteToolResponseSubmitted(request.callId);
     this.providerOwnedContinuationReasons.add("TOOL_RESULT");
+    if (after.pendingToolCallIds.length === 0) {
+      this.expectedToolContinuationResponseId = before.activeResponseId;
+    }
+  }
+
+  noteProviderResponseCompleted(responseId: string | undefined, status: string | undefined): void {
+    if (status !== "completed" || !responseId || responseId !== this.expectedToolContinuationResponseId) return;
+    const snapshot = this.owner.snapshot();
+    if (snapshot.state !== "READY" || snapshot.activeResponseId !== null || snapshot.pendingToolCallIds.length > 0) {
+      throw new Error(`Gemini Live tool continuation completion is inconsistent with session state ${snapshot.state}`);
+    }
+    this.providerOwnedContinuationReasons.delete("TOOL_RESULT");
+    this.expectedToolContinuationResponseId = null;
   }
 
   updateSessionPolicy(update: RealtimeSessionPolicyUpdate): void { this.delegate.updateSessionPolicy(update); }
@@ -72,6 +90,7 @@ class OwnedGeminiCommandPort implements RealtimeProviderCommandPort {
           throw new Error(`Gemini Live tool continuation is invalid while session state is ${snapshot.state}`);
         }
         if (snapshot.pendingToolCallIds.length > 0) return;
+        this.expectedToolContinuationResponseId = null;
       }
       this.providerOwnedContinuationReasons.clear();
       return;
@@ -169,6 +188,11 @@ export class GeminiLiveSessionRuntime {
 
   observe(data: unknown): GeminiLiveSessionRuntimeObservation {
     const owned = this.owner.observe(data);
+    for (const event of owned.events) {
+      if (event.type === "ASSISTANT_RESPONSE_COMPLETED") {
+        this.ownedCommandPort.noteProviderResponseCompleted(event.responseId, event.status);
+      }
+    }
     const stateless = adaptGeminiLiveEvent(data);
     return Object.freeze({
       events: Object.freeze([...owned.events, ...stateless]),

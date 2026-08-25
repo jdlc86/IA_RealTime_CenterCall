@@ -105,6 +105,60 @@ test("post-tool default response is consumed exactly once by Gemini provider-own
   assert.equal(h.sent.length, afterToolResponse);
 });
 
+test("completed post-tool continuation is retired before the next caller turn", () => {
+  const { runtime, h } = startedRuntime();
+  runtime.observe(wire({ toolCall: { functionCalls: [{ id: "fc-progressive", name: "reservation_create" }] } }));
+  runtime.commandPort.submitToolResult({
+    callId: "fc-progressive",
+    toolName: "reservation_create",
+    output: { code: "MISSING_INFORMATION", missing_fields: ["date"] },
+  });
+  const afterToolResponse = h.sent.length;
+
+  const completed = runtime.observe(wire({ serverContent: { turnComplete: true } }));
+  assert.equal(completed.snapshot.state, "READY");
+  assert.equal(completed.snapshot.activeResponseId, null);
+  assert.deepEqual(completed.snapshot.pendingToolCallIds, []);
+  assert.ok(completed.events.some((event) =>
+    event.type === "ASSISTANT_RESPONSE_COMPLETED"
+      && event.responseId === "gemini-response-1"
+      && event.status === "completed"));
+
+  runtime.noteCallerTurnCommitted();
+  runtime.commandPort.createDefaultResponse();
+
+  assert.equal(h.sent.length, afterToolResponse);
+  assert.throws(
+    () => runtime.commandPort.createDefaultResponse(),
+    /default response creation has no proven neutral mapping/,
+  );
+  assert.equal(h.sent.length, afterToolResponse);
+});
+
+test("interrupted post-tool continuation is not retired as a successful completion", () => {
+  const { runtime, h } = startedRuntime();
+  runtime.observe(wire({ toolCall: { functionCalls: [{ id: "fc-interrupted", name: "reservation_create" }] } }));
+  runtime.commandPort.submitToolResult({
+    callId: "fc-interrupted",
+    toolName: "reservation_create",
+    output: { code: "MISSING_INFORMATION", missing_fields: ["party_size"] },
+  });
+  const afterToolResponse = h.sent.length;
+
+  const interrupted = runtime.observe(wire({ serverContent: { interrupted: true } }));
+  assert.equal(interrupted.snapshot.state, "READY");
+  assert.ok(interrupted.events.some((event) =>
+    event.type === "ASSISTANT_RESPONSE_COMPLETED"
+      && event.responseId === "gemini-response-1"
+      && event.status === "interrupted"));
+
+  assert.throws(
+    () => runtime.commandPort.createDefaultResponse(),
+    /tool continuation is invalid while session state is READY/,
+  );
+  assert.equal(h.sent.length, afterToolResponse);
+});
+
 test("committed caller audio consumes exactly one inherited default response without synthetic input", () => {
   const { runtime, h } = startedRuntime();
   const before = h.sent.length;
