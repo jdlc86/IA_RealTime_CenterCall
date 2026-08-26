@@ -32,7 +32,7 @@ function fakeEnv(capture: { name?: string; request?: Request }): GeminiControlRo
         return {
           async fetch(request: Request) {
             capture.request = request;
-            return new Response("forwarded", { status: 204 });
+            return new Response(null, { status: 204 });
           },
         };
       },
