@@ -91,6 +91,7 @@ test("standalone fast server admits real Telnyx connected then start and starts 
     revision: null,
     activeSessions: 0,
     registeredBootstraps: 1,
+    diagnosticCalls: 0,
     providerReadiness: { setupMs: 321, firstAudioMs: 654 },
   });
 
@@ -126,6 +127,26 @@ test("standalone fast server admits real Telnyx connected then start and starts 
   for (let i = 0; i < 20 && gemini.sent.length < 2; i += 1) await new Promise((resolve) => setTimeout(resolve, 2));
   assert.equal(gemini.sent[1].realtimeInput.audio.mimeType, "audio/pcm;rate=16000");
   assert.equal(runtime.activeSessions(), 1);
+
+  const unauthorizedDiagnostics = await fetch(`http://127.0.0.1:${port}/internal/diagnostics?call_control_id=${encodeURIComponent("v3:fast-server")}`);
+  assert.equal(unauthorizedDiagnostics.status, 401);
+  const diagnostics = await fetch(`http://127.0.0.1:${port}/internal/diagnostics?call_control_id=${encodeURIComponent("v3:fast-server")}`, {
+    headers: { authorization: "Bearer 0123456789abcdef0123456789abcdef" },
+  });
+  assert.equal(diagnostics.status, 200);
+  const diagnosticBody = await diagnostics.json();
+  const stages = diagnosticBody.events.map((event) => event.stage);
+  assert.deepEqual(stages.slice(0, 6), [
+    "FAST_TELNYX_CONNECTED",
+    "FAST_TELNYX_START_AUTHORIZED",
+    "FAST_SESSION_STARTED",
+    "FAST_MEDIA_AUTHORIZED",
+    "GEMINI_SETUP_SENT",
+    "GEMINI_SETUP_COMPLETE",
+  ]);
+  assert.equal(stages.includes("FAST_FIRST_CALLER_MEDIA"), true);
+  assert.equal(stages.includes("CALLER_CHUNK_FORWARDED"), false, "per-audio-chunk events must not enter the diagnostic journal");
+  assert.equal(stages.includes("GEMINI_FRAME_PROCESSED"), false, "per-provider-frame events must not enter the diagnostic journal");
 
   client.close();
   await runtime.close();
@@ -186,6 +207,7 @@ test("fast server bootstrap endpoint is authenticated and contains no semantic r
   const body = await ready.json();
   assert.equal(body.ok, true);
   assert.equal(body.providerReadiness, null);
+  assert.equal(body.diagnosticCalls, 0);
   assert.equal("semanticDecision" in body, false);
   assert.equal("speech" in body, false);
   await runtime.close();
