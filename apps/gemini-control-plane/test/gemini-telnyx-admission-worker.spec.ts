@@ -1,5 +1,6 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
+import { verifyGeminiControlCapabilityV1 } from "../src/control-auth/capability-v1";
 import { admitTelnyxRequestInternally } from "../src/telnyx/admission-worker";
 
 function base64(bytes: ArrayBuffer): string {
@@ -49,6 +50,7 @@ async function signedRequest() {
 }
 
 const IDENTITY_SECRET = "0123456789abcdef0123456789abcdef";
+const CONTROL_SECRET = "abcdef0123456789abcdef0123456789";
 
 describe("internal Gemini Telnyx admission worker composition", () => {
   it("uses the existing tenant phone-route key after signature verification", async () => {
@@ -62,6 +64,7 @@ describe("internal Gemini Telnyx admission worker composition", () => {
       TENANT_CONFIG: { get },
       TELNYX_PUBLIC_KEY: fixture.publicKey,
       GEMINI_ADMISSION_IDENTITY_SECRET: IDENTITY_SECRET,
+      GEMINI_CONTROL_CAPABILITY_SECRET: CONTROL_SECRET,
     }, {
       nowEpochMs: fixture.nowEpochMs,
       signatureMaxAgeSeconds: 300,
@@ -72,6 +75,10 @@ describe("internal Gemini Telnyx admission worker composition", () => {
     if (result.status !== "ADMITTED") throw new Error("expected admission");
     expect(result.result.registration).toBe("CREATED");
     expect(result.result.admission.tenantId).toBe("tenant-kv");
+    const claims = await verifyGeminiControlCapabilityV1(result.controlCapability, CONTROL_SECRET, fixture.nowEpochMs);
+    expect(claims?.callSessionId).toBe(result.result.admission.callSessionId);
+    expect(claims?.edgeSessionId).toBe(result.result.admission.edgeSessionId);
+    expect(claims?.credentialId).toBe(result.result.admission.credentialId);
     expect(get).toHaveBeenCalledTimes(1);
   });
 
@@ -88,6 +95,7 @@ describe("internal Gemini Telnyx admission worker composition", () => {
       TENANT_CONFIG: { get },
       TELNYX_PUBLIC_KEY: fixture.publicKey,
       GEMINI_ADMISSION_IDENTITY_SECRET: IDENTITY_SECRET,
+      GEMINI_CONTROL_CAPABILITY_SECRET: CONTROL_SECRET,
     }, {
       nowEpochMs: fixture.nowEpochMs,
       signatureMaxAgeSeconds: 300,
