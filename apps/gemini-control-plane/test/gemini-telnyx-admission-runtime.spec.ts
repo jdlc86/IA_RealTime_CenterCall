@@ -1,5 +1,6 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
+import { verifyGeminiControlCapabilityV1 } from "../src/control-auth/capability-v1";
 import { admitSignedTelnyxIncomingCall } from "../src/telnyx/admission-runtime";
 
 function base64(bytes: ArrayBuffer): string {
@@ -40,6 +41,7 @@ async function signedFixture() {
 }
 
 const IDENTITY_SECRET = "0123456789abcdef0123456789abcdef";
+const CONTROL_SECRET = "abcdef0123456789abcdef0123456789";
 
 describe("signed Telnyx Gemini admission runtime", () => {
   it("authenticates raw body, resolves tenant and registers a retry-stable admission", async () => {
@@ -51,6 +53,7 @@ describe("signed Telnyx Gemini admission runtime", () => {
       admissionTtlMs: 10 * 60_000,
       telnyxPublicKey: fixture.publicKey,
       admissionIdentitySecret: IDENTITY_SECRET,
+      controlCapabilitySecret: CONTROL_SECRET,
       resolveTenantId,
     };
 
@@ -68,6 +71,15 @@ describe("signed Telnyx Gemini admission runtime", () => {
     expect(first.result.admission.edgeSessionId).toMatch(/^edge_/);
     expect(first.result.admission.credentialId).toMatch(/^cred_/);
 
+    const capability = await verifyGeminiControlCapabilityV1(first.controlCapability, CONTROL_SECRET, fixture.nowEpochMs);
+    expect(capability).not.toBeNull();
+    expect(capability?.tenantId).toBe(first.result.admission.tenantId);
+    expect(capability?.callControlId).toBe(first.result.admission.callControlId);
+    expect(capability?.callSessionId).toBe(first.result.admission.callSessionId);
+    expect(capability?.edgeSessionId).toBe(first.result.admission.edgeSessionId);
+    expect(capability?.credentialId).toBe(first.result.admission.credentialId);
+    expect(capability?.notAfterEpochMs).toBe(first.result.admission.notAfterEpochMs);
+
     const retry = await admitSignedTelnyxIncomingCall(env, {
       rawBody: fixture.rawBody,
       signatureBase64: fixture.signatureBase64,
@@ -77,6 +89,7 @@ describe("signed Telnyx Gemini admission runtime", () => {
     if (retry.status !== "ADMITTED") throw new Error("expected admitted retry");
     expect(retry.result.registration).toBe("IDEMPOTENT");
     expect(retry.result.admission).toEqual(first.result.admission);
+    expect(retry.controlCapability).toBe(first.controlCapability);
     expect(resolveTenantId).toHaveBeenCalledTimes(2);
   });
 
@@ -93,6 +106,7 @@ describe("signed Telnyx Gemini admission runtime", () => {
       admissionTtlMs: 10 * 60_000,
       telnyxPublicKey: fixture.publicKey,
       admissionIdentitySecret: IDENTITY_SECRET,
+      controlCapabilitySecret: CONTROL_SECRET,
       resolveTenantId,
     });
     expect(result).toEqual({ status: "SIGNATURE_REJECTED" });
@@ -111,6 +125,7 @@ describe("signed Telnyx Gemini admission runtime", () => {
       admissionTtlMs: 10 * 60_000,
       telnyxPublicKey: fixture.publicKey,
       admissionIdentitySecret: IDENTITY_SECRET,
+      controlCapabilitySecret: CONTROL_SECRET,
       resolveTenantId: async () => null,
     });
     expect(result.status).toBe("TENANT_NOT_FOUND");
