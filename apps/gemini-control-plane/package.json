@@ -7,7 +7,9 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm test"
+    "check:fast-deploy": "wrangler deploy --dry-run --config wrangler.fast.jsonc",
+    "check": "npm run typecheck && npm test && npm run check:fast-deploy",
+    "deploy:fast": "wrangler deploy --config wrangler.fast.jsonc"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.0.0",
