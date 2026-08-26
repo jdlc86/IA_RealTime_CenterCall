@@ -81,6 +81,7 @@ jobs:
           ' "$BODY"
 
       # Isolation recheck after Cloudflare OpenAI Build watch paths were updated.
+      # Operational probe: health verification requested after Worker isolation was fixed.
       - name: Deployment summary
         if: always()
         shell: bash
