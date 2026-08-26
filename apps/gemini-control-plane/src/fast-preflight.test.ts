@@ -70,11 +70,27 @@ describe("fast runtime preflight", () => {
 
     const response = await routeFastGeminiPreflight(request(), env(), { fetcher });
     expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({
-      ok: false,
-      status: "TELNYX_ROUTE_MISMATCH",
-      connectionScope: "SHARED",
+    expect(await response.json()).toEqual({ ok: false, status: "TELNYX_ROUTE_MISMATCH", connectionScope: "SHARED" });
+  });
+
+  it("rejects a shared Telnyx connection even when its webhook already matches Gemini", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v2/phone_numbers/slim" && url.searchParams.get("filter[phone_number]") === NUMBER) {
+        return Response.json({ data: [{ phone_number: NUMBER, status: "active", connection_id: CONNECTION_ID }] });
+      }
+      if (url.pathname === `/v2/call_control_applications/${CONNECTION_ID}`) {
+        return Response.json({ data: { active: true, webhook_event_url: "https://worker.example.test/webhooks/telnyx/fast-canary" } });
+      }
+      if (url.pathname === "/v2/phone_numbers/slim" && url.searchParams.get("filter[connection_id]") === CONNECTION_ID) {
+        return Response.json({ data: [{ phone_number: NUMBER }, { phone_number: "+34600000001" }] });
+      }
+      throw new Error(`unexpected URL ${url}`);
     });
+
+    const response = await routeFastGeminiPreflight(request(), env(), { fetcher });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ ok: false, status: "TELNYX_ROUTE_MISMATCH", connectionScope: "SHARED" });
   });
 
   it("proves Telnyx routing bootstrap control auth and HMAC websocket upgrade without sending Telnyx start", async () => {
