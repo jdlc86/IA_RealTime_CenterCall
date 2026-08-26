@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { GEMINI_ADMISSION_VERSION_V1, type GeminiAdmissionV1 } from "../src/admission/v1";
+import { GEMINI_CONTROL_CAPABILITY_VERSION_V1 } from "../src/control-auth/capability-v1";
 
 function admission(overrides: Partial<GeminiAdmissionV1> = {}): GeminiAdmissionV1 {
   return {
@@ -17,10 +18,18 @@ function admission(overrides: Partial<GeminiAdmissionV1> = {}): GeminiAdmissionV
 }
 
 function controlRequest(value: GeminiAdmissionV1, credentialId = value.credentialId) {
-  return new Request(
-    `https://do/internal/control?call_session_id=${value.callSessionId}&edge_session_id=${value.edgeSessionId}&credential_id=${credentialId}`,
-    { headers: { Upgrade: "websocket" } },
-  );
+  return new Request("https://do/internal/control", {
+    headers: {
+      Upgrade: "websocket",
+      "x-gemini-control-authenticated": GEMINI_CONTROL_CAPABILITY_VERSION_V1,
+      "x-gemini-tenant-id": value.tenantId,
+      "x-gemini-call-control-id": value.callControlId,
+      "x-gemini-call-session-id": value.callSessionId,
+      "x-gemini-edge-session-id": value.edgeSessionId,
+      "x-gemini-credential-id": credentialId,
+      "x-gemini-capability-not-after": String(value.notAfterEpochMs),
+    },
+  });
 }
 
 describe("GeminiCallSession admission registration", () => {
