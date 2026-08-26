@@ -16,7 +16,11 @@ export type GeminiControlPlaneEnv = Readonly<{
   GEMINI_CALL_SESSIONS: DurableObjectNamespace<GeminiCallSession>;
 }>;
 
-export type GeminiAdmissionRegistrationResult = "CREATED" | "IDEMPOTENT";
+export type GeminiAdmissionRegistrationResult =
+  | "CREATED"
+  | "IDEMPOTENT"
+  | "REJECTED_EXPIRED"
+  | "REJECTED_IMMUTABLE";
 
 type ConnectionAttachment = Readonly<{
   callSessionId: string;
@@ -97,10 +101,10 @@ export class GeminiCallSession extends DurableObject<GeminiControlPlaneEnv> {
 
   async registerAdmission(admission: GeminiAdmissionV1): Promise<GeminiAdmissionRegistrationResult> {
     if (admission.version !== "gemini-admission.v1" || admission.provider !== "GEMINI") {
-      throw new Error("Gemini admission contract mismatch");
+      return "REJECTED_IMMUTABLE";
     }
     if (!Number.isSafeInteger(admission.notAfterEpochMs) || admission.notAfterEpochMs <= Date.now()) {
-      throw new Error("Gemini admission is expired");
+      return "REJECTED_EXPIRED";
     }
 
     const existing = this.admissionState();
@@ -113,7 +117,7 @@ export class GeminiCallSession extends DurableObject<GeminiControlPlaneEnv> {
         && existing.credential_id === admission.credentialId
         && existing.not_after_epoch_ms === admission.notAfterEpochMs
       ) return "IDEMPOTENT";
-      throw new Error("Gemini call admission identity is immutable");
+      return "REJECTED_IMMUTABLE";
     }
 
     this.ctx.storage.sql.exec(
