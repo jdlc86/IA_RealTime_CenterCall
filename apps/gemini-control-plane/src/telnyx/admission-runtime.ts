@@ -5,6 +5,10 @@ import {
   GEMINI_CONTROL_CAPABILITY_VERSION_V1,
   issueGeminiControlCapabilityV1,
 } from "../control-auth/capability-v1";
+import {
+  buildGeminiEdgeControlBootstrapV1,
+  type GeminiEdgeControlBootstrapV1,
+} from "../edge-control/bootstrap-v1";
 import type { GeminiControlPlaneEnv } from "../gemini-call-session";
 import { parseVerifiedTelnyxIncomingCall, type VerifiedTelnyxIncomingCall } from "./incoming-call";
 import { verifyTelnyxWebhookSignature } from "./webhook-signature";
@@ -16,6 +20,7 @@ export type GeminiTelnyxAdmissionRuntimeOptions = Readonly<{
   telnyxPublicKey: string;
   admissionIdentitySecret: string;
   controlCapabilitySecret: string;
+  controlUrl: string;
   resolveTenantId: (call: VerifiedTelnyxIncomingCall) => Promise<string | null>;
 }>;
 
@@ -26,7 +31,7 @@ export type GeminiTelnyxAdmissionRuntimeResult =
       status: "ADMITTED";
       call: VerifiedTelnyxIncomingCall;
       result: RegisterGeminiAdmissionResult;
-      controlCapability: string;
+      edgeControlBootstrap: GeminiEdgeControlBootstrapV1;
     }>;
 
 function positiveSafeInteger(value: number, field: string): number {
@@ -34,11 +39,6 @@ function positiveSafeInteger(value: number, field: string): number {
   return value;
 }
 
-/**
- * Internal composition for the future Telnyx webhook route. The raw request
- * body is authenticated before JSON parsing. Tenant resolution is injected so
- * this provider-specific boundary does not import the legacy OpenAI Worker.
- */
 export async function admitSignedTelnyxIncomingCall(
   env: GeminiControlPlaneEnv,
   input: Readonly<{
@@ -103,5 +103,11 @@ export async function admitSignedTelnyxIncomingCall(
     notAfterEpochMs: admission.notAfterEpochMs,
   }, options.controlCapabilitySecret);
 
-  return Object.freeze({ status: "ADMITTED", call, result, controlCapability });
+  const edgeControlBootstrap = buildGeminiEdgeControlBootstrapV1(admission, {
+    controlUrl: options.controlUrl,
+    controlCapability,
+    nowEpochMs,
+  });
+
+  return Object.freeze({ status: "ADMITTED", call, result, edgeControlBootstrap });
 }
