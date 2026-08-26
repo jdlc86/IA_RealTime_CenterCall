@@ -250,7 +250,8 @@ export async function routeFastGeminiPreflight(
   if (!telnyxRoute.matches) {
     return Response.json({
       ok: false,
-      status: "TELNYX_ROUTE_MISMATCH",
+      status: "TELNYX_ROUTE_MISMATCH_MEDIA_VERIFIED",
+      routingStatus: "TELNYX_ROUTE_MISMATCH",
       connectionScope: telnyxRoute.connectionScope,
       checks: {
         mediaCredentialHmac: "VERIFIED",
