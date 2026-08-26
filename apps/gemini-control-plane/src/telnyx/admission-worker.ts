@@ -7,6 +7,7 @@ export type GeminiTelnyxAdmissionWorkerEnv = GeminiControlPlaneEnv & Readonly<{
   TELNYX_PUBLIC_KEY: string;
   GEMINI_ADMISSION_IDENTITY_SECRET: string;
   GEMINI_CONTROL_CAPABILITY_SECRET: string;
+  GEMINI_CONTROL_WSS_URL: string;
 }>;
 
 export type GeminiTelnyxAdmissionWorkerOptions = Readonly<{
@@ -16,11 +17,6 @@ export type GeminiTelnyxAdmissionWorkerOptions = Readonly<{
   tenantRouteCacheTtlSeconds?: number;
 }>;
 
-/**
- * Internal Worker composition for a Telnyx request. This function is not wired
- * to an HTTP route yet. It preserves the raw request body through signature
- * verification, then resolves only the shared called-number tenant route.
- */
 export async function admitTelnyxRequestInternally(
   request: Request,
   env: GeminiTelnyxAdmissionWorkerEnv,
@@ -44,6 +40,7 @@ export async function admitTelnyxRequestInternally(
     telnyxPublicKey: env.TELNYX_PUBLIC_KEY,
     admissionIdentitySecret: env.GEMINI_ADMISSION_IDENTITY_SECRET,
     controlCapabilitySecret: env.GEMINI_CONTROL_CAPABILITY_SECRET,
+    controlUrl: env.GEMINI_CONTROL_WSS_URL,
     resolveTenantId: async (call) => (await tenantRoutes.resolveByCalledNumber(call.calledNumber))?.tenantId ?? null,
   });
 }
