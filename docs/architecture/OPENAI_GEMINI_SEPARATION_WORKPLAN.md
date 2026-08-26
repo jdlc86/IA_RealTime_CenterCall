@@ -102,7 +102,7 @@ El código existente es evidencia histórica y funcional, **no especificación a
 
 ## Fase 2 — Diseño y contratos del Gemini independiente
 
-**Estado:** ACTIVA.
+**Estado:** ACTIVA — D2 y D4 demostrados; D1/D3/D5 pendientes.
 
 ### 2A — Diseño de producto
 
@@ -129,8 +129,8 @@ El código existente es evidencia histórica y funcional, **no especificación a
 - [x] estado crítico del DO obligado a sobrevivir hibernación/reconstrucción.
 - [x] session resumption declarado explícitamente **no rollback de seguridad**.
 - [x] output quarantine redefinido: bloquea efectos/audio, no borra contexto Gemini.
-- [x] rejected-turn trust recovery definido.
-- [x] control speech actualizado a semántica Gemini 3.1 vigente (`sendRealtimeInput({text})` a validar).
+- [x] rejected-turn trust recovery definido como requisito.
+- [x] control speech actualizado a semántica Gemini 3.1 vigente (`sendRealtimeInput({text})`).
 - [x] ACK/NACK explícito añadido para efectos Worker↔Edge.
 - [x] tool/business idempotency separada de transport idempotency.
 
@@ -162,24 +162,49 @@ El código existente es evidencia histórica y funcional, **no especificación a
 - [x] builders ACK/NACK implementados.
 - [x] tests de versión/binding/sequence/duplicate/ACK/NACK/payload limits añadidos.
 - [x] workflow `Gemini Control Plane CI` independiente creado.
-- [x] CI Gemini Control Plane validó typecheck + tests en el primer SHA del contrato.
+- [x] `GeminiCallSession` experimental creado como Durable Object sin tráfico productivo.
+- [x] SQLite del DO persiste sequence/idempotency.
+- [x] WebSocket Hibernation API usada en el probe.
+- [x] test Cloudflare runtime verifica reconnect + duplicate + out-of-order.
 - [ ] añadir lockfile y cambiar CI a `npm ci` cuando se fijen dependencias del skeleton.
 
 ### 2E — Probes obligatorios antes de declarar diseño cerrado
 
 #### D1 — Transcript authority
 
+**Estado:** PENDIENTE / SIGUIENTE ACCIÓN.
+
 - [ ] comparar Google STT batch actual vs Gemini input transcription vs alternativa streaming si aporta valor.
 - [ ] medir EOS→transcript p50/p95, calidad telefonía/español, split-turn, coste y ordering/finality.
+- [ ] decidir baseline de Fase 3 sin retirar Google STT por hipótesis.
 
 #### D2 — Control speech Gemini-native
 
-- [ ] probar greeting/presence/recovery/handoff/terminal usando semántica Live vigente.
-- [ ] baseline a probar: realtime text (`sendRealtimeInput({text})`) tras primer turno.
-- [ ] demostrar misma voz, no caller evidence, no tool side-effect y siguiente caller turn natural.
-- [ ] ejecutar probe dentro de superficie donde `GEMINI_API_KEY` ya está aislada; no exponer secreto al workflow.
+**Estado:** PROBADO.
+
+- [x] dos control turns se envían mediante realtime text en UNA sesión Live.
+- [x] voz prebuilt única configurada (`Kore` por defecto).
+- [x] ambos turnos exigen audio nativo y `turnComplete`.
+- [x] tool call inesperado falla cerrado.
+- [x] turno sin audio falla cerrado.
+- [x] secreto permanece dentro de Cloud Run; no se expone a GitHub Actions.
+- [x] startup del Media Edge se bloquea si el probe real falla.
+- [x] canary real desplegado sólo después de que el probe pasara.
+
+**Evidencia:**
+
+- capability/startup SHA `880e09b0203be5a009f7cb5b6491aa263e042ed6`;
+- `Gemini Media Edge Canary Deploy` run #43 / id `32959778772`: SUCCESS;
+- final revision `gemini-media-edge-00073-qfk` sirviendo 100%;
+- image `sha256:c8ca1bf77b342755bfdfc0ec5be81d5813ff4ba34c13cdf33b76c5473181ee07`;
+- 148 Media Edge tests, 0 fallos;
+- deployed E2E/readiness: SUCCESS.
+
+**Límite de la evidencia:** demuestra capacidad para la arquitectura nueva; las llamadas productivas siguen usando el camino híbrido actual y todavía no deben declararse single-voice.
 
 #### D3 — Authorization/output quarantine
+
+**Estado:** PENDIENTE.
 
 - [ ] medir `activityEnd → TURN_AUTHORIZED` p50/p95.
 - [ ] medir bytes PCM quarantined y output/tool temprano.
@@ -187,13 +212,22 @@ El código existente es evidencia histórica y funcional, **no especificación a
 
 #### D4 — DO↔Edge WSS
 
-- [ ] probar Hibernation API.
-- [ ] probar reconstrucción tras nuevo constructor.
-- [ ] sequence/idempotency/ACK/NACK/replay.
-- [ ] medir p50/p95.
-- [ ] demostrar ausencia de sticky poison.
+**Estado:** PROBADO para persistencia/secuencia/reconnect; latencia p50/p95 queda para benchmark posterior.
+
+- [x] `GeminiCallSession` DO experimental creado.
+- [x] Hibernation API usada para control WebSocket.
+- [x] sequence/idempotency persistidos en SQLite, no sólo memoria.
+- [x] seq=1 → ACK `APPLIED`.
+- [x] reconexión + mismo seq/message → ACK `DUPLICATE_ALREADY_APPLIED`.
+- [x] gap seq=3 esperando 2 → NACK `OUT_OF_ORDER_SEQUENCE` retryable.
+- [x] no se introduce sticky poison global.
+- [ ] medir latencia p50/p95 cuando exista Edge↔DO integration probe real.
+
+**Evidencia:** HEAD `be98a465ed1eb1ff22f6c6b2374c9f1406c7a563`; `Gemini Control Plane CI` run id `32959979617`: SUCCESS.
 
 #### D5 — Rejected-turn trust recovery
+
+**Estado:** PENDIENTE.
 
 - [ ] rechazo terminal: sin output/tool effect y cierre limpio.
 - [ ] si se habilita rechazo no terminal: nueva sesión limpia desde trusted state.
@@ -204,13 +238,15 @@ El código existente es evidencia histórica y funcional, **no especificación a
 Fase 2 podrá marcarse COMPLETADA cuando:
 
 - [x] arquitectura/owners estén definidos;
-- [x] contrato v1 esté definido;
-- [x] contrato tenga implementación/test puro inicial;
+- [x] contrato v1 esté definido e implementado/testeado inicialmente;
 - [x] no exista dependencia conceptual OpenAI en el nuevo Gemini Worker;
-- [ ] D2 tenga mecanismo exacto probado;
-- [ ] D4 valide el modelo de control WSS/hibernación o produzca ajuste explícito;
-- [ ] límites/ACK/replay v1 queden ratificados por tests/probe;
-- [ ] primera tarea de construcción del DO quede definida a nivel commit.
+- [x] D2 tenga mecanismo exacto probado contra Gemini Live real;
+- [x] D4 valide el modelo DO control WSS/sequence/reconnect;
+- [x] límites/ACK/replay v1 básicos estén ratificados por tests;
+- [x] primera construcción de `GeminiCallSession` esté definida e iniciada sin tráfico;
+- [ ] D1 tenga baseline decidido;
+- [ ] D3 tenga límites/policy de quarantine definidos;
+- [ ] D5 tenga política de trust recovery demostrable.
 
 No habilitar tráfico productivo del nuevo camino antes de este criterio.
 
@@ -218,17 +254,17 @@ No habilitar tráfico productivo del nuevo camino antes de este criterio.
 
 ## Fase 3 — Construcción y migración Gemini
 
-**Estado:** BLOQUEADA por criterio de salida de Fase 2.
+**Estado:** BLOQUEADA por D1/D3/D5 de Fase 2.
 
 Orden previsto:
 
-1. `GeminiCallSession` skeleton + storage mínimo.
+1. consolidar `GeminiCallSession` + storage/control contract.
 2. admission Telnyx Gemini sin número productivo.
 3. Edge↔DO contract v1 detrás de camino no productivo.
 4. tool call → ToolGateway → FunctionResponse same-session.
 5. output quarantine + caller security gate.
 6. rejected-turn trust recovery.
-7. single-voice control turns.
+7. single-voice control turns en el nuevo runtime.
 8. D1 transcript authority final/baseline.
 9. E2E sintético completo.
 10. canary Gemini manual sólo tras SHA/CI/deploy/E2E verificados.
@@ -254,7 +290,7 @@ Orden previsto:
 ## Fase 5 — Separación operacional
 
 - [ ] CI/deploy OpenAI independientes.
-- [x] CI básico Gemini Control Plane ya existe para contrato/skeleton.
+- [x] CI Gemini Control Plane independiente para contrato/DO probe.
 - [ ] CI/deploy Gemini completos e independientes.
 - [ ] secretos/bindings segregados.
 - [ ] health/readiness/runbooks separados.
@@ -284,26 +320,22 @@ Orden previsto:
 - inventario y camino crítico documentados;
 - no se modificó runtime.
 
-## 2026-08-26 — Fase 2: diseño, revisión y contrato v1
+## 2026-08-26 — Fase 2: diseño, contrato y probes D2/D4
 
-- creado `GEMINI_INDEPENDENT_RUNTIME_DESIGN.md`;
-- revisión contra APIs actuales documentada en `GEMINI_INDEPENDENT_RUNTIME_DESIGN_REVIEW.md`;
-- detectado riesgo de contexto contaminado en turnos enviados a Live antes de security authorization;
-- session resumption separado de trust recovery;
-- creado `GEMINI_CONTROL_CONTRACT_V1.md`;
-- creado skeleton `apps/gemini-control-plane` sin tráfico;
-- implementado/testeado contrato puro v1;
-- creado CI independiente Gemini Control Plane y validado verde para contrato.
+- diseño/revisión/contrato v1 documentados;
+- creado `apps/gemini-control-plane` sin tráfico;
+- implementado contrato puro v1 y CI independiente;
+- D2 single-voice/control-speech capability demostrada contra Gemini Live real en Cloud Run canary;
+- D4 Durable Object sequence/reconnect/idempotency demostrado en Cloudflare Vitest runtime;
+- Control Plane CI de `be98a465...` falló exclusivamente porque `SESSION_HANDOFF.md` había perdido encabezados/comandos literales exigidos por `docs:check`; el relevo fue corregido en el commit documental siguiente.
 
-**Siguiente acción exacta:** implementar un **probe D2 aislado de control speech Gemini-native** dentro de una superficie que ya disponga de `GEMINI_API_KEY` sin exponer el secreto al workflow; después ejecutar D4 con un `GeminiCallSession` DO de prueba/no productivo para validar Hibernation + sequence/ACK/replay antes de habilitar cualquier tráfico real.
+**Siguiente acción exacta:** ejecutar D1 — comparar transcript authority (Google STT batch vs Gemini Live input transcription y sólo si procede una opción streaming), decidir baseline de Fase 3; después cerrar D3/D5 antes de habilitar tráfico real del nuevo Gemini Worker.
 
 ## Relevo entre sesiones
 
 1. verificar HEAD remoto, PR #85 y CI real;
-2. leer ADR-003;
-3. leer este plan;
-4. leer cierre Fase 1;
-5. leer diseño + revisión + contrato v1;
-6. inspeccionar `apps/gemini-control-plane` y su CI;
-7. continuar desde la primera casilla pendiente de Fase 2E;
-8. actualizar este documento y `docs/SESSION_HANDOFF.md` antes de cerrar.
+2. leer ADR-003 y este plan;
+3. leer diseño + revisión + contrato v1;
+4. inspeccionar `apps/gemini-control-plane` y probes Media Edge;
+5. continuar desde D1;
+6. actualizar este documento y `docs/SESSION_HANDOFF.md` antes de cerrar.
