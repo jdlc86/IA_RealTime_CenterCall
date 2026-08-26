@@ -145,7 +145,7 @@ jobs:
             --min-instances 1 \
             --max-instances 1 \
             --timeout 3600 \
-            --set-env-vars "MEDIA_EDGE_SINGLE_INSTANCE=true,MEDIA_EDGE_PUBLIC_URL=wss://bootstrap.invalid/telnyx/gemini,GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview,GEMINI_LIVE_VOICE=Kore" \
+            --set-env-vars "MEDIA_EDGE_SINGLE_INSTANCE=true,GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview,GEMINI_LIVE_VOICE=Kore" \
             --set-secrets "GEMINI_API_KEY=gemini-media-edge-gemini-api-key:${GEMINI_API_KEY_SECRET_VERSION},MEDIA_EDGE_CREDENTIAL_HMAC_SECRET=gemini-media-edge-credential-hmac-secret:${CREDENTIAL_SECRET_VERSION},MEDIA_EDGE_CONTROL_PLANE_TOKEN=gemini-media-edge-control-plane-token:${CONTROL_TOKEN_SECRET_VERSION}" \
             --no-traffic \
             --tag "${{ steps.image.outputs.tag }}" \
@@ -200,6 +200,29 @@ jobs:
           echo "setup_ms=$SETUP_MS" >> "$GITHUB_OUTPUT"
           echo "first_audio_ms=$FIRST_AUDIO_MS" >> "$GITHUB_OUTPUT"
 
+      - name: Point Gemini fast Worker at tagged canary
+        working-directory: apps/gemini-control-plane
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          FAST_EDGE_URL: ${{ steps.deployed.outputs.edge_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$FAST_EDGE_URL"
+          npm install --no-audit --no-fund
+          printf '%s' "$FAST_EDGE_URL" | npx wrangler secret put GEMINI_FAST_CANARY_EDGE_URL --config wrangler.fast.jsonc
+          npx wrangler secret list --config wrangler.fast.jsonc | grep -q 'GEMINI_FAST_CANARY_EDGE_URL'
+
+      - name: Verify Gemini fast Worker health after edge sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          BODY="$(curl --fail --silent --show-error --max-time 10 https://ia-realtime-centercall-gemini-fast.julopezcardona.workers.dev/health)"
+          echo "$BODY" | jq -e '.ok == true and .service == "gemini-control-plane-fast"' >/dev/null
+
       - name: Deployment summary
         shell: bash
         run: |
@@ -216,6 +239,7 @@ jobs:
             echo "- Provider setup: \`${{ steps.readiness.outputs.setup_ms }} ms\`"
             echo "- Provider first native audio: \`${{ steps.readiness.outputs.first_audio_ms }} ms\`"
             echo "- Startup gate: real Gemini Live setup + native audio + turnComplete"
+            echo "- Worker edge binding: **synced**"
             echo "- Tagged URL: \`${{ steps.deployed.outputs.tag_url }}\`"
             echo "- WSS: \`${{ steps.deployed.outputs.edge_url }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
