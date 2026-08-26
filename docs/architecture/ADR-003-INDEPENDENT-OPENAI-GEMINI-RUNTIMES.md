@@ -30,6 +30,48 @@ Se adoptan **dos sistemas de ejecución realtime independientes**, uno para Open
 
 Cada sistema será desplegable, operable, testeable y evolucionable sin depender del runtime conversacional del otro proveedor.
 
+### Decisión física para esta fase: dos Workers
+
+La arquitectura objetivo incluye **dos Cloudflare Workers distintos**:
+
+1. **OpenAI Control Plane Worker** — exclusivo del producto OpenAI.
+2. **Gemini Control Plane Worker** — exclusivo del producto Gemini.
+
+Gemini conserva además su **Gemini Media Edge** dedicado para el transporte continuo de audio hacia/desde Gemini Live.
+
+Por tanto, la topología de ejecución objetivo de esta fase es:
+
+```text
+PRODUCTO OPENAI
+PSTN
+  ↓
+Telnyx
+  ↓
+OpenAI Control Plane Worker
+  ↓
+OpenAI Realtime
+  ↓
+Supabase compartido
+
+
+PRODUCTO GEMINI
+PSTN
+  ↓
+Telnyx
+  ↓
+Gemini Control Plane Worker
+  ↓ control / negocio
+Gemini Media Edge
+  ↓ audio realtime
+Gemini Live
+  ↓
+Supabase compartido
+```
+
+El Gemini Media Edge no sustituye al Gemini Control Plane Worker: ambos pertenecen al producto Gemini y tienen responsabilidades diferentes.
+
+Los dos Workers pueden vivir en el mismo repositorio y compartir packages de dominio/persistencia, pero **no comparten runtime conversacional ni estado efímero de llamada**.
+
 ```text
                        ┌──────────────────────────┐
                        │   Dominio compartido     │
@@ -46,15 +88,13 @@ Cada sistema será desplegable, operable, testeable y evolucionable sin depender
         ┌────────────────────────┐   ┌────────────────────────┐
         │ SISTEMA OPENAI         │   │ SISTEMA GEMINI         │
         │                        │   │                        │
-PSTN ──►│ Telnyx / OpenAI CP     │   │ Gemini CP / Media Edge │◄── PSTN
-        │ runtime OpenAI propio  │   │ runtime Gemini propio  │
-        │ lifecycle propio       │   │ lifecycle propio       │
-        │ tools flow propio      │   │ tools flow propio      │
-        │ audio/voz propia       │   │ audio/voz propia       │
+PSTN ──►│ Worker OpenAI          │   │ Worker Gemini          │◄── PSTN
+        │ runtime OpenAI propio  │   │ Gemini Media Edge      │
+        │ lifecycle propio       │   │ runtime Gemini propio  │
+        │ tools flow propio      │   │ lifecycle propio       │
+        │ audio/voz propia       │   │ tools/audio propios    │
         └────────────────────────┘   └────────────────────────┘
 ```
-
-La separación puede llegar, cuando sea útil, a **Workers/servicios distintos** y pipelines de deploy distintos.
 
 No se exige que ambos sistemas utilicen el mismo `ResponseCoordinator`, la misma máquina de estados, el mismo lifecycle, el mismo protocolo de continuación post-tool ni una abstracción realtime común si ello obliga a ocultar diferencias sustanciales entre proveedores.
 
@@ -70,6 +110,7 @@ Duplicar una pequeña cantidad de lógica específica de runtime es preferible a
 
 ### El sistema OpenAI es propietario de
 
+- su Cloudflare Worker de Control Plane;
 - conexión y lifecycle de OpenAI Realtime;
 - semántica OpenAI de respuesta;
 - turn ownership específico de OpenAI;
@@ -83,8 +124,9 @@ El sistema OpenAI no debe depender del runtime Gemini para operar.
 
 ### El sistema Gemini es propietario de
 
+- su Cloudflare Worker de Control Plane;
 - conexión y lifecycle de Gemini Live;
-- Gemini Media Edge cuando sea necesario;
+- Gemini Media Edge;
 - máquina de estados Gemini;
 - tool calling y continuación post-tool Gemini;
 - barge-in, input detection y reconexión Gemini;
@@ -200,7 +242,6 @@ La estructura exacta se decidirá durante la refactorización, pero el objetivo 
 ```text
 apps/
   openai-control-plane/
-  openai-media-edge/        # sólo si OpenAI lo necesita
 
   gemini-control-plane/
   gemini-media-edge/
@@ -224,15 +265,16 @@ Conceptualmente:
 
 ```text
 deploy-openai
-  → artefactos OpenAI
-  → configuración OpenAI
+  → OpenAI Control Plane Worker
+  → configuración/secretos OpenAI
   → tests OpenAI
   → deploy OpenAI
 
 
 deploy-gemini
-  → artefactos Gemini
-  → configuración Gemini
+  → Gemini Control Plane Worker
+  → Gemini Media Edge
+  → configuración/secretos Gemini
   → tests Gemini
   → deploy Gemini
 ```
@@ -245,18 +287,100 @@ A partir de la aceptación de este ADR, no se invertirá esfuerzo en perfecciona
 
 Los errores actuales de la integración híbrida se conservan como evidencia y regresiones útiles, pero antes de corregirlos se evaluará si pertenecen a código que será retirado o reemplazado por el runtime Gemini independiente.
 
-Orden de trabajo recomendado:
+### Fase 1 — Inventario y clasificación
 
-1. inventariar responsabilidades actualmente compartidas entre OpenAI y Gemini;
-2. clasificar cada responsabilidad como `DOMAIN_SHARED`, `OPENAI_RUNTIME` o `GEMINI_RUNTIME`;
-3. definir la frontera mínima compartida de dominio/persistencia;
-4. diseñar el nuevo runtime Gemini alrededor de la semántica real de Gemini Live;
-5. preservar OpenAI sin cambios funcionales durante la separación;
-6. migrar Gemini incrementalmente detrás de tests propios;
-7. eliminar adapters/compatibilidad heredada sólo cuando el nuevo camino esté probado;
-8. validar Gemini E2E de forma independiente;
-9. validar OpenAI E2E para confirmar ausencia de regresión;
-10. separar pipelines/deploys donde aporte aislamiento real.
+Antes de mover código se inventariará el estado real del repositorio y se clasificará cada responsabilidad relevante como:
+
+- `DOMAIN_SHARED`
+- `OPENAI_RUNTIME`
+- `GEMINI_RUNTIME`
+- `LEGACY_HYBRID_TO_REMOVE`
+
+El inventario debe identificar especialmente cualquier lógica Gemini introducida dentro del Worker/Control Plane que originalmente pertenecía a OpenAI.
+
+### Fase 2 — Construcción del Gemini Control Plane Worker independiente
+
+Se crea el Worker Gemini con ownership propio de:
+
+- bootstrap y lifecycle Gemini;
+- coordinación con Gemini Media Edge;
+- tool calling/continuation Gemini;
+- turn state y response state Gemini;
+- barge-in/input detection;
+- observabilidad Gemini;
+- integración con los mismos contratos empresariales compartidos.
+
+La implementación se diseña desde la semántica real de Gemini Live y no como traducción de OpenAI.
+
+### Fase 3 — Migración funcional de Gemini
+
+Se migra incrementalmente al nuevo Worker Gemini:
+
+- telefonía/control;
+- conversación multi-turno;
+- tools;
+- reservas;
+- disponibilidad;
+- continuación post-tool;
+- audio/voz coherente;
+- reconexión;
+- cierre;
+- diagnóstico.
+
+El camino híbrido antiguo sólo se retira cuando el nuevo Gemini demuestre tests propios y E2E satisfactorio.
+
+### Fase 4 — Limpieza y restauración del Worker OpenAI
+
+Una vez que Gemini ya opere de forma independiente, se realizará una fase dedicada de **limpieza del Worker OpenAI**.
+
+Se asume como hipótesis de trabajo que el Worker actual puede contener lógica, adapters, guards, branches, contratos y observabilidad añadidos únicamente para acomodar Gemini. Esa hipótesis deberá comprobarse mediante inventario/diff antes de borrar nada.
+
+La limpieza incluirá, cuando la evidencia confirme que son Gemini-only o legado híbrido:
+
+- eliminar ramas `if provider === GEMINI` del camino OpenAI;
+- retirar adapters de compatibilidad Gemini/OpenAI;
+- retirar estados y coordinadores introducidos sólo para traducir Gemini a semántica OpenAI;
+- retirar comandos/control sideband Gemini del Worker OpenAI;
+- retirar bootstrap/configuración Gemini del deploy OpenAI;
+- retirar secrets/env vars Gemini del pipeline OpenAI;
+- retirar tests Gemini que vivan artificialmente dentro de la suite OpenAI;
+- reducir dependencias y bundle del Worker OpenAI;
+- restaurar ownership y lifecycle OpenAI simples donde la integración híbrida los haya complicado;
+- conservar cualquier hardening que sea genuinamente útil para OpenAI, aunque se haya descubierto durante el trabajo Gemini.
+
+**No se revertirá OpenAI a una versión histórica a ciegas.** La limpieza será selectiva: se elimina contaminación Gemini, pero se conservan correcciones generales de seguridad, concurrencia, dominio y fiabilidad que beneficien al producto OpenAI.
+
+Criterio final de esta fase:
+
+> El Worker OpenAI debe poder compilar, desplegarse y ejecutar todos sus E2E sin código runtime, secretos, servicios ni decisiones de lifecycle Gemini.
+
+### Fase 5 — Separación de pipelines y contratos operativos
+
+Tras estabilizar ambos sistemas:
+
+- CI OpenAI valida únicamente producto OpenAI + packages compartidos relevantes;
+- CI Gemini valida únicamente producto Gemini + packages compartidos relevantes;
+- los deploys son independientes;
+- los secrets son independientes;
+- un cliente recibe únicamente los componentes del producto contratado.
+
+### Fase 6 — Evolución futura de persistencia
+
+Sólo cuando exista requisito comercial se evaluará pasar de un Supabase compartido a N bases/proyectos que implementen los mismos contratos de persistencia. No forma parte de la separación realtime actual.
+
+## Orden de trabajo resumido
+
+1. inventariar responsabilidades y contaminación cruzada actual;
+2. clasificar `DOMAIN_SHARED`, `OPENAI_RUNTIME`, `GEMINI_RUNTIME`, `LEGACY_HYBRID_TO_REMOVE`;
+3. definir packages realmente compartidos;
+4. levantar `gemini-control-plane` como Worker independiente;
+5. integrar el Worker Gemini con el Gemini Media Edge existente;
+6. migrar Gemini detrás de tests propios;
+7. validar Gemini E2E independiente;
+8. limpiar el Worker OpenAI de lógica Gemini/legacy híbrida;
+9. validar OpenAI E2E y ausencia de dependencias Gemini;
+10. separar CI/deploy/secrets por producto;
+11. eliminar definitivamente el camino híbrido sólo cuando ambos productos estén demostrados.
 
 ## Criterios de aceptación del sistema Gemini independiente
 
@@ -277,7 +401,22 @@ Gemini se considera producto autónomo cuando puede demostrar, sin utilizar runt
 13. CI, deploy y E2E propios;
 14. ausencia de dependencia runtime o credenciales OpenAI.
 
-OpenAI mantiene su propio conjunto equivalente de pruebas de producto, pero no tiene que cumplir internamente la misma máquina de estados que Gemini.
+## Criterios de aceptación del sistema OpenAI limpio
+
+OpenAI se considera nuevamente aislado cuando puede demostrar:
+
+1. Worker OpenAI desplegable de forma independiente;
+2. ninguna dependencia runtime del Worker Gemini ni Gemini Media Edge;
+3. ninguna credencial Gemini requerida;
+4. ninguna rama de lifecycle necesaria sólo para Gemini;
+5. ninguna traducción de comandos Gemini en el camino OpenAI;
+6. tools y dominio compartidos siguen funcionando;
+7. Supabase compartido sigue siendo la misma fuente empresarial;
+8. suite OpenAI y E2E OpenAI verdes;
+9. comportamiento funcional OpenAI preservado o mejorado;
+10. reducción verificable de contaminación/complexidad híbrida respecto al estado previo a la limpieza.
+
+OpenAI mantiene su propia arquitectura interna; no tiene que cumplir la máquina de estados Gemini.
 
 ## Relación con ADR anteriores y reglas vigentes
 
@@ -298,7 +437,8 @@ Siguen vigentes los principios de separación de dominio, autoridad empresarial,
 - troubleshooting y observabilidad más claros;
 - despliegues y secretos pueden aislarse por producto;
 - un cliente Gemini no paga complejidad operativa de OpenAI;
-- se conserva una única fuente de verdad empresarial en Supabase durante esta fase.
+- se conserva una única fuente de verdad empresarial en Supabase durante esta fase;
+- la limpieza posterior de OpenAI reduce deuda técnica acumulada durante la integración híbrida.
 
 ## Costes y trade-offs
 
@@ -306,7 +446,8 @@ Siguen vigentes los principios de separación de dominio, autoridad empresarial,
 - habrá dos suites E2E y posiblemente dos pipelines;
 - ciertos cambios conversacionales deberán implementarse dos veces si son específicos de ambos productos;
 - se requiere una refactorización estructural de código ya existente;
-- la coexistencia/failover entre proveedores queda explícitamente fuera del alcance actual.
+- la coexistencia/failover entre proveedores queda explícitamente fuera del alcance actual;
+- habrá una fase explícita de limpieza del Worker OpenAI después de migrar Gemini.
 
 Estos costes se aceptan porque el objetivo prioritario es disponer de **dos sistemas eficientes, independientes y comercializables por separado**.
 
@@ -316,6 +457,6 @@ Estos costes se aceptan porque el objetivo prioritario es disponer de **dos sist
 - selección dinámica de proveedor dentro de una misma llamada;
 - ejecución simultánea obligatoria de ambos runtimes para un cliente;
 - migración inmediata a múltiples bases de datos;
-- selección concreta de estructura final de repositorio;
 - corrección de todos los defectos de la arquitectura híbrida actual antes de iniciar la separación;
-- reescritura del dominio empresarial que ya sea realmente neutral.
+- reescritura del dominio empresarial que ya sea realmente neutral;
+- borrar código OpenAI o Gemini sin inventario/evidencia previa.
