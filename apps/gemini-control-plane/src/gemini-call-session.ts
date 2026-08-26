@@ -1,11 +1,14 @@
 import { DurableObject } from "cloudflare:workers";
+import { reduceGeminiCallLifecycle, type GeminiCallLifecycleState, type GeminiCallPhase } from "./call-lifecycle/state";
 import { assertEnvelopeDirectionV1 } from "./control-contract/direction-v1";
 import {
   applyInboundSequenceV1,
   buildAckV1,
   buildNackV1,
   parseEnvelopeV1,
+  type AckResultV1,
   type GeminiControlEnvelopeV1,
+  type NackCodeV1,
 } from "./control-contract/v1";
 
 export type GeminiControlPlaneEnv = Readonly<{
@@ -19,6 +22,22 @@ type ConnectionAttachment = Readonly<{
 
 type SequenceRow = Readonly<{ value: number }>;
 type MessageRow = Readonly<{ message_id: string }>;
+type LifecycleRow = Readonly<{
+  phase: string;
+  active_turn_id: string | null;
+  provider_connection_epoch: number | null;
+  media_started: number;
+}>;
+
+const PHASES = new Set<GeminiCallPhase>([
+  "CALL_BOOTSTRAP",
+  "LISTENING",
+  "CALLER_ACTIVE",
+  "TURN_GATING",
+  "RECOVERING",
+  "CLOSING",
+  "TERMINAL",
+]);
 
 function requiredQuery(url: URL, name: string): string {
   const value = url.searchParams.get(name)?.trim() ?? "";
@@ -39,8 +58,18 @@ export class GeminiCallSession extends DurableObject<GeminiControlPlaneEnv> {
           message_id TEXT PRIMARY KEY,
           sequence INTEGER NOT NULL CHECK(sequence > 0)
         );
+        CREATE TABLE IF NOT EXISTS lifecycle_state (
+          id INTEGER PRIMARY KEY CHECK(id = 1),
+          phase TEXT NOT NULL,
+          active_turn_id TEXT,
+          provider_connection_epoch INTEGER,
+          media_started INTEGER NOT NULL CHECK(media_started IN (0, 1))
+        );
         INSERT OR IGNORE INTO control_counters(name, value) VALUES ('inbound', 0);
         INSERT OR IGNORE INTO control_counters(name, value) VALUES ('outbound', 0);
+        INSERT OR IGNORE INTO lifecycle_state(
+          id, phase, active_turn_id, provider_connection_epoch, media_started
+        ) VALUES (1, 'CALL_BOOTSTRAP', NULL, NULL, 0);
       `);
     });
   }
@@ -86,64 +115,100 @@ export class GeminiCallSession extends DurableObject<GeminiControlPlaneEnv> {
     try {
       assertEnvelopeDirectionV1(envelope, "EDGE_TO_WORKER");
     } catch {
-      const response = buildNackV1({
-        callSessionId: attachment.callSessionId,
-        messageId: crypto.randomUUID(),
-        sequence: this.nextOutboundSequence(),
-        rejectedMessageId: envelope.message_id,
-        rejectedSequence: envelope.sequence,
-        code: "PROTOCOL_VIOLATION",
-        retryable: false,
-        terminal: true,
-      });
-      ws.send(JSON.stringify(response));
+      this.nack(ws, attachment.callSessionId, envelope, "PROTOCOL_VIOLATION", false, true);
       ws.close(1008, "invalid control direction");
       return;
     }
 
     const lastAppliedSequence = this.counter("inbound");
-    const appliedMessageIds = new Set<string>();
-    if (this.wasApplied(envelope.message_id)) appliedMessageIds.add(envelope.message_id);
-    const decision = applyInboundSequenceV1({ lastAppliedSequence, appliedMessageIds }, envelope);
-
-    if (decision.action === "OUT_OF_ORDER") {
-      const response = buildNackV1({
-        callSessionId: attachment.callSessionId,
-        messageId: crypto.randomUUID(),
-        sequence: this.nextOutboundSequence(),
-        rejectedMessageId: envelope.message_id,
-        rejectedSequence: envelope.sequence,
-        code: "OUT_OF_ORDER_SEQUENCE",
-        retryable: true,
-        terminal: false,
-      });
-      ws.send(JSON.stringify(response));
+    const alreadyApplied = this.wasApplied(envelope.message_id);
+    if (alreadyApplied && envelope.sequence > lastAppliedSequence) {
+      this.nack(ws, attachment.callSessionId, envelope, "IDENTITY_MISMATCH", false, true);
+      ws.close(1008, "reused control message identity");
       return;
     }
 
-    if (decision.action === "APPLY") {
+    const appliedMessageIds = new Set<string>();
+    if (alreadyApplied) appliedMessageIds.add(envelope.message_id);
+    const sequenceDecision = applyInboundSequenceV1({ lastAppliedSequence, appliedMessageIds }, envelope);
+
+    if (sequenceDecision.action === "OUT_OF_ORDER") {
+      this.nack(ws, attachment.callSessionId, envelope, "OUT_OF_ORDER_SEQUENCE", true, false);
+      return;
+    }
+
+    if (sequenceDecision.action === "DUPLICATE") {
+      if (envelope.ack_required) this.ack(ws, attachment.callSessionId, envelope, "DUPLICATE_ALREADY_APPLIED");
+      return;
+    }
+
+    if (!this.edgeIdentityMatches(attachment, envelope)) {
+      this.nack(ws, attachment.callSessionId, envelope, "IDENTITY_MISMATCH", false, true);
+      ws.close(1008, "control edge identity mismatch");
+      return;
+    }
+
+    const currentLifecycle = this.lifecycleState();
+    const lifecycleDecision = reduceGeminiCallLifecycle(currentLifecycle, envelope);
+    if (lifecycleDecision.action === "INVALID_STATE") {
+      this.nack(ws, attachment.callSessionId, envelope, "INVALID_STATE", false, false);
+      return;
+    }
+
+    this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec(
         "INSERT INTO applied_messages(message_id, sequence) VALUES (?, ?)",
         envelope.message_id,
         envelope.sequence,
       );
-      this.setCounter("inbound", decision.nextLastAppliedSequence);
-    }
+      this.setCounter("inbound", sequenceDecision.nextLastAppliedSequence);
+      if (lifecycleDecision.action === "APPLY") this.writeLifecycleState(lifecycleDecision.state);
+    });
 
     if (!envelope.ack_required) return;
-    const response = buildAckV1({
-      callSessionId: attachment.callSessionId,
-      messageId: crypto.randomUUID(),
-      sequence: this.nextOutboundSequence(),
-      ackedMessageId: envelope.message_id,
-      ackedSequence: envelope.sequence,
-      result: decision.action === "DUPLICATE" ? "DUPLICATE_ALREADY_APPLIED" : "APPLIED",
-    });
-    ws.send(JSON.stringify(response));
+    this.ack(
+      ws,
+      attachment.callSessionId,
+      envelope,
+      lifecycleDecision.action === "ACCEPT_NO_EFFECT" ? "ACCEPTED_NO_EFFECT" : "APPLIED",
+    );
   }
 
   webSocketClose(_ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): void {
-    // No critical state is held in memory. SQLite remains authoritative.
+    // Critical state is persisted in SQLite and survives hibernation/restart.
+  }
+
+  private edgeIdentityMatches(attachment: ConnectionAttachment, envelope: GeminiControlEnvelopeV1): boolean {
+    if (envelope.type !== "EDGE_READY" && envelope.type !== "SYNC") return true;
+    return envelope.payload.edge_session_id === attachment.edgeSessionId;
+  }
+
+  private lifecycleState(): GeminiCallLifecycleState {
+    const row = this.ctx.storage.sql.exec<LifecycleRow>(
+      "SELECT phase, active_turn_id, provider_connection_epoch, media_started FROM lifecycle_state WHERE id = 1",
+    ).one();
+    if (!PHASES.has(row.phase as GeminiCallPhase)) throw new Error("Persisted Gemini lifecycle phase is invalid");
+    if (row.provider_connection_epoch !== null && (!Number.isSafeInteger(row.provider_connection_epoch) || row.provider_connection_epoch < 1)) {
+      throw new Error("Persisted Gemini provider epoch is invalid");
+    }
+    return Object.freeze({
+      phase: row.phase as GeminiCallPhase,
+      activeTurnId: row.active_turn_id,
+      providerConnectionEpoch: row.provider_connection_epoch,
+      mediaStarted: row.media_started === 1,
+    });
+  }
+
+  private writeLifecycleState(state: GeminiCallLifecycleState): void {
+    this.ctx.storage.sql.exec(
+      `UPDATE lifecycle_state
+       SET phase = ?, active_turn_id = ?, provider_connection_epoch = ?, media_started = ?
+       WHERE id = 1`,
+      state.phase,
+      state.activeTurnId,
+      state.providerConnectionEpoch,
+      state.mediaStarted ? 1 : 0,
+    );
   }
 
   private counter(name: "inbound" | "outbound"): number {
@@ -169,5 +234,41 @@ export class GeminiCallSession extends DurableObject<GeminiControlPlaneEnv> {
       "SELECT message_id FROM applied_messages WHERE message_id = ? LIMIT 1",
       messageId,
     ).toArray().length === 1;
+  }
+
+  private ack(
+    ws: WebSocket,
+    callSessionId: string,
+    envelope: GeminiControlEnvelopeV1,
+    result: AckResultV1,
+  ): void {
+    ws.send(JSON.stringify(buildAckV1({
+      callSessionId,
+      messageId: crypto.randomUUID(),
+      sequence: this.nextOutboundSequence(),
+      ackedMessageId: envelope.message_id,
+      ackedSequence: envelope.sequence,
+      result,
+    })));
+  }
+
+  private nack(
+    ws: WebSocket,
+    callSessionId: string,
+    envelope: GeminiControlEnvelopeV1,
+    code: NackCodeV1,
+    retryable: boolean,
+    terminal: boolean,
+  ): void {
+    ws.send(JSON.stringify(buildNackV1({
+      callSessionId,
+      messageId: crypto.randomUUID(),
+      sequence: this.nextOutboundSequence(),
+      rejectedMessageId: envelope.message_id,
+      rejectedSequence: envelope.sequence,
+      code,
+      retryable,
+      terminal,
+    })));
   }
 }
