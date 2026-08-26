@@ -17,7 +17,7 @@ function env(overrides: Partial<FastGeminiPreflightEnv> = {}): FastGeminiPreflig
     GEMINI_FAST_CANARY_CALLED_NUMBER: NUMBER,
     GEMINI_FAST_CANARY_TENANT_ID: "restaurante-centro",
     GEMINI_FAST_CANARY_SYSTEM_INSTRUCTION: "Responde brevemente en español.",
-    GEMINI_FAST_PREFLIGHT_TOKEN: SECRET,
+    GEMINI_FAST_PREFLIGHT_NONCE: SECRET,
     ...overrides,
   };
 }
@@ -30,6 +30,14 @@ function request(token = SECRET): Request {
 }
 
 describe("fast runtime preflight", () => {
+  it("is unavailable when the ephemeral preflight nonce is disabled", async () => {
+    const fetcher = vi.fn();
+    const response = await routeFastGeminiPreflight(request(), env({ GEMINI_FAST_PREFLIGHT_NONCE: "" }), { fetcher });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ ok: false, status: "PREFLIGHT_UNAVAILABLE" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("rejects unauthorized requests before any external effect", async () => {
     const fetcher = vi.fn();
     const response = await routeFastGeminiPreflight(request("wrong-token-that-is-long-enough-000000"), env(), { fetcher });
