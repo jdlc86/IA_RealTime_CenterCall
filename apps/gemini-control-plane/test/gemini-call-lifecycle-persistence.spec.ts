@@ -1,8 +1,11 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { GEMINI_ADMISSION_VERSION_V1 } from "../src/admission/v1";
+import { GEMINI_CONTROL_CAPABILITY_VERSION_V1 } from "../src/control-auth/capability-v1";
 import { GEMINI_CONTROL_PROTOCOL_V1 } from "../src/control-contract/v1";
 
+const TENANT_ID = "probe-lifecycle-tenant";
+const CALL_CONTROL_ID = "probe-lifecycle-call-control";
 const CALL_SESSION_ID = "probe-lifecycle-persistence";
 const EDGE_SESSION_ID = "probe-lifecycle-edge";
 const CREDENTIAL_ID = "probe-lifecycle-credential";
@@ -25,21 +28,34 @@ function controlEnvelope(
   };
 }
 
+function verifiedControlHeaders(): HeadersInit {
+  return {
+    Upgrade: "websocket",
+    "x-gemini-control-authenticated": GEMINI_CONTROL_CAPABILITY_VERSION_V1,
+    "x-gemini-tenant-id": TENANT_ID,
+    "x-gemini-call-control-id": CALL_CONTROL_ID,
+    "x-gemini-call-session-id": CALL_SESSION_ID,
+    "x-gemini-edge-session-id": EDGE_SESSION_ID,
+    "x-gemini-credential-id": CREDENTIAL_ID,
+    "x-gemini-capability-not-after": String(ADMISSION_EXPIRY),
+  };
+}
+
 async function connect() {
   const stub = env.GEMINI_CALL_SESSIONS.getByName(CALL_SESSION_ID);
   await stub.registerAdmission({
     version: GEMINI_ADMISSION_VERSION_V1,
     provider: "GEMINI",
-    tenantId: "probe-lifecycle-tenant",
-    callControlId: "probe-lifecycle-call-control",
+    tenantId: TENANT_ID,
+    callControlId: CALL_CONTROL_ID,
     callSessionId: CALL_SESSION_ID,
     edgeSessionId: EDGE_SESSION_ID,
     credentialId: CREDENTIAL_ID,
     notAfterEpochMs: ADMISSION_EXPIRY,
   });
   const response = await stub.fetch(new Request(
-    `https://do/internal/control?call_session_id=${CALL_SESSION_ID}&edge_session_id=${EDGE_SESSION_ID}&credential_id=${CREDENTIAL_ID}`,
-    { headers: { Upgrade: "websocket" } },
+    "https://do/internal/control",
+    { headers: verifiedControlHeaders() },
   ));
   expect(response.status).toBe(101);
   const socket = response.webSocket;
@@ -78,8 +94,6 @@ describe("GeminiCallSession durable lifecycle", () => {
     expect(invalidMedia.type).toBe("NACK");
     expect(invalidMedia.sequence).toBe(1);
     expect((invalidMedia.payload as Record<string, unknown>).code).toBe("INVALID_STATE");
-    // retryable=false means the same invalid envelope must not be retried. The
-    // inbound sequence slot remains unconsumed so the correct event can use 1.
     expect((invalidMedia.payload as Record<string, unknown>).retryable).toBe(false);
     expect((invalidMedia.payload as Record<string, unknown>).terminal).toBe(false);
 
