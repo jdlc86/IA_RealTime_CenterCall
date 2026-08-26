@@ -249,8 +249,8 @@ jobs:
             if [ "$STATUS" = "200" ]; then
               break
             fi
-            if [ "$STATUS" = "503" ] && [ "$attempt" -lt 15 ]; then
-              echo "Fast preflight token propagation pending; retry ${attempt}/15"
+            if { [ "$STATUS" = "401" ] || [ "$STATUS" = "503" ]; } && [ "$attempt" -lt 15 ]; then
+              echo "Fast preflight token rollout pending (HTTP ${STATUS}); retry ${attempt}/15"
               sleep 2
               continue
             fi
