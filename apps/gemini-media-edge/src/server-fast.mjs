@@ -62,6 +62,12 @@ function streamingCredential(request) {
   return required(request.headers["x-telnyx-streaming-auth-token"], "Telnyx streaming auth token", 16_384);
 }
 
+function edgeUrlForUpgrade(request) {
+  const host = required(request.headers.host, "Fast Gemini media request host", 512);
+  if (/[/\\\s,@]/.test(host)) throw new Error("Fast Gemini media request host is invalid");
+  return new URL(`wss://${host}${MEDIA_PATH}`).toString();
+}
+
 function writeJson(response, status, value) {
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -169,7 +175,8 @@ export function createFastGeminiMediaServer(options = {}) {
     }
     void (async () => {
       try {
-        const claims = await verifyCredential(streamingCredential(request), Date.now());
+        const expectedEdgeUrl = edgeUrlForUpgrade(request);
+        const claims = await verifyCredential(streamingCredential(request), Date.now(), expectedEdgeUrl);
         wss.handleUpgrade(request, socket, head, (ws) => wss.emit("connection", ws, request, claims));
       } catch {
         try { socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n"); } catch {}
@@ -197,12 +204,13 @@ export function createFastGeminiMediaServerFromEnv(env = process.env, options = 
   if (env.MEDIA_EDGE_SINGLE_INSTANCE !== "true") {
     throw new Error("MEDIA_EDGE_SINGLE_INSTANCE=true is required while fast bootstrap state is in-memory");
   }
-  const publicUrl = required(env.MEDIA_EDGE_PUBLIC_URL, "MEDIA_EDGE_PUBLIC_URL", 2_048);
+  const credentialSecret = required(env.MEDIA_EDGE_CREDENTIAL_HMAC_SECRET, "MEDIA_EDGE_CREDENTIAL_HMAC_SECRET", 8_192);
   return createFastGeminiMediaServer({
     geminiApiKey: env.GEMINI_API_KEY,
     model: env.GEMINI_LIVE_MODEL || "gemini-3.1-flash-live-preview",
     controlToken: env.MEDIA_EDGE_CONTROL_PLANE_TOKEN,
-    verifyCredential: createHmacCredentialVerifier(env.MEDIA_EDGE_CREDENTIAL_HMAC_SECRET, publicUrl),
+    verifyCredential: (rawCredential, nowEpochMs, expectedEdgeUrl) =>
+      createHmacCredentialVerifier(credentialSecret, expectedEdgeUrl)(rawCredential, nowEpochMs),
     revision: env.K_REVISION ?? null,
     maxBufferedBytes: env.MEDIA_EDGE_MAX_BUFFERED_BYTES ? Number(env.MEDIA_EDGE_MAX_BUFFERED_BYTES) : undefined,
     providerReadiness: options.providerReadiness ?? null,
