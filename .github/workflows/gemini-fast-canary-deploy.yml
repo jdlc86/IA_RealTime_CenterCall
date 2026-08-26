@@ -194,7 +194,9 @@ jobs:
           test -n "$CLOUDFLARE_API_TOKEN"; test -n "$CLOUDFLARE_ACCOUNT_ID"; test -n "$FAST_EDGE_URL"
           npm install --no-audit --no-fund
           npx wrangler deploy --config wrangler.fast.jsonc --var "GEMINI_FAST_CANARY_EDGE_URL:${FAST_EDGE_URL}" --var "GEMINI_FAST_PREFLIGHT_NONCE:"
-          npx wrangler deployments list --config wrangler.fast.jsonc
+          if ! npx wrangler deployments list --config wrangler.fast.jsonc; then
+            echo "::warning::Cloudflare deployment listing failed after a successful Worker deploy; continuing to health/preflight verification."
+          fi
 
       - name: Verify Gemini fast Worker health after edge sync
         shell: bash
