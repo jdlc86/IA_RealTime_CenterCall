@@ -106,75 +106,85 @@ La separación física de Workers es la dirección aprobada. El Media Edge Gemin
 - [x] `SESSION_HANDOFF.md` actualizado para apuntar a ADR-003 y este plan.
 - [x] `PROJECT_STATUS.md` actualizado para declarar obsoleto el plan híbrido G1–G5 como dirección de producto.
 
-**Criterio de salida:** cumplido; una sesión nueva recibe como primera misión el inventario y no el parcheo del runtime híbrido.
+**Criterio de salida:** cumplido.
 
 ## Fase 1 — Inventario arquitectónico del sistema actual
 
-**Estado:** ACTIVA / PRÓXIMA ACCIÓN.
+**Estado:** COMPLETADA.
 
-**Objetivo:** saber qué existe realmente antes de mover código.
+**Evidencia de cierre:** [`PROVIDER_RUNTIME_INVENTORY_PHASE1_CLOSURE.md`](./PROVIDER_RUNTIME_INVENTORY_PHASE1_CLOSURE.md).
 
 ### 1A. Topología y entrypoints
 
-- [ ] Enumerar `apps/`, `packages/`, Workers, servicios y entrypoints efectivos.
-- [ ] Identificar Worker productivo actual y sus bindings/configuración.
-- [ ] Identificar Gemini Media Edge, endpoints y responsabilidades.
-- [ ] Identificar pipelines CI/deploy que hoy mezclan responsabilidades.
+- [x] Enumerar `apps/`, Workers, servicios y entrypoints efectivos.
+- [x] Identificar Worker productivo actual y sus bindings/configuración.
+- [x] Identificar Gemini Media Edge, endpoints y responsabilidades.
+- [x] Identificar pipelines CI/deploy que hoy mezclan responsabilidades.
 
 ### 1B. Inventario del Control Plane / Worker actual
 
-- [ ] Catalogar archivos/símbolos de lifecycle conversacional.
-- [ ] Catalogar response coordination / response ownership.
-- [ ] Catalogar turn ownership / concurrency / watchdogs.
-- [ ] Catalogar OpenAI adapters y wire handling.
-- [ ] Catalogar Gemini branches, sideband, bootstrap y adapters dentro del Worker.
-- [ ] Catalogar ToolGateway y herramientas empresariales.
-- [ ] Catalogar reservas, horarios, identidad y autorización.
-- [ ] Catalogar persistencia y Supabase adapters.
-- [ ] Catalogar observabilidad/diagnóstico.
-- [ ] Catalogar Telnyx neutral vs Telnyx específico de un producto.
+- [x] Catalogar lifecycle conversacional/composición superior suficiente para no reutilizar la herencia actual.
+- [x] Catalogar response coordination / response ownership y marcar lo no demostrablemente neutral.
+- [x] Catalogar turn ownership / concurrency / watchdogs.
+- [x] Catalogar OpenAI adapters y wire handling.
+- [x] Catalogar Gemini branches, sideband, bootstrap y adapters dentro del Worker.
+- [x] Catalogar ToolGateway y herramientas empresariales.
+- [x] Catalogar reservas, horarios, identidad y autorización representativos.
+- [x] Catalogar persistencia y Supabase adapters.
+- [x] Catalogar observabilidad/diagnóstico.
+- [x] Catalogar Telnyx neutral vs Telnyx específico de un producto.
 
 ### 1C. Inventario Gemini Media Edge
 
-- [ ] Conexión Telnyx Media Streaming.
-- [ ] Conexión Gemini Live.
-- [ ] VAD/STT/input authority.
-- [ ] semantic preselection/tool gate.
-- [ ] playback/mark/clear.
-- [ ] governed speech/TTS actual.
-- [ ] reconnect/session rotation.
-- [ ] sideband/control-plane coupling.
-- [ ] diagnóstico y health/E2E.
+- [x] Conexión Telnyx Media Streaming.
+- [x] Conexión Gemini Live.
+- [x] VAD/STT/input authority.
+- [x] semantic preselection/tool gate.
+- [x] playback/mark/clear a nivel de ownership/camino crítico.
+- [x] governed speech/TTS actual.
+- [x] reconnect/session rotation.
+- [x] sideband/control-plane coupling.
+- [x] diagnóstico, health y registries relevantes.
 
 ### 1D. Clasificación
 
-- [ ] Etiquetar cada pieza `SHARED_DOMAIN` / `OPENAI_NATIVE` / `GEMINI_NATIVE` / `LEGACY_COMPAT_REDESSIGN` / `UNRESOLVED`.
-- [ ] Registrar dependencias cruzadas que impiden separación física.
-- [ ] Identificar owners duplicados o abstracciones que traducen OpenAI↔Gemini artificialmente.
-- [ ] Identificar piezas en camino crítico que añaden latencia o saltos evitables.
-- [ ] Identificar tests que preservan comportamiento valioso frente a tests que sólo preservan arquitectura histórica.
+- [x] Etiquetar piezas representativas `SHARED_DOMAIN` / `OPENAI_NATIVE` / `GEMINI_NATIVE` / `LEGACY_COMPAT_REDESSIGN` / `UNRESOLVED`.
+- [x] Registrar dependencias cruzadas que impiden separación física.
+- [x] Identificar owners/abstracciones que traducen OpenAI↔Gemini artificialmente.
+- [x] Construir camino crítico Gemini y localizar saltos de latencia/compatibilidad.
+- [x] Clasificar cada salto como `ESSENTIAL`, `KEEP_FOR_INVARIANT`, `REMOVE_OR_COLLAPSE`, `REWRITE` o `BENCHMARK`.
+- [x] Convertir cuestiones restantes en decisiones explícitas de Fase 2 en lugar de incertidumbres de inventario.
 
-**Entregable:** `docs/architecture/PROVIDER_RUNTIME_INVENTORY.md`.
+**Entregables:**
 
-**Criterio de salida:** ninguna migración estructural empieza hasta que las dependencias críticas estén clasificadas.
+- [`PROVIDER_RUNTIME_INVENTORY.md`](./PROVIDER_RUNTIME_INVENTORY.md)
+- [`PROVIDER_RUNTIME_INVENTORY_PHASE1_CLOSURE.md`](./PROVIDER_RUNTIME_INVENTORY_PHASE1_CLOSURE.md)
+
+**Criterio de salida:** cumplido. No se modificó runtime durante la Fase 1.
 
 ## Fase 2 — Diseño detallado del producto Gemini independiente
 
-**Estado:** BLOQUEADA por Fase 1.
+**Estado:** ACTIVA / PRÓXIMA ACCIÓN.
 
 - [ ] Definir entrypoint del Gemini Worker.
 - [ ] Definir estado/lifecycle Gemini desde semántica real de Gemini Live.
 - [ ] Definir frontera Gemini Worker ↔ Gemini Media Edge.
-- [ ] Definir tool flow y post-tool continuation Gemini nativos.
+- [ ] Clasificar qué responsabilidades actuales permanecen en Media Edge y cuáles pasan al Worker.
+- [ ] Definir tool flow y post-tool continuation Gemini nativos, sin provider rotation por defecto.
 - [ ] Definir barge-in/input detection/reconnect Gemini.
 - [ ] Definir estrategia de una sola identidad vocal por sesión.
-- [ ] Definir interacción con dominio/Supabase compartidos.
+- [ ] Decidir mediante evidencia/benchmark si Google STT batch permanece.
+- [ ] Rediseñar o eliminar la doble decisión semantic preselection + Gemini Live manteniendo autorización fail-closed.
+- [ ] Definir contrato Worker↔Edge con política explícita de errores/recuperación; no copiar el sideband actual por inercia.
+- [ ] Definir interacción con ToolGateway/dominio/Supabase compartidos por inyección.
 - [ ] Definir observabilidad y correlación Gemini.
-- [ ] Definir secretos/bindings propios Gemini.
+- [ ] Definir secretos/bindings propios Gemini sin OpenAI.
 - [ ] Definir CI y E2E Gemini independientes.
-- [ ] Revisar qué código existente se puede reutilizar sin importar semántica OpenAI.
+- [ ] Revisar qué código `GEMINI_NATIVE` existente se puede reutilizar sin importar semántica OpenAI.
 
-**Entregable:** diseño implementable del Worker Gemini y contratos con Media Edge.
+**Entregable:** `docs/architecture/GEMINI_INDEPENDENT_RUNTIME_DESIGN.md`.
+
+**Criterio de salida:** diseño implementable, con owners y contratos explícitos, antes de crear/mover runtime.
 
 ## Fase 3 — Construcción y migración Gemini
 
@@ -229,31 +239,39 @@ La separación física de Workers es la dirección aprobada. El Media Edge Gemin
 
 # Registro de trabajo
 
-## 2026-08-26 — Cambio de paradigma y relevo completados
+## 2026-08-26 — Cambio de paradigma y relevo
+
+- dos productos / dos Workers aprobados;
+- Supabase compartido;
+- ADR-003, plan, status y handoff actualizados;
+- runtime híbrido deja de ser arquitectura objetivo.
+
+## 2026-08-26 — Fase 1 cerrada
 
 **Completado:**
 
-- Se abandona como objetivo la orquestación realtime universal OpenAI/Gemini.
-- Se aprueban dos productos con dos Workers independientes.
-- Supabase permanece compartido durante esta fase.
-- Se decide no invertir más esfuerzo en defectos del runtime híbrido que vayan a desaparecer con la separación.
-- Se declara que el código actual no es necesariamente óptimo ni siquiera para OpenAI; será auditado posteriormente.
-- Se formaliza ADR-003.
-- Se crea este plan/checklist.
-- `PROJECT_STATUS.md` ya refleja la nueva dirección.
-- `SESSION_HANDOFF.md` ya entrega a otra sesión la nueva primera misión.
+- inventario de Worker, Gemini Media Edge y CI/deploy;
+- confirmada contaminación Gemini sustancial dentro del Worker OpenAI-first;
+- identificadas abstracciones híbridas `LEGACY_COMPAT_REDESSIGN`;
+- identificado dominio/persistencia realmente compartible;
+- auditados CallSession/response/turn ownership a nivel necesario para no copiar la arquitectura histórica;
+- reconstruido camino crítico Gemini;
+- confirmado STT Google batch, preselección aislada, doble voz y provider rotation post-tool;
+- clasificados seguridad, diagnóstico y Telnyx;
+- clasificados saltos del camino crítico;
+- cuestiones restantes trasladadas explícitamente a Fase 2.
 
-**Siguiente acción exacta:**
+**No se modificó runtime.**
 
-Crear `docs/architecture/PROVIDER_RUNTIME_INVENTORY.md` e iniciar Fase 1A mediante inspección del repositorio real, sin mover ni refactorizar runtime todavía.
+**Siguiente acción exacta:** crear `docs/architecture/GEMINI_INDEPENDENT_RUNTIME_DESIGN.md` y diseñar el Gemini Worker independiente antes de implementar código.
 
 ## Cómo debe trabajar una sesión posterior
 
 1. verificar HEAD remoto, PR #85 y estado de CI;
 2. leer ADR-003;
 3. leer este plan;
-4. leer `SESSION_HANDOFF.md` y `PROJECT_STATUS.md` vigentes;
-5. localizar la primera casilla pendiente de la fase activa;
+4. leer cierre de Fase 1 e inventario;
+5. localizar la primera casilla pendiente de Fase 2;
 6. trabajar sólo esa frontera con evidencia;
 7. actualizar este checklist antes de cerrar la sesión;
 8. registrar commit/SHA y siguiente acción exacta.
