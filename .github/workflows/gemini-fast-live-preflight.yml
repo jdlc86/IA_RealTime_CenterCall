@@ -73,7 +73,7 @@ jobs:
             if [ "$STATUS" = "200" ]; then
               break
             fi
-            if [ "$STATUS" != "503" ]; then
+            if [ "$STATUS" != "401" ] && [ "$STATUS" != "503" ]; then
               echo "Fast preflight failed with HTTP ${STATUS}" >&2
               printf '%s' "$BODY" | jq -c '{ok,status}' >&2 2>/dev/null || true
               exit 1
@@ -82,7 +82,8 @@ jobs:
           done
 
           if [ "$STATUS" != "200" ]; then
-            echo "Fast preflight token did not propagate before timeout" >&2
+            echo "Fast preflight token did not propagate before timeout; last HTTP ${STATUS}" >&2
+            printf '%s' "$BODY" | jq -c '{ok,status}' >&2 2>/dev/null || true
             exit 1
           fi
 
