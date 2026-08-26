@@ -19,6 +19,21 @@ function required(value, field, max = 64_000) {
   return normalized;
 }
 
+function optionalPositiveMetric(value, field) {
+  if (value == null) return null;
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${field} is invalid`);
+  return value;
+}
+
+function canonicalProviderReadiness(value) {
+  if (value == null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Fast Gemini provider readiness is invalid");
+  return Object.freeze({
+    setupMs: optionalPositiveMetric(value.setupMs, "Fast Gemini provider setupMs"),
+    firstAudioMs: optionalPositiveMetric(value.firstAudioMs, "Fast Gemini provider firstAudioMs"),
+  });
+}
+
 function secureTokenEqual(actual, expected) {
   const left = Buffer.from(actual ?? "", "utf8");
   const right = Buffer.from(expected, "utf8");
@@ -71,6 +86,7 @@ export function createFastGeminiMediaServer(options = {}) {
   const bootstrapRegistry = options.bootstrapRegistry ?? new InMemoryFastBootstrapRegistry();
   const toolHandlers = options.toolHandlers ?? {};
   const observe = typeof options.observe === "function" ? options.observe : () => {};
+  const providerReadiness = canonicalProviderReadiness(options.providerReadiness);
   const sessions = new Set();
 
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 256 * 1024 });
@@ -125,6 +141,7 @@ export function createFastGeminiMediaServer(options = {}) {
         revision: options.revision ?? null,
         activeSessions: sessions.size,
         registeredBootstraps: bootstrapRegistry.size(),
+        providerReadiness,
       });
       return;
     }
@@ -167,6 +184,7 @@ export function createFastGeminiMediaServer(options = {}) {
     mediaPath: MEDIA_PATH,
     activeSessions: () => sessions.size,
     registeredBootstraps: () => bootstrapRegistry.size(),
+    providerReadiness,
     async close() {
       for (const session of [...sessions]) session.close("SERVER_SHUTDOWN");
       await new Promise((resolve) => server.close(() => resolve()));
@@ -175,7 +193,7 @@ export function createFastGeminiMediaServer(options = {}) {
   });
 }
 
-export function createFastGeminiMediaServerFromEnv(env = process.env) {
+export function createFastGeminiMediaServerFromEnv(env = process.env, options = {}) {
   if (env.MEDIA_EDGE_SINGLE_INSTANCE !== "true") {
     throw new Error("MEDIA_EDGE_SINGLE_INSTANCE=true is required while fast bootstrap state is in-memory");
   }
@@ -187,6 +205,7 @@ export function createFastGeminiMediaServerFromEnv(env = process.env) {
     verifyCredential: createHmacCredentialVerifier(env.MEDIA_EDGE_CREDENTIAL_HMAC_SECRET, publicUrl),
     revision: env.K_REVISION ?? null,
     maxBufferedBytes: env.MEDIA_EDGE_MAX_BUFFERED_BYTES ? Number(env.MEDIA_EDGE_MAX_BUFFERED_BYTES) : undefined,
+    providerReadiness: options.providerReadiness ?? null,
   });
 }
 
