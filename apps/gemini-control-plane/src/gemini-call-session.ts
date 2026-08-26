@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { GeminiAdmissionV1 } from "./admission/v1";
 import { reduceGeminiCallLifecycle, type GeminiCallLifecycleState, type GeminiCallPhase } from "./call-lifecycle/state";
+import { GEMINI_CONTROL_CAPABILITY_VERSION_V1 } from "./control-auth/capability-v1";
 import { assertEnvelopeDirectionV1 } from "./control-contract/direction-v1";
 import {
   applyInboundSequenceV1,
@@ -55,9 +56,16 @@ const PHASES = new Set<GeminiCallPhase>([
   "TERMINAL",
 ]);
 
-function requiredQuery(url: URL, name: string): string {
-  const value = url.searchParams.get(name)?.trim() ?? "";
+function requiredInternalHeader(request: Request, name: string): string {
+  const value = request.headers.get(name)?.trim() ?? "";
   if (!value || value.length > 256 || /[\r\n\t]/.test(value)) throw new Error(`${name} is invalid`);
+  return value;
+}
+
+function positiveSafeIntegerHeader(request: Request, name: string): number {
+  const raw = requiredInternalHeader(request, name);
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} is invalid`);
   return value;
 }
 
@@ -139,23 +147,38 @@ export class GeminiCallSession extends DurableObject<GeminiControlPlaneEnv> {
     if (url.pathname !== "/internal/control" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("websocket required", { status: 400 });
     }
+    if (request.headers.get("x-gemini-control-authenticated") !== GEMINI_CONTROL_CAPABILITY_VERSION_V1) {
+      return new Response("verified control capability required", { status: 403 });
+    }
 
+    let tenantId: string;
+    let callControlId: string;
     let callSessionId: string;
     let edgeSessionId: string;
     let credentialId: string;
+    let capabilityNotAfterEpochMs: number;
     try {
-      callSessionId = requiredQuery(url, "call_session_id");
-      edgeSessionId = requiredQuery(url, "edge_session_id");
-      credentialId = requiredQuery(url, "credential_id");
+      tenantId = requiredInternalHeader(request, "x-gemini-tenant-id");
+      callControlId = requiredInternalHeader(request, "x-gemini-call-control-id");
+      callSessionId = requiredInternalHeader(request, "x-gemini-call-session-id");
+      edgeSessionId = requiredInternalHeader(request, "x-gemini-edge-session-id");
+      credentialId = requiredInternalHeader(request, "x-gemini-credential-id");
+      capabilityNotAfterEpochMs = positiveSafeIntegerHeader(request, "x-gemini-capability-not-after");
     } catch {
-      return new Response("invalid control identity", { status: 400 });
+      return new Response("invalid verified control identity", { status: 400 });
     }
 
+    const nowEpochMs = Date.now();
     const admission = this.admissionState();
     if (!admission) return new Response("call not admitted", { status: 403 });
-    if (admission.not_after_epoch_ms <= Date.now()) return new Response("call admission expired", { status: 403 });
+    if (admission.not_after_epoch_ms <= nowEpochMs) return new Response("call admission expired", { status: 403 });
+    if (capabilityNotAfterEpochMs <= nowEpochMs || capabilityNotAfterEpochMs > admission.not_after_epoch_ms) {
+      return new Response("control capability lifetime mismatch", { status: 403 });
+    }
     if (
-      admission.call_session_id !== callSessionId
+      admission.tenant_id !== tenantId
+      || admission.call_control_id !== callControlId
+      || admission.call_session_id !== callSessionId
       || admission.edge_session_id !== edgeSessionId
       || admission.credential_id !== credentialId
     ) return new Response("call admission binding mismatch", { status: 403 });
