@@ -7,36 +7,27 @@
 > **Rama:** `rebuild/v39-stable-baseline`  
 > **PR:** `#85`
 
-## 1. Propósito
+## 1. Objetivo y método
 
-Este documento registra el inventario arquitectónico previo a cualquier separación física de runtime. El objetivo no es describir el código por carpeta, sino identificar **qué responsabilidad posee cada pieza, por qué existe y a qué producto debe pertenecer**.
+Este inventario precede cualquier separación física de runtime. El código actual es **evidencia histórica y funcional, no especificación arquitectónica**. No se asume que una pieza deba conservarse por estar hoy en el Worker principal, ni que el diseño actual sea óptimo para OpenAI.
 
-El código actual se trata como evidencia histórica y funcional; no se asume que sea el diseño óptimo de OpenAI ni de Gemini.
+Clasificaciones:
 
-Clasificaciones usadas:
+- `SHARED_DOMAIN` — dominio/persistencia/contrato neutral al proveedor.
+- `OPENAI_NATIVE` — comportamiento/runtime específico de OpenAI.
+- `GEMINI_NATIVE` — comportamiento/runtime específico de Gemini.
+- `LEGACY_COMPAT_REDESSIGN` — compatibilidad histórica o abstracción creada para convivencia que debe reevaluarse.
+- `UNRESOLVED` — evidencia insuficiente.
 
-- `SHARED_DOMAIN` — dominio/persistencia/contrato realmente neutral al proveedor.
-- `OPENAI_NATIVE` — runtime específico de OpenAI que debe permanecer en el producto OpenAI, sujeto a futura optimización.
-- `GEMINI_NATIVE` — runtime específico de Gemini que debe pertenecer al producto Gemini.
-- `LEGACY_COMPAT_REDESSIGN` — compatibilidad histórica o abstracción que debe rediseñarse antes de conservarse.
-- `UNRESOLVED` — evidencia insuficiente; no mover ni borrar todavía.
+Acciones: `KEEP`, `MOVE`, `EXTRACT`, `REWRITE`, `DELETE_LATER`, `INVESTIGATE`.
 
-Acciones propuestas:
-
-- `KEEP` — conservar en el producto correspondiente.
-- `MOVE` — trasladar al producto correcto sin cambiar semántica salvo adaptación de dependencias.
-- `EXTRACT` — extraer como pieza compartida neutral.
-- `REWRITE` — conservar capacidad, no implementación actual.
-- `DELETE_LATER` — retirar después de demostrar que el nuevo camino la sustituye.
-- `INVESTIGATE` — requiere más evidencia.
+Para cada pieza relevante se evalúan responsabilidad, owner de estado, dependencias, proveedor de origen, camino crítico, tests y acción futura.
 
 ---
 
-# 2. Topología física observada
+# 2. Topología física actual
 
-## 2.1 Apps existentes
-
-En `apps/` existen actualmente:
+## 2.1 Apps
 
 ```text
 apps/
@@ -45,19 +36,17 @@ apps/
   gemini-media-edge-benchmark/
 ```
 
-No existe todavía un `gemini-control-plane` / Gemini Worker independiente.
+**No existe todavía un Gemini Control Plane Worker independiente.**
 
-### Clasificación preliminar
+| Ruta | Clasificación | Acción |
+|---|---|---|
+| `apps/control-plane/` | producto físico OpenAI-first contaminado por Gemini + compatibilidad | conservar como base OpenAI; separar Gemini y auditar legacy |
+| `apps/gemini-media-edge/` | `GEMINI_NATIVE` | `KEEP`; revisar reparto Worker↔Edge |
+| `apps/gemini-media-edge-benchmark/` | `GEMINI_NATIVE` | `KEEP` mientras aporte evidencia de rendimiento |
 
-| Ruta | Responsabilidad observada | Clasificación | Acción |
-|---|---|---|---|
-| `apps/control-plane/` | Worker Cloudflare principal; OpenAI-first pero hoy contiene integración Gemini | `LEGACY_COMPAT_REDESSIGN` como conjunto físico | `INVESTIGATE` y dividir responsabilidades; conservar luego como producto OpenAI |
-| `apps/gemini-media-edge/` | Media edge Gemini Live desplegable en Node/Cloud Run | `GEMINI_NATIVE` | `KEEP`, revisar acoplamiento al Control Plane actual |
-| `apps/gemini-media-edge-benchmark/` | benchmark específico del media edge Gemini | `GEMINI_NATIVE` | `KEEP` mientras siga siendo útil para rendimiento/hosting |
+## 2.2 CI/deploy
 
-## 2.2 Pipelines observados
-
-Workflows existentes:
+Existen:
 
 ```text
 .github/workflows/control-plane-ci.yml
@@ -66,296 +55,417 @@ Workflows existentes:
 .github/workflows/gemini-media-edge-canary-deploy.yml
 ```
 
-Existe separación CI/deploy del Media Edge Gemini, pero **no existe CI/deploy de un Gemini Control Plane independiente**, porque ese Worker aún no existe.
-
-### Clasificación preliminar
-
-| Workflow | Clasificación | Acción |
-|---|---|---|
-| `control-plane-ci.yml` | `LEGACY_COMPAT_REDESSIGN` como frontera de producto | convertir progresivamente en CI del producto OpenAI y extraer comprobaciones realmente compartidas |
-| `gemini-media-edge-ci.yml` | `GEMINI_NATIVE` | `KEEP` |
-| `gemini-media-edge-benchmark-ci.yml` | `GEMINI_NATIVE` | `KEEP` |
-| `gemini-media-edge-canary-deploy.yml` | `GEMINI_NATIVE` | `KEEP`; más adelante coordinarlo con deploy del nuevo Gemini Worker |
+El Media Edge Gemini ya tiene CI/benchmark/canary propios. Falta CI/deploy para un Gemini Worker independiente. `control-plane-ci.yml` deberá tender a ser CI del producto OpenAI, extrayendo sólo checks realmente compartidos.
 
 ---
 
-# 3. Worker actual (`apps/control-plane`)
+# 3. Producto OpenAI actual: identidad y contaminación
 
-## 3.1 Identidad y configuración física
+## 3.1 Configuración física
 
-`wrangler.jsonc` demuestra que el Worker actual es originalmente OpenAI-first:
+`apps/control-plane/wrangler.jsonc` demuestra una base OpenAI-first:
 
 ```text
-name               ia-realtime-centercall
-main               src/index-v6.ts
+Worker             ia-realtime-centercall
+entrypoint         src/index-v6.ts
 REALTIME_MODEL     gpt-realtime
 REALTIME_VOICE     marin
 OPENAI_PROJECT_ID  configurado
 Durable Object     CALL_SESSIONS → CallSession
 ```
 
-`package.json` tiene dependencia runtime directa de `openai` y no de un SDK Gemini.
+`apps/control-plane/package.json` depende de `openai` y no de un SDK Gemini.
 
-### Conclusión
+**Conclusión:** este Worker debe evolucionar hacia el **producto OpenAI independiente**. No será el Worker Gemini final.
 
-La dirección objetivo es que este Worker evolucione hacia el **producto OpenAI independiente**, no que siga creciendo como Worker universal.
+## 3.2 `src/index-v6.ts`
 
-**Clasificación:** `OPENAI_NATIVE` como producto físico objetivo, con contaminación `GEMINI_NATIVE` y piezas `LEGACY_COMPAT_REDESSIGN` internas todavía por separar.
+El entrypoint productivo conoce directamente Gemini:
 
-**Acción:** `KEEP` como base del producto OpenAI; auditar y limpiar después de extraer Gemini.
-
-## 3.2 Entrypoint `src/index-v6.ts`
-
-Responsabilidades observadas:
-
-- envuelve `index-v6-runtime-core`;
-- exporta `CallSession` V54;
-- consume cola de seguridad compartida;
-- conoce `SUPABASE_URL` / `SUPABASE_SECRET_KEY`;
-- conoce `GEMINI_MEDIA_EDGE_URL`;
-- conoce `MEDIA_EDGE_CONTROL_PLANE_TOKEN`;
-- interpreta respuestas `start_gemini_media_stream`;
-- persiste `GEMINI_ADMISSION_COMPLETED`;
-- construye `/internal/diagnostics` del Gemini Media Edge;
-- al `call.hangup`, consulta directamente diagnósticos del Media Edge y los persiste.
-
-### Descomposición preliminar
+- `GEMINI_MEDIA_EDGE_URL`;
+- `MEDIA_EDGE_CONTROL_PLANE_TOKEN`;
+- `GeminiAdmissionResponse`;
+- `start_gemini_media_stream`;
+- `GEMINI_ADMISSION_COMPLETED`;
+- `/internal/diagnostics` del Media Edge;
+- pull de diagnósticos Gemini al `call.hangup`.
 
 | Responsabilidad | Clasificación | Acción |
 |---|---|---|
-| consumo de `CALLER_SECURITY_SIGNALS` | `SHARED_DOMAIN` / infraestructura neutral probable | `INVESTIGATE` para extraer contrato común sin asumir ubicación final |
-| persistencia de diagnósticos cross-plane | `SHARED_DOMAIN` probable | `INVESTIGATE` / posible `EXTRACT` |
-| observación Telnyx genérica de `call.hangup` | `UNRESOLVED` | distinguir telefonía neutral de correlación Gemini específica |
-| `GEMINI_MEDIA_EDGE_URL` | `GEMINI_NATIVE` | `MOVE` al futuro Gemini Worker |
-| `MEDIA_EDGE_CONTROL_PLANE_TOKEN` | `GEMINI_NATIVE` | `MOVE` al futuro Gemini Worker |
-| `GeminiAdmissionResponse` | `GEMINI_NATIVE` | `MOVE` / posiblemente `REWRITE` según nuevo contrato Gemini |
-| `workerAdmissionEvent(... GEMINI ...)` | `GEMINI_NATIVE` | `MOVE` |
-| `mediaDiagnosticEndpoint()` | `GEMINI_NATIVE` | `MOVE` |
-| `pullAndPersistMediaEdgeDiagnostics()` | `GEMINI_NATIVE` | `MOVE` o `REWRITE` si el nuevo diseño elimina pull al hangup |
+| integración/admission Media Edge | `GEMINI_NATIVE` | `MOVE`/`REWRITE` en Gemini Worker |
+| token/URL Media Edge | `GEMINI_NATIVE` | `MOVE` |
+| pull de diagnóstico Gemini al hangup | `GEMINI_NATIVE` + acoplamiento actual | reevaluar contrato; no preservar por inercia |
+| consumo de seguridad | probable `SHARED_DOMAIN`/infra | `INVESTIGATE` para extracción neutral |
+| persistencia diagnóstica | compartible como contrato | separar de mecanismo Gemini concreto |
 
-### Dependencia cruzada ya demostrada
+**Dependencia crítica:** el Worker OpenAI-first necesita hoy conocer infraestructura Gemini. Esta dependencia debe desaparecer antes de declarar autónomo el producto OpenAI.
 
-El **entrypoint productivo del Worker OpenAI-first conoce directamente el servicio Gemini Media Edge**. Esta es una frontera de separación prioritaria porque impide que el producto OpenAI sea operacionalmente independiente de configuración Gemini.
+## 3.3 `index-v6-runtime-core.ts` / `index-v5.ts`
 
-No se elimina todavía: primero debe existir el nuevo Worker Gemini y una ruta funcional equivalente.
+`index-v6-runtime-core.ts` es una capa de composición histórica que delega a generaciones anteriores. `index-v5.ts` contiene flujo OpenAI real:
 
-## 3.3 `src/index-v6-runtime-core.ts`
+- `/webhooks/openai`;
+- `realtime.call.incoming`;
+- correlación SIP OpenAI↔Telnyx;
+- handoff transport context;
+- health/version metadata.
 
-Responsabilidades observadas:
+Clasificación:
 
-- delega a `index-v5`;
-- exporta el mismo `CallSession` V54;
-- contiene cola de seguridad;
-- no contiene, en el tramo inspeccionado, referencias Gemini directas.
-
-**Clasificación provisional:** `LEGACY_COMPAT_REDESSIGN` como capa de composición histórica; sus responsabilidades individuales parecen repartirse entre `SHARED_DOMAIN` (seguridad) y `OPENAI_NATIVE`/infraestructura del Worker.
-
-**Acción:** `INVESTIGATE`. No copiar esta cadena de wrappers al nuevo Gemini Worker.
-
-## 3.4 `src/index-v5.ts`
-
-Responsabilidades observadas:
-
-- delega a `index-v4`;
-- expone `CallSession` de una generación anterior para composición;
-- procesa específicamente `/webhooks/openai`;
-- parsea `realtime.call.incoming`;
-- extrae headers SIP relacionados con Telnyx;
-- adjunta contexto de handoff al Durable Object;
-- añade metadata de versión a `/health`.
-
-### Clasificación preliminar
-
-| Responsabilidad | Clasificación | Acción |
-|---|---|---|
-| `/webhooks/openai` y evento `realtime.call.incoming` | `OPENAI_NATIVE` | `KEEP` sujeto a futura simplificación |
-| correlación SIP OpenAI ↔ Telnyx | `OPENAI_NATIVE` | `KEEP` si sigue siendo necesaria en arquitectura OpenAI final |
-| health + metadata de versión | `SHARED_DOMAIN`/infra neutral probable | posible `EXTRACT`, sólo si hay beneficio real |
-| cadena `index-v5 → index-v4 → ...` | `LEGACY_COMPAT_REDESSIGN` | auditar; no replicar en Gemini |
+- webhook/eventos/correlación SIP: `OPENAI_NATIVE`, `KEEP` sujeto a simplificación posterior;
+- cadena `index-v6 → v5 → v4 → ...`: `LEGACY_COMPAT_REDESSIGN`; **no copiar al Gemini Worker**.
 
 ---
 
-# 4. Gemini Media Edge
+# 4. Superficie Gemini dentro de `apps/control-plane/src`
 
-## 4.1 Identidad del servicio
+La contaminación no se limita al entrypoint. El árbol contiene una implementación Gemini extensa.
 
-`apps/gemini-media-edge/package.json`:
+## 4.1 Gemini Live/session
+
+Archivos demostrados:
 
 ```text
-runtime       Node 24
-entrypoint    src/server.mjs
-transport     ws 8.21.3
-E2E           test:e2e:cloud-run
+gemini-live-command-adapter.ts
+gemini-live-event-adapter.ts
+gemini-live-session-owner.ts
+gemini-live-session-runtime.ts
+gemini-live-websocket-connector.ts
+gemini-live-caller-activity-owner.ts
 ```
 
-No depende del paquete `openai`.
+`gemini-live-session-runtime.ts` posee semántica Gemini real:
 
-**Clasificación general:** `GEMINI_NATIVE`.
+- setup inmutable;
+- owner de lifecycle Gemini;
+- estados y response identities Gemini;
+- `activityStart` / `activityEnd`;
+- tool continuation automática/provider-owned;
+- correlación de tool calls;
+- adaptación de eventos Gemini.
 
-## 4.2 Componentes observados por estructura/nombres
+**Clasificación:** `GEMINI_NATIVE`.
 
-El inventario de `src/` confirma al menos las siguientes áreas:
+**Acción:** `MOVE` al producto Gemini. Revisar en Fase 2 si debe vivir en Gemini Worker o parcialmente en Media Edge; no mantenerlo dentro del producto OpenAI.
 
-- `bootstrap.mjs`
-- `caller-input-core.mjs`
-- `caller-input.mjs`
-- `control-sideband.mjs`
-- `credential.mjs`
-- además de tests específicos de overlap, sideband y bootstrap.
+## 4.2 Gemini Media Edge/control sideband dentro del Worker
 
-El script `check` del paquete confirma además:
+Archivos demostrados incluyen:
 
-- `diagnostic-journal.mjs`
-- `google-speech.mjs`
-- `playback.mjs`
-- `live-provider-contract.mjs`
-- `live-provider-contract-probe.mjs`
-- `server.mjs`
-- `runtime-core.mjs`
-- `runtime.mjs`
+```text
+gemini-media-edge-admission-composition.ts
+gemini-media-edge-bootstrap-registration.ts
+gemini-media-edge-caller-turn-disposition.ts
+gemini-media-edge-credential-consumption.ts
+gemini-media-edge-hmac-credential-issuer.ts
+gemini-media-edge-inbound-admission.ts
+gemini-media-edge-isolated-generation.ts
+gemini-media-edge-semantic-decision.ts
+gemini-media-edge-session-contract.ts
+gemini-media-edge-sideband-connector.ts
+gemini-media-edge-sideband-runtime.ts
+gemini-media-edge-start-authorization.ts
+gemini-media-edge-telnyx-start-authority.ts
+```
 
-### Clasificación preliminar por responsabilidad
+`gemini-media-edge-sideband-runtime.ts` demuestra que el Control Plane actual:
 
-| Pieza | Responsabilidad inferida/observada | Clasificación | Acción |
-|---|---|---|---|
-| `bootstrap.mjs` | bootstrap autorizado de sesión Gemini | `GEMINI_NATIVE` | `KEEP`, revisar qué parte debe venir del nuevo Gemini Worker |
-| `caller-input-core.mjs` | owner/estado de candidatos de caller | `GEMINI_NATIVE` | `KEEP` como capacidad; evaluar si implementación actual sigue siendo óptima |
-| `caller-input.mjs` | VAD/STT/input pipeline | `GEMINI_NATIVE` | `KEEP`/`INVESTIGATE` |
-| `control-sideband.mjs` | canal de control Gemini Worker ↔ Media Edge actual | `GEMINI_NATIVE` pero contrato actual posiblemente `LEGACY_COMPAT_REDESSIGN` | `REWRITE` si el nuevo Worker permite contrato más directo |
-| `credential.mjs` | autenticación/credenciales del edge | `GEMINI_NATIVE` | `KEEP` si cumple frontera final |
-| `diagnostic-journal.mjs` | journal técnico del edge | `GEMINI_NATIVE` con contrato diagnóstico potencialmente compartido | `KEEP`; evaluar interfaz neutral de persistencia |
-| `google-speech.mjs` | STT Google usado por Gemini path actual | `GEMINI_NATIVE` en topología actual | `INVESTIGATE` si sigue siendo necesario en diseño Gemini óptimo |
-| `playback.mjs` | playback Telnyx/marks/clear | `GEMINI_NATIVE` | `KEEP` como capacidad; revisar diseño |
-| `live-provider-contract*.mjs` | contrato/probe de Gemini Live | `GEMINI_NATIVE` | `KEEP` |
-| `runtime-core.mjs` / `runtime.mjs` | orchestration principal Media Edge | `GEMINI_NATIVE` con posible deuda híbrida | auditoría profunda necesaria |
-| `server.mjs` | servidor HTTP/WSS/health | `GEMINI_NATIVE` | `KEEP` sujeto a frontera final |
+- traduce tools al sideband;
+- gobierna `PLAYBACK_BINDING`, `PLAYBACK_DRAIN`, `PLAYBACK_CLEAR`;
+- envía `GOVERNED_SPEECH`;
+- decide `CALLER_TURN_DECISION`;
+- arma/libera semantic gate;
+- controla input detection;
+- mantiene identidad de caller/playback;
+- contiene bypass determinista post-tool;
+- reconstruye `GeminiLiveSessionRuntime` tras provider reset.
 
-## 4.3 Evidencia histórica que debe conservarse como tests, no como arquitectura
+**Clasificación:** capacidad funcional `GEMINI_NATIVE`, pero el **contrato sideband actual es `LEGACY_COMPAT_REDESSIGN`** porque fue creado para conectar Gemini con el Control Plane híbrido.
 
-Los tests actuales documentan fallos reales ya encontrados, entre ellos:
+**Acción:** conservar comportamiento probado como requisitos/tests, pero rediseñar la frontera Gemini Worker↔Media Edge desde la arquitectura nueva.
 
-- overlap de fragmentos de caller;
-- comandos sideband asíncronos;
-- bootstrap;
-- semantic continuation / preselection (por inspeccionar en detalle en siguiente bloque).
+## 4.3 Admission/provisioning Gemini
 
-Estos tests son evidencia valiosa de comportamiento y carreras. **No implica que el nuevo producto Gemini tenga que conservar exactamente la misma estructura interna o el mismo sideband.**
+`gemini-media-edge-admission-composition.ts` valida:
+
+- provider affinity `GEMINI`;
+- traffic admission;
+- `GEMINI_MEDIA_BRIDGE`;
+- WSS obligatorio;
+- tenant/call binding;
+- credential issuance antes de streaming.
+
+La seguridad y fail-closed son invariantes valiosos, pero la dependencia de `RealtimeProviderSelection`/selector común proviene de la convivencia actual.
+
+**Clasificación:**
+
+- invariantes de seguridad/admission: `GEMINI_NATIVE` valioso;
+- selección multi-provider común: `LEGACY_COMPAT_REDESSIGN`.
+
+**Acción:** `REWRITE` la composición en Gemini Worker preservando las garantías.
+
+## 4.4 Caller input/barge-in/media Gemini en Control Plane
+
+El árbol contiene además:
+
+```text
+gemini-authorized-barge-in-commit-adapter.ts
+gemini-authorized-barge-in-effect-runtime.ts
+gemini-deferred-barge-in-acoustic-runtime.ts
+gemini-deferred-barge-in-candidate-owner.ts
+gemini-deferred-barge-in-transcription-runtime.ts
+gemini-normal-caller-turn-commit-adapter.ts
+gemini-telnyx-acoustic-vad.ts
+gemini-telnyx-deferred-input-coordinator.ts
+gemini-inbound-media-transport.ts
+gemini-telnyx-media-bridge.ts
+gemini-telnyx-media-contract.ts
+gemini-telnyx-playback-owner.ts
+gemini-telnyx-session-bridge.ts
+telnyx-gemini-media-stream-owner.ts
+telnyx-gemini-streaming-port.ts
+google-cloud-speech-v2-transcription-adapter.ts
+```
+
+**Clasificación preliminar:** `GEMINI_NATIVE`. La ubicación final Worker vs Media Edge queda `UNRESOLVED` hasta diseñar el camino óptimo Gemini.
+
+No se trasladarán mecánicamente: algunas responsabilidades pueden estar duplicadas con `apps/gemini-media-edge` o existir por restricciones del modelo híbrido.
 
 ---
 
-# 5. Hallazgos arquitectónicos cerrados hasta ahora
+# 5. Abstracciones multi-provider que deben reevaluarse
+
+## 5.1 `realtime-provider-runtime.ts`
+
+Esta clase se presentó como neutral, pero contiene acoplamiento de convivencia:
+
+- imports de adapters OpenAI y runtime externo;
+- `switch(provider)` con `OPENAI`/`GEMINI`;
+- `this.provider === "GEMINI"`;
+- `GEMINI_DETERMINISTIC_RESPONSE`;
+- governed speech común;
+- default-response replacement/defer;
+- selección/admission/capabilities comunes;
+- fallback de parsing a OpenAI wire.
+
+**Clasificación:** `LEGACY_COMPAT_REDESSIGN`.
+
+**Acción:** no compartir esta implementación entre los dos productos. Extraer más adelante sólo tipos/invariantes que demuestren neutralidad real.
+
+## 5.2 `realtime-provider-call-session-composition.ts`
+
+Hace `switch(selection.provider)`, conecta sideband Gemini y modifica `host.socket`; para OpenAI sólo bindea el provider.
+
+**Clasificación:** `LEGACY_COMPAT_REDESSIGN`.
+
+**Acción:** `DELETE_LATER`/`REWRITE` después de separar productos. El Gemini Worker compondrá Gemini directamente; OpenAI no necesitará decidir Gemini.
+
+## 5.3 `call-session-v49-provider-selection.ts`
+
+Esta generación existe para seleccionar `OPENAI`/`GEMINI` dentro de la misma `CallSession`, con tenant/KV override, affinity, admission y estado sideband.
+
+**Clasificación:** `LEGACY_COMPAT_REDESSIGN`.
+
+**Acción:** retirar del producto OpenAI cuando la separación esté probada. No copiar al Gemini Worker. La elección de producto/deployment debe ocurrir antes del runtime conversacional.
+
+## 5.4 `realtime-provider-selector.ts`
+
+Implementa `KV_OVERRIDE > TENANT_CONFIG > OPENAI default` para elegir provider dentro de la plataforma única.
+
+**Clasificación bajo ADR-003:** `LEGACY_COMPAT_REDESSIGN` para el runtime. Puede quedar algún concepto de configuración/provisioning futuro, pero no debe gobernar llamadas dentro de cada producto independiente.
+
+---
+
+# 6. Response ownership: no clasificar prematuramente como shared
+
+## 6.1 `response-coordinator.ts` / `realtime-response-owner.ts`
+
+Aspectos valiosos y potencialmente neutrales:
+
+- una respuesta activa;
+- identidad `responseId`;
+- interrupción vs ignore;
+- playback separado de generación;
+- terminal absorbente;
+- resolución por identidad, no por timers.
+
+Sin embargo, la especificación actual está expresada alrededor de `response.create`, `response.cancel` y una semántica de liberación de respuesta que nació en OpenAI y luego se intentó mapear a Gemini.
+
+**Clasificación actual:** `UNRESOLVED`.
+
+**Acción:** conservar tests/invariantes como referencia; en Fase 2 diseñar Gemini desde su lifecycle nativo. Sólo extraer un coordinator compartido si ambos productos terminan demostrando la misma máquina de estados, no antes.
+
+---
+
+# 7. OpenAI específico ya identificado
+
+`openai-realtime-command-adapter.ts` traduce explícitamente a:
+
+- `response.create`;
+- `response.cancel`;
+- `conversation.item.create/delete`;
+- `function_call_output`;
+- `session.update`;
+- `input_audio_buffer.clear`;
+- `output_audio_buffer.clear`;
+- server VAD OpenAI.
+
+**Clasificación:** `OPENAI_NATIVE`.
+
+**Acción:** `KEEP` en producto OpenAI y revisar en Fase 4 si existen capas redundantes alrededor de él. No usar esta semántica como interfaz obligatoria de Gemini.
+
+---
+
+# 8. Dominio y persistencia compartibles
+
+## 8.1 `tool-gateway.ts`
+
+Conoce tenant, nombre de tool, allowlist, validación y ejecución. No importa SDK/wire OpenAI o Gemini.
+
+**Clasificación:** `SHARED_DOMAIN`.
+
+**Acción:** `EXTRACT` como paquete compartido cuando comience la separación física.
+
+## 8.2 `restaurant-reservation-port.ts`
+
+La capacidad de reservas es proveedor-neutral, pero la composición actual instancia directamente `SupabaseAdapter` leyendo `host.env`.
+
+**Clasificación:**
+
+- contratos/operaciones de reserva: `SHARED_DOMAIN`;
+- construcción desde Worker host/env: `LEGACY_COMPAT_REDESSIGN` de composición.
+
+**Acción:** separar interfaz/runtime de negocio de la creación del adapter para que OpenAI Worker y Gemini Worker inyecten la misma implementación de persistencia.
+
+## 8.3 `supabase-adapter.ts`
+
+No depende de OpenAI/Gemini y encapsula REST/RPC de Supabase para servicios, horarios, reservas, diagnóstico, etc.
+
+**Clasificación:** shared data adapter, actualmente monolítico.
+
+**Acción:** conservar como base compartida; más adelante modularizar por dominio si reduce acoplamiento. No duplicar Supabase por proveedor en esta fase.
+
+---
+
+# 9. Gemini Media Edge externo
+
+`apps/gemini-media-edge` es `GEMINI_NATIVE` y ya posee, entre otros:
+
+- bootstrap;
+- caller input owner;
+- VAD/STT pipeline;
+- control sideband;
+- credential validation;
+- diagnostic journal;
+- Google Speech;
+- playback/mark/clear;
+- Gemini Live contract/probe;
+- runtime/server;
+- reconnect/session rotation;
+- semantic preselection/tool gate.
+
+**Hallazgo:** el Media Edge actual no es un relay mínimo; ya posee bastante orchestration conversacional.
+
+**Implicación:** Fase 2 debe decidir explícitamente qué ownership queda en Gemini Worker y cuál en Media Edge. No se asumirá que el reparto actual es óptimo.
+
+Los tests de carreras reales (reconnect, split caller fragments, semantic continuation, sideband) se preservarán como **evidencia de comportamiento**, no como obligación de conservar el wire/arquitectura actual.
+
+---
+
+# 10. Hallazgos cerrados
 
 ## H1 — No existe Gemini Worker independiente
+**CONFIRMADO.** Debe diseñarse, no renombrarse el Worker actual.
 
-**Estado:** CONFIRMADO.
+## H2 — El Worker actual es OpenAI-first
+**CONFIRMADO.** Debe convertirse en producto OpenAI limpio después de extraer Gemini.
 
-La lógica Gemini de control está parcialmente incrustada en `apps/control-plane`, mientras el transporte/audio está separado en `apps/gemini-media-edge`.
+## H3 — La contaminación Gemini dentro del Worker es sustancial
+**CONFIRMADO.** Incluye session/runtime, Media Edge admission/sideband, barge-in, media, VAD/STT, semantic decision y Telnyx bridge; no sólo ramas puntuales.
 
-**Implicación:** la Fase 2 deberá diseñar explícitamente la frontera del nuevo Gemini Worker en lugar de renombrar el Worker actual.
+## H4 — Parte del “provider-neutral core” es compatibilidad híbrida
+**CONFIRMADO.** `realtime-provider-runtime`, composition, selector y CallSession V49 contienen ramas/provider selection explícitas. No deben convertirse automáticamente en base común futura.
 
-## H2 — El Worker actual debe tender a OpenAI
+## H5 — Existe dominio realmente compartible
+**CONFIRMADO.** `ToolGateway` es neutral; reservas y Supabase son compartibles tras limpiar composición/configuración.
 
-**Estado:** CONFIRMADO.
+## H6 — Response ownership aún no está resuelto como shared vs específico
+**CONFIRMADO COMO PENDIENTE.** Sus invariantes son valiosas, pero la implementación actual está condicionada por semántica OpenAI. No compartir preventivamente.
 
-Configuración, dependencia npm, webhook y modelo/voz demuestran una base OpenAI-first.
-
-**Implicación:** se preservará como punto de partida del producto OpenAI, pero no se considerará automáticamente óptimo.
-
-## H3 — Existe contaminación Gemini en el entrypoint productivo
-
-**Estado:** CONFIRMADO.
-
-El Worker principal conoce URL/token del Media Edge, admission Gemini y pull de diagnósticos Gemini.
-
-**Implicación:** esas responsabilidades deberán migrar o rediseñarse en el Gemini Worker antes de limpiar OpenAI.
-
-## H4 — El Media Edge Gemini ya posee bastante lógica de conversación, no sólo relay de bytes
-
-**Estado:** CONFIRMADO POR ESTRUCTURA; detalle interno aún en auditoría.
-
-VAD/STT, candidate ownership, semantic gate/preselection, playback, sideband, reconnect y runtime viven o han vivido en el Media Edge.
-
-**Implicación:** durante Fase 2 habrá que decidir conscientemente qué debe permanecer en Media Edge y qué debe subir al Gemini Worker. No se asumirá que el reparto actual es óptimo.
-
-## H5 — La separación operacional está parcialmente adelantada
-
-**Estado:** CONFIRMADO.
-
-Gemini Media Edge ya tiene CI, benchmark y canary deploy propios. Falta el equivalente para un Gemini Control Plane independiente.
+## H7 — La separación operacional está parcialmente adelantada
+**CONFIRMADO.** Media Edge tiene CI/deploy propios; falta Gemini Worker y su pipeline.
 
 ---
 
-# 6. Riesgos / deuda ya identificados
+# 11. Deuda/riesgos
 
-1. **Cadena histórica de entrypoints y CallSession Vx.** El Worker actual está compuesto mediante múltiples generaciones. Puede contener hardening útil, pero también compatibilidad acumulada. Se auditará antes de optimizar OpenAI.
-2. **Sideband como frontera heredada.** El nuevo Worker Gemini podría simplificar el contrato con Media Edge; no preservar sideband por inercia.
-3. **STT externo en Gemini.** `google-speech.mjs` existe y hoy aporta autoridad de transcript. Evaluar si sigue siendo la opción eficiente bajo el nuevo diseño.
-4. **Dos rutas de voz actuales.** El sistema híbrido ha usado audio Gemini Live y governed speech/TTS; el producto Gemini final debe garantizar una sola identidad vocal.
-5. **Diagnóstico pull al hangup.** Puede ser una solución de trazabilidad útil, pero añade acoplamiento Worker→Media Edge. Evaluar push/event stream/persistencia directa u otra frontera, sin decidir prematuramente.
-6. **Tests pueden codificar arquitectura histórica.** Preservar comportamiento demostrado, no necesariamente wire, sideband o owners actuales.
-
----
-
-# 7. Próximos bloques de inventario
-
-## 7.1 Control Plane
-
-Pendiente inspeccionar y clasificar por símbolos:
-
-- cadena completa `index-v4` hacia abajo;
-- `CallSession` V31–V54 y composición real final;
-- `ResponseCoordinator` y response ownership;
-- turn/concurrency/watchdogs;
-- realtime provider registry/adapters;
-- módulos Gemini dentro de `apps/control-plane/src`;
-- ToolGateway;
-- reservas/horarios/contact identity;
-- Supabase adapters;
-- seguridad;
-- observabilidad;
-- Telnyx neutral vs específico OpenAI/Gemini.
-
-## 7.2 Gemini Media Edge
-
-Pendiente inspeccionar en detalle:
-
-- `runtime-core.mjs` / `runtime.mjs`;
-- `control-sideband.mjs`;
-- `semantic-preselection.mjs`;
-- `semantic-tool-gate.mjs`;
-- `playback.mjs`;
-- `google-speech.mjs`;
-- `server.mjs`;
-- reconnect/session rotation;
-- governed speech/TTS;
-- ownership de herramientas y continuidad post-tool.
-
-## 7.3 Dependencias y latencia
-
-Pendiente construir el grafo causal de un turno real:
-
-```text
-Telnyx → Worker → Media Edge → STT/semantic → Worker → tool/domain/Supabase → Worker → Media Edge → Gemini/TTS → Telnyx
-```
-
-para determinar qué saltos son esenciales y cuáles existen sólo por compatibilidad histórica.
+1. Cadena histórica `index-v*` / `CallSession V2…V54`: puede esconder compatibilidad acumulada; auditar antes de optimizar OpenAI.
+2. Sideband actual: preservar garantías, no necesariamente protocolo/ubicación.
+3. Google STT en Gemini: reevaluar coste/latencia/necesidad en diseño nativo.
+4. Dos rutas de voz actuales: producto Gemini final debe garantizar una identidad vocal única.
+5. Pull de diagnósticos al hangup: acoplamiento Worker→Edge; reevaluar.
+6. Tests pueden fijar arquitectura histórica: conservar comportamiento, no wire.
+7. `SupabaseAdapter` y reservation port son compartibles pero necesitan composición limpia para dos Workers.
+8. No duplicar automáticamente coordinadores del Worker actual en el Gemini Worker.
 
 ---
 
-# 8. Registro de inventario
+# 12. Estado de Fase 1
 
-## 2026-08-26 — Bloque inicial
+## 1A — Topología y entrypoints
 
-**Completado:**
+- [x] apps/servicios principales enumerados.
+- [x] Worker productivo actual y bindings principales identificados.
+- [x] Gemini Media Edge identificado como servicio separado.
+- [x] pipelines CI/deploy principales identificados.
 
-- topología raíz y `apps/`;
-- entrypoint y configuración física del Worker actual;
-- dependencia runtime OpenAI del Control Plane;
-- contaminación Gemini demostrada en `index-v6.ts`;
-- carácter OpenAI-specific de `index-v5.ts`;
-- identidad/package y superficie principal del Gemini Media Edge;
-- workflows CI/deploy existentes.
+## 1B — Worker / Control Plane
+
+- [x] entrypoint/configuración OpenAI-first identificados.
+- [x] superficie Gemini dentro de `apps/control-plane/src` localizada.
+- [x] provider selection/composition híbridos clasificados.
+- [x] adapter OpenAI representativo clasificado.
+- [ ] cadena completa de `CallSession` y capas Vx auditada.
+- [ ] turn/concurrency/watchdogs auditados.
+- [ ] seguridad/diagnóstico/Telnyx neutral vs específico auditados.
+- [x] `ToolGateway` representativo clasificado.
+- [x] reservas/Supabase representativos clasificados.
+
+## 1C — Gemini Media Edge
+
+- [x] superficie principal identificada.
+- [ ] `runtime-core.mjs`/`runtime.mjs` auditados en profundidad.
+- [ ] `semantic-preselection.mjs`/`semantic-tool-gate.mjs` auditados.
+- [ ] playback/Google STT/reconnect/governed speech auditados.
+
+## 1D — Clasificación/dependencias
+
+- [x] dependencias cruzadas principales Worker↔Gemini demostradas.
+- [x] abstracciones multi-provider híbridas principales marcadas `LEGACY_COMPAT_REDESSIGN`.
+- [x] ejemplos sólidos de `OPENAI_NATIVE`, `GEMINI_NATIVE` y `SHARED_DOMAIN` demostrados.
+- [ ] grafo de camino crítico y latencia de un turno completo.
+- [ ] inventario final de piezas `UNRESOLVED` antes de Fase 2.
+
+---
+
+# 13. Registro de trabajo
+
+## 2026-08-26 — Bloque 1: topología
+
+Completado: apps, entrypoints, configuración Worker, Media Edge, workflows y contaminación Gemini en `index-v6.ts`. No se modificó runtime.
+
+## 2026-08-26 — Bloque 2: frontera de runtime
+
+Completado:
+
+- se demostró que `realtime-provider-runtime.ts` mezcla semántica OpenAI/Gemini y es compatibilidad híbrida;
+- `CallSession V49` y provider selector/composition quedan marcados para rediseño/retirada;
+- `GeminiLiveSessionRuntime` queda identificado como Gemini nativo;
+- sideband Gemini actual queda identificado como capacidad Gemini con contrato heredado;
+- `OpenAIRealtimeCommandAdapter` queda identificado como OpenAI nativo;
+- `ToolGateway`, reservas y Supabase confirman una frontera de negocio/persistencia compartible;
+- `ResponseCoordinator` queda `UNRESOLVED` en lugar de asumir neutralidad.
 
 **No se modificó runtime.**
 
-**Siguiente acción exacta:** auditar componentes Gemini incrustados en `apps/control-plane/src` y la composición final de `CallSession`/response ownership, y completar el inventario con dependencias cruzadas antes de diseñar el nuevo Worker Gemini.
+**Siguiente acción exacta:** auditar `CallSession`/turn-concurrency y el núcleo del Gemini Media Edge; después construir el grafo de camino crítico de un turno para cuantificar qué saltos desaparecerían con el Gemini Worker independiente.
