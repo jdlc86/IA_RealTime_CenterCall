@@ -7,6 +7,12 @@ function decodeBase64url(value: string): Uint8Array {
   return Uint8Array.from(binary, (char) => char.charCodeAt(0));
 }
 
+function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy.buffer;
+}
+
 async function verifyToken(token: string, secret: string): Promise<Record<string, unknown>> {
   const parts = token.split(".");
   expect(parts).toHaveLength(3);
@@ -21,7 +27,7 @@ async function verifyToken(token: string, secret: string): Promise<Record<string
   const verified = await crypto.subtle.verify(
     "HMAC",
     key,
-    decodeBase64url(parts[2]),
+    asArrayBuffer(decodeBase64url(parts[2])),
     new TextEncoder().encode(`${parts[0]}.${parts[1]}`),
   );
   expect(verified).toBe(true);
