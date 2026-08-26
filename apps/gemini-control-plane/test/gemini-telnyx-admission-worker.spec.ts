@@ -52,9 +52,10 @@ async function signedRequest() {
 
 const IDENTITY_SECRET = "0123456789abcdef0123456789abcdef";
 const CONTROL_SECRET = "abcdef0123456789abcdef0123456789";
+const CONTROL_URL = "wss://gemini-control.example.test/internal/control";
 
 describe("internal Gemini Telnyx admission worker composition", () => {
-  it("uses the existing tenant phone-route key after signature verification", async () => {
+  it("uses the shared tenant route and returns an authenticated edge-control bootstrap", async () => {
     const fixture = await signedRequest();
     const get = vi.fn(async (key: string) => {
       expect(key).toBe("ia-rtcc:v1:route:phone:+34910000020");
@@ -66,6 +67,7 @@ describe("internal Gemini Telnyx admission worker composition", () => {
       TELNYX_PUBLIC_KEY: fixture.publicKey,
       GEMINI_ADMISSION_IDENTITY_SECRET: IDENTITY_SECRET,
       GEMINI_CONTROL_CAPABILITY_SECRET: CONTROL_SECRET,
+      GEMINI_CONTROL_WSS_URL: CONTROL_URL,
     }, {
       nowEpochMs: fixture.nowEpochMs,
       signatureMaxAgeSeconds: 300,
@@ -76,7 +78,12 @@ describe("internal Gemini Telnyx admission worker composition", () => {
     if (result.status !== "ADMITTED") throw new Error("expected admission");
     expect(result.result.registration).toBe("CREATED");
     expect(result.result.admission.tenantId).toBe("tenant-kv");
-    const claims = await verifyGeminiControlCapabilityV1(result.controlCapability, CONTROL_SECRET, fixture.nowEpochMs);
+    expect(result.edgeControlBootstrap.controlUrl).toBe(CONTROL_URL);
+    const claims = await verifyGeminiControlCapabilityV1(
+      result.edgeControlBootstrap.controlCapability,
+      CONTROL_SECRET,
+      fixture.nowEpochMs,
+    );
     expect(claims?.callSessionId).toBe(result.result.admission.callSessionId);
     expect(claims?.edgeSessionId).toBe(result.result.admission.edgeSessionId);
     expect(claims?.credentialId).toBe(result.result.admission.credentialId);
@@ -97,6 +104,7 @@ describe("internal Gemini Telnyx admission worker composition", () => {
       TELNYX_PUBLIC_KEY: fixture.publicKey,
       GEMINI_ADMISSION_IDENTITY_SECRET: IDENTITY_SECRET,
       GEMINI_CONTROL_CAPABILITY_SECRET: CONTROL_SECRET,
+      GEMINI_CONTROL_WSS_URL: CONTROL_URL,
     }, {
       nowEpochMs: fixture.nowEpochMs,
       signatureMaxAgeSeconds: 300,
