@@ -92,7 +92,7 @@ La separación física de Workers es la dirección aprobada. El Media Edge Gemin
 
 ## Fase 0 — Decisión y documentación
 
-**Objetivo:** congelar la nueva dirección antes de modificar runtime.
+**Estado:** COMPLETADA.
 
 - [x] ADR-003 creado y aceptado.
 - [x] Dos sistemas realtime independientes definidos.
@@ -103,14 +103,14 @@ La separación física de Workers es la dirección aprobada. El Media Edge Gemin
 - [x] Futuro N-Supabase reconocido como evolución posterior por contratos.
 - [x] Limpieza posterior del Worker OpenAI incluida como fase explícita.
 - [x] Plan operativo/checklist persistente creado.
-- [ ] `SESSION_HANDOFF.md` actualizado para apuntar a ADR-003 y este plan.
-- [ ] `PROJECT_STATUS.md` actualizado para declarar obsoleto el plan híbrido G1–G5 como dirección de producto.
+- [x] `SESSION_HANDOFF.md` actualizado para apuntar a ADR-003 y este plan.
+- [x] `PROJECT_STATUS.md` actualizado para declarar obsoleto el plan híbrido G1–G5 como dirección de producto.
 
-**Criterio de salida:** cualquier sesión nueva entiende que no debe seguir perfeccionando el runtime híbrido.
+**Criterio de salida:** cumplido; una sesión nueva recibe como primera misión el inventario y no el parcheo del runtime híbrido.
 
 ## Fase 1 — Inventario arquitectónico del sistema actual
 
-**Estado:** PENDIENTE / PRÓXIMA FASE.
+**Estado:** ACTIVA / PRÓXIMA ACCIÓN.
 
 **Objetivo:** saber qué existe realmente antes de mover código.
 
@@ -195,8 +195,6 @@ La separación física de Workers es la dirección aprobada. El Media Edge Gemin
 
 **Estado:** BLOQUEADA hasta que Gemini independiente esté probado.
 
-**Objetivo:** no dejar el Worker OpenAI como fósil de la integración híbrida.
-
 - [ ] Inventariar toda referencia Gemini restante en el Worker OpenAI.
 - [ ] Retirar sideband/bootstrap/configuración Gemini que ya no pertenezca a OpenAI.
 - [ ] Retirar branches de provider y adapters creados sólo por convivencia híbrida.
@@ -231,9 +229,7 @@ La separación física de Workers es la dirección aprobada. El Media Edge Gemin
 
 # Registro de trabajo
 
-Este apartado se actualiza al cerrar cada bloque significativo. No sustituye Git ni `PROJECT_STATUS.md`; sirve para continuidad entre sesiones.
-
-## 2026-08-26 — Cambio de paradigma aprobado
+## 2026-08-26 — Cambio de paradigma y relevo completados
 
 **Completado:**
 
@@ -244,15 +240,14 @@ Este apartado se actualiza al cerrar cada bloque significativo. No sustituye Git
 - Se declara que el código actual no es necesariamente óptimo ni siquiera para OpenAI; será auditado posteriormente.
 - Se formaliza ADR-003.
 - Se crea este plan/checklist.
+- `PROJECT_STATUS.md` ya refleja la nueva dirección.
+- `SESSION_HANDOFF.md` ya entrega a otra sesión la nueva primera misión.
 
 **Siguiente acción exacta:**
 
-1. actualizar `SESSION_HANDOFF.md` y `PROJECT_STATUS.md` para que ninguna sesión continúe el plan híbrido anterior;
-2. comenzar Fase 1 creando `PROVIDER_RUNTIME_INVENTORY.md` a partir de evidencia del repositorio, sin mover runtime todavía.
+Crear `docs/architecture/PROVIDER_RUNTIME_INVENTORY.md` e iniciar Fase 1A mediante inspección del repositorio real, sin mover ni refactorizar runtime todavía.
 
 ## Cómo debe trabajar una sesión posterior
-
-Al comenzar:
 
 1. verificar HEAD remoto, PR #85 y estado de CI;
 2. leer ADR-003;
