@@ -53,24 +53,47 @@ describe("fast runtime preflight", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it("reports a Telnyx webhook mismatch without revealing routing identifiers", async () => {
-    const fetcher = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
-      const url = new URL(String(input));
-      if (url.pathname === "/v2/phone_numbers/slim" && url.searchParams.get("filter[phone_number]") === NUMBER) {
+  it("reports a Telnyx webhook mismatch only after proving bootstrap and HMAC", async () => {
+    const accept = vi.fn();
+    const close = vi.fn();
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const raw = String(input);
+      const url = new URL(raw);
+      if (url.hostname === "api.telnyx.com" && url.pathname === "/v2/phone_numbers/slim" && url.searchParams.get("filter[phone_number]") === NUMBER) {
         return Response.json({ data: [{ phone_number: NUMBER, status: "active", connection_id: CONNECTION_ID }] });
       }
-      if (url.pathname === `/v2/call_control_applications/${CONNECTION_ID}`) {
+      if (url.hostname === "api.telnyx.com" && url.pathname === `/v2/call_control_applications/${CONNECTION_ID}`) {
         return Response.json({ data: { active: true, webhook_event_url: "https://openai.example.test/webhook" } });
       }
-      if (url.pathname === "/v2/phone_numbers/slim" && url.searchParams.get("filter[connection_id]") === CONNECTION_ID) {
+      if (url.hostname === "api.telnyx.com" && url.pathname === "/v2/phone_numbers/slim" && url.searchParams.get("filter[connection_id]") === CONNECTION_ID) {
         return Response.json({ data: [{ phone_number: NUMBER }, { phone_number: "+34600000001" }] });
       }
-      throw new Error(`unexpected URL ${url}`);
+      if (raw.endsWith("/internal/bootstrap")) {
+        const bootstrap = JSON.parse(String(init?.body)) as { credentialId: string };
+        return Response.json({ ok: true, credentialId: bootstrap.credentialId }, { status: 201 });
+      }
+      if (raw === "https://fast.example.test/telnyx/gemini") {
+        return { webSocket: { accept, close } } as unknown as Response;
+      }
+      throw new Error(`unexpected URL ${raw}`);
     });
 
     const response = await routeFastGeminiPreflight(request(), env(), { fetcher });
     expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({ ok: false, status: "TELNYX_ROUTE_MISMATCH", connectionScope: "SHARED" });
+    expect(await response.json()).toEqual({
+      ok: false,
+      status: "TELNYX_ROUTE_MISMATCH",
+      connectionScope: "SHARED",
+      checks: {
+        mediaCredentialHmac: "VERIFIED",
+        mediaControlToken: "VERIFIED",
+        canaryEdge: "VERIFIED",
+        bootstrap: "VERIFIED",
+        websocketUpgrade: "VERIFIED",
+      },
+    });
+    expect(accept).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledWith(1000, "preflight");
   });
 
   it("accepts a shared Telnyx application when the canary number and webhook match, then proves bootstrap and HMAC", async () => {
