@@ -1,0 +1,13 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ia-realtime-centercall-gemini-fast",
+  "main": "src/index-fast.ts",
+  "compatibility_date": "2026-08-26",
+  "workers_dev": true,
+  "preview_urls": true,
+  "keep_vars": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}
