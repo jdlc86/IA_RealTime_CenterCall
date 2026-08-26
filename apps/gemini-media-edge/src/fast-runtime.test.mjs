@@ -163,6 +163,7 @@ test("fast runtime executes Gemini tool locally and continues same Live session"
 
 test("fast runtime has no legacy hybrid hot-path imports", async () => {
   const source = await readFile(new URL("./fast-runtime.mjs", import.meta.url), "utf8");
+  const imports = [...source.matchAll(/from\s+["']([^"']+)["']/g)].map((match) => match[1]);
   const forbidden = [
     "control-sideband",
     "google-speech",
@@ -172,7 +173,9 @@ test("fast runtime has no legacy hybrid hot-path imports", async () => {
     "governed-speech",
     "isolated-decision",
     "isolated-generation",
-    "GeminiCallSession",
+    "gemini-call-session",
   ];
-  for (const value of forbidden) assert.equal(source.includes(value), false, `fast runtime must not import/reference ${value}`);
+  for (const specifier of imports) {
+    for (const value of forbidden) assert.equal(specifier.includes(value), false, `fast runtime must not import ${value}`);
+  }
 });
