@@ -38,7 +38,7 @@ function normalizePhone(value: string): string {
 }
 
 function canaryMatches(call: VerifiedTelnyxIncomingCall, expected: string): boolean {
-  return normalizePhone(call.to) === expected;
+  return normalizePhone(call.calledNumber) === expected;
 }
 
 export async function routeFastGeminiCanaryWebhook(
