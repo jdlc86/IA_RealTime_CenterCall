@@ -14,7 +14,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: gemini-media-edge-canary
+  group: gemini-fast-canary
   cancel-in-progress: false
 
 env:
