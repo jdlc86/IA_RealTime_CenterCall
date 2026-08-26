@@ -1,9 +1,12 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { GEMINI_ADMISSION_VERSION_V1 } from "../src/admission/v1";
 import { GEMINI_CONTROL_PROTOCOL_V1 } from "../src/control-contract/v1";
 
 const CALL_SESSION_ID = "probe-lifecycle-persistence";
 const EDGE_SESSION_ID = "probe-lifecycle-edge";
+const CREDENTIAL_ID = "probe-lifecycle-credential";
+const ADMISSION_EXPIRY = Date.now() + 5 * 60_000;
 
 function controlEnvelope(
   sequence: number,
@@ -24,8 +27,18 @@ function controlEnvelope(
 
 async function connect() {
   const stub = env.GEMINI_CALL_SESSIONS.getByName(CALL_SESSION_ID);
+  await stub.registerAdmission({
+    version: GEMINI_ADMISSION_VERSION_V1,
+    provider: "GEMINI",
+    tenantId: "probe-lifecycle-tenant",
+    callControlId: "probe-lifecycle-call-control",
+    callSessionId: CALL_SESSION_ID,
+    edgeSessionId: EDGE_SESSION_ID,
+    credentialId: CREDENTIAL_ID,
+    notAfterEpochMs: ADMISSION_EXPIRY,
+  });
   const response = await stub.fetch(new Request(
-    `https://do/internal/control?call_session_id=${CALL_SESSION_ID}&edge_session_id=${EDGE_SESSION_ID}`,
+    `https://do/internal/control?call_session_id=${CALL_SESSION_ID}&edge_session_id=${EDGE_SESSION_ID}&credential_id=${CREDENTIAL_ID}`,
     { headers: { Upgrade: "websocket" } },
   ));
   expect(response.status).toBe(101);
