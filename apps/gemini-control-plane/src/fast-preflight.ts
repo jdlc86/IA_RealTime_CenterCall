@@ -3,7 +3,7 @@ import { decodeTelnyxPublicKey } from "./telnyx/webhook-signature";
 import type { FastGeminiCanaryEnv } from "./telnyx/fast-canary-route";
 
 export type FastGeminiPreflightEnv = FastGeminiCanaryEnv & Readonly<{
-  GEMINI_FAST_PREFLIGHT_TOKEN: string;
+  GEMINI_FAST_PREFLIGHT_NONCE: string;
 }>;
 
 type ProbeWebSocket = Readonly<{
@@ -59,10 +59,10 @@ async function secureEqual(left: string, right: string): Promise<boolean> {
   return diff === 0;
 }
 
-async function authorized(request: Request, expectedToken: string): Promise<boolean> {
+async function authorized(request: Request, expectedNonce: string): Promise<boolean> {
   const authorization = request.headers.get("authorization")?.trim() ?? "";
   const match = /^Bearer\s+(.+)$/i.exec(authorization);
-  return Boolean(match && await secureEqual(match[1], expectedToken));
+  return Boolean(match && await secureEqual(match[1], expectedNonce));
 }
 
 async function validateTelnyxPublicKey(value: string): Promise<void> {
@@ -171,13 +171,13 @@ export async function routeFastGeminiPreflight(
 ): Promise<Response> {
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
 
-  let preflightToken: string;
+  let preflightNonce: string;
   try {
-    preflightToken = requireMinBytes(env.GEMINI_FAST_PREFLIGHT_TOKEN, "GEMINI_FAST_PREFLIGHT_TOKEN", 32);
+    preflightNonce = requireMinBytes(env.GEMINI_FAST_PREFLIGHT_NONCE, "GEMINI_FAST_PREFLIGHT_NONCE", 32);
   } catch {
     return Response.json({ ok: false, status: "PREFLIGHT_UNAVAILABLE" }, { status: 503 });
   }
-  if (!await authorized(request, preflightToken)) {
+  if (!await authorized(request, preflightNonce)) {
     return Response.json({ ok: false, status: "UNAUTHORIZED" }, { status: 401 });
   }
 
