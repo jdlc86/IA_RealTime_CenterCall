@@ -78,12 +78,12 @@ export function reduceGeminiCallLifecycle(
       return noEffect(state);
 
     case "EDGE_READY": {
-      if (state.phase !== "CALL_BOOTSTRAP" && state.phase !== "RECOVERING") {
-        return invalid(state, "EDGE_READY_REQUIRES_BOOTSTRAP_OR_RECOVERING");
+      if (state.phase !== "CALL_BOOTSTRAP") {
+        return invalid(state, "EDGE_READY_REQUIRES_BOOTSTRAP");
       }
       const epoch = integerPayload(envelope, "provider_connection_epoch");
-      if (state.providerConnectionEpoch !== null && epoch <= state.providerConnectionEpoch) {
-        return invalid(state, "PROVIDER_EPOCH_MUST_INCREASE");
+      if (state.providerConnectionEpoch !== null) {
+        return invalid(state, "EDGE_READY_ALREADY_APPLIED");
       }
       return applied({ ...state, providerConnectionEpoch: epoch });
     }
@@ -125,8 +125,12 @@ export function reduceGeminiCallLifecycle(
       if (envelope.payload.mode !== "CLEAN_RESTART") {
         return invalid(state, "TRUST_RECOVERY_REQUIRES_CLEAN_RESTART");
       }
+      const previousEpoch = integerPayload(envelope, "previous_provider_connection_epoch");
       const epoch = integerPayload(envelope, "provider_connection_epoch");
-      if (state.providerConnectionEpoch !== null && epoch <= state.providerConnectionEpoch) {
+      if (state.providerConnectionEpoch === null || previousEpoch !== state.providerConnectionEpoch) {
+        return invalid(state, "PREVIOUS_PROVIDER_EPOCH_MISMATCH");
+      }
+      if (epoch <= previousEpoch) {
         return invalid(state, "PROVIDER_EPOCH_MUST_INCREASE");
       }
       return applied({
@@ -146,8 +150,6 @@ export function reduceGeminiCallLifecycle(
       }
       return applied({ ...state, phase: "RECOVERING", activeTurnId: null });
 
-    // Generation/tool/playback events require their own owners and are not
-    // admitted into lifecycle state until those slices are implemented.
     case "GEMINI_TOOL_CALL":
     case "GEMINI_GENERATION_STARTED":
     case "GEMINI_INTERRUPTED":
@@ -157,8 +159,6 @@ export function reduceGeminiCallLifecycle(
     case "PLAYBACK_COMPLETED":
       return invalid(state, "EVENT_OWNER_NOT_IMPLEMENTED");
 
-    // Worker-originating commands should already have been rejected by the
-    // direction boundary. Keeping them invalid here is defense in depth.
     case "TURN_AUTHORIZED":
     case "TURN_REJECTED":
     case "TOOL_RESULT":
