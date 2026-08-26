@@ -1,8 +1,11 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { GEMINI_ADMISSION_VERSION_V1 } from "../src/admission/v1";
+import { GEMINI_CONTROL_CAPABILITY_VERSION_V1 } from "../src/control-auth/capability-v1";
 import { GEMINI_CONTROL_PROTOCOL_V1 } from "../src/control-contract/v1";
 
+const TENANT_ID = "probe-tenant";
+const CALL_CONTROL_ID = "probe-call-control";
 const CALL_SESSION_ID = "probe-call-session";
 const EDGE_SESSION_ID = "probe-edge-session";
 const CREDENTIAL_ID = "probe-control-credential";
@@ -35,21 +38,34 @@ function workerOnlyEnvelope(sequence: number, messageId: string) {
   } as const;
 }
 
+function verifiedControlHeaders(): HeadersInit {
+  return {
+    Upgrade: "websocket",
+    "x-gemini-control-authenticated": GEMINI_CONTROL_CAPABILITY_VERSION_V1,
+    "x-gemini-tenant-id": TENANT_ID,
+    "x-gemini-call-control-id": CALL_CONTROL_ID,
+    "x-gemini-call-session-id": CALL_SESSION_ID,
+    "x-gemini-edge-session-id": EDGE_SESSION_ID,
+    "x-gemini-credential-id": CREDENTIAL_ID,
+    "x-gemini-capability-not-after": String(ADMISSION_EXPIRY),
+  };
+}
+
 async function connect() {
   const stub = env.GEMINI_CALL_SESSIONS.getByName(CALL_SESSION_ID);
   await stub.registerAdmission({
     version: GEMINI_ADMISSION_VERSION_V1,
     provider: "GEMINI",
-    tenantId: "probe-tenant",
-    callControlId: "probe-call-control",
+    tenantId: TENANT_ID,
+    callControlId: CALL_CONTROL_ID,
     callSessionId: CALL_SESSION_ID,
     edgeSessionId: EDGE_SESSION_ID,
     credentialId: CREDENTIAL_ID,
     notAfterEpochMs: ADMISSION_EXPIRY,
   });
   const response = await stub.fetch(new Request(
-    `https://do/internal/control?call_session_id=${CALL_SESSION_ID}&edge_session_id=${EDGE_SESSION_ID}&credential_id=${CREDENTIAL_ID}`,
-    { headers: { Upgrade: "websocket" } },
+    "https://do/internal/control",
+    { headers: verifiedControlHeaders() },
   ));
   expect(response.status).toBe(101);
   const socket = response.webSocket;
@@ -104,5 +120,13 @@ describe("GeminiCallSession durable control contract", () => {
     expect((nack.payload as Record<string, unknown>).code).toBe("PROTOCOL_VIOLATION");
     expect((nack.payload as Record<string, unknown>).retryable).toBe(false);
     expect((nack.payload as Record<string, unknown>).terminal).toBe(true);
+  });
+
+  it("rejects direct DO access without verified capability headers", async () => {
+    const stub = env.GEMINI_CALL_SESSIONS.getByName("probe-direct-reject");
+    const response = await stub.fetch(new Request("https://do/internal/control", {
+      headers: { Upgrade: "websocket" },
+    }));
+    expect(response.status).toBe(403);
   });
 });
