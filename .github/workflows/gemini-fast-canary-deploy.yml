@@ -254,7 +254,13 @@ jobs:
               sleep 2
               continue
             fi
-            echo "Fast Worker runtime preflight failed with HTTP ${STATUS}" >&2
+            SAFE_STATUS="$(printf '%s' "$BODY" | jq -r '.status // "UNKNOWN"' 2>/dev/null || printf 'UNKNOWN')"
+            echo "Fast Worker runtime preflight failed: ${SAFE_STATUS} (HTTP ${STATUS})" >&2
+            if [ "$STATUS" = "409" ]; then
+              SCOPE="$(printf '%s' "$BODY" | jq -r '.connectionScope // "UNKNOWN"' 2>/dev/null || printf 'UNKNOWN')"
+              case "$SCOPE" in DEDICATED|SHARED|UNKNOWN) ;; *) SCOPE=UNKNOWN ;; esac
+              echo "Telnyx canary connection scope: ${SCOPE}" >&2
+            fi
             exit 1
           done
           test "$STATUS" = "200"
