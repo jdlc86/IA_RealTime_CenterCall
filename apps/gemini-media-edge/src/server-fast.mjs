@@ -8,10 +8,26 @@ import {
   requireTelnyxStartForCredential,
 } from "./credential.mjs";
 import { InMemoryFastBootstrapRegistry } from "./fast-bootstrap.mjs";
+import { InMemoryDiagnosticJournal } from "./diagnostic-journal.mjs";
 import { FastGeminiRealtimeSession } from "./fast-runtime.mjs";
 
 const MEDIA_PATH = "/telnyx/gemini";
 const TELNYX_START_TIMEOUT_MS = 5_000;
+const FAST_DIAGNOSTIC_STAGES = new Set([
+  "FAST_TELNYX_CONNECTED",
+  "FAST_TELNYX_START_AUTHORIZED",
+  "FAST_SESSION_STARTED",
+  "FAST_MEDIA_AUTHORIZED",
+  "GEMINI_SETUP_SENT",
+  "GEMINI_SETUP_COMPLETE",
+  "FAST_FIRST_CALLER_MEDIA",
+  "FAST_FIRST_GEMINI_AUDIO_TO_TELNYX",
+  "BARGE_IN_CLEAR_SENT",
+  "GEMINI_TURN_COMPLETE",
+  "TOOL_RESULT_SENT",
+  "GEMINI_GO_AWAY",
+  "FAST_SESSION_CLOSED",
+]);
 
 function required(value, field, max = 64_000) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`);
@@ -82,6 +98,12 @@ function parseTelnyxHandshakeMessage(raw) {
   catch { throw new Error("Telnyx handshake JSON is invalid"); }
 }
 
+function safeFastDiagnostic(event) {
+  if (!event || typeof event !== "object" || typeof event.stage !== "string") return null;
+  if (FAST_DIAGNOSTIC_STAGES.has(event.stage)) return event;
+  return null;
+}
+
 export function createFastGeminiMediaServer(options = {}) {
   const geminiApiKey = required(options.geminiApiKey, "GEMINI_API_KEY", 8_192);
   const model = options.model ?? "gemini-3.1-flash-live-preview";
@@ -91,10 +113,36 @@ export function createFastGeminiMediaServer(options = {}) {
   if (typeof verifyCredential !== "function") throw new Error("Fast Gemini credential verifier is required");
   const credentialConsumer = options.credentialConsumer ?? new InMemoryOneShotCredentialConsumer();
   const bootstrapRegistry = options.bootstrapRegistry ?? new InMemoryFastBootstrapRegistry();
+  const diagnosticJournal = options.diagnosticJournal ?? new InMemoryDiagnosticJournal({ maxEventsPerCall: 64 });
+  const flushDiagnostics = typeof options.flushDiagnostics === "function" ? options.flushDiagnostics : null;
   const toolHandlers = options.toolHandlers ?? {};
   const observe = typeof options.observe === "function" ? options.observe : () => {};
   const providerReadiness = canonicalProviderReadiness(options.providerReadiness);
   const sessions = new Set();
+
+  function recordDiagnostic(event) {
+    const selected = safeFastDiagnostic(event);
+    if (!selected) return null;
+    try {
+      const normalized = { ...selected };
+      if (selected.stage === "FIRST_GEMINI_AUDIO_TO_TELNYX") normalized.stage = "FAST_FIRST_GEMINI_AUDIO_TO_TELNYX";
+      if (Number.isSafeInteger(selected.sinceLastCallerMediaMicros)) normalized.observedMs = Math.round(selected.sinceLastCallerMediaMicros / 1_000);
+      return diagnosticJournal.record(normalized);
+    } catch {
+      return null;
+    }
+  }
+
+  function flushCallDiagnostics(callControlId) {
+    if (!flushDiagnostics) return;
+    let events;
+    try { events = diagnosticJournal.read(callControlId); }
+    catch { return; }
+    if (!events.length) return;
+    queueMicrotask(() => {
+      Promise.resolve(flushDiagnostics(events)).catch(() => {});
+    });
+  }
 
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 256 * 1024 });
   wss.on("connection", (socket, request, claims) => {
@@ -116,10 +164,37 @@ export function createFastGeminiMediaServer(options = {}) {
       if (consumed !== true) throw new Error("Fast Gemini media credential already consumed");
       const bootstrap = bootstrapRegistry.consumeForClaims(claims, Date.now());
       cleanupHandshake();
+      recordDiagnostic({
+        stage: "FAST_TELNYX_START_AUTHORIZED",
+        tenantId: claims.tenantId,
+        callControlId: claims.callControlId,
+      });
       let session;
+      let firstCallerMediaObserved = false;
       const sessionObserve = (event) => {
         try { observe(event); } catch {}
-        if (event?.stage === "FAST_SESSION_CLOSED" && session) sessions.delete(session);
+        if (event?.stage === "CALLER_CHUNK_FORWARDED" && !firstCallerMediaObserved) {
+          firstCallerMediaObserved = true;
+          recordDiagnostic({
+            stage: "FAST_FIRST_CALLER_MEDIA",
+            tenantId: event.tenantId,
+            callControlId: event.callControlId,
+          });
+        } else if (event?.stage === "FIRST_GEMINI_AUDIO_TO_TELNYX") {
+          recordDiagnostic({
+            ...event,
+            stage: "FAST_FIRST_GEMINI_AUDIO_TO_TELNYX",
+            observedMs: Number.isSafeInteger(event.sinceLastCallerMediaMicros)
+              ? Math.round(event.sinceLastCallerMediaMicros / 1_000)
+              : undefined,
+          });
+        } else {
+          recordDiagnostic(event);
+        }
+        if (event?.stage === "FAST_SESSION_CLOSED" && session) {
+          sessions.delete(session);
+          flushCallDiagnostics(event.callControlId);
+        }
       };
       session = new FastGeminiRealtimeSession({
         telnyxSocket: socket,
@@ -145,6 +220,11 @@ export function createFastGeminiMediaServer(options = {}) {
         if (message?.event === "connected") {
           if (connectedSeen) return fail("duplicate Telnyx connected");
           connectedSeen = true;
+          recordDiagnostic({
+            stage: "FAST_TELNYX_CONNECTED",
+            tenantId: claims.tenantId,
+            callControlId: claims.callControlId,
+          });
           return;
         }
         if (message?.event !== "start") throw new Error("Telnyx start expected after connected");
@@ -169,8 +249,22 @@ export function createFastGeminiMediaServer(options = {}) {
         revision: options.revision ?? null,
         activeSessions: sessions.size,
         registeredBootstraps: bootstrapRegistry.size(),
+        diagnosticCalls: diagnosticJournal.size(),
         providerReadiness,
       });
+      return;
+    }
+    if (url.pathname === "/internal/diagnostics" && request.method === "GET") {
+      if (!controlAuthorized(request, controlToken)) {
+        writeJson(response, 401, { ok: false, error: "unauthorized" });
+        return;
+      }
+      try {
+        const callControlId = required(url.searchParams.get("call_control_id"), "diagnostic call_control_id", 512);
+        writeJson(response, 200, { ok: true, events: diagnosticJournal.read(callControlId) });
+      } catch {
+        writeJson(response, 400, { ok: false, error: "invalid_diagnostic_request" });
+      }
       return;
     }
     if (url.pathname === "/internal/bootstrap" && request.method === "POST") {
@@ -213,6 +307,7 @@ export function createFastGeminiMediaServer(options = {}) {
     mediaPath: MEDIA_PATH,
     activeSessions: () => sessions.size,
     registeredBootstraps: () => bootstrapRegistry.size(),
+    diagnosticCalls: () => diagnosticJournal.size(),
     providerReadiness,
     async close() {
       for (const session of [...sessions]) session.close("SERVER_SHUTDOWN");
@@ -236,6 +331,7 @@ export function createFastGeminiMediaServerFromEnv(env = process.env, options = 
     revision: env.K_REVISION ?? null,
     maxBufferedBytes: env.MEDIA_EDGE_MAX_BUFFERED_BYTES ? Number(env.MEDIA_EDGE_MAX_BUFFERED_BYTES) : undefined,
     providerReadiness: options.providerReadiness ?? null,
+    ...(options.flushDiagnostics ? { flushDiagnostics: options.flushDiagnostics } : {}),
   });
 }
 
