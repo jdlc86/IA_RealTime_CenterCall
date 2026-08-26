@@ -64,6 +64,7 @@ test("standalone fast server admits Telnyx media and starts only the fast Gemini
     geminiApiKey: "test-api-key",
     controlToken: "0123456789abcdef0123456789abcdef",
     bootstrapRegistry,
+    providerReadiness: { setupMs: 321, firstAudioMs: 654 },
     verifyCredential: async () => ({
       credentialId: "cred-server-fast",
       provider: "GEMINI",
@@ -86,6 +87,7 @@ test("standalone fast server admits Telnyx media and starts only the fast Gemini
     revision: null,
     activeSessions: 0,
     registeredBootstraps: 1,
+    providerReadiness: { setupMs: 321, firstAudioMs: 654 },
   });
 
   const client = new WebSocket(`ws://127.0.0.1:${port}/telnyx/gemini`, {
@@ -135,6 +137,7 @@ test("fast server bootstrap endpoint is authenticated and contains no semantic r
   const ready = await fetch(`http://127.0.0.1:${port}/ready`);
   const body = await ready.json();
   assert.equal(body.ok, true);
+  assert.equal(body.providerReadiness, null);
   assert.equal("semanticDecision" in body, false);
   assert.equal("speech" in body, false);
   await runtime.close();
