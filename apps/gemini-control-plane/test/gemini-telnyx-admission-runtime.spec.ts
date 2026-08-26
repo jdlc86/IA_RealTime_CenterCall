@@ -32,20 +32,15 @@ async function signedFixture() {
   });
   const message = new TextEncoder().encode(`${timestamp}|${rawBody}`);
   const signature = await crypto.subtle.sign("Ed25519", keys.privateKey, message);
-  return {
-    nowEpochMs,
-    timestamp,
-    rawBody,
-    signatureBase64: base64(signature),
-    publicKey: base64(publicRaw),
-  };
+  return { nowEpochMs, timestamp, rawBody, signatureBase64: base64(signature), publicKey: base64(publicRaw) };
 }
 
 const IDENTITY_SECRET = "0123456789abcdef0123456789abcdef";
 const CONTROL_SECRET = "abcdef0123456789abcdef0123456789";
+const CONTROL_URL = "wss://gemini-control.example.test/internal/control";
 
 describe("signed Telnyx Gemini admission runtime", () => {
-  it("authenticates raw body, resolves tenant and registers a retry-stable admission", async () => {
+  it("registers retry-stable admission and returns matching edge control bootstrap", async () => {
     const fixture = await signedFixture();
     const resolveTenantId = vi.fn(async () => "tenant-signed");
     const options = {
@@ -55,6 +50,7 @@ describe("signed Telnyx Gemini admission runtime", () => {
       telnyxPublicKey: fixture.publicKey,
       admissionIdentitySecret: IDENTITY_SECRET,
       controlCapabilitySecret: CONTROL_SECRET,
+      controlUrl: CONTROL_URL,
       resolveTenantId,
     };
 
@@ -66,14 +62,16 @@ describe("signed Telnyx Gemini admission runtime", () => {
     expect(first.status).toBe("ADMITTED");
     if (first.status !== "ADMITTED") throw new Error("expected admitted result");
     expect(first.result.registration).toBe("CREATED");
-    expect(first.result.admission.tenantId).toBe("tenant-signed");
-    expect(first.result.admission.callControlId).toBe("v3:signed-admission-call");
-    expect(first.result.admission.callSessionId).toMatch(/^cs_/);
-    expect(first.result.admission.edgeSessionId).toMatch(/^edge_/);
-    expect(first.result.admission.credentialId).toMatch(/^cred_/);
+    expect(first.edgeControlBootstrap.controlUrl).toBe(CONTROL_URL);
+    expect(first.edgeControlBootstrap.callSessionId).toBe(first.result.admission.callSessionId);
+    expect(first.edgeControlBootstrap.edgeSessionId).toBe(first.result.admission.edgeSessionId);
+    expect(first.edgeControlBootstrap.credentialId).toBe(first.result.admission.credentialId);
 
-    const capability = await verifyGeminiControlCapabilityV1(first.controlCapability, CONTROL_SECRET, fixture.nowEpochMs);
-    expect(capability).not.toBeNull();
+    const capability = await verifyGeminiControlCapabilityV1(
+      first.edgeControlBootstrap.controlCapability,
+      CONTROL_SECRET,
+      fixture.nowEpochMs,
+    );
     expect(capability?.tenantId).toBe(first.result.admission.tenantId);
     expect(capability?.callControlId).toBe(first.result.admission.callControlId);
     expect(capability?.callSessionId).toBe(first.result.admission.callSessionId);
@@ -90,7 +88,7 @@ describe("signed Telnyx Gemini admission runtime", () => {
     if (retry.status !== "ADMITTED") throw new Error("expected admitted retry");
     expect(retry.result.registration).toBe("IDEMPOTENT");
     expect(retry.result.admission).toEqual(first.result.admission);
-    expect(retry.controlCapability).toBe(first.controlCapability);
+    expect(retry.edgeControlBootstrap).toEqual(first.edgeControlBootstrap);
     expect(resolveTenantId).toHaveBeenCalledTimes(2);
   });
 
@@ -108,6 +106,7 @@ describe("signed Telnyx Gemini admission runtime", () => {
       telnyxPublicKey: fixture.publicKey,
       admissionIdentitySecret: IDENTITY_SECRET,
       controlCapabilitySecret: CONTROL_SECRET,
+      controlUrl: CONTROL_URL,
       resolveTenantId,
     });
     expect(result).toEqual({ status: "SIGNATURE_REJECTED" });
@@ -127,6 +126,7 @@ describe("signed Telnyx Gemini admission runtime", () => {
       telnyxPublicKey: fixture.publicKey,
       admissionIdentitySecret: IDENTITY_SECRET,
       controlCapabilitySecret: CONTROL_SECRET,
+      controlUrl: CONTROL_URL,
       resolveTenantId: async () => null,
     });
     expect(result.status).toBe("TENANT_NOT_FOUND");
