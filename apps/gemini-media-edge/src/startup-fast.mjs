@@ -16,17 +16,21 @@ if (probe.status !== "ready") {
   throw new Error(`Gemini fast provider readiness failed: ${probe.failureCategory ?? "UNKNOWN"}`);
 }
 
+const providerReadiness = Object.freeze({
+  setupMs: probe.setupMs,
+  firstAudioMs: probe.firstAudioMs,
+});
 const port = Number(process.env.PORT ?? "8080");
 if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("PORT is invalid");
-const runtime = createFastGeminiMediaServerFromEnv();
+const runtime = createFastGeminiMediaServerFromEnv(process.env, { providerReadiness });
 runtime.server.listen(port, "0.0.0.0", () => {
   console.log(JSON.stringify({
     event: "gemini_fast_media_ready",
     port,
     model,
     mediaPath: runtime.mediaPath,
-    providerSetupMs: probe.setupMs,
-    providerFirstAudioMs: probe.firstAudioMs,
+    providerSetupMs: providerReadiness.setupMs,
+    providerFirstAudioMs: providerReadiness.firstAudioMs,
   }));
 });
 
