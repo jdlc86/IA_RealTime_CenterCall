@@ -216,7 +216,7 @@ export async function routeFastGeminiPreflight(
   } catch {
     return Response.json({ ok: false, status: "TELNYX_ROUTE_LOOKUP_FAILED" }, { status: 502 });
   }
-  if (!telnyxRoute.matches) {
+  if (!telnyxRoute.matches || telnyxRoute.connectionScope !== "DEDICATED") {
     return Response.json({
       ok: false,
       status: "TELNYX_ROUTE_MISMATCH",
