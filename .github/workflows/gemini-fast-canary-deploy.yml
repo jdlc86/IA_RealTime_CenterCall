@@ -235,15 +235,35 @@ jobs:
           PREFLIGHT_TOKEN="$(openssl rand -hex 32)"
           echo "::add-mask::$PREFLIGHT_TOKEN"
           printf '%s' "$PREFLIGHT_TOKEN" | npx wrangler secret put GEMINI_FAST_PREFLIGHT_TOKEN --config wrangler.fast.jsonc
-          BODY="$(curl --fail --silent --show-error --max-time 15 \
-            --request POST \
-            --header "Authorization: Bearer ${PREFLIGHT_TOKEN}" \
-            "${FAST_WORKER_ORIGIN}/internal/preflight")"
+
+          BODY=""
+          STATUS=""
+          for attempt in $(seq 1 15); do
+            RESPONSE="$(curl --silent --show-error --max-time 15 \
+              --request POST \
+              --header "Authorization: Bearer ${PREFLIGHT_TOKEN}" \
+              --write-out $'\n%{http_code}' \
+              "${FAST_WORKER_ORIGIN}/internal/preflight")"
+            STATUS="${RESPONSE##*$'\n'}"
+            BODY="${RESPONSE%$'\n'*}"
+            if [ "$STATUS" = "200" ]; then
+              break
+            fi
+            if [ "$STATUS" = "503" ] && [ "$attempt" -lt 15 ]; then
+              echo "Fast preflight token propagation pending; retry ${attempt}/15"
+              sleep 2
+              continue
+            fi
+            echo "Fast Worker runtime preflight failed with HTTP ${STATUS}" >&2
+            exit 1
+          done
+          test "$STATUS" = "200"
           echo "$BODY" | jq -e '
             .ok == true and
             .status == "READY" and
             .checks.telnyxApiKey == "PRESENT" and
             .checks.telnyxPublicKey == "PRESENT_VALID" and
+            .checks.telnyxRouting == "VERIFIED" and
             .checks.admissionIdentitySecret == "PRESENT" and
             .checks.mediaCredentialHmac == "VERIFIED" and
             .checks.mediaControlToken == "VERIFIED" and
