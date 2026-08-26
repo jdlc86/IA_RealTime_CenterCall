@@ -101,8 +101,11 @@ export class TelnyxSampleCountVad {
 }
 
 /**
- * Owns one deferred caller candidate in the media plane until STT has produced
+ * Owns deferred caller candidates in the media plane until STT has produced
  * authoritative text and the control plane later resolves NORMAL/INTERRUPT/IGNORE.
+ * A completed candidate may remain pending while VAD starts the next acoustic
+ * fragment; this prevents natural split utterances from becoming fatal media
+ * errors while the control-plane decision for the previous fragment is in flight.
  * Telnyx WebSocket L16 is PCM16 little-endian in the verified media-streaming
  * transport, so the exact payload is preserved for VAD, Google STT and Gemini.
  * No activityStart/audio/activityEnd is sent to Gemini from this component.
@@ -114,10 +117,15 @@ export class AuthoritativeCallerInputOwner {
     this.vad = new TelnyxSampleCountVad(vadConfig);
     this.maxBufferedChunks = Number(options.maxBufferedChunks ?? 256);
     this.maxBufferedPayloadChars = Number(options.maxBufferedPayloadChars ?? 2_000_000);
+    this.maxPendingCompletedCandidates = Number(options.maxPendingCompletedCandidates ?? 4);
     if (!Number.isSafeInteger(this.maxBufferedChunks) || this.maxBufferedChunks < 1) throw new Error("Gemini caller maxBufferedChunks is invalid");
     if (!Number.isSafeInteger(this.maxBufferedPayloadChars) || this.maxBufferedPayloadChars < 1) throw new Error("Gemini caller maxBufferedPayloadChars is invalid");
+    if (!Number.isSafeInteger(this.maxPendingCompletedCandidates) || this.maxPendingCompletedCandidates < 1 || this.maxPendingCompletedCandidates > 8) {
+      throw new Error("Gemini caller maxPendingCompletedCandidates is invalid");
+    }
     this.sequence = 0;
     this.active = null;
+    this.pendingCompleted = new Map();
     this.transcriptionInFlight = null;
     this.provisionalPlaybackResponseId = undefined;
     this.inputDetectionEnabled = true;
@@ -143,7 +151,14 @@ export class AuthoritativeCallerInputOwner {
     }
 
     if (acoustic.boundary?.type === "SPEECH_START") {
-      if (this.active) throw new Error(`Gemini caller candidate already active: ${this.active.itemId}`);
+      if (this.active) {
+        if (this.active.transcript === null) throw new Error(`Gemini caller candidate already active: ${this.active.itemId}`);
+        if (this.pendingCompleted.size >= this.maxPendingCompletedCandidates) {
+          throw new Error("Gemini caller pending completed candidate limit exceeded");
+        }
+        this.pendingCompleted.set(this.active.itemId, this.active);
+        this.active = null;
+      }
       this.sequence += 1;
       this.active = {
         itemId: `gemini-candidate-${this.sequence}`,
@@ -196,21 +211,36 @@ export class AuthoritativeCallerInputOwner {
   }
 
   resolve(itemId, decision) {
-    const candidate = this.requireMatching(itemId);
+    const normalized = required(itemId, "Gemini caller item id");
+    const activeMatch = this.active?.itemId === normalized;
+    const candidate = activeMatch ? this.active : this.pendingCompleted.get(normalized);
+    if (!candidate) {
+      const expected = this.active?.itemId ?? this.pendingCompleted.keys().next().value ?? "<none>";
+      throw new Error(`Gemini caller candidate identity mismatch: expected ${expected}`);
+    }
     if (!["NORMAL", "INTERRUPT", "IGNORE"].includes(decision)) throw new Error("Gemini caller decision is invalid");
     if (candidate.transcript === null || (!candidate.transcript && decision !== "IGNORE")) {
       throw new Error(`Gemini caller candidate ${candidate.itemId} has no authoritative transcript`);
     }
     const result = Object.freeze({ itemId: candidate.itemId, transcript: candidate.transcript, mediaPayloads: Object.freeze([...candidate.payloads]), playbackResponseIdAtStart: candidate.playbackResponseIdAtStart, decision });
-    this.active = null;
-    this.provisionalPlaybackResponseId = undefined;
-    this.vad.reset();
+    if (activeMatch) {
+      this.active = null;
+      const vad = this.vad.snapshot();
+      const nextOnsetInProgress = vad.state === "SILENCE" && (vad.candidateSpeechSamples > 0 || this.provisionalPlaybackResponseId !== undefined);
+      if (!nextOnsetInProgress) {
+        this.provisionalPlaybackResponseId = undefined;
+        this.vad.reset();
+      }
+    } else {
+      this.pendingCompleted.delete(normalized);
+    }
     return result;
   }
 
   clear() {
     this.revision += 1;
     this.active = null;
+    this.pendingCompleted.clear();
     this.provisionalPlaybackResponseId = undefined;
     this.vad.reset();
     return this.snapshot();
@@ -239,6 +269,25 @@ export class AuthoritativeCallerInputOwner {
   }
 
   requireActive() { if (!this.active) throw new Error("Gemini caller candidate is not active"); return this.active; }
-  requireMatching(itemId) { const candidate = this.requireActive(); const normalized = required(itemId, "Gemini caller item id"); if (normalized !== candidate.itemId) throw new Error(`Gemini caller candidate identity mismatch: expected ${candidate.itemId}`); return candidate; }
-  snapshot() { return Object.freeze({ activeItemId: this.active?.itemId ?? null, sequence: this.sequence, bufferedChunks: this.active?.payloads.length ?? 0, bufferedPayloadChars: this.active?.payloadChars ?? 0, transcriptReady: this.active ? this.active.transcript !== null : false, transcriptionInFlightItemId: this.transcriptionInFlight?.itemId ?? null, provisionalPlaybackResponseId: this.provisionalPlaybackResponseId ?? null, inputDetectionEnabled: this.inputDetectionEnabled }); }
+  requireMatching(itemId) {
+    const normalized = required(itemId, "Gemini caller item id");
+    if (this.active?.itemId === normalized) return this.active;
+    const pending = this.pendingCompleted.get(normalized);
+    if (pending) return pending;
+    const expected = this.active?.itemId ?? this.pendingCompleted.keys().next().value ?? "<none>";
+    throw new Error(`Gemini caller candidate identity mismatch: expected ${expected}`);
+  }
+  snapshot() {
+    return Object.freeze({
+      activeItemId: this.active?.itemId ?? null,
+      sequence: this.sequence,
+      bufferedChunks: this.active?.payloads.length ?? 0,
+      bufferedPayloadChars: this.active?.payloadChars ?? 0,
+      transcriptReady: this.active ? this.active.transcript !== null : false,
+      transcriptionInFlightItemId: this.transcriptionInFlight?.itemId ?? null,
+      provisionalPlaybackResponseId: this.provisionalPlaybackResponseId ?? null,
+      inputDetectionEnabled: this.inputDetectionEnabled,
+      pendingCompletedCount: this.pendingCompleted.size,
+    });
+  }
 }
