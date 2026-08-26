@@ -27,8 +27,8 @@ env:
   GCP_WIF_PROVIDER: projects/1012718461242/locations/global/workloadIdentityPools/github-actions/providers/ia-realtime-centercall
   GCP_DEPLOYER_SERVICE_ACCOUNT: github-cloud-run-deployer@iacallcenterv1.iam.gserviceaccount.com
   GEMINI_API_KEY_SECRET_VERSION: "1"
-  CREDENTIAL_SECRET_VERSION: "1"
-  CONTROL_TOKEN_SECRET_VERSION: "1"
+  CREDENTIAL_SECRET_VERSION: "latest"
+  CONTROL_TOKEN_SECRET_VERSION: "latest"
   DEPLOY_SERVICE: gemini-media-edge
   ARTIFACT_REPOSITORY: ia-realtime-centercall
   FAST_PROVIDER_SETUP_BUDGET_MS: "5000"
