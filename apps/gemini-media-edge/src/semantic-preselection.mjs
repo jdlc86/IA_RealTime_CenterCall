@@ -4,6 +4,9 @@ function required(value, field) {
 }
 
 const DIRECT_MODEL_OUTPUT_TOOLS = new Set(["restaurant_conversation"]);
+const RESERVATION_CONTINUATION_TOOL = "restaurant_reservation_create";
+const RESERVATION_CONTINUATION_MARKER = "An active reservation draft is waiting";
+const RESERVATION_CONTINUATION_DIRECTIVE = "invoke restaurant_reservation_create progressively";
 
 function requiredInputs(parameters) {
   const values = Array.isArray(parameters?.required) ? parameters.required : [];
@@ -54,10 +57,22 @@ function semanticTools(bootstrap) {
   return Object.freeze(result);
 }
 
+function deterministicContinuationTool(bootstrap, allowedToolNames) {
+  const instructions = typeof bootstrap?.instructions === "string" ? bootstrap.instructions : "";
+  const ownsReservationContinuation = instructions.includes(RESERVATION_CONTINUATION_MARKER)
+    && instructions.includes(RESERVATION_CONTINUATION_DIRECTIVE);
+  if (!ownsReservationContinuation) return null;
+  if (!allowedToolNames.includes(RESERVATION_CONTINUATION_TOOL)) {
+    throw new Error("Gemini semantic continuation tool is unavailable in the active bootstrap");
+  }
+  return RESERVATION_CONTINUATION_TOOL;
+}
+
 export function buildSemanticPreselectionRequest(bootstrap, transcript) {
   const inputText = required(transcript, "Gemini semantic preselection transcript").slice(0, 1500);
   const tools = semanticTools(bootstrap);
   const allowedToolNames = Object.freeze(tools.map((tool) => tool.name));
+  const continuationTool = deterministicContinuationTool(bootstrap, allowedToolNames);
   const catalog = tools.map((tool) => {
     const requiredSuffix = tool.requiredInputs.length
       ? ` Declared required inputs: ${tool.requiredInputs.join(", ")}.`
@@ -77,6 +92,7 @@ export function buildSemanticPreselectionRequest(bootstrap, transcript) {
     "Use restaurant_conversation only for ordinary dialogue that is not semantically owned by an existing operation, data, action, escalation, security, ignore, or end-call tool.",
     "JSON Schema required fields describe provider argument syntax. Never use them as a semantic readiness gate and never let them override progressive or multi-turn behavior stated by the tool contract.",
     "A short follow-up that continues an active operation belongs to that operation tool rather than restaurant_conversation when the supplied context makes that ownership clear.",
+    ...(continuationTool ? [`Active deterministic continuation tool: ${continuationTool}. Preserve this product-owned route for the current caller turn.`] : []),
     `Allowed tool names: ${allowed}`,
     "Tool catalog:",
     catalog,
@@ -86,6 +102,7 @@ export function buildSemanticPreselectionRequest(bootstrap, transcript) {
     inputText,
     maxOutputTokens: 64,
     allowedToolNames,
+    continuationTool,
     responseMimeType: "application/json",
     responseJsonSchema: Object.freeze({
       type: "object",
@@ -122,6 +139,12 @@ export function parseSemanticPreselection(text, allowedToolNames) {
 export async function resolveSemanticPreselection(decide, bootstrap, transcript) {
   if (typeof decide !== "function") throw new Error("Gemini semantic preselection decision function is required");
   const request = buildSemanticPreselectionRequest(bootstrap, transcript);
+  if (request.continuationTool) {
+    return Object.freeze({
+      selectedTool: request.continuationTool,
+      directModelOutputAllowed: DIRECT_MODEL_OUTPUT_TOOLS.has(request.continuationTool),
+    });
+  }
   const text = await decide({
     instructions: request.instructions,
     inputText: request.inputText,

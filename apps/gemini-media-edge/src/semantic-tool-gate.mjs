@@ -67,6 +67,10 @@ export class GeminiSemanticGateViolation extends Error {
   }
 }
 
+function gateViolation(code, message) {
+  throw new GeminiSemanticGateViolation(code, message);
+}
+
 /**
  * Product-owned enforcement for Gemini's one-tool semantic decision invariant.
  *
@@ -159,16 +163,18 @@ export class GeminiSemanticToolGate {
     if (!this.activeItemId) return this.snapshot();
 
     const calls = providerToolCalls(message);
-    if (calls.length > 1) throw new Error("Gemini semantic gate received multiple tool decisions for one caller turn");
+    if (calls.length > 1) {
+      gateViolation("MULTIPLE_TOOL_DECISIONS", "Gemini semantic gate received multiple tool decisions for one caller turn");
+    }
     if (calls.length === 1) {
       const call = calls[0];
       const callId = required(call?.id, "Gemini semantic gate function call id");
       const toolName = required(call?.name, "Gemini semantic gate function name");
       if (this.preselectedTool && this.preselectedTool !== toolName) {
-        throw new Error("Gemini semantic gate provider tool conflicts with isolated preselection");
+        gateViolation("TOOL_PRESELECTION_CONFLICT", "Gemini semantic gate provider tool conflicts with isolated preselection");
       }
       if (this.selectedTool && (this.selectedTool !== toolName || this.selectedCallId !== callId)) {
-        throw new Error("Gemini semantic gate received a second tool decision for one caller turn");
+        gateViolation("SECOND_TOOL_DECISION", "Gemini semantic gate received a second tool decision for one caller turn");
       }
       this.selectedTool = toolName;
       this.selectedCallId = callId;
@@ -176,19 +182,16 @@ export class GeminiSemanticToolGate {
 
     if (providerProducedSemanticOutput(message)) {
       if (this.selectedTool) {
-        throw new Error("Gemini semantic output arrived before semantic gate release");
+        gateViolation("OUTPUT_BEFORE_RELEASE", "Gemini semantic output arrived before semantic gate release");
       }
       if (!this.preselectedTool) {
-        throw new Error("Gemini semantic output arrived before semantic tool selection");
+        gateViolation("OUTPUT_BEFORE_TOOL_SELECTION", "Gemini semantic output arrived before semantic tool selection");
       }
       if (!this.confirmed) {
-        throw new Error("Gemini semantic output arrived before control-plane gate confirmation");
+        gateViolation("OUTPUT_BEFORE_GATE_CONFIRMATION", "Gemini semantic output arrived before control-plane gate confirmation");
       }
       if (!this.directModelOutputAllowed) {
-        throw new GeminiSemanticGateViolation(
-          "GOVERNED_DIRECT_OUTPUT",
-          "Gemini semantic output bypassed a governed preselected tool",
-        );
+        gateViolation("GOVERNED_DIRECT_OUTPUT", "Gemini semantic output bypassed a governed preselected tool");
       }
       this.directModelOutputObserved = true;
     }
