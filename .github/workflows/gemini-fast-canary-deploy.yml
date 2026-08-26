@@ -89,26 +89,14 @@ jobs:
           test -n "$BUILD_ID"
           DEADLINE=$((SECONDS + 1200))
           while true; do
-            STATUS="$(gcloud builds describe "$BUILD_ID" \
-              --region "$GCP_REGION" \
-              --project "$GCP_PROJECT_ID" \
-              --format='value(status)')"
+            STATUS="$(gcloud builds describe "$BUILD_ID" --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --format='value(status)')"
             case "$STATUS" in
               SUCCESS) break ;;
               QUEUED|PENDING|WORKING) ;;
-              FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED)
-                echo "Fast Cloud Build ${BUILD_ID} ended with ${STATUS}" >&2
-                exit 1
-                ;;
-              *)
-                echo "Unexpected Fast Cloud Build status: ${STATUS}" >&2
-                exit 1
-                ;;
+              FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED) echo "Fast Cloud Build ${BUILD_ID} ended with ${STATUS}" >&2; exit 1 ;;
+              *) echo "Unexpected Fast Cloud Build status: ${STATUS}" >&2; exit 1 ;;
             esac
-            if (( SECONDS >= DEADLINE )); then
-              echo "Timed out waiting for Fast Cloud Build ${BUILD_ID}" >&2
-              exit 1
-            fi
+            if (( SECONDS >= DEADLINE )); then echo "Timed out waiting for Fast Cloud Build ${BUILD_ID}" >&2; exit 1; fi
             sleep 5
           done
           DIGEST="$(gcloud artifacts docker images describe "$IMAGE_TAG" --project "$GCP_PROJECT_ID" --format='value(image_summary.digest)')"
@@ -162,10 +150,7 @@ jobs:
           TAG='${{ steps.image.outputs.tag }}'
           REVISION="$(echo "$SERVICE_JSON" | jq -r --arg TAG "$TAG" '.status.traffic[] | select(.tag == $TAG) | .revisionName' | head -n1)"
           TAG_URL="$(echo "$SERVICE_JSON" | jq -r --arg TAG "$TAG" '.status.traffic[] | select(.tag == $TAG) | .url' | head -n1)"
-          test -n "$REVISION"
-          test -n "$TAG_URL"
-          test "$REVISION" != "null"
-          test "$TAG_URL" != "null"
+          test -n "$REVISION"; test -n "$TAG_URL"; test "$REVISION" != "null"; test "$TAG_URL" != "null"
           IMAGE="$(gcloud run revisions describe "$REVISION" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(spec.containers[0].image)')"
           test "$IMAGE" = '${{ steps.image.outputs.immutable_image }}'
           echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
@@ -181,22 +166,15 @@ jobs:
           READY_URL="${{ steps.deployed.outputs.tag_url }}/ready"
           BODY=""
           for attempt in $(seq 1 30); do
-            if BODY="$(curl --fail --silent --show-error --max-time 5 "$READY_URL")"; then
-              break
-            fi
+            if BODY="$(curl --fail --silent --show-error --max-time 5 "$READY_URL")"; then break; fi
             sleep 2
           done
           test -n "$BODY"
-          echo "$BODY" | jq -e '.ok == true' >/dev/null
-          echo "$BODY" | jq -e '.service == "gemini-media-edge-fast"' >/dev/null
-          echo "$BODY" | jq -e '.model == "gemini-3.1-flash-live-preview"' >/dev/null
-          echo "$BODY" | jq -e '.activeSessions == 0' >/dev/null
+          echo "$BODY" | jq -e '.ok == true and .service == "gemini-media-edge-fast" and .model == "gemini-3.1-flash-live-preview" and .activeSessions == 0' >/dev/null
           SETUP_MS="$(echo "$BODY" | jq -r '.providerReadiness.setupMs')"
           FIRST_AUDIO_MS="$(echo "$BODY" | jq -r '.providerReadiness.firstAudioMs')"
-          [[ "$SETUP_MS" =~ ^[0-9]+$ ]]
-          [[ "$FIRST_AUDIO_MS" =~ ^[0-9]+$ ]]
-          (( SETUP_MS < FAST_PROVIDER_SETUP_BUDGET_MS ))
-          (( FIRST_AUDIO_MS < FAST_PROVIDER_FIRST_AUDIO_BUDGET_MS ))
+          [[ "$SETUP_MS" =~ ^[0-9]+$ ]]; [[ "$FIRST_AUDIO_MS" =~ ^[0-9]+$ ]]
+          (( SETUP_MS < FAST_PROVIDER_SETUP_BUDGET_MS )); (( FIRST_AUDIO_MS < FAST_PROVIDER_FIRST_AUDIO_BUDGET_MS ))
           echo "setup_ms=$SETUP_MS" >> "$GITHUB_OUTPUT"
           echo "first_audio_ms=$FIRST_AUDIO_MS" >> "$GITHUB_OUTPUT"
 
@@ -209,9 +187,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$CLOUDFLARE_API_TOKEN"
-          test -n "$CLOUDFLARE_ACCOUNT_ID"
-          test -n "$FAST_EDGE_URL"
+          test -n "$CLOUDFLARE_API_TOKEN"; test -n "$CLOUDFLARE_ACCOUNT_ID"; test -n "$FAST_EDGE_URL"
           npm install --no-audit --no-fund
           npx wrangler deploy --config wrangler.fast.jsonc --var "GEMINI_FAST_CANARY_EDGE_URL:${FAST_EDGE_URL}"
           npx wrangler deployments list --config wrangler.fast.jsonc
@@ -229,12 +205,18 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           FAST_WORKER_ORIGIN: https://ia-realtime-centercall-gemini-fast.julopezcardona.workers.dev
+          FAST_EDGE_URL: ${{ steps.deployed.outputs.edge_url }}
         shell: bash
         run: |
           set -euo pipefail
           PREFLIGHT_TOKEN="$(openssl rand -hex 32)"
           echo "::add-mask::$PREFLIGHT_TOKEN"
           printf '%s' "$PREFLIGHT_TOKEN" | npx wrangler secret put GEMINI_FAST_PREFLIGHT_TOKEN --config wrangler.fast.jsonc
+
+          # A secret change creates a Worker version but is not guaranteed to be
+          # immediately active on the workers.dev route. Deploy the exact current
+          # code/config once more so the probe is bound to the freshly written secret.
+          npx wrangler deploy --config wrangler.fast.jsonc --var "GEMINI_FAST_CANARY_EDGE_URL:${FAST_EDGE_URL}"
 
           BODY=""
           STATUS=""
@@ -246,9 +228,7 @@ jobs:
               "${FAST_WORKER_ORIGIN}/internal/preflight")"
             STATUS="${RESPONSE##*$'\n'}"
             BODY="${RESPONSE%$'\n'*}"
-            if [ "$STATUS" = "200" ]; then
-              break
-            fi
+            if [ "$STATUS" = "200" ]; then break; fi
             if { [ "$STATUS" = "401" ] || [ "$STATUS" = "503" ]; } && [ "$attempt" -lt 15 ]; then
               echo "Fast preflight token rollout pending (HTTP ${STATUS}); retry ${attempt}/15"
               sleep 2
