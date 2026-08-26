@@ -1,0 +1,131 @@
+name: Gemini Fast Canary Deploy
+
+on:
+  push:
+    branches:
+      - rebuild/v39-stable-baseline
+    paths:
+      - "apps/gemini-media-edge/src/fast-*.mjs"
+      - "apps/gemini-media-edge/src/server-fast.mjs"
+      - "apps/gemini-media-edge/src/startup-fast.mjs"
+      - "apps/gemini-media-edge/Dockerfile.fast"
+      - "apps/gemini-media-edge/deploy/cloud-run/deploy-fast.ps1"
+      - "apps/gemini-media-edge/deploy/cloud-run/cloudbuild-fast.yaml"
+      - ".github/workflows/gemini-fast-canary-deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: gemini-fast-canary
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT_ID: iacallcenterv1
+  GCP_REGION: europe-west9
+  GCP_WIF_PROVIDER: projects/1012718461242/locations/global/workloadIdentityPools/github-actions/providers/ia-realtime-centercall
+  GCP_DEPLOYER_SERVICE_ACCOUNT: github-cloud-run-deployer@iacallcenterv1.iam.gserviceaccount.com
+  GEMINI_API_KEY_SECRET_VERSION: "1"
+  CREDENTIAL_SECRET_VERSION: "1"
+  CONTROL_TOKEN_SECRET_VERSION: "1"
+  FAST_SERVICE: gemini-media-edge-fast
+
+jobs:
+  deploy:
+    name: Deploy isolated Gemini 3.1 fast canary
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/gemini-media-edge/package-lock.json
+
+      - name: Install and validate fast runtime
+        working-directory: apps/gemini-media-edge
+        run: |
+          npm ci
+          npm run check
+          npm test
+          docker build -f Dockerfile.fast -t gemini-media-edge-fast:test .
+
+      - name: Authenticate to Google Cloud with GitHub OIDC
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Deploy isolated fast service
+        shell: pwsh
+        run: |
+          ./apps/gemini-media-edge/deploy/cloud-run/deploy-fast.ps1 `
+            -ProjectId "${{ env.GCP_PROJECT_ID }}" `
+            -Region "${{ env.GCP_REGION }}" `
+            -GeminiApiKeySecretVersion "${{ env.GEMINI_API_KEY_SECRET_VERSION }}" `
+            -CredentialSecretVersion "${{ env.CREDENTIAL_SECRET_VERSION }}" `
+            -ControlTokenSecretVersion "${{ env.CONTROL_TOKEN_SECRET_VERSION }}" `
+            -Service "${{ env.FAST_SERVICE }}" `
+            -ImageTag "fast-${{ github.sha }}"
+
+      - name: Resolve exact fast revision
+        id: deployed
+        shell: bash
+        run: |
+          set -euo pipefail
+          REVISION="$(gcloud run services describe "$FAST_SERVICE" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(status.latestReadyRevisionName)')"
+          SERVICE_URL="$(gcloud run services describe "$FAST_SERVICE" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(status.url)')"
+          IMAGE="$(gcloud run revisions describe "$REVISION" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(spec.containers[0].image)')"
+          test -n "$REVISION"
+          test -n "$SERVICE_URL"
+          test -n "$IMAGE"
+          echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
+          echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "edge_url=wss://${SERVICE_URL#https://}/telnyx/gemini" >> "$GITHUB_OUTPUT"
+
+      - name: Verify startup provider gate and public readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          READY_URL="${{ steps.deployed.outputs.service_url }}/ready"
+          BODY=""
+          for attempt in $(seq 1 30); do
+            if BODY="$(curl --fail --silent --show-error --max-time 5 "$READY_URL")"; then
+              break
+            fi
+            sleep 2
+          done
+          test -n "$BODY"
+          echo "$BODY" | jq -e '.ok == true' >/dev/null
+          echo "$BODY" | jq -e '.service == "gemini-media-edge-fast"' >/dev/null
+          echo "$BODY" | jq -e '.model == "gemini-3.1-flash-live-preview"' >/dev/null
+          echo "$BODY" | jq -e '.activeSessions == 0' >/dev/null
+
+      - name: Deployment summary
+        shell: bash
+        run: |
+          {
+            echo "### Gemini 3.1 ultra-low-latency fast canary"
+            echo "- Source SHA: \`${GITHUB_SHA}\`"
+            echo "- Service: \`${FAST_SERVICE}\` (isolated; no production number routed)"
+            echo "- Revision: \`${{ steps.deployed.outputs.revision }}\`"
+            echo "- Image: \`${{ steps.deployed.outputs.image }}\`"
+            echo "- Model: \`gemini-3.1-flash-live-preview\`"
+            echo "- Startup gate: real Gemini Live setup + native audio + turnComplete"
+            echo "- Service URL: \`${{ steps.deployed.outputs.service_url }}\`"
+            echo "- WSS: \`${{ steps.deployed.outputs.edge_url }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
