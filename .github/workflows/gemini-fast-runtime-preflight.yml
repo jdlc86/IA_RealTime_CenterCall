@@ -36,3 +36,5 @@ jobs:
             fi
           done
           exit "$missing"
+
+      # Operational probe requested after Gemini Worker deployment isolation.
