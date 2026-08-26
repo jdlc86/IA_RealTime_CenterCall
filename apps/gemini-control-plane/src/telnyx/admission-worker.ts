@@ -6,6 +6,7 @@ export type GeminiTelnyxAdmissionWorkerEnv = GeminiControlPlaneEnv & Readonly<{
   TENANT_CONFIG: TenantRouteKvNamespace;
   TELNYX_PUBLIC_KEY: string;
   GEMINI_ADMISSION_IDENTITY_SECRET: string;
+  GEMINI_CONTROL_CAPABILITY_SECRET: string;
 }>;
 
 export type GeminiTelnyxAdmissionWorkerOptions = Readonly<{
@@ -42,6 +43,7 @@ export async function admitTelnyxRequestInternally(
     admissionTtlMs: options.admissionTtlMs,
     telnyxPublicKey: env.TELNYX_PUBLIC_KEY,
     admissionIdentitySecret: env.GEMINI_ADMISSION_IDENTITY_SECRET,
+    controlCapabilitySecret: env.GEMINI_CONTROL_CAPABILITY_SECRET,
     resolveTenantId: async (call) => (await tenantRoutes.resolveByCalledNumber(call.calledNumber))?.tenantId ?? null,
   });
 }
