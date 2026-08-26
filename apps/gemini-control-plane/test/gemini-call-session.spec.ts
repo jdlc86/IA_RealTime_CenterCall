@@ -20,6 +20,18 @@ function envelope(sequence: number, messageId: string) {
   } as const;
 }
 
+function workerOnlyEnvelope(sequence: number, messageId: string) {
+  return {
+    protocol: GEMINI_CONTROL_PROTOCOL_V1,
+    call_session_id: CALL_SESSION_ID,
+    message_id: messageId,
+    sequence,
+    type: "TURN_AUTHORIZED",
+    ack_required: true,
+    payload: { command_id: "cmd-edge-forgery", turn_id: "turn-1" },
+  } as const;
+}
+
 async function connect() {
   const stub = env.GEMINI_CALL_SESSIONS.getByName(CALL_SESSION_ID);
   const response = await stub.fetch(new Request(
@@ -68,5 +80,16 @@ describe("GeminiCallSession durable control contract", () => {
     expect((nack.payload as Record<string, unknown>).code).toBe("OUT_OF_ORDER_SEQUENCE");
     expect((nack.payload as Record<string, unknown>).retryable).toBe(true);
     second.close(1000, "done");
+  });
+
+  it("NACKs and closes when Edge sends a Worker-only command", async () => {
+    const socket = await connect();
+    const reply = receiveJson(socket);
+    socket.send(JSON.stringify(workerOnlyEnvelope(1, "forged-worker-command")));
+    const nack = await reply;
+    expect(nack.type).toBe("NACK");
+    expect((nack.payload as Record<string, unknown>).code).toBe("PROTOCOL_VIOLATION");
+    expect((nack.payload as Record<string, unknown>).retryable).toBe(false);
+    expect((nack.payload as Record<string, unknown>).terminal).toBe(true);
   });
 });
