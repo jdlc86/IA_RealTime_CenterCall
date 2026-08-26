@@ -64,7 +64,10 @@ describe("GeminiCallSession durable lifecycle", () => {
     ));
     expect(invalidMedia.type).toBe("NACK");
     expect((invalidMedia.payload as Record<string, unknown>).code).toBe("INVALID_STATE");
-    expect((invalidMedia.payload as Record<string, unknown>).retryable).toBe(true);
+    // retryable=false means the same invalid envelope must not be retried. The
+    // sequence slot remains unconsumed so the correct event can use seq=1.
+    expect((invalidMedia.payload as Record<string, unknown>).retryable).toBe(false);
+    expect((invalidMedia.payload as Record<string, unknown>).terminal).toBe(false);
 
     const ready = await sendAndReceive(first, controlEnvelope(
       1,
