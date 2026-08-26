@@ -10,47 +10,23 @@
 
 Transformar la integración híbrida actual en **dos productos realtime independientes y eficientes**:
 
-- producto OpenAI con Worker/runtime propios, optimizados para OpenAI Realtime;
-- producto Gemini con Worker/runtime propios, optimizados para Gemini Live;
-- Supabase y contratos de dominio compartidos en esta fase;
-- sin obligación de coexistencia simultánea de ambos productos para un mismo cliente;
-- sin failover entre proveedores durante una llamada.
+- OpenAI Worker/runtime optimizado para OpenAI Realtime;
+- Gemini Worker/runtime optimizado para Gemini Live;
+- Gemini Media Edge específico de Gemini;
+- Supabase y contratos de dominio realmente neutrales compartidos en esta fase;
+- sin obligación de coexistencia simultánea para un mismo cliente;
+- sin failover OpenAI↔Gemini dentro de una llamada.
 
-El código existente es evidencia histórica y funcional, **no especificación arquitectónica**. Una pieza no se conserva únicamente porque ya exista o porque hoy esté en el Worker principal.
-
-## Principio de evaluación
-
-Toda pieza inspeccionada se clasifica por **propósito real**, no por ubicación actual.
-
-Etiquetas obligatorias:
-
-- `SHARED_DOMAIN` — dominio/persistencia/contrato realmente neutral al proveedor.
-- `OPENAI_NATIVE` — runtime o comportamiento específico de OpenAI que sigue siendo necesario y razonable.
-- `GEMINI_NATIVE` — runtime o comportamiento específico de Gemini que debe vivir en el producto Gemini.
-- `LEGACY_COMPAT_REDESSIGN` — compatibilidad histórica, abstracción artificial, duplicación de ownership o diseño que debe reevaluarse aunque hoy funcione.
-- `UNRESOLVED` — no hay evidencia suficiente todavía; no mover ni borrar hasta resolver.
-
-Para cada componente se debe registrar:
-
-1. ruta / símbolo principal;
-2. responsabilidad actual;
-3. problema que resuelve;
-4. proveedor o motivo de origen cuando pueda demostrarse;
-5. dependencias entrantes/salientes relevantes;
-6. estado mutable que posee;
-7. latencia o pasos adicionales que introduce en camino crítico;
-8. tests que prueban su necesidad;
-9. clasificación;
-10. acción propuesta: `KEEP`, `MOVE`, `EXTRACT`, `REWRITE`, `DELETE_LATER`, `INVESTIGATE`.
+El código existente es evidencia histórica y funcional, **no especificación arquitectónica**.
 
 ## Arquitectura objetivo
 
 ```text
                          SUPABASE COMPARTIDO
-                    estado empresarial persistente
+                         negocio + persistencia
                                ▲       ▲
                                │       │
-                     contratos de dominio
+                  contratos shared realmente neutrales
                          ▲             ▲
                          │             │
               ┌──────────┘             └──────────┐
@@ -58,33 +34,30 @@ Para cada componente se debe registrar:
      OPENAI PRODUCT                      GEMINI PRODUCT
      --------------                      --------------
      OpenAI Worker                       Gemini Worker
-     OpenAI runtime                      Gemini runtime
-     OpenAI lifecycle                    Gemini lifecycle
-     OpenAI tool flow                    Gemini tool flow
-     OpenAI audio/voz                    Gemini audio/voz
-              │                                   │
+     OpenAI runtime                      GeminiCallSession DO
+     OpenAI lifecycle                    Gemini lifecycle propio
+     OpenAI tool flow                    ToolGateway/domain shared
+     OpenAI audio/voz                         │
+              │                               ▼
        OpenAI Realtime                  Gemini Media Edge
-                                                  │
-                                             Gemini Live
+                                              │
+                                         Gemini Live
 ```
 
-La separación física de Workers es la dirección aprobada. El Media Edge Gemini sigue siendo un servicio separado cuando el transporte continuo de audio lo requiera.
+## Reglas de refactorización
 
-## Reglas durante la refactorización
-
-1. No crear nuevas ramas ni PRs; usar únicamente `rebuild/v39-stable-baseline` y PR #85.
-2. No merge, no ready-for-review, no force-push, no reescritura de historia.
-3. No continuar corrigiendo defectos del camino híbrido salvo que:
-   - bloqueen la propia separación;
-   - afecten también al producto OpenAI independiente;
-   - o exista evidencia de que el código sobrevivirá a la nueva arquitectura.
-4. No copiar automáticamente lógica del Worker actual al Worker Gemini.
-5. No considerar el Worker actual como diseño óptimo de OpenAI; también será auditado y simplificado después.
-6. No borrar hardening útil sólo porque fue descubierto durante el trabajo Gemini. Seguridad, concurrencia, diagnóstico y reglas de negocio se conservan si son realmente generales.
-7. No compartir orchestration conversacional por obligación. La reutilización se justifica después, con evidencia.
-8. Supabase permanece único en esta fase. La base compartida no implica runtime compartido.
-9. Una futura topología con N bases deberá preservar los mismos contratos y requerirá decisión posterior.
-10. Cada fase debe dejar este documento actualizado para relevo entre sesiones.
+1. Usar exclusivamente `rebuild/v39-stable-baseline` y PR #85.
+2. PR #85 permanece OPEN y DRAFT; no merge, ready, force-push ni historia reescrita.
+3. No seguir arreglando el camino híbrido salvo bloqueo de la separación o código que vaya a sobrevivir.
+4. No copiar automáticamente `CallSession`, `ResponseCoordinator`, `realtime-provider-runtime` ni sideband actuales al nuevo Gemini Worker.
+5. OpenAI actual tampoco se considera automáticamente óptimo; se limpiará después de estabilizar Gemini independiente.
+6. Compartir dominio/persistencia, no orchestration conversacional por obligación.
+7. Supabase permanece único en esta fase.
+8. No introducir N bases, coexistencia o failover ahora.
+9. One state owner per concern.
+10. No usar timers/sleeps para ocultar ordering; usar identidad, ACK, estados y evidencia.
+11. No exponer secretos para facilitar probes. Los probes deben ejecutarse donde el secreto ya está correctamente aislado.
+12. Cada sesión actualiza este plan/relevo antes de cerrar.
 
 ---
 
@@ -94,186 +67,243 @@ La separación física de Workers es la dirección aprobada. El Media Edge Gemin
 
 **Estado:** COMPLETADA.
 
-- [x] ADR-003 creado y aceptado.
-- [x] Dos sistemas realtime independientes definidos.
-- [x] Dos Workers separados fijados como arquitectura objetivo.
-- [x] Gemini Media Edge conservado como servicio específico Gemini.
-- [x] Supabase único compartido en esta fase.
-- [x] No coexistencia simultánea por cliente declarada fuera del requisito actual.
-- [x] Futuro N-Supabase reconocido como evolución posterior por contratos.
-- [x] Limpieza posterior del Worker OpenAI incluida como fase explícita.
-- [x] Plan operativo/checklist persistente creado.
-- [x] `SESSION_HANDOFF.md` actualizado para apuntar a ADR-003 y este plan.
-- [x] `PROJECT_STATUS.md` actualizado para declarar obsoleto el plan híbrido G1–G5 como dirección de producto.
+- [x] ADR-003 creado.
+- [x] Dos productos realtime independientes aprobados.
+- [x] Dos Workers separados fijados como dirección.
+- [x] Gemini Media Edge conservado como servicio Gemini.
+- [x] Supabase compartido en esta fase.
+- [x] Futura N-Supabase reconocida como evolución posterior.
+- [x] Limpieza posterior de OpenAI incluida.
+- [x] `PROJECT_STATUS.md` / `SESSION_HANDOFF.md` orientados al nuevo paradigma.
 
-**Criterio de salida:** cumplido.
+---
 
-## Fase 1 — Inventario arquitectónico del sistema actual
+## Fase 1 — Inventario arquitectónico
 
 **Estado:** COMPLETADA.
-
-**Evidencia de cierre:** [`PROVIDER_RUNTIME_INVENTORY_PHASE1_CLOSURE.md`](./PROVIDER_RUNTIME_INVENTORY_PHASE1_CLOSURE.md).
-
-### 1A. Topología y entrypoints
-
-- [x] Enumerar `apps/`, Workers, servicios y entrypoints efectivos.
-- [x] Identificar Worker productivo actual y sus bindings/configuración.
-- [x] Identificar Gemini Media Edge, endpoints y responsabilidades.
-- [x] Identificar pipelines CI/deploy que hoy mezclan responsabilidades.
-
-### 1B. Inventario del Control Plane / Worker actual
-
-- [x] Catalogar lifecycle conversacional/composición superior suficiente para no reutilizar la herencia actual.
-- [x] Catalogar response coordination / response ownership y marcar lo no demostrablemente neutral.
-- [x] Catalogar turn ownership / concurrency / watchdogs.
-- [x] Catalogar OpenAI adapters y wire handling.
-- [x] Catalogar Gemini branches, sideband, bootstrap y adapters dentro del Worker.
-- [x] Catalogar ToolGateway y herramientas empresariales.
-- [x] Catalogar reservas, horarios, identidad y autorización representativos.
-- [x] Catalogar persistencia y Supabase adapters.
-- [x] Catalogar observabilidad/diagnóstico.
-- [x] Catalogar Telnyx neutral vs Telnyx específico de un producto.
-
-### 1C. Inventario Gemini Media Edge
-
-- [x] Conexión Telnyx Media Streaming.
-- [x] Conexión Gemini Live.
-- [x] VAD/STT/input authority.
-- [x] semantic preselection/tool gate.
-- [x] playback/mark/clear a nivel de ownership/camino crítico.
-- [x] governed speech/TTS actual.
-- [x] reconnect/session rotation.
-- [x] sideband/control-plane coupling.
-- [x] diagnóstico, health y registries relevantes.
-
-### 1D. Clasificación
-
-- [x] Etiquetar piezas representativas `SHARED_DOMAIN` / `OPENAI_NATIVE` / `GEMINI_NATIVE` / `LEGACY_COMPAT_REDESSIGN` / `UNRESOLVED`.
-- [x] Registrar dependencias cruzadas que impiden separación física.
-- [x] Identificar owners/abstracciones que traducen OpenAI↔Gemini artificialmente.
-- [x] Construir camino crítico Gemini y localizar saltos de latencia/compatibilidad.
-- [x] Clasificar cada salto como `ESSENTIAL`, `KEEP_FOR_INVARIANT`, `REMOVE_OR_COLLAPSE`, `REWRITE` o `BENCHMARK`.
-- [x] Convertir cuestiones restantes en decisiones explícitas de Fase 2 en lugar de incertidumbres de inventario.
 
 **Entregables:**
 
 - [`PROVIDER_RUNTIME_INVENTORY.md`](./PROVIDER_RUNTIME_INVENTORY.md)
 - [`PROVIDER_RUNTIME_INVENTORY_PHASE1_CLOSURE.md`](./PROVIDER_RUNTIME_INVENTORY_PHASE1_CLOSURE.md)
 
-**Criterio de salida:** cumplido. No se modificó runtime durante la Fase 1.
+**Cierre demostrado:**
 
-## Fase 2 — Diseño detallado del producto Gemini independiente
+- [x] Worker actual identificado como OpenAI-first con contaminación Gemini.
+- [x] superficie Gemini dentro de `apps/control-plane` clasificada.
+- [x] Gemini Media Edge auditado.
+- [x] camino crítico actual reconstruido.
+- [x] STT Google batch, semantic preselection aislada, doble voz, provider rotation post-tool y sideband sticky identificados.
+- [x] ToolGateway / reservas / Supabase / seguridad / diagnóstico clasificados.
+- [x] OpenAI-native vs Gemini-native vs legacy compatibility separados conceptualmente.
+- [x] no se modificó runtime en Fase 1.
 
-**Estado:** ACTIVA / PRÓXIMA ACCIÓN.
+---
 
-- [ ] Definir entrypoint del Gemini Worker.
-- [ ] Definir estado/lifecycle Gemini desde semántica real de Gemini Live.
-- [ ] Definir frontera Gemini Worker ↔ Gemini Media Edge.
-- [ ] Clasificar qué responsabilidades actuales permanecen en Media Edge y cuáles pasan al Worker.
-- [ ] Definir tool flow y post-tool continuation Gemini nativos, sin provider rotation por defecto.
-- [ ] Definir barge-in/input detection/reconnect Gemini.
-- [ ] Definir estrategia de una sola identidad vocal por sesión.
-- [ ] Decidir mediante evidencia/benchmark si Google STT batch permanece.
-- [ ] Rediseñar o eliminar la doble decisión semantic preselection + Gemini Live manteniendo autorización fail-closed.
-- [ ] Definir contrato Worker↔Edge con política explícita de errores/recuperación; no copiar el sideband actual por inercia.
-- [ ] Definir interacción con ToolGateway/dominio/Supabase compartidos por inyección.
-- [ ] Definir observabilidad y correlación Gemini.
-- [ ] Definir secretos/bindings propios Gemini sin OpenAI.
-- [ ] Definir CI y E2E Gemini independientes.
-- [ ] Revisar qué código `GEMINI_NATIVE` existente se puede reutilizar sin importar semántica OpenAI.
+## Fase 2 — Diseño y contratos del Gemini independiente
 
-**Entregable:** `docs/architecture/GEMINI_INDEPENDENT_RUNTIME_DESIGN.md`.
+**Estado:** ACTIVA.
 
-**Criterio de salida:** diseño implementable, con owners y contratos explícitos, antes de crear/mover runtime.
+### 2A — Diseño de producto
+
+- [x] Topología Gemini Worker + `GeminiCallSession` DO + Gemini Media Edge + Gemini Live definida.
+- [x] ownership Worker/DO/Edge definido.
+- [x] Gemini Live conserva su propia semántica; no imita OpenAI.
+- [x] tool flow same-session mediante FunctionResponse definido.
+- [x] provider rotation post-tool eliminado del diseño nuevo.
+- [x] semantic preselection aislada eliminada como requisito por defecto.
+- [x] audio entra a Live en tiempo real; STT/security pasa a gate paralelo inicialmente.
+- [x] single-voice Gemini Live definido como requisito arquitectónico.
+- [x] VAD/manual activity baseline definido en Media Edge.
+- [x] session resumption/GoAway definido como recuperación de conexión, no como lifecycle de negocio.
+- [x] shared packages por dependency injection definidos.
+- [x] secretos Gemini separados de OpenAI en diseño.
+- [x] CI/E2E Gemini independientes definidos conceptualmente.
+
+**Documento:** [`GEMINI_INDEPENDENT_RUNTIME_DESIGN.md`](./GEMINI_INDEPENDENT_RUNTIME_DESIGN.md)
+
+### 2B — Revisión contra APIs actuales
+
+- [x] diseño contrastado con Gemini Live vigente y Cloudflare DO/WebSockets.
+- [x] DO WebSocket Hibernation aceptado como servidor de control.
+- [x] estado crítico del DO obligado a sobrevivir hibernación/reconstrucción.
+- [x] session resumption declarado explícitamente **no rollback de seguridad**.
+- [x] output quarantine redefinido: bloquea efectos/audio, no borra contexto Gemini.
+- [x] rejected-turn trust recovery definido.
+- [x] control speech actualizado a semántica Gemini 3.1 vigente (`sendRealtimeInput({text})` a validar).
+- [x] ACK/NACK explícito añadido para efectos Worker↔Edge.
+- [x] tool/business idempotency separada de transport idempotency.
+
+**Documento:** [`GEMINI_INDEPENDENT_RUNTIME_DESIGN_REVIEW.md`](./GEMINI_INDEPENDENT_RUNTIME_DESIGN_REVIEW.md)
+
+### 2C — Control Contract v1
+
+- [x] protocolo `gemini-control.v1` definido.
+- [x] envelope, identities y sequence definidos.
+- [x] ACK/NACK definidos.
+- [x] Edge→Worker events definidos.
+- [x] Worker→Edge commands definidos.
+- [x] replay/reconnect/SYNC definidos.
+- [x] límites bounded iniciales definidos.
+- [x] estado mínimo persistente del DO definido.
+- [x] invariantes de lifecycle/identity definidos.
+- [x] política sensitive payload transient definida.
+
+**Documento:** [`GEMINI_CONTROL_CONTRACT_V1.md`](./GEMINI_CONTROL_CONTRACT_V1.md)
+
+### 2D — Implementación contract-first sin tráfico
+
+- [x] creado `apps/gemini-control-plane/` como paquete independiente.
+- [x] no tiene OpenAI SDK ni runtime dependency.
+- [x] creado `src/control-contract/v1.ts`.
+- [x] parser/validator de envelope implementado.
+- [x] validación de payloads v1 implementada.
+- [x] decisión `APPLY / DUPLICATE / OUT_OF_ORDER` implementada.
+- [x] builders ACK/NACK implementados.
+- [x] tests de versión/binding/sequence/duplicate/ACK/NACK/payload limits añadidos.
+- [x] workflow `Gemini Control Plane CI` independiente creado.
+- [x] CI Gemini Control Plane validó typecheck + tests en el primer SHA del contrato.
+- [ ] añadir lockfile y cambiar CI a `npm ci` cuando se fijen dependencias del skeleton.
+
+### 2E — Probes obligatorios antes de declarar diseño cerrado
+
+#### D1 — Transcript authority
+
+- [ ] comparar Google STT batch actual vs Gemini input transcription vs alternativa streaming si aporta valor.
+- [ ] medir EOS→transcript p50/p95, calidad telefonía/español, split-turn, coste y ordering/finality.
+
+#### D2 — Control speech Gemini-native
+
+- [ ] probar greeting/presence/recovery/handoff/terminal usando semántica Live vigente.
+- [ ] baseline a probar: realtime text (`sendRealtimeInput({text})`) tras primer turno.
+- [ ] demostrar misma voz, no caller evidence, no tool side-effect y siguiente caller turn natural.
+- [ ] ejecutar probe dentro de superficie donde `GEMINI_API_KEY` ya está aislada; no exponer secreto al workflow.
+
+#### D3 — Authorization/output quarantine
+
+- [ ] medir `activityEnd → TURN_AUTHORIZED` p50/p95.
+- [ ] medir bytes PCM quarantined y output/tool temprano.
+- [ ] fijar límite y policy fail-closed por evidencia.
+
+#### D4 — DO↔Edge WSS
+
+- [ ] probar Hibernation API.
+- [ ] probar reconstrucción tras nuevo constructor.
+- [ ] sequence/idempotency/ACK/NACK/replay.
+- [ ] medir p50/p95.
+- [ ] demostrar ausencia de sticky poison.
+
+#### D5 — Rejected-turn trust recovery
+
+- [ ] rechazo terminal: sin output/tool effect y cierre limpio.
+- [ ] si se habilita rechazo no terminal: nueva sesión limpia desde trusted state.
+- [ ] demostrar que contenido rechazado no reaparece en contexto reconstruido.
+
+### Criterio de salida Fase 2
+
+Fase 2 podrá marcarse COMPLETADA cuando:
+
+- [x] arquitectura/owners estén definidos;
+- [x] contrato v1 esté definido;
+- [x] contrato tenga implementación/test puro inicial;
+- [x] no exista dependencia conceptual OpenAI en el nuevo Gemini Worker;
+- [ ] D2 tenga mecanismo exacto probado;
+- [ ] D4 valide el modelo de control WSS/hibernación o produzca ajuste explícito;
+- [ ] límites/ACK/replay v1 queden ratificados por tests/probe;
+- [ ] primera tarea de construcción del DO quede definida a nivel commit.
+
+No habilitar tráfico productivo del nuevo camino antes de este criterio.
+
+---
 
 ## Fase 3 — Construcción y migración Gemini
 
-**Estado:** BLOQUEADA por Fase 2.
+**Estado:** BLOQUEADA por criterio de salida de Fase 2.
 
-- [ ] Crear Worker Gemini en la rama existente.
-- [ ] Migrar sólo piezas `GEMINI_NATIVE` aprobadas.
-- [ ] Reescribir piezas `LEGACY_COMPAT_REDESSIGN` cuando sean necesarias para Gemini.
-- [ ] Conectar dominio/Supabase compartidos por contratos explícitos.
-- [ ] Eliminar dependencia runtime de OpenAI en el producto Gemini.
-- [ ] Garantizar que pipeline Gemini no requiere secretos OpenAI.
-- [ ] E2E: saludo, conversación, reserva multi-turno, herramientas, alternativas, confirmación, barge-in, cierre, reconexión.
-- [ ] E2E: una sola identidad vocal durante toda la llamada.
+Orden previsto:
 
-**Criterio de salida:** Gemini funciona como producto autónomo sin runtime/credenciales OpenAI.
+1. `GeminiCallSession` skeleton + storage mínimo.
+2. admission Telnyx Gemini sin número productivo.
+3. Edge↔DO contract v1 detrás de camino no productivo.
+4. tool call → ToolGateway → FunctionResponse same-session.
+5. output quarantine + caller security gate.
+6. rejected-turn trust recovery.
+7. single-voice control turns.
+8. D1 transcript authority final/baseline.
+9. E2E sintético completo.
+10. canary Gemini manual sólo tras SHA/CI/deploy/E2E verificados.
+11. retirar camino Gemini híbrido sólo después del canary exitoso.
 
-## Fase 4 — Limpieza y optimización del producto OpenAI
+**Criterio de salida:** producto Gemini autónomo sin runtime/credenciales OpenAI.
 
-**Estado:** BLOQUEADA hasta que Gemini independiente esté probado.
+---
 
-- [ ] Inventariar toda referencia Gemini restante en el Worker OpenAI.
-- [ ] Retirar sideband/bootstrap/configuración Gemini que ya no pertenezca a OpenAI.
-- [ ] Retirar branches de provider y adapters creados sólo por convivencia híbrida.
-- [ ] Retirar secretos/bindings Gemini del deploy OpenAI.
-- [ ] Revisar coordinadores/owners introducidos por compatibilidad histórica.
-- [ ] Simplificar caminos OpenAI cuando la semántica real de OpenAI permita menos capas.
-- [ ] Conservar hardening general demostrado: seguridad, concurrencia, dominio, diagnóstico, confirmación backend, etc.
-- [ ] Verificar que OpenAI compila y despliega sin paquete/runtime Gemini.
-- [ ] E2E completo OpenAI después de limpieza.
+## Fase 4 — Limpieza y optimización OpenAI
 
-**Criterio de salida:** producto OpenAI eficiente y autónomo, no simplemente “el Worker viejo sin Gemini”.
+**Estado:** BLOQUEADA hasta Gemini independiente probado.
+
+- [ ] retirar Gemini sideband/bootstrap/bindings/branches del Worker OpenAI.
+- [ ] retirar secretos/configuración Gemini.
+- [ ] reevaluar coordinadores/owners creados por compatibilidad histórica.
+- [ ] simplificar OpenAI según OpenAI Realtime real.
+- [ ] conservar hardening general útil.
+- [ ] E2E OpenAI completo sin runtime Gemini.
+
+---
 
 ## Fase 5 — Separación operacional
 
-- [ ] CI OpenAI independiente.
-- [ ] CI Gemini independiente.
-- [ ] Deploy OpenAI independiente.
-- [ ] Deploy Gemini independiente.
-- [ ] Secretos/bindings segregados.
-- [ ] Health/readiness separados.
-- [ ] Runbooks separados.
-- [ ] Diagnóstico en Supabase identifica inequívocamente producto/runtime/deployment.
+- [ ] CI/deploy OpenAI independientes.
+- [x] CI básico Gemini Control Plane ya existe para contrato/skeleton.
+- [ ] CI/deploy Gemini completos e independientes.
+- [ ] secretos/bindings segregados.
+- [ ] health/readiness/runbooks separados.
+- [ ] diagnóstico Supabase identifica producto/runtime/deployment.
+
+---
 
 ## Fase 6 — Evolución futura (fuera de alcance actual)
 
-- [ ] Coexistencia simultánea de productos para un mismo cliente, sólo si aparece requisito real.
-- [ ] Selección/failover entre providers, sólo mediante ADR específico.
-- [ ] N proyectos/bases Supabase manteniendo contratos de persistencia.
-- [ ] Packaging/comercialización por cliente y automatización de provisioning.
+- [ ] coexistencia simultánea por cliente sólo si aparece requisito.
+- [ ] failover/provider selection sólo mediante ADR posterior.
+- [ ] N proyectos/bases Supabase con los mismos contratos.
+- [ ] provisioning/comercialización automatizados.
 
 ---
 
 # Registro de trabajo
 
-## 2026-08-26 — Cambio de paradigma y relevo
+## 2026-08-26 — Cambio de paradigma
 
 - dos productos / dos Workers aprobados;
 - Supabase compartido;
-- ADR-003, plan, status y handoff actualizados;
-- runtime híbrido deja de ser arquitectura objetivo.
+- runtime híbrido deja de ser objetivo.
 
 ## 2026-08-26 — Fase 1 cerrada
 
-**Completado:**
+- inventario y camino crítico documentados;
+- no se modificó runtime.
 
-- inventario de Worker, Gemini Media Edge y CI/deploy;
-- confirmada contaminación Gemini sustancial dentro del Worker OpenAI-first;
-- identificadas abstracciones híbridas `LEGACY_COMPAT_REDESSIGN`;
-- identificado dominio/persistencia realmente compartible;
-- auditados CallSession/response/turn ownership a nivel necesario para no copiar la arquitectura histórica;
-- reconstruido camino crítico Gemini;
-- confirmado STT Google batch, preselección aislada, doble voz y provider rotation post-tool;
-- clasificados seguridad, diagnóstico y Telnyx;
-- clasificados saltos del camino crítico;
-- cuestiones restantes trasladadas explícitamente a Fase 2.
+## 2026-08-26 — Fase 2: diseño, revisión y contrato v1
 
-**No se modificó runtime.**
+- creado `GEMINI_INDEPENDENT_RUNTIME_DESIGN.md`;
+- revisión contra APIs actuales documentada en `GEMINI_INDEPENDENT_RUNTIME_DESIGN_REVIEW.md`;
+- detectado riesgo de contexto contaminado en turnos enviados a Live antes de security authorization;
+- session resumption separado de trust recovery;
+- creado `GEMINI_CONTROL_CONTRACT_V1.md`;
+- creado skeleton `apps/gemini-control-plane` sin tráfico;
+- implementado/testeado contrato puro v1;
+- creado CI independiente Gemini Control Plane y validado verde para contrato.
 
-**Siguiente acción exacta:** crear `docs/architecture/GEMINI_INDEPENDENT_RUNTIME_DESIGN.md` y diseñar el Gemini Worker independiente antes de implementar código.
+**Siguiente acción exacta:** implementar un **probe D2 aislado de control speech Gemini-native** dentro de una superficie que ya disponga de `GEMINI_API_KEY` sin exponer el secreto al workflow; después ejecutar D4 con un `GeminiCallSession` DO de prueba/no productivo para validar Hibernation + sequence/ACK/replay antes de habilitar cualquier tráfico real.
 
-## Cómo debe trabajar una sesión posterior
+## Relevo entre sesiones
 
-1. verificar HEAD remoto, PR #85 y estado de CI;
+1. verificar HEAD remoto, PR #85 y CI real;
 2. leer ADR-003;
 3. leer este plan;
-4. leer cierre de Fase 1 e inventario;
-5. localizar la primera casilla pendiente de Fase 2;
-6. trabajar sólo esa frontera con evidencia;
-7. actualizar este checklist antes de cerrar la sesión;
-8. registrar commit/SHA y siguiente acción exacta.
-
-No reabrir decisiones marcadas como aprobadas salvo nueva evidencia que obligue a un ADR posterior.
+4. leer cierre Fase 1;
+5. leer diseño + revisión + contrato v1;
+6. inspeccionar `apps/gemini-control-plane` y su CI;
+7. continuar desde la primera casilla pendiente de Fase 2E;
+8. actualizar este documento y `docs/SESSION_HANDOFF.md` antes de cerrar.
