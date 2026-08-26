@@ -2,6 +2,20 @@ const TELNYX_API_BASE = "https://api.telnyx.com/v2";
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
+type TelnyxOptions = Readonly<{ apiKey: string; fetcher?: FetchLike }>;
+
+export type FastTelnyxAnswer = Readonly<{
+  callControlId: string;
+  commandId: string;
+}>;
+
+export type FastTelnyxStreamingStart = Readonly<{
+  callControlId: string;
+  edgeUrl: string;
+  streamAuthToken: string;
+  commandId: string;
+}>;
+
 export type FastTelnyxMediaStart = Readonly<{
   callControlId: string;
   edgeUrl: string;
@@ -27,6 +41,13 @@ function cleanEdgeUrl(value: unknown): string {
   }
   if (parsed.pathname !== "/telnyx/gemini") throw new Error("Fast Telnyx edge URL path is invalid");
   return parsed.toString();
+}
+
+function client(options: TelnyxOptions): Readonly<{ apiKey: string; fetcher: FetchLike }> {
+  return Object.freeze({
+    apiKey: required(options.apiKey, "TELNYX_API_KEY", 8_192),
+    fetcher: options.fetcher ?? fetch,
+  });
 }
 
 async function command(
@@ -56,27 +77,21 @@ async function command(
   }
 }
 
-/**
- * Establishes the audio-only fast path with the minimum two Telnyx commands.
- * Telnyx requires answer before later commands. streaming_start is separate
- * because stream_auth_token is available there and binds the WebSocket to the
- * pre-provisioned fast-media admission.
- */
-export async function startFastGeminiTelnyxMedia(
-  input: FastTelnyxMediaStart,
-  options: Readonly<{ apiKey: string; fetcher?: FetchLike }>,
-): Promise<void> {
-  const apiKey = required(options.apiKey, "TELNYX_API_KEY", 8_192);
+export async function answerFastGeminiTelnyxCall(input: FastTelnyxAnswer, options: TelnyxOptions): Promise<void> {
+  const configured = client(options);
+  const callControlId = required(input.callControlId, "Fast Telnyx call control id", 512);
+  const commandId = required(input.commandId, "Fast Telnyx answer command id", 256);
+  await command(configured.apiKey, callControlId, "answer", { command_id: commandId }, configured.fetcher);
+}
+
+export async function startFastGeminiTelnyxStreaming(input: FastTelnyxStreamingStart, options: TelnyxOptions): Promise<void> {
+  const configured = client(options);
   const callControlId = required(input.callControlId, "Fast Telnyx call control id", 512);
   const edgeUrl = cleanEdgeUrl(input.edgeUrl);
   const streamAuthToken = required(input.streamAuthToken, "Fast Telnyx streaming auth token", 4_000);
-  const answerCommandId = required(input.answerCommandId, "Fast Telnyx answer command id", 256);
-  const streamCommandId = required(input.streamCommandId, "Fast Telnyx stream command id", 256);
-  const fetcher = options.fetcher ?? fetch;
-
-  await command(apiKey, callControlId, "answer", { command_id: answerCommandId }, fetcher);
-  await command(apiKey, callControlId, "streaming_start", {
-    command_id: streamCommandId,
+  const commandId = required(input.commandId, "Fast Telnyx stream command id", 256);
+  await command(configured.apiKey, callControlId, "streaming_start", {
+    command_id: commandId,
     stream_url: edgeUrl,
     stream_track: "inbound_track",
     stream_codec: "L16",
@@ -85,5 +100,16 @@ export async function startFastGeminiTelnyxMedia(
     stream_bidirectional_target_legs: "both",
     stream_bidirectional_sampling_rate: 16000,
     stream_auth_token: streamAuthToken,
-  }, fetcher);
+  }, configured.fetcher);
+}
+
+/** Convenience composition used outside the latency-optimized pre-call runtime. */
+export async function startFastGeminiTelnyxMedia(input: FastTelnyxMediaStart, options: TelnyxOptions): Promise<void> {
+  await answerFastGeminiTelnyxCall({ callControlId: input.callControlId, commandId: input.answerCommandId }, options);
+  await startFastGeminiTelnyxStreaming({
+    callControlId: input.callControlId,
+    edgeUrl: input.edgeUrl,
+    streamAuthToken: input.streamAuthToken,
+    commandId: input.streamCommandId,
+  }, options);
 }
