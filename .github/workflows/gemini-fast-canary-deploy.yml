@@ -9,7 +9,6 @@ on:
       - "apps/gemini-media-edge/src/server-fast.mjs"
       - "apps/gemini-media-edge/src/startup-fast.mjs"
       - "apps/gemini-media-edge/Dockerfile.fast"
-      - "apps/gemini-media-edge/deploy/cloud-run/deploy-fast.ps1"
       - "apps/gemini-media-edge/deploy/cloud-run/cloudbuild-fast.yaml"
       - ".github/workflows/gemini-fast-canary-deploy.yml"
   workflow_dispatch:
@@ -30,11 +29,12 @@ env:
   GEMINI_API_KEY_SECRET_VERSION: "1"
   CREDENTIAL_SECRET_VERSION: "1"
   CONTROL_TOKEN_SECRET_VERSION: "1"
-  FAST_SERVICE: gemini-media-edge-fast
+  DEPLOY_SERVICE: gemini-media-edge
+  ARTIFACT_REPOSITORY: ia-realtime-centercall
 
 jobs:
   deploy:
-    name: Deploy isolated Gemini 3.1 fast canary
+    name: Deploy zero-traffic Gemini 3.1 fast canary
     runs-on: ubuntu-latest
     timeout-minutes: 35
 
@@ -69,39 +69,85 @@ jobs:
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
 
-      - name: Deploy isolated fast service
-        shell: pwsh
+      - name: Build immutable fast image
+        id: image
+        shell: bash
         run: |
-          ./apps/gemini-media-edge/deploy/cloud-run/deploy-fast.ps1 `
-            -ProjectId "${{ env.GCP_PROJECT_ID }}" `
-            -Region "${{ env.GCP_REGION }}" `
-            -GeminiApiKeySecretVersion "${{ env.GEMINI_API_KEY_SECRET_VERSION }}" `
-            -CredentialSecretVersion "${{ env.CREDENTIAL_SECRET_VERSION }}" `
-            -ControlTokenSecretVersion "${{ env.CONTROL_TOKEN_SECRET_VERSION }}" `
-            -Service "${{ env.FAST_SERVICE }}" `
-            -ImageTag "fast-${{ github.sha }}"
+          set -euo pipefail
+          SHORT_SHA="${GITHUB_SHA:0:12}"
+          IMAGE_TAG="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}/gemini-media-edge-fast:fast-${SHORT_SHA}"
+          gcloud builds submit apps/gemini-media-edge \
+            --config apps/gemini-media-edge/deploy/cloud-run/cloudbuild-fast.yaml \
+            --substitutions "_IMAGE=${IMAGE_TAG}" \
+            --region "$GCP_REGION" \
+            --project "$GCP_PROJECT_ID" \
+            --quiet
+          DIGEST="$(gcloud artifacts docker images describe "$IMAGE_TAG" --project "$GCP_PROJECT_ID" --format='value(image_summary.digest)')"
+          test "$DIGEST" != ""
+          IMMUTABLE_IMAGE="${IMAGE_TAG%:*}@${DIGEST}"
+          echo "immutable_image=$IMMUTABLE_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "tag=fast-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve exact fast revision
+      - name: Snapshot production traffic
+        id: before
+        shell: bash
+        run: |
+          set -euo pipefail
+          SERVICE_JSON="$(gcloud run services describe "$DEPLOY_SERVICE" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format=json)"
+          ACTIVE="$(echo "$SERVICE_JSON" | jq -c '[.status.traffic[] | select((.percent // 0) > 0) | {revisionName,percent}] | sort_by(.revisionName)')"
+          test "$ACTIVE" != "[]"
+          echo "active=$ACTIVE" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy fast revision with zero production traffic
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run deploy "$DEPLOY_SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --image "${{ steps.image.outputs.immutable_image }}" \
+            --service-account "gemini-media-edge@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
+            --execution-environment gen2 \
+            --port 8080 \
+            --cpu 1 \
+            --memory 512Mi \
+            --concurrency 25 \
+            --min-instances 1 \
+            --max-instances 1 \
+            --timeout 3600 \
+            --set-env-vars "MEDIA_EDGE_SINGLE_INSTANCE=true,MEDIA_EDGE_PUBLIC_URL=wss://bootstrap.invalid/telnyx/gemini,GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview,GEMINI_LIVE_VOICE=Kore" \
+            --set-secrets "GEMINI_API_KEY=gemini-media-edge-gemini-api-key:${GEMINI_API_KEY_SECRET_VERSION},MEDIA_EDGE_CREDENTIAL_HMAC_SECRET=gemini-media-edge-credential-hmac-secret:${CREDENTIAL_SECRET_VERSION},MEDIA_EDGE_CONTROL_PLANE_TOKEN=gemini-media-edge-control-plane-token:${CONTROL_TOKEN_SECRET_VERSION}" \
+            --no-traffic \
+            --tag "${{ steps.image.outputs.tag }}" \
+            --quiet
+
+      - name: Resolve tagged fast revision and prove production traffic unchanged
         id: deployed
         shell: bash
         run: |
           set -euo pipefail
-          REVISION="$(gcloud run services describe "$FAST_SERVICE" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(status.latestReadyRevisionName)')"
-          SERVICE_URL="$(gcloud run services describe "$FAST_SERVICE" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(status.url)')"
-          IMAGE="$(gcloud run revisions describe "$REVISION" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(spec.containers[0].image)')"
+          SERVICE_JSON="$(gcloud run services describe "$DEPLOY_SERVICE" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format=json)"
+          AFTER_ACTIVE="$(echo "$SERVICE_JSON" | jq -c '[.status.traffic[] | select((.percent // 0) > 0) | {revisionName,percent}] | sort_by(.revisionName)')"
+          test "$AFTER_ACTIVE" = '${{ steps.before.outputs.active }}'
+          TAG='${{ steps.image.outputs.tag }}'
+          REVISION="$(echo "$SERVICE_JSON" | jq -r --arg TAG "$TAG" '.status.traffic[] | select(.tag == $TAG) | .revisionName' | head -n1)"
+          TAG_URL="$(echo "$SERVICE_JSON" | jq -r --arg TAG "$TAG" '.status.traffic[] | select(.tag == $TAG) | .url' | head -n1)"
           test -n "$REVISION"
-          test -n "$SERVICE_URL"
-          test -n "$IMAGE"
+          test -n "$TAG_URL"
+          test "$REVISION" != "null"
+          test "$TAG_URL" != "null"
+          IMAGE="$(gcloud run revisions describe "$REVISION" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(spec.containers[0].image)')"
+          test "$IMAGE" = '${{ steps.image.outputs.immutable_image }}'
           echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
-          echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
+          echo "tag_url=$TAG_URL" >> "$GITHUB_OUTPUT"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "edge_url=wss://${SERVICE_URL#https://}/telnyx/gemini" >> "$GITHUB_OUTPUT"
+          echo "edge_url=wss://${TAG_URL#https://}/telnyx/gemini" >> "$GITHUB_OUTPUT"
 
-      - name: Verify startup provider gate and public readiness
+      - name: Verify startup provider gate and tagged readiness
         shell: bash
         run: |
           set -euo pipefail
-          READY_URL="${{ steps.deployed.outputs.service_url }}/ready"
+          READY_URL="${{ steps.deployed.outputs.tag_url }}/ready"
           BODY=""
           for attempt in $(seq 1 30); do
             if BODY="$(curl --fail --silent --show-error --max-time 5 "$READY_URL")"; then
@@ -121,11 +167,13 @@ jobs:
           {
             echo "### Gemini 3.1 ultra-low-latency fast canary"
             echo "- Source SHA: \`${GITHUB_SHA}\`"
-            echo "- Service: \`${FAST_SERVICE}\` (isolated; no production number routed)"
+            echo "- Cloud Run service: \`${DEPLOY_SERVICE}\`"
+            echo "- Production traffic: **unchanged**"
+            echo "- Canary traffic: **0%**, reachable only through revision tag"
             echo "- Revision: \`${{ steps.deployed.outputs.revision }}\`"
             echo "- Image: \`${{ steps.deployed.outputs.image }}\`"
             echo "- Model: \`gemini-3.1-flash-live-preview\`"
             echo "- Startup gate: real Gemini Live setup + native audio + turnComplete"
-            echo "- Service URL: \`${{ steps.deployed.outputs.service_url }}\`"
+            echo "- Tagged URL: \`${{ steps.deployed.outputs.tag_url }}\`"
             echo "- WSS: \`${{ steps.deployed.outputs.edge_url }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
