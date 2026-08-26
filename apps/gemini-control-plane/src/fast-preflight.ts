@@ -216,13 +216,6 @@ export async function routeFastGeminiPreflight(
   } catch {
     return Response.json({ ok: false, status: "TELNYX_ROUTE_LOOKUP_FAILED" }, { status: 502 });
   }
-  if (!telnyxRoute.matches) {
-    return Response.json({
-      ok: false,
-      status: "TELNYX_ROUTE_MISMATCH",
-      connectionScope: telnyxRoute.connectionScope,
-    }, { status: 409 });
-  }
 
   const timestamp = now();
   const credentialId = `preflight_${randomUUID()}`;
@@ -252,6 +245,21 @@ export async function routeFastGeminiPreflight(
     await probeAuthenticatedUpgrade(admission.edgeUrl, admission.streamingAuthToken, fetcher);
   } catch {
     return Response.json({ ok: false, status: "WSS_AUTH_FAILED" }, { status: 502 });
+  }
+
+  if (!telnyxRoute.matches) {
+    return Response.json({
+      ok: false,
+      status: "TELNYX_ROUTE_MISMATCH",
+      connectionScope: telnyxRoute.connectionScope,
+      checks: {
+        mediaCredentialHmac: "VERIFIED",
+        mediaControlToken: "VERIFIED",
+        canaryEdge: "VERIFIED",
+        bootstrap: "VERIFIED",
+        websocketUpgrade: "VERIFIED",
+      },
+    }, { status: 409 });
   }
 
   return Response.json({
