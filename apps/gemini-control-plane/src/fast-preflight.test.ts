@@ -82,7 +82,8 @@ describe("fast runtime preflight", () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
       ok: false,
-      status: "TELNYX_ROUTE_MISMATCH",
+      status: "TELNYX_ROUTE_MISMATCH_MEDIA_VERIFIED",
+      routingStatus: "TELNYX_ROUTE_MISMATCH",
       connectionScope: "SHARED",
       checks: {
         mediaCredentialHmac: "VERIFIED",
