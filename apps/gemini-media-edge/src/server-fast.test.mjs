@@ -60,20 +60,24 @@ test("standalone fast server admits Telnyx media and starts only the fast Gemini
     tools: [],
   }, now);
   let gemini;
+  let verifiedEdgeUrl = null;
   const runtime = createFastGeminiMediaServer({
     geminiApiKey: "test-api-key",
     controlToken: "0123456789abcdef0123456789abcdef",
     bootstrapRegistry,
     providerReadiness: { setupMs: 321, firstAudioMs: 654 },
-    verifyCredential: async () => ({
-      credentialId: "cred-server-fast",
-      provider: "GEMINI",
-      tenantId: "tenant-fast",
-      callControlId: "v3:fast-server",
-      edgeUrl: "wss://example.invalid/telnyx/gemini",
-      targetLegs: "both",
-      notAfterEpochMs: now + 60_000,
-    }),
+    verifyCredential: async (_credential, _now, expectedEdgeUrl) => {
+      verifiedEdgeUrl = expectedEdgeUrl;
+      return {
+        credentialId: "cred-server-fast",
+        provider: "GEMINI",
+        tenantId: "tenant-fast",
+        callControlId: "v3:fast-server",
+        edgeUrl: expectedEdgeUrl,
+        targetLegs: "both",
+        notAfterEpochMs: now + 60_000,
+      };
+    },
     createGeminiSocket() { gemini = new FakeGeminiSocket(); return gemini; },
   });
 
@@ -94,6 +98,7 @@ test("standalone fast server admits Telnyx media and starts only the fast Gemini
     headers: { "x-telnyx-streaming-auth-token": "opaque-test-credential" },
   });
   await once(client, "open");
+  assert.equal(verifiedEdgeUrl, `wss://127.0.0.1:${port}/telnyx/gemini`);
   client.send(JSON.stringify({
     event: "start",
     stream_id: "stream-fast-1",
