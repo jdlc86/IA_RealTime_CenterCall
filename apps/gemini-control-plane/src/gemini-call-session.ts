@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { assertEnvelopeDirectionV1 } from "./control-contract/direction-v1";
 import {
   applyInboundSequenceV1,
   buildAckV1,
@@ -79,6 +80,24 @@ export class GeminiCallSession extends DurableObject<GeminiControlPlaneEnv> {
       envelope = parseEnvelopeV1(JSON.parse(raw), attachment.callSessionId);
     } catch {
       ws.close(1008, "invalid control envelope");
+      return;
+    }
+
+    try {
+      assertEnvelopeDirectionV1(envelope, "EDGE_TO_WORKER");
+    } catch {
+      const response = buildNackV1({
+        callSessionId: attachment.callSessionId,
+        messageId: crypto.randomUUID(),
+        sequence: this.nextOutboundSequence(),
+        rejectedMessageId: envelope.message_id,
+        rejectedSequence: envelope.sequence,
+        code: "PROTOCOL_VIOLATION",
+        retryable: false,
+        terminal: true,
+      });
+      ws.send(JSON.stringify(response));
+      ws.close(1008, "invalid control direction");
       return;
     }
 
