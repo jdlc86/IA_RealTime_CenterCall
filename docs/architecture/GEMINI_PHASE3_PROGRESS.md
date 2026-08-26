@@ -24,7 +24,10 @@ Este documento es el checkpoint operativo de Fase 3. Debe actualizarse conforme 
 - [ ] `SYNC`/replay completo de mensajes worker→edge aún no implementado.
 - [ ] comandos worker→edge con effect idempotency aún no conectados al runtime real.
 
-Evidencia validada: SHA `9044f8df141b5e1363bd13677472cac82361cea8` — Gemini Control Plane CI, Gemini Media Edge CI, Benchmark CI y Control Plane CI SUCCESS.
+Evidencia validada:
+
+- SHA `9044f8df141b5e1363bd13677472cac82361cea8`: cuatro pipelines SUCCESS tras capability + admission.
+- SHA `5275949c7571e1f91d4627cf0b5aea26dd9fb5a7`: handshake integrado admission → capability → router Worker → DO → `EDGE_READY` → `ACK APPLIED`; cuatro pipelines SUCCESS.
 
 ## 3B — Admission Telnyx Gemini
 
@@ -36,6 +39,7 @@ Evidencia validada: SHA `9044f8df141b5e1363bd13677472cac82361cea8` — Gemini Co
 - [x] admission persistida por RPC interno en `GeminiCallSession`.
 - [x] retry idéntico = idempotente; rebinding de identidad = rechazado.
 - [x] admission emite capability de control con exactamente los mismos bindings/expiry.
+- [x] admission construye bootstrap `gemini-edge-control-bootstrap.v1` efímero con WSS + Bearer capability.
 - [ ] caller-security pre-call compartida todavía no conectada al nuevo Worker.
 - [ ] webhook HTTP Gemini todavía no expuesto.
 - [ ] Telnyx `answer` todavía no conectado.
@@ -43,9 +47,12 @@ Evidencia validada: SHA `9044f8df141b5e1363bd13677472cac82361cea8` — Gemini Co
 
 ## 3C — Edge ↔ DO no productivo
 
-- [ ] definir bootstrap de control Edge↔Worker separado del bootstrap Gemini Live antiguo.
-- [ ] Media Edge usa capability Bearer y no identidad sensible en URL.
-- [ ] conectar WSS no productivo.
+- [x] bootstrap de control Edge↔Worker separado del bootstrap Gemini Live antiguo.
+- [x] bootstrap prohíbe identidad sensible en query y exige `wss://.../internal/control`.
+- [x] Media Edge canoniza el bootstrap y coloca capability sólo en `Authorization: Bearer`.
+- [x] vistas de auditoría no contienen material de capability.
+- [x] handshake autenticado demostrado en Cloudflare test runtime hasta `EDGE_READY → ACK APPLIED`.
+- [ ] cliente WSS Media Edge mínimo todavía no conectado al runtime real.
 - [ ] medir RTT p50/p95/p99.
 - [ ] medir reconnect/SYNC/replay.
 - [ ] medir quarantine high-water.
@@ -70,11 +77,12 @@ Pendiente completo. No habilitar número productivo hasta cerrar los gates E2E/c
 
 ## Siguiente acción exacta
 
-Definir y probar un bootstrap `edge-control` efímero que transporte únicamente:
+Implementar un cliente WSS mínimo y provider-specific en Media Edge para `gemini-control.v1` usando el bootstrap autenticado ya validado. Inicialmente sólo debe:
 
-- identidad inmutable de admission;
-- endpoint WSS del Gemini Worker;
-- capability Bearer opaca;
-- expiry.
+1. abrir WSS con Bearer capability;
+2. emitir `EDGE_READY` con sequence/message id propios;
+3. correlacionar `ACK/NACK`;
+4. mantener estado bounded necesario para reconnect;
+5. ser probado con transporte WebSocket inyectado antes de conectar Cloud Run al Worker nuevo.
 
-No debe incluir audio, transcript, PII, secretos de firma, Gemini API key, tools ni instrucciones del modelo. Después el Media Edge podrá abrir un WSS no productivo contra el nuevo Worker y medir el contrato real.
+No debe ejecutar tools, liberar audio ni tocar Telnyx productivo todavía.
