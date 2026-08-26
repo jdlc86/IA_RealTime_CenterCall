@@ -13,12 +13,13 @@ function base64(bytes: ArrayBuffer): string {
 async function signedRequest() {
   const keys = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
   const publicRaw = await crypto.subtle.exportKey("raw", keys.publicKey);
-  const nowEpochMs = Date.parse("2026-08-26T11:50:00.000Z");
+  const nowEpochMs = Date.now();
+  const occurredAt = new Date(nowEpochMs).toISOString();
   const timestamp = String(Math.floor(nowEpochMs / 1000));
   const rawBody = JSON.stringify({
     data: {
       id: "evt-worker-admission-1",
-      occurred_at: "2026-08-26T11:50:00.000Z",
+      occurred_at: occurredAt,
       event_type: "call.initiated",
       payload: {
         direction: "incoming",
