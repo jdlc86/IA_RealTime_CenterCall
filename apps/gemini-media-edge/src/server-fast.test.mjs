@@ -48,7 +48,7 @@ async function listen(server) {
   return address.port;
 }
 
-test("standalone fast server admits Telnyx media and starts only the fast Gemini session", async () => {
+test("standalone fast server admits real Telnyx connected then start and starts only the fast Gemini session", async () => {
   const now = Date.now();
   const bootstrapRegistry = new InMemoryFastBootstrapRegistry();
   bootstrapRegistry.register({
@@ -99,6 +99,11 @@ test("standalone fast server admits Telnyx media and starts only the fast Gemini
   });
   await once(client, "open");
   assert.equal(verifiedEdgeUrl, `wss://127.0.0.1:${port}/telnyx/gemini`);
+
+  client.send(JSON.stringify({ event: "connected", version: "1.0.0" }));
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  assert.equal(gemini, undefined, "connected is protocol setup, not the authenticated media start");
+
   client.send(JSON.stringify({
     event: "start",
     stream_id: "stream-fast-1",
@@ -123,6 +128,44 @@ test("standalone fast server admits Telnyx media and starts only the fast Gemini
   assert.equal(runtime.activeSessions(), 1);
 
   client.close();
+  await runtime.close();
+});
+
+test("fast server rejects media before authenticated Telnyx start", async () => {
+  const now = Date.now();
+  const bootstrapRegistry = new InMemoryFastBootstrapRegistry();
+  bootstrapRegistry.register({
+    credentialId: "cred-server-fast-reject",
+    tenantId: "tenant-fast",
+    callControlId: "v3:fast-server-reject",
+    notAfterEpochMs: now + 60_000,
+    systemInstruction: "Responde brevemente.",
+    tools: [],
+  }, now);
+  const runtime = createFastGeminiMediaServer({
+    geminiApiKey: "test-api-key",
+    controlToken: "0123456789abcdef0123456789abcdef",
+    bootstrapRegistry,
+    verifyCredential: async (_credential, _now, expectedEdgeUrl) => ({
+      credentialId: "cred-server-fast-reject",
+      provider: "GEMINI",
+      tenantId: "tenant-fast",
+      callControlId: "v3:fast-server-reject",
+      edgeUrl: expectedEdgeUrl,
+      targetLegs: "both",
+      notAfterEpochMs: now + 60_000,
+    }),
+  });
+  const port = await listen(runtime.server);
+  const client = new WebSocket(`ws://127.0.0.1:${port}/telnyx/gemini`, {
+    headers: { "x-telnyx-streaming-auth-token": "opaque-test-credential" },
+  });
+  await once(client, "open");
+  client.send(JSON.stringify({ event: "connected", version: "1.0.0" }));
+  client.send(JSON.stringify({ event: "media", media: { track: "inbound", chunk: 1, payload: "AAAA" } }));
+  const [code] = await once(client, "close");
+  assert.equal(code, 1008);
+  assert.equal(runtime.activeSessions(), 0);
   await runtime.close();
 });
 
