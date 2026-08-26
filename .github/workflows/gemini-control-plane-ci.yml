@@ -1,0 +1,39 @@
+name: Gemini Control Plane CI
+
+on:
+  push:
+    branches:
+      - rebuild/v39-stable-baseline
+    paths:
+      - "apps/gemini-control-plane/**"
+      - ".github/workflows/gemini-control-plane-ci.yml"
+  pull_request:
+    paths:
+      - "apps/gemini-control-plane/**"
+      - ".github/workflows/gemini-control-plane-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/gemini-control-plane
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/gemini-control-plane/package-lock.json
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck and test
+        run: npm run check
