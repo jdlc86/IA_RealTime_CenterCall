@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { routeFastGeminiCanaryWebhook, type FastGeminiCanaryEnv } from "./fast-canary-route";
-import type { FastIncomingRuntimeOptions, FastIncomingRuntimeResult } from "./fast-incoming-runtime";
+import type { FastIncomingRuntimeResult } from "./fast-incoming-runtime";
 import type { VerifiedTelnyxIncomingCall } from "./incoming-call";
 
 const ENV: FastGeminiCanaryEnv = {
@@ -39,11 +39,12 @@ function request(method = "POST"): Request {
 
 describe("fast Gemini canary webhook", () => {
   it("admits only the exact canary called number and forces audio-only session config", async () => {
-    let captured: FastIncomingRuntimeOptions | null = null;
     const response = await routeFastGeminiCanaryWebhook(request(), ENV, {
       now: () => Date.parse("2026-08-26T13:14:01.000Z"),
       startIncoming: async (_input, options): Promise<FastIncomingRuntimeResult> => {
-        captured = options;
+        expect(options.edgeUrl).toBe("wss://fast-canary.example/telnyx/gemini");
+        expect(options.admissionTtlMs).toBe(60_000);
+        expect(options.signatureMaxAgeSeconds).toBe(300);
         expect(await options.resolveTenantId(CALL)).toBe("tenant-fast-canary");
         expect(options.isCanaryAllowed("tenant-fast-canary", CALL)).toBe(true);
         const otherNumber = { ...CALL, calledNumber: "+34600000999" };
@@ -68,9 +69,6 @@ describe("fast Gemini canary webhook", () => {
 
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual({ ok: true, status: "STARTED" });
-    expect(captured?.edgeUrl).toBe("wss://fast-canary.example/telnyx/gemini");
-    expect(captured?.admissionTtlMs).toBe(60_000);
-    expect(captured?.signatureMaxAgeSeconds).toBe(300);
   });
 
   it("forwards Telnyx signature headers to the signed pre-call runtime", async () => {
