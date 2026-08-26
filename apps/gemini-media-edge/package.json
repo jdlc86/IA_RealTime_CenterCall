@@ -8,7 +8,7 @@
     "start": "node src/startup.mjs",
     "test": "node --test src/*.test.mjs",
     "test:e2e:cloud-run": "node scripts/verify-cloud-run.mjs",
-    "check": "node --check src/bootstrap.mjs && node --check src/caller-input-core.mjs && node --check src/caller-input.mjs && node --check src/control-sideband.mjs && node --check src/credential.mjs && node --check src/diagnostic-journal.mjs && node --check src/google-speech.mjs && node --check src/playback.mjs && node --check src/live-provider-contract.mjs && node --check src/live-provider-contract-probe.mjs && node --check src/live-control-speech-probe.mjs && node --check src/startup.mjs && node --check src/server.mjs && node --check src/runtime-core.mjs && node --check src/runtime.mjs"
+    "check": "node --check src/authorization-quarantine.mjs && node --check src/bootstrap.mjs && node --check src/caller-input-core.mjs && node --check src/caller-input.mjs && node --check src/control-sideband.mjs && node --check src/credential.mjs && node --check src/diagnostic-journal.mjs && node --check src/google-speech.mjs && node --check src/playback.mjs && node --check src/live-provider-contract.mjs && node --check src/live-provider-contract-probe.mjs && node --check src/live-control-speech-probe.mjs && node --check src/startup.mjs && node --check src/server.mjs && node --check src/runtime-core.mjs && node --check src/runtime.mjs"
   },
   "dependencies": { "ws": "8.21.3" }
 }
