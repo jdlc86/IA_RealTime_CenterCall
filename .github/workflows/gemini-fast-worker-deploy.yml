@@ -80,7 +80,7 @@ jobs:
             if (body.ok !== true || body.service !== "gemini-control-plane-fast") process.exit(1);
           ' "$BODY"
 
-      # Keep this deployment path independent from Cloudflare Git Builds used by OpenAI.
+      # Isolation check: this Gemini-only workflow must not trigger the OpenAI Cloudflare Git Build.
       - name: Deployment summary
         if: always()
         shell: bash
