@@ -213,8 +213,8 @@ jobs:
           test -n "$CLOUDFLARE_ACCOUNT_ID"
           test -n "$FAST_EDGE_URL"
           npm install --no-audit --no-fund
-          printf '%s' "$FAST_EDGE_URL" | npx wrangler secret put GEMINI_FAST_CANARY_EDGE_URL --config wrangler.fast.jsonc
-          npx wrangler secret list --config wrangler.fast.jsonc | grep -q 'GEMINI_FAST_CANARY_EDGE_URL'
+          npx wrangler deploy --config wrangler.fast.jsonc --var "GEMINI_FAST_CANARY_EDGE_URL:${FAST_EDGE_URL}"
+          npx wrangler deployments list --config wrangler.fast.jsonc
 
       - name: Verify Gemini fast Worker health after edge sync
         shell: bash
