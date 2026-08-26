@@ -9,6 +9,7 @@ import {
 } from "./credential.mjs";
 import { InMemoryFastBootstrapRegistry } from "./fast-bootstrap.mjs";
 import { InMemoryDiagnosticJournal } from "./diagnostic-journal.mjs";
+import { createFastDiagnosticFlusher } from "./fast-diagnostic-flush.mjs";
 import { FastGeminiRealtimeSession } from "./fast-runtime.mjs";
 
 const MEDIA_PATH = "/telnyx/gemini";
@@ -125,7 +126,6 @@ export function createFastGeminiMediaServer(options = {}) {
     if (!selected) return null;
     try {
       const normalized = { ...selected };
-      if (selected.stage === "FIRST_GEMINI_AUDIO_TO_TELNYX") normalized.stage = "FAST_FIRST_GEMINI_AUDIO_TO_TELNYX";
       if (Number.isSafeInteger(selected.sinceLastCallerMediaMicros)) normalized.observedMs = Math.round(selected.sinceLastCallerMediaMicros / 1_000);
       return diagnosticJournal.record(normalized);
     } catch {
@@ -322,16 +322,20 @@ export function createFastGeminiMediaServerFromEnv(env = process.env, options = 
     throw new Error("MEDIA_EDGE_SINGLE_INSTANCE=true is required while fast bootstrap state is in-memory");
   }
   const credentialSecret = required(env.MEDIA_EDGE_CREDENTIAL_HMAC_SECRET, "MEDIA_EDGE_CREDENTIAL_HMAC_SECRET", 8_192);
+  const controlToken = required(env.MEDIA_EDGE_CONTROL_PLANE_TOKEN, "MEDIA_EDGE_CONTROL_PLANE_TOKEN", 8_192);
+  const flushDiagnostics = options.flushDiagnostics ?? (env.FAST_DIAGNOSTIC_SINK_URL
+    ? createFastDiagnosticFlusher({ sinkUrl: env.FAST_DIAGNOSTIC_SINK_URL, controlToken })
+    : null);
   return createFastGeminiMediaServer({
     geminiApiKey: env.GEMINI_API_KEY,
     model: env.GEMINI_LIVE_MODEL || "gemini-3.1-flash-live-preview",
-    controlToken: env.MEDIA_EDGE_CONTROL_PLANE_TOKEN,
+    controlToken,
     verifyCredential: (rawCredential, nowEpochMs, expectedEdgeUrl) =>
       createHmacCredentialVerifier(credentialSecret, expectedEdgeUrl)(rawCredential, nowEpochMs),
     revision: env.K_REVISION ?? null,
     maxBufferedBytes: env.MEDIA_EDGE_MAX_BUFFERED_BYTES ? Number(env.MEDIA_EDGE_MAX_BUFFERED_BYTES) : undefined,
     providerReadiness: options.providerReadiness ?? null,
-    ...(options.flushDiagnostics ? { flushDiagnostics: options.flushDiagnostics } : {}),
+    ...(flushDiagnostics ? { flushDiagnostics } : {}),
   });
 }
 
