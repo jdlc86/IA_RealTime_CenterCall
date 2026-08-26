@@ -10,6 +10,10 @@ on:
       - "apps/gemini-media-edge/src/startup-fast.mjs"
       - "apps/gemini-media-edge/Dockerfile.fast"
       - "apps/gemini-media-edge/deploy/cloud-run/cloudbuild-fast.yaml"
+      - "apps/gemini-control-plane/src/fast-preflight.ts"
+      - "apps/gemini-control-plane/src/fast-preflight.test.ts"
+      - "apps/gemini-control-plane/src/telnyx/fast-canary-route.ts"
+      - "apps/gemini-control-plane/src/telnyx/fast-canary-route.test.ts"
       - ".github/workflows/gemini-fast-canary-deploy.yml"
   workflow_dispatch:
 
