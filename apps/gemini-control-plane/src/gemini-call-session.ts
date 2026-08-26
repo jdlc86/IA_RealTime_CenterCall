@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import type { GeminiAdmissionV1 } from "./admission/v1";
 import { reduceGeminiCallLifecycle, type GeminiCallLifecycleState, type GeminiCallPhase } from "./call-lifecycle/state";
 import { assertEnvelopeDirectionV1 } from "./control-contract/direction-v1";
 import {
@@ -15,6 +16,8 @@ export type GeminiControlPlaneEnv = Readonly<{
   GEMINI_CALL_SESSIONS: DurableObjectNamespace<GeminiCallSession>;
 }>;
 
+export type GeminiAdmissionRegistrationResult = "CREATED" | "IDEMPOTENT";
+
 type ConnectionAttachment = Readonly<{
   callSessionId: string;
   edgeSessionId: string;
@@ -27,6 +30,14 @@ type LifecycleRow = Readonly<{
   active_turn_id: string | null;
   provider_connection_epoch: number | null;
   media_started: number;
+}>;
+type AdmissionRow = Readonly<{
+  tenant_id: string;
+  call_control_id: string;
+  call_session_id: string;
+  edge_session_id: string;
+  credential_id: string;
+  not_after_epoch_ms: number;
 }>;
 
 const PHASES = new Set<GeminiCallPhase>([
@@ -65,6 +76,15 @@ export class GeminiCallSession extends DurableObject<GeminiControlPlaneEnv> {
           provider_connection_epoch INTEGER,
           media_started INTEGER NOT NULL CHECK(media_started IN (0, 1))
         );
+        CREATE TABLE IF NOT EXISTS admission_state (
+          id INTEGER PRIMARY KEY CHECK(id = 1),
+          tenant_id TEXT NOT NULL,
+          call_control_id TEXT NOT NULL,
+          call_session_id TEXT NOT NULL,
+          edge_session_id TEXT NOT NULL,
+          credential_id TEXT NOT NULL,
+          not_after_epoch_ms INTEGER NOT NULL CHECK(not_after_epoch_ms > 0)
+        );
         INSERT OR IGNORE INTO control_counters(name, value) VALUES ('inbound', 0);
         INSERT OR IGNORE INTO control_counters(name, value) VALUES ('outbound', 0);
         INSERT OR IGNORE INTO lifecycle_state(
@@ -72,6 +92,41 @@ export class GeminiCallSession extends DurableObject<GeminiControlPlaneEnv> {
         ) VALUES (1, 'CALL_BOOTSTRAP', NULL, NULL, 0);
       `);
     });
+  }
+
+  async registerAdmission(admission: GeminiAdmissionV1): Promise<GeminiAdmissionRegistrationResult> {
+    if (admission.version !== "gemini-admission.v1" || admission.provider !== "GEMINI") {
+      throw new Error("Gemini admission contract mismatch");
+    }
+    if (!Number.isSafeInteger(admission.notAfterEpochMs) || admission.notAfterEpochMs <= Date.now()) {
+      throw new Error("Gemini admission is expired");
+    }
+
+    const existing = this.admissionState();
+    if (existing) {
+      if (
+        existing.tenant_id === admission.tenantId
+        && existing.call_control_id === admission.callControlId
+        && existing.call_session_id === admission.callSessionId
+        && existing.edge_session_id === admission.edgeSessionId
+        && existing.credential_id === admission.credentialId
+        && existing.not_after_epoch_ms === admission.notAfterEpochMs
+      ) return "IDEMPOTENT";
+      throw new Error("Gemini call admission identity is immutable");
+    }
+
+    this.ctx.storage.sql.exec(
+      `INSERT INTO admission_state(
+        id, tenant_id, call_control_id, call_session_id, edge_session_id, credential_id, not_after_epoch_ms
+      ) VALUES (1, ?, ?, ?, ?, ?, ?)`,
+      admission.tenantId,
+      admission.callControlId,
+      admission.callSessionId,
+      admission.edgeSessionId,
+      admission.credentialId,
+      admission.notAfterEpochMs,
+    );
+    return "CREATED";
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -176,6 +231,14 @@ export class GeminiCallSession extends DurableObject<GeminiControlPlaneEnv> {
 
   webSocketClose(_ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): void {
     // Critical state is persisted in SQLite and survives hibernation/restart.
+  }
+
+  private admissionState(): AdmissionRow | null {
+    const rows = this.ctx.storage.sql.exec<AdmissionRow>(
+      `SELECT tenant_id, call_control_id, call_session_id, edge_session_id, credential_id, not_after_epoch_ms
+       FROM admission_state WHERE id = 1`,
+    ).toArray();
+    return rows.length === 1 ? rows[0] : null;
   }
 
   private edgeIdentityMatches(attachment: ConnectionAttachment, envelope: GeminiControlEnvelopeV1): boolean {
