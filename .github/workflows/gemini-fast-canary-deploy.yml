@@ -189,7 +189,7 @@ jobs:
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN"; test -n "$CLOUDFLARE_ACCOUNT_ID"; test -n "$FAST_EDGE_URL"
           npm install --no-audit --no-fund
-          npx wrangler deploy --config wrangler.fast.jsonc --var "GEMINI_FAST_CANARY_EDGE_URL:${FAST_EDGE_URL}"
+          npx wrangler deploy --config wrangler.fast.jsonc --var "GEMINI_FAST_CANARY_EDGE_URL:${FAST_EDGE_URL}" --var "GEMINI_FAST_PREFLIGHT_NONCE:"
           npx wrangler deployments list --config wrangler.fast.jsonc
 
       - name: Verify Gemini fast Worker health after edge sync
@@ -209,28 +209,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PREFLIGHT_TOKEN="$(openssl rand -hex 32)"
-          echo "::add-mask::$PREFLIGHT_TOKEN"
-          printf '%s' "$PREFLIGHT_TOKEN" | npx wrangler secret put GEMINI_FAST_PREFLIGHT_TOKEN --config wrangler.fast.jsonc
+          PREFLIGHT_NONCE="$(openssl rand -hex 32)"
+          echo "::add-mask::$PREFLIGHT_NONCE"
 
-          # A secret change creates a Worker version but is not guaranteed to be
-          # immediately active on the workers.dev route. Deploy the exact current
-          # code/config once more so the probe is bound to the freshly written secret.
-          npx wrangler deploy --config wrangler.fast.jsonc --var "GEMINI_FAST_CANARY_EDGE_URL:${FAST_EDGE_URL}"
+          cleanup() {
+            npx wrangler deploy --config wrangler.fast.jsonc \
+              --var "GEMINI_FAST_CANARY_EDGE_URL:${FAST_EDGE_URL}" \
+              --var "GEMINI_FAST_PREFLIGHT_NONCE:" >/dev/null || true
+          }
+          trap cleanup EXIT
+
+          npx wrangler deploy --config wrangler.fast.jsonc \
+            --var "GEMINI_FAST_CANARY_EDGE_URL:${FAST_EDGE_URL}" \
+            --var "GEMINI_FAST_PREFLIGHT_NONCE:${PREFLIGHT_NONCE}"
 
           BODY=""
           STATUS=""
-          for attempt in $(seq 1 15); do
+          for attempt in $(seq 1 10); do
             RESPONSE="$(curl --silent --show-error --max-time 15 \
               --request POST \
-              --header "Authorization: Bearer ${PREFLIGHT_TOKEN}" \
+              --header "Authorization: Bearer ${PREFLIGHT_NONCE}" \
               --write-out $'\n%{http_code}' \
               "${FAST_WORKER_ORIGIN}/internal/preflight")"
             STATUS="${RESPONSE##*$'\n'}"
             BODY="${RESPONSE%$'\n'*}"
             if [ "$STATUS" = "200" ]; then break; fi
-            if { [ "$STATUS" = "401" ] || [ "$STATUS" = "503" ]; } && [ "$attempt" -lt 15 ]; then
-              echo "Fast preflight token rollout pending (HTTP ${STATUS}); retry ${attempt}/15"
+            if { [ "$STATUS" = "401" ] || [ "$STATUS" = "503" ]; } && [ "$attempt" -lt 10 ]; then
+              echo "Fast preflight nonce rollout pending (HTTP ${STATUS}); retry ${attempt}/10"
               sleep 2
               continue
             fi
