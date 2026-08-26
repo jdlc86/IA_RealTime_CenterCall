@@ -32,23 +32,22 @@ describe("GeminiCallSession admission registration", () => {
     expect(await stub.registerAdmission(value)).toBe("IDEMPOTENT");
   });
 
-  it("rejects immutable identity rebinding", async () => {
+  it("rejects immutable identity rebinding without throwing across RPC", async () => {
     const stub = env.GEMINI_CALL_SESSIONS.getByName("call-session-admission-rebind");
     const original = admission({ callSessionId: "call-session-admission-rebind" });
     expect(await stub.registerAdmission(original)).toBe("CREATED");
-
-    await expect(stub.registerAdmission({
+    expect(await stub.registerAdmission({
       ...original,
       edgeSessionId: "other-edge-session",
-    })).rejects.toThrow(/immutable/i);
+    })).toBe("REJECTED_IMMUTABLE");
   });
 
-  it("rejects expired admission at the DO boundary", async () => {
+  it("rejects expired admission at the DO boundary without throwing across RPC", async () => {
     const stub = env.GEMINI_CALL_SESSIONS.getByName("call-session-admission-expired");
-    await expect(stub.registerAdmission(admission({
+    expect(await stub.registerAdmission(admission({
       callSessionId: "call-session-admission-expired",
       notAfterEpochMs: Date.now() - 1,
-    }))).rejects.toThrow(/expired/i);
+    }))).toBe("REJECTED_EXPIRED");
   });
 
   it("requires admission before opening control and enforces all persisted identities", async () => {
