@@ -53,7 +53,7 @@ async function sendAndReceive(socket: WebSocket, envelope: Record<string, unknow
 }
 
 describe("GeminiCallSession durable lifecycle", () => {
-  it("does not consume sequence on INVALID_STATE and persists lifecycle across reconnect", async () => {
+  it("preserves lifecycle and bidirectional sequence authority across reconnect", async () => {
     const first = await connect();
 
     const invalidMedia = await sendAndReceive(first, controlEnvelope(
@@ -63,9 +63,10 @@ describe("GeminiCallSession durable lifecycle", () => {
       { stream_id: "stream-1" },
     ));
     expect(invalidMedia.type).toBe("NACK");
+    expect(invalidMedia.sequence).toBe(1);
     expect((invalidMedia.payload as Record<string, unknown>).code).toBe("INVALID_STATE");
     // retryable=false means the same invalid envelope must not be retried. The
-    // sequence slot remains unconsumed so the correct event can use seq=1.
+    // inbound sequence slot remains unconsumed so the correct event can use 1.
     expect((invalidMedia.payload as Record<string, unknown>).retryable).toBe(false);
     expect((invalidMedia.payload as Record<string, unknown>).terminal).toBe(false);
 
@@ -76,6 +77,7 @@ describe("GeminiCallSession durable lifecycle", () => {
       { edge_session_id: EDGE_SESSION_ID, provider_connection_epoch: 1 },
     ));
     expect(ready.type).toBe("ACK");
+    expect(ready.sequence).toBe(2);
     expect((ready.payload as Record<string, unknown>).result).toBe("APPLIED");
 
     const media = await sendAndReceive(first, controlEnvelope(
@@ -85,6 +87,7 @@ describe("GeminiCallSession durable lifecycle", () => {
       { stream_id: "stream-1" },
     ));
     expect(media.type).toBe("ACK");
+    expect(media.sequence).toBe(3);
     expect((media.payload as Record<string, unknown>).result).toBe("APPLIED");
     first.close(1000, "reconnect lifecycle probe");
 
@@ -96,6 +99,7 @@ describe("GeminiCallSession durable lifecycle", () => {
       { turn_id: "turn-1", generation_id_at_start: null },
     ));
     expect(callerStart.type).toBe("ACK");
+    expect(callerStart.sequence).toBe(4);
     expect((callerStart.payload as Record<string, unknown>).result).toBe("APPLIED");
 
     const callerEnd = await sendAndReceive(second, controlEnvelope(
@@ -105,6 +109,7 @@ describe("GeminiCallSession durable lifecycle", () => {
       { turn_id: "turn-1" },
     ));
     expect(callerEnd.type).toBe("ACK");
+    expect(callerEnd.sequence).toBe(5);
     expect((callerEnd.payload as Record<string, unknown>).result).toBe("APPLIED");
     second.close(1000, "done");
   });
