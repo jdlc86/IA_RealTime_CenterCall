@@ -16,6 +16,13 @@ function admission(overrides: Partial<GeminiAdmissionV1> = {}): GeminiAdmissionV
   };
 }
 
+function controlRequest(value: GeminiAdmissionV1, credentialId = value.credentialId) {
+  return new Request(
+    `https://do/internal/control?call_session_id=${value.callSessionId}&edge_session_id=${value.edgeSessionId}&credential_id=${credentialId}`,
+    { headers: { Upgrade: "websocket" } },
+  );
+}
+
 describe("GeminiCallSession admission registration", () => {
   it("accepts an identical webhook retry idempotently", async () => {
     const stub = env.GEMINI_CALL_SESSIONS.getByName("call-session-admission");
@@ -42,5 +49,28 @@ describe("GeminiCallSession admission registration", () => {
       callSessionId: "call-session-admission-expired",
       notAfterEpochMs: Date.now() - 1,
     }))).rejects.toThrow(/expired/i);
+  });
+
+  it("requires admission before opening control and enforces all persisted identities", async () => {
+    const callSessionId = "call-session-control-gate";
+    const stub = env.GEMINI_CALL_SESSIONS.getByName(callSessionId);
+    const value = admission({
+      callSessionId,
+      edgeSessionId: "edge-control-gate",
+      credentialId: "credential-control-gate",
+    });
+
+    const beforeAdmission = await stub.fetch(controlRequest(value));
+    expect(beforeAdmission.status).toBe(403);
+
+    expect(await stub.registerAdmission(value)).toBe("CREATED");
+
+    const wrongCredential = await stub.fetch(controlRequest(value, "wrong-credential"));
+    expect(wrongCredential.status).toBe(403);
+
+    const accepted = await stub.fetch(controlRequest(value));
+    expect(accepted.status).toBe(101);
+    accepted.webSocket?.accept();
+    accepted.webSocket?.close(1000, "done");
   });
 });
