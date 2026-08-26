@@ -76,17 +76,45 @@ jobs:
           set -euo pipefail
           SHORT_SHA="${GITHUB_SHA:0:12}"
           IMAGE_TAG="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}/gemini-media-edge-fast:fast-${SHORT_SHA}"
-          gcloud builds submit apps/gemini-media-edge \
+          BUILD_ID="$(gcloud builds submit apps/gemini-media-edge \
             --config apps/gemini-media-edge/deploy/cloud-run/cloudbuild-fast.yaml \
             --substitutions "_IMAGE=${IMAGE_TAG}" \
             --region "$GCP_REGION" \
             --project "$GCP_PROJECT_ID" \
-            --quiet
+            --async \
+            --suppress-logs \
+            --format='value(id)')"
+          test -n "$BUILD_ID"
+          DEADLINE=$((SECONDS + 1200))
+          while true; do
+            STATUS="$(gcloud builds describe "$BUILD_ID" \
+              --region "$GCP_REGION" \
+              --project "$GCP_PROJECT_ID" \
+              --format='value(status)')"
+            case "$STATUS" in
+              SUCCESS) break ;;
+              QUEUED|PENDING|WORKING) ;;
+              FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED)
+                echo "Fast Cloud Build ${BUILD_ID} ended with ${STATUS}" >&2
+                exit 1
+                ;;
+              *)
+                echo "Unexpected Fast Cloud Build status: ${STATUS}" >&2
+                exit 1
+                ;;
+            esac
+            if (( SECONDS >= DEADLINE )); then
+              echo "Timed out waiting for Fast Cloud Build ${BUILD_ID}" >&2
+              exit 1
+            fi
+            sleep 5
+          done
           DIGEST="$(gcloud artifacts docker images describe "$IMAGE_TAG" --project "$GCP_PROJECT_ID" --format='value(image_summary.digest)')"
           test "$DIGEST" != ""
           IMMUTABLE_IMAGE="${IMAGE_TAG%:*}@${DIGEST}"
           echo "immutable_image=$IMMUTABLE_IMAGE" >> "$GITHUB_OUTPUT"
           echo "tag=fast-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
 
       - name: Snapshot production traffic
         id: before
@@ -167,6 +195,7 @@ jobs:
           {
             echo "### Gemini 3.1 ultra-low-latency fast canary"
             echo "- Source SHA: \`${GITHUB_SHA}\`"
+            echo "- Cloud Build: \`${{ steps.image.outputs.build_id }}\`"
             echo "- Cloud Run service: \`${DEPLOY_SERVICE}\`"
             echo "- Production traffic: **unchanged**"
             echo "- Canary traffic: **0%**, reachable only through revision tag"
