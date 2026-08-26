@@ -1,0 +1,172 @@
+const FAST_BOOTSTRAP_VERSION = "gemini-fast-bootstrap.v1";
+const FAST_PROVIDER = "GEMINI";
+
+export type FastGeminiToolDeclaration = Readonly<{
+  name: string;
+  description: string;
+  parameters: Readonly<Record<string, unknown>>;
+}>;
+
+export type FastGeminiMediaAdmission = Readonly<{
+  edgeUrl: string;
+  bootstrapUrl: string;
+  streamingAuthToken: string;
+  bootstrap: Readonly<{
+    version: typeof FAST_BOOTSTRAP_VERSION;
+    provider: typeof FAST_PROVIDER;
+    credentialId: string;
+    tenantId: string;
+    callControlId: string;
+    notAfterEpochMs: number;
+    systemInstruction: string;
+    tools: readonly FastGeminiToolDeclaration[];
+    voiceName: string;
+    languageCode: string;
+  }>;
+}>;
+
+type FastGeminiMediaAdmissionInput = Readonly<{
+  tenantId: string;
+  callControlId: string;
+  credentialId: string;
+  notAfterEpochMs: number;
+  edgeUrl: string;
+  systemInstruction: string;
+  tools?: readonly FastGeminiToolDeclaration[];
+  voiceName?: string;
+  languageCode?: string;
+  credentialSecret: string;
+}>;
+
+type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+function required(value: unknown, field: string, max = 64_000): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`);
+  const normalized = value.trim();
+  if (normalized.length > max || /[\u0000\r\n]/.test(normalized)) throw new Error(`${field} is invalid`);
+  return normalized;
+}
+
+function safeEpoch(value: unknown, field: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error(`${field} is invalid`);
+  return value as number;
+}
+
+function canonicalEdgeUrl(value: unknown): string {
+  const raw = required(value, "Fast Gemini edge URL", 2_048);
+  let parsed: URL;
+  try { parsed = new URL(raw); }
+  catch { throw new Error("Fast Gemini edge URL is invalid"); }
+  if (parsed.protocol !== "wss:" || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error("Fast Gemini edge URL must be a clean wss:// URL");
+  }
+  if (parsed.pathname !== "/telnyx/gemini") throw new Error("Fast Gemini edge URL path is invalid");
+  return parsed.toString();
+}
+
+function bootstrapUrlFromEdge(edgeUrl: string): string {
+  const parsed = new URL(edgeUrl);
+  parsed.protocol = "https:";
+  parsed.pathname = "/internal/bootstrap";
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString();
+}
+
+function canonicalTools(value: readonly FastGeminiToolDeclaration[] | undefined): readonly FastGeminiToolDeclaration[] {
+  const tools = value ?? [];
+  if (!Array.isArray(tools) || tools.length > 32) throw new Error("Fast Gemini tools are invalid");
+  return Object.freeze(tools.map((tool, index) => {
+    if (!tool || typeof tool !== "object" || Array.isArray(tool)) throw new Error(`Fast Gemini tool ${index} is invalid`);
+    const name = required(tool.name, `Fast Gemini tool ${index} name`, 128);
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error(`Fast Gemini tool ${index} name is invalid`);
+    const description = required(tool.description, `Fast Gemini tool ${index} description`, 4_000);
+    if (!tool.parameters || typeof tool.parameters !== "object" || Array.isArray(tool.parameters)) {
+      throw new Error(`Fast Gemini tool ${index} parameters are invalid`);
+    }
+    return Object.freeze({ name, description, parameters: structuredClone(tool.parameters) });
+  }));
+}
+
+function base64url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+async function hmacSha256(secret: string, value: string): Promise<Uint8Array> {
+  const secretBytes = new TextEncoder().encode(required(secret, "Fast Gemini credential secret", 8_192));
+  if (secretBytes.byteLength < 32) throw new Error("Fast Gemini credential secret must be at least 32 bytes");
+  const key = await crypto.subtle.importKey("raw", secretBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)));
+}
+
+export async function buildFastGeminiMediaAdmission(input: FastGeminiMediaAdmissionInput): Promise<FastGeminiMediaAdmission> {
+  const tenantId = required(input.tenantId, "Fast Gemini tenant id", 256);
+  const callControlId = required(input.callControlId, "Fast Gemini call control id", 512);
+  const credentialId = required(input.credentialId, "Fast Gemini credential id", 256);
+  const notAfterEpochMs = safeEpoch(input.notAfterEpochMs, "Fast Gemini admission expiry");
+  const edgeUrl = canonicalEdgeUrl(input.edgeUrl);
+  const systemInstruction = required(input.systemInstruction, "Fast Gemini system instruction", 64_000);
+  const tools = canonicalTools(input.tools);
+  const voiceName = required(input.voiceName ?? "Kore", "Fast Gemini voice name", 128);
+  const languageCode = required(input.languageCode ?? "es-ES", "Fast Gemini language code", 32);
+
+  const claims = Object.freeze({
+    credentialId,
+    provider: FAST_PROVIDER,
+    tenantId,
+    callControlId,
+    edgeUrl,
+    targetLegs: "both",
+    notAfterEpochMs,
+  });
+  const payload = base64url(new TextEncoder().encode(JSON.stringify(claims)));
+  const signingInput = `v1.${payload}`;
+  const signature = base64url(await hmacSha256(input.credentialSecret, signingInput));
+  const streamingAuthToken = `${signingInput}.${signature}`;
+
+  return Object.freeze({
+    edgeUrl,
+    bootstrapUrl: bootstrapUrlFromEdge(edgeUrl),
+    streamingAuthToken,
+    bootstrap: Object.freeze({
+      version: FAST_BOOTSTRAP_VERSION,
+      provider: FAST_PROVIDER,
+      credentialId,
+      tenantId,
+      callControlId,
+      notAfterEpochMs,
+      systemInstruction,
+      tools,
+      voiceName,
+      languageCode,
+    }),
+  });
+}
+
+export async function provisionFastGeminiMediaAdmission(
+  admission: FastGeminiMediaAdmission,
+  options: Readonly<{ controlToken: string; fetcher?: FetchLike }>,
+): Promise<void> {
+  const controlToken = required(options.controlToken, "Fast Gemini media control token", 8_192);
+  if (new TextEncoder().encode(controlToken).byteLength < 32) throw new Error("Fast Gemini media control token must be at least 32 bytes");
+  const fetcher = options.fetcher ?? fetch;
+  const response = await fetcher(admission.bootstrapUrl, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${controlToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(admission.bootstrap),
+  });
+  let body: unknown = null;
+  try { body = await response.json(); } catch {}
+  if (response.status !== 201 || !body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error("Fast Gemini media bootstrap provisioning failed");
+  }
+  const record = body as Record<string, unknown>;
+  if (record.ok !== true || record.credentialId !== admission.bootstrap.credentialId) {
+    throw new Error("Fast Gemini media bootstrap acknowledgement is invalid");
+  }
+}
