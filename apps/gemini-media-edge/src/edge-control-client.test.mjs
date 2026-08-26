@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { GeminiEdgeControlClientV1 } from "./edge-control-client.mjs";
 
-const NOW = 1_787_745_000_000;
+const NOW = Date.now();
 const bootstrap = Object.freeze({
   version: "gemini-edge-control-bootstrap.v1",
   provider: "GEMINI",
