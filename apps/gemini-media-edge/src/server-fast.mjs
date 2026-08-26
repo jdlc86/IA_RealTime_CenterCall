@@ -11,6 +11,7 @@ import { InMemoryFastBootstrapRegistry } from "./fast-bootstrap.mjs";
 import { FastGeminiRealtimeSession } from "./fast-runtime.mjs";
 
 const MEDIA_PATH = "/telnyx/gemini";
+const TELNYX_START_TIMEOUT_MS = 5_000;
 
 function required(value, field, max = 64_000) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`);
@@ -76,9 +77,9 @@ function writeJson(response, status, value) {
   response.end(JSON.stringify(value));
 }
 
-function parseFirstMessage(raw) {
+function parseTelnyxHandshakeMessage(raw) {
   try { return JSON.parse(typeof raw === "string" ? raw : raw.toString("utf8")); }
-  catch { throw new Error("Telnyx start JSON is invalid"); }
+  catch { throw new Error("Telnyx handshake JSON is invalid"); }
 }
 
 export function createFastGeminiMediaServer(options = {}) {
@@ -98,43 +99,64 @@ export function createFastGeminiMediaServer(options = {}) {
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 256 * 1024 });
   wss.on("connection", (socket, request, claims) => {
     let claimed = false;
+    let connectedSeen = false;
+    let timer = null;
+    const cleanupHandshake = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      socket.off("message", onHandshakeMessage);
+    };
     const fail = (reason) => {
+      cleanupHandshake();
       try { socket.close(1008, reason.slice(0, 120)); } catch {}
     };
-    socket.once("message", (raw) => {
+    const startSession = (start) => {
+      requireTelnyxStartForCredential(claims, start);
+      const consumed = credentialConsumer.consume(claims.credentialId, claims.notAfterEpochMs, Date.now());
+      if (consumed !== true) throw new Error("Fast Gemini media credential already consumed");
+      const bootstrap = bootstrapRegistry.consumeForClaims(claims, Date.now());
+      cleanupHandshake();
+      let session;
+      const sessionObserve = (event) => {
+        try { observe(event); } catch {}
+        if (event?.stage === "FAST_SESSION_CLOSED" && session) sessions.delete(session);
+      };
+      session = new FastGeminiRealtimeSession({
+        telnyxSocket: socket,
+        bootstrap,
+        geminiApiKey,
+        model,
+        toolHandlers,
+        observe: sessionObserve,
+        ...(options.createGeminiSocket ? { createGeminiSocket: options.createGeminiSocket } : {}),
+        ...(options.maxBufferedBytes ? { maxBufferedBytes: options.maxBufferedBytes } : {}),
+      }).start();
+      sessions.add(session);
+      sessionObserve({
+        stage: "FAST_MEDIA_AUTHORIZED",
+        tenantId: claims.tenantId,
+        callControlId: claims.callControlId,
+      });
+    };
+    const onHandshakeMessage = (raw) => {
       if (claimed) return fail("duplicate Telnyx start");
-      claimed = true;
       try {
-        const start = parseFirstMessage(raw);
-        requireTelnyxStartForCredential(claims, start);
-        const consumed = credentialConsumer.consume(claims.credentialId, claims.notAfterEpochMs, Date.now());
-        if (consumed !== true) throw new Error("Fast Gemini media credential already consumed");
-        const bootstrap = bootstrapRegistry.consumeForClaims(claims, Date.now());
-        let session;
-        const sessionObserve = (event) => {
-          try { observe(event); } catch {}
-          if (event?.stage === "FAST_SESSION_CLOSED" && session) sessions.delete(session);
-        };
-        session = new FastGeminiRealtimeSession({
-          telnyxSocket: socket,
-          bootstrap,
-          geminiApiKey,
-          model,
-          toolHandlers,
-          observe: sessionObserve,
-          ...(options.createGeminiSocket ? { createGeminiSocket: options.createGeminiSocket } : {}),
-          ...(options.maxBufferedBytes ? { maxBufferedBytes: options.maxBufferedBytes } : {}),
-        }).start();
-        sessions.add(session);
-        sessionObserve({
-          stage: "FAST_MEDIA_AUTHORIZED",
-          tenantId: claims.tenantId,
-          callControlId: claims.callControlId,
-        });
+        const message = parseTelnyxHandshakeMessage(raw);
+        if (message?.event === "connected") {
+          if (connectedSeen) return fail("duplicate Telnyx connected");
+          connectedSeen = true;
+          return;
+        }
+        if (message?.event !== "start") throw new Error("Telnyx start expected after connected");
+        claimed = true;
+        startSession(message);
       } catch {
         fail("invalid or unauthorized Telnyx start");
       }
-    });
+    };
+    socket.on("message", onHandshakeMessage);
+    timer = setTimeout(() => fail("Telnyx start timeout"), TELNYX_START_TIMEOUT_MS);
+    timer.unref?.();
   });
 
   const server = http.createServer(async (request, response) => {
