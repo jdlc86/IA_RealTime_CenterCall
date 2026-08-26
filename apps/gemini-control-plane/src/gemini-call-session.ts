@@ -21,6 +21,7 @@ export type GeminiAdmissionRegistrationResult = "CREATED" | "IDEMPOTENT";
 type ConnectionAttachment = Readonly<{
   callSessionId: string;
   edgeSessionId: string;
+  credentialId: string;
 }>;
 
 type SequenceRow = Readonly<{ value: number }>;
@@ -52,7 +53,7 @@ const PHASES = new Set<GeminiCallPhase>([
 
 function requiredQuery(url: URL, name: string): string {
   const value = url.searchParams.get(name)?.trim() ?? "";
-  if (!value || value.length > 160 || /[\r\n\t]/.test(value)) throw new Error(`${name} is invalid`);
+  if (!value || value.length > 256 || /[\r\n\t]/.test(value)) throw new Error(`${name} is invalid`);
   return value;
 }
 
@@ -137,23 +138,34 @@ export class GeminiCallSession extends DurableObject<GeminiControlPlaneEnv> {
 
     let callSessionId: string;
     let edgeSessionId: string;
+    let credentialId: string;
     try {
       callSessionId = requiredQuery(url, "call_session_id");
       edgeSessionId = requiredQuery(url, "edge_session_id");
+      credentialId = requiredQuery(url, "credential_id");
     } catch {
       return new Response("invalid control identity", { status: 400 });
     }
 
+    const admission = this.admissionState();
+    if (!admission) return new Response("call not admitted", { status: 403 });
+    if (admission.not_after_epoch_ms <= Date.now()) return new Response("call admission expired", { status: 403 });
+    if (
+      admission.call_session_id !== callSessionId
+      || admission.edge_session_id !== edgeSessionId
+      || admission.credential_id !== credentialId
+    ) return new Response("call admission binding mismatch", { status: 403 });
+
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.ctx.acceptWebSocket(server, ["gemini-control-v1"]);
-    server.serializeAttachment(Object.freeze({ callSessionId, edgeSessionId } satisfies ConnectionAttachment));
+    server.serializeAttachment(Object.freeze({ callSessionId, edgeSessionId, credentialId } satisfies ConnectionAttachment));
     return new Response(null, { status: 101, webSocket: client });
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const attachment = ws.deserializeAttachment() as ConnectionAttachment | null;
-    if (!attachment?.callSessionId || !attachment?.edgeSessionId) {
+    if (!attachment?.callSessionId || !attachment?.edgeSessionId || !attachment?.credentialId) {
       ws.close(1008, "missing control attachment");
       return;
     }
