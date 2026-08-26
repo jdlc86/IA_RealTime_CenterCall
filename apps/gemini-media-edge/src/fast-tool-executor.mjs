@@ -22,22 +22,23 @@ function jsonBytes(value, field, maxBytes) {
 /**
  * Per-call tool boundary for the low-latency Gemini runtime.
  * It owns transport idempotency only. Business idempotency remains inside the
- * domain handler (e.g. reservation command id / booking id).
+ * domain handler (e.g. reservation command id / booking id). An empty handler
+ * set is valid for voice-only probes and fails closed if Gemini calls a tool.
  */
 export class FastGeminiToolExecutor {
   constructor(options = {}) {
-    if (!options.handlers || typeof options.handlers !== "object" || Array.isArray(options.handlers)) {
-      throw new Error("Fast Gemini tool handlers are required");
+    const handlers = options.handlers ?? {};
+    if (typeof handlers !== "object" || Array.isArray(handlers)) {
+      throw new Error("Fast Gemini tool handlers are invalid");
     }
     this.handlers = new Map();
-    for (const [name, handler] of Object.entries(options.handlers)) {
+    for (const [name, handler] of Object.entries(handlers)) {
       const normalized = requiredString(name, "Fast Gemini tool name", 128);
       if (!/^[A-Za-z0-9_-]+$/.test(normalized) || typeof handler !== "function") {
         throw new Error(`Fast Gemini tool handler ${normalized} is invalid`);
       }
       this.handlers.set(normalized, handler);
     }
-    if (!this.handlers.size) throw new Error("At least one Fast Gemini tool handler is required");
     this.maxArgumentBytes = options.maxArgumentBytes ?? DEFAULT_MAX_ARGUMENT_BYTES;
     this.maxResultBytes = options.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES;
     this.maxCalls = options.maxCalls ?? DEFAULT_MAX_CALLS;
