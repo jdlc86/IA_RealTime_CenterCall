@@ -6,6 +6,9 @@
   "workers_dev": true,
   "preview_urls": true,
   "keep_vars": true,
+  "vars": {
+    "SUPABASE_URL": "https://vutekfkbtvfogouwcfvc.supabase.co"
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
