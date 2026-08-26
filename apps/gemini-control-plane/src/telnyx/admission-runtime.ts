@@ -1,6 +1,10 @@
 import { issueGeminiAdmissionIdentity } from "../admission/identity-issuer";
 import { registerGeminiAdmission, type RegisterGeminiAdmissionResult } from "../admission/runtime";
 import { GEMINI_ADMISSION_VERSION_V1 } from "../admission/v1";
+import {
+  GEMINI_CONTROL_CAPABILITY_VERSION_V1,
+  issueGeminiControlCapabilityV1,
+} from "../control-auth/capability-v1";
 import type { GeminiControlPlaneEnv } from "../gemini-call-session";
 import { parseVerifiedTelnyxIncomingCall, type VerifiedTelnyxIncomingCall } from "./incoming-call";
 import { verifyTelnyxWebhookSignature } from "./webhook-signature";
@@ -11,13 +15,19 @@ export type GeminiTelnyxAdmissionRuntimeOptions = Readonly<{
   admissionTtlMs: number;
   telnyxPublicKey: string;
   admissionIdentitySecret: string;
+  controlCapabilitySecret: string;
   resolveTenantId: (call: VerifiedTelnyxIncomingCall) => Promise<string | null>;
 }>;
 
 export type GeminiTelnyxAdmissionRuntimeResult =
   | Readonly<{ status: "SIGNATURE_REJECTED" }>
   | Readonly<{ status: "TENANT_NOT_FOUND"; call: VerifiedTelnyxIncomingCall }>
-  | Readonly<{ status: "ADMITTED"; call: VerifiedTelnyxIncomingCall; result: RegisterGeminiAdmissionResult }>;
+  | Readonly<{
+      status: "ADMITTED";
+      call: VerifiedTelnyxIncomingCall;
+      result: RegisterGeminiAdmissionResult;
+      controlCapability: string;
+    }>;
 
 function positiveSafeInteger(value: number, field: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${field} must be a positive safe integer`);
@@ -81,5 +91,17 @@ export async function admitSignedTelnyxIncomingCall(
     maxTtlMs: admissionTtlMs,
   });
 
-  return Object.freeze({ status: "ADMITTED", call, result });
+  const admission = result.admission;
+  const controlCapability = await issueGeminiControlCapabilityV1({
+    version: GEMINI_CONTROL_CAPABILITY_VERSION_V1,
+    provider: "GEMINI",
+    tenantId: admission.tenantId,
+    callControlId: admission.callControlId,
+    callSessionId: admission.callSessionId,
+    edgeSessionId: admission.edgeSessionId,
+    credentialId: admission.credentialId,
+    notAfterEpochMs: admission.notAfterEpochMs,
+  }, options.controlCapabilitySecret);
+
+  return Object.freeze({ status: "ADMITTED", call, result, controlCapability });
 }
