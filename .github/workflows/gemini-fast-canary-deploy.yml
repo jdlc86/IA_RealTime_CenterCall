@@ -31,6 +31,8 @@ env:
   CONTROL_TOKEN_SECRET_VERSION: "1"
   DEPLOY_SERVICE: gemini-media-edge
   ARTIFACT_REPOSITORY: ia-realtime-centercall
+  FAST_PROVIDER_SETUP_BUDGET_MS: "5000"
+  FAST_PROVIDER_FIRST_AUDIO_BUDGET_MS: "8000"
 
 jobs:
   deploy:
@@ -172,6 +174,7 @@ jobs:
           echo "edge_url=wss://${TAG_URL#https://}/telnyx/gemini" >> "$GITHUB_OUTPUT"
 
       - name: Verify startup provider gate and tagged readiness
+        id: readiness
         shell: bash
         run: |
           set -euo pipefail
@@ -188,6 +191,14 @@ jobs:
           echo "$BODY" | jq -e '.service == "gemini-media-edge-fast"' >/dev/null
           echo "$BODY" | jq -e '.model == "gemini-3.1-flash-live-preview"' >/dev/null
           echo "$BODY" | jq -e '.activeSessions == 0' >/dev/null
+          SETUP_MS="$(echo "$BODY" | jq -r '.providerReadiness.setupMs')"
+          FIRST_AUDIO_MS="$(echo "$BODY" | jq -r '.providerReadiness.firstAudioMs')"
+          [[ "$SETUP_MS" =~ ^[0-9]+$ ]]
+          [[ "$FIRST_AUDIO_MS" =~ ^[0-9]+$ ]]
+          (( SETUP_MS < FAST_PROVIDER_SETUP_BUDGET_MS ))
+          (( FIRST_AUDIO_MS < FAST_PROVIDER_FIRST_AUDIO_BUDGET_MS ))
+          echo "setup_ms=$SETUP_MS" >> "$GITHUB_OUTPUT"
+          echo "first_audio_ms=$FIRST_AUDIO_MS" >> "$GITHUB_OUTPUT"
 
       - name: Deployment summary
         shell: bash
@@ -202,6 +213,8 @@ jobs:
             echo "- Revision: \`${{ steps.deployed.outputs.revision }}\`"
             echo "- Image: \`${{ steps.deployed.outputs.image }}\`"
             echo "- Model: \`gemini-3.1-flash-live-preview\`"
+            echo "- Provider setup: \`${{ steps.readiness.outputs.setup_ms }} ms\`"
+            echo "- Provider first native audio: \`${{ steps.readiness.outputs.first_audio_ms }} ms\`"
             echo "- Startup gate: real Gemini Live setup + native audio + turnComplete"
             echo "- Tagged URL: \`${{ steps.deployed.outputs.tag_url }}\`"
             echo "- WSS: \`${{ steps.deployed.outputs.edge_url }}\`"
