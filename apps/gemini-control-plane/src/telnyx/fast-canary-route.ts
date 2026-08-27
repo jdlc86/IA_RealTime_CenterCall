@@ -1,7 +1,16 @@
 import { startSignedFastGeminiIncomingCall, type FastIncomingRuntimeOptions, type FastIncomingRuntimeResult, type FastTenantRoute } from "./fast-incoming-runtime";
+import { verifyTelnyxWebhookSignature } from "./webhook-signature";
+import {
+  FAST_TRANSFER_TOOL,
+  fastHumanHandoffPrompt,
+  handleVerifiedFastHumanHandoffEvent,
+  isFastHumanHandoffEventType,
+  parseFastHumanHandoffConfig,
+} from "./fast-human-handoff";
 
 type TenantRoutingKv = Readonly<{
   get(key: string): Promise<string | null>;
+  put?(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
 }>;
 
 type TenantCapabilities = Readonly<{
@@ -32,10 +41,7 @@ type StartIncoming = (
   options: FastIncomingRuntimeOptions,
 ) => Promise<FastIncomingRuntimeResult>;
 
-type RouteDependencies = Readonly<{
-  startIncoming?: StartIncoming;
-  now?: () => number;
-}>;
+type RouteDependencies = Readonly<{ startIncoming?: StartIncoming; now?: () => number }>;
 
 function required(value: unknown, field: string, max = 64_000): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`);
@@ -45,8 +51,7 @@ function required(value: unknown, field: string, max = 64_000): string {
 }
 
 function optionalString(value: unknown, field: string, max = 4_000): string | null {
-  if (value == null) return null;
-  return required(value, field, max);
+  return value == null ? null : required(value, field, max);
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -59,6 +64,13 @@ function parseJson(raw: string | null, field: string): unknown | null {
   catch { throw new Error(`${field} is invalid JSON`); }
 }
 
+function eventType(rawBody: string): string | null {
+  try {
+    const data = record(record(JSON.parse(rawBody))?.data);
+    return typeof data?.event_type === "string" ? data.event_type : null;
+  } catch { return null; }
+}
+
 function canonicalE164(value: string): string {
   const normalized = value.trim();
   if (!/^\+[1-9]\d{7,14}$/.test(normalized)) throw new Error("Called number must be E.164");
@@ -68,9 +80,10 @@ function canonicalE164(value: string): string {
 function canonicalTenantRoute(value: unknown): FastTenantRoute | null {
   const route = record(value);
   if (!route || route.enabled !== true) return null;
-  const tenantId = required(route.tenant_id, "KV tenant_id", 256);
-  const routeId = route.route_id == null ? "default" : required(route.route_id, "KV route_id", 256);
-  return Object.freeze({ tenantId, routeId });
+  return Object.freeze({
+    tenantId: required(route.tenant_id, "KV tenant_id", 256),
+    routeId: route.route_id == null ? "default" : required(route.route_id, "KV route_id", 256),
+  });
 }
 
 async function resolveTenantRouteFromKv(kv: TenantRoutingKv, calledNumber: string): Promise<FastTenantRoute | null> {
@@ -81,8 +94,7 @@ async function resolveTenantRouteFromKv(kv: TenantRoutingKv, calledNumber: strin
 function capabilityValue(source: Record<string, unknown> | null, flatKey: keyof TenantCapabilities, category: "call" | "whatsapp", nestedKey: string): boolean {
   if (!source) return false;
   if (typeof source[flatKey] === "boolean") return source[flatKey] as boolean;
-  const nested = record(source[category]);
-  return nested?.[nestedKey] === true;
+  return record(source[category])?.[nestedKey] === true;
 }
 
 function canonicalCapabilities(value: unknown, tenantId: string): TenantCapabilities {
@@ -110,49 +122,46 @@ function capabilityInstruction(capabilities: TenantCapabilities): string {
   ].join("\n");
 }
 
-function buildTenantInstruction(baseInstruction: string, value: unknown, tenantId: string, capabilities: TenantCapabilities): Readonly<{ systemInstruction: string; languageCode: string }> {
-  if (value == null) {
-    return Object.freeze({ systemInstruction: baseInstruction, languageCode: "es-ES" });
-  }
-  const config = record(value);
-  if (!config) throw new Error("Tenant config KV value is invalid");
-  const declaredTenant = config.tenant_id ?? config.tenantId;
-  if (declaredTenant != null && required(declaredTenant, "Tenant config tenant id", 256) !== tenantId) {
-    throw new Error("Tenant config tenant mismatch");
-  }
-  if (config.status != null && config.status !== "active") throw new Error("Tenant config is not active");
+function buildTenantInstruction(baseInstruction: string, value: unknown, tenantId: string, capabilities: TenantCapabilities) {
+  const config = value == null ? null : record(value);
+  if (value != null && !config) throw new Error("Tenant config KV value is invalid");
+  const declaredTenant = config?.tenant_id ?? config?.tenantId;
+  if (declaredTenant != null && required(declaredTenant, "Tenant config tenant id", 256) !== tenantId) throw new Error("Tenant config tenant mismatch");
+  if (config?.status != null && config.status !== "active") throw new Error("Tenant config is not active");
 
-  const business = record(config.business);
-  const assistant = record(config.assistant);
+  const business = record(config?.business);
+  const assistant = record(config?.assistant);
   const displayName = optionalString(business?.display_name ?? business?.displayName, "Tenant business display name", 256);
   const assistantName = optionalString(assistant?.name, "Tenant assistant name", 128);
   const greeting = optionalString(assistant?.greeting, "Tenant assistant greeting", 2_000);
   const language = optionalString(assistant?.language, "Tenant assistant language", 32) ?? "es-ES";
   if (!/^[a-z]{2}(?:-[A-Z]{2})?$/.test(language)) throw new Error("Tenant assistant language is invalid");
-
   const waiting = assistant?.waiting_phrases ?? assistant?.waitingPhrases;
   const waitingPhrases = waiting == null ? [] : (() => {
     if (!Array.isArray(waiting) || waiting.length > 16) throw new Error("Tenant assistant waiting phrases are invalid");
     return waiting.map((entry, index) => required(entry, `Tenant waiting phrase ${index}`, 512));
   })();
 
-  const tenantLines = [
+  const handoff = config ? parseFastHumanHandoffConfig(config) : null;
+  const transferEnabled = capabilities["call.transfer"] && Boolean(handoff?.enabled);
+  const lines = [
     displayName ? `Negocio: ${displayName}.` : null,
     assistantName ? `Tu nombre de asistente es ${assistantName}.` : null,
     greeting ? `Saludo configurado: ${greeting}` : null,
     waitingPhrases.length ? `Frases de espera permitidas: ${waitingPhrases.join(" | ")}` : null,
     capabilityInstruction(capabilities),
+    transferEnabled && handoff ? fastHumanHandoffPrompt(handoff) : null,
   ].filter((entry): entry is string => Boolean(entry));
 
   return Object.freeze({
-    systemInstruction: `${baseInstruction}\n\n${tenantLines.join("\n")}`,
+    systemInstruction: `${baseInstruction}${lines.length ? `\n\n${lines.join("\n")}` : ""}`,
     languageCode: language,
+    tools: transferEnabled ? Object.freeze([FAST_TRANSFER_TOOL]) : Object.freeze([]),
   });
 }
 
 async function resolveTenantSessionConfig(kv: TenantRoutingKv, tenantId: string, baseInstruction: string) {
-  // These two reads are pre-call configuration only and run in parallel. No KV
-  // access is performed in the media/audio hot path.
+  // Both reads are pre-call only and parallel; no KV access is added to audio forwarding.
   const [configRaw, capabilitiesRaw] = await Promise.all([
     kv.get(`tenant_config:${tenantId}`),
     kv.get(`tenant_capabilities:${tenantId}`),
@@ -161,31 +170,37 @@ async function resolveTenantSessionConfig(kv: TenantRoutingKv, tenantId: string,
   const tenant = buildTenantInstruction(baseInstruction, parseJson(configRaw, "Tenant config KV value"), tenantId, capabilities);
   return Object.freeze({
     systemInstruction: tenant.systemInstruction,
-    tools: [],
-    // Realtime voice/VAD remain on the already-stable defaults. Tenant KV does
-    // not override them in this version.
+    tools: tenant.tools,
+    // Stable Gemini realtime settings are intentionally untouched.
     voiceName: "Kore",
     languageCode: tenant.languageCode,
   });
 }
 
-export async function routeFastGeminiCanaryWebhook(
-  request: Request,
-  env: FastGeminiCanaryEnv,
-  dependencies: RouteDependencies = {},
-): Promise<Response> {
+export async function routeFastGeminiCanaryWebhook(request: Request, env: FastGeminiCanaryEnv, dependencies: RouteDependencies = {}): Promise<Response> {
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
   const rawBody = await request.text();
   if (rawBody.length > 512_000) return new Response("payload too large", { status: 413 });
+  if (!env.TENANT_ROUTING_KV || typeof env.TENANT_ROUTING_KV.get !== "function") throw new Error("TENANT_ROUTING_KV binding is required");
 
-  if (!env.TENANT_ROUTING_KV || typeof env.TENANT_ROUTING_KV.get !== "function") {
-    throw new Error("TENANT_ROUTING_KV binding is required");
+  const now = dependencies.now ?? Date.now;
+  const incomingEventType = eventType(rawBody);
+  if (isFastHumanHandoffEventType(incomingEventType)) {
+    const valid = await verifyTelnyxWebhookSignature({
+      rawBody,
+      signatureBase64: request.headers.get("telnyx-signature-ed25519"),
+      timestamp: request.headers.get("telnyx-timestamp"),
+      publicKey: env.TELNYX_PUBLIC_KEY,
+      nowEpochMs: now(),
+      maxAgeSeconds: 300,
+    });
+    if (!valid) return Response.json({ ok: false, status: "SIGNATURE_REJECTED" }, { status: 401 });
+    await handleVerifiedFastHumanHandoffEvent(rawBody, env);
+    return new Response(null, { status: 204 });
   }
 
   const systemInstruction = required(env.GEMINI_FAST_CANARY_SYSTEM_INSTRUCTION, "GEMINI_FAST_CANARY_SYSTEM_INSTRUCTION", 64_000);
   const startIncoming = dependencies.startIncoming ?? startSignedFastGeminiIncomingCall;
-  const now = dependencies.now ?? Date.now;
-
   const result = await startIncoming({
     rawBody,
     signatureBase64: request.headers.get("telnyx-signature-ed25519"),
@@ -201,21 +216,15 @@ export async function routeFastGeminiCanaryWebhook(
     telnyxApiKey: env.TELNYX_API_KEY,
     edgeUrl: env.GEMINI_FAST_CANARY_EDGE_URL,
     resolveTenantRoute: (call) => resolveTenantRouteFromKv(env.TENANT_ROUTING_KV, call.calledNumber),
-    // A valid, enabled KV route is the admission gate. There is no secondary
-    // tenant/phone allowlist in variables or secrets.
     isCanaryAllowed: () => true,
     resolveSessionConfig: (tenantId) => resolveTenantSessionConfig(env.TENANT_ROUTING_KV, tenantId, systemInstruction),
   });
 
   switch (result.status) {
-    case "SIGNATURE_REJECTED":
-      return Response.json({ ok: false, status: result.status }, { status: 401 });
-    case "IGNORED_EVENT":
-      return new Response(null, { status: 204 });
+    case "SIGNATURE_REJECTED": return Response.json({ ok: false, status: result.status }, { status: 401 });
+    case "IGNORED_EVENT": return new Response(null, { status: 204 });
     case "TENANT_NOT_FOUND":
-    case "CANARY_NOT_ALLOWED":
-      return Response.json({ ok: false, status: result.status }, { status: 403 });
-    case "STARTED":
-      return Response.json({ ok: true, status: result.status }, { status: 202 });
+    case "CANARY_NOT_ALLOWED": return Response.json({ ok: false, status: result.status }, { status: 403 });
+    case "STARTED": return Response.json({ ok: true, status: result.status }, { status: 202 });
   }
 }
