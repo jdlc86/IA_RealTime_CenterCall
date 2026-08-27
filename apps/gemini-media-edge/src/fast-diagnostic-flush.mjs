@@ -13,6 +13,7 @@ function canonicalSinkUrl(value) {
   return parsed.toString();
 }
 
+// Post-call, best-effort telemetry only. This module must never be awaited by the live audio path.
 export function createFastDiagnosticFlusher(options = {}) {
   const sinkUrl = canonicalSinkUrl(options.sinkUrl);
   const controlToken = required(options.controlToken, "MEDIA_EDGE_CONTROL_PLANE_TOKEN");
