@@ -2,7 +2,7 @@
 
 > **Estado:** Aceptado — IMPLEMENTADO / operativo  
 > **Fecha:** 2026-08-26  
-> **Última aclaración:** 2026-08-27  
+> **Última aclaración:** 2026-08-28  
 > **Ámbito:** producto Gemini / realtime / media / tools / latencia / producción  
 > **Supersede parcialmente:** decisiones de Fase 2/3 que obligaban a Google STT, semantic preselection, quarantine o `GeminiCallSession`/control WSS en cada turno  
 > **No supersede:** ADR-003 sobre independencia OpenAI/Gemini ni la prohibición de Cloudflare en audio continuo
@@ -129,9 +129,13 @@ Aun así, toda tool sensible debe preservar:
 
 ### Handoff humano
 
-La comprensión lingüística pertenece a Gemini; el kernel valida autoridad grounded y estado. No se utilizan listas rígidas de frases para decidir si el caller “realmente quiso decir sí”.
+La comprensión lingüística pertenece a Gemini. Para la política Fast actual, el kernel verifica que `authorization` use un valor soportado y que `caller_authority_evidence` esté grounded en el transcript snapshot capturado para ese tool call. No vuelve a interpretar el significado mediante listas de frases.
 
-El transcript/evidencia necesario para el tool se captura antes de encolar la ejecución asíncrona para evitar carreras con `turnComplete`.
+La política actual tampoco mantiene `offerPending` ni prueba por sí sola que existiera una oferta previa para `CONFIRMED_OFFER`; si esa garantía adicional se exige en el futuro, debe modelarse como estado/protocolo explícito, no como matching léxico.
+
+El transcript/evidencia se captura antes de encolar la ejecución asíncrona para evitar carreras con `turnComplete`.
+
+El contrato y las limitaciones operativas de transferencia pertenecen a [`../HUMAN_HANDOFF.md`](../HUMAN_HANDOFF.md).
 
 ## Observabilidad
 
@@ -153,6 +157,8 @@ Por tanto, **0% general no significa 0 llamadas Fast**.
 
 El estado real debe comprobarse desde el binding `GEMINI_FAST_CANARY_EDGE_URL`, readiness del tag y Worker correspondiente.
 
+El procedimiento y cualquier deuda temporal del gate de despliegue pertenecen a [`../runbooks/Deployment.md`](../runbooks/Deployment.md), no a esta ADR.
+
 ## Gates de producción
 
 El Fast Path ya cruzó los gates que históricamente impedían llamadas reales. A partir de ahora, cada cambio debe demostrar sólo los gates que le correspondan:
@@ -164,17 +170,6 @@ El Fast Path ya cruzó los gates que históricamente impedían llamadas reales. 
 5. E2E de llamada si el cambio afecta comportamiento telefónico/acústico.
 
 No volver a interpretar esta sección como “Gemini no puede recibir tráfico hasta una futura fase”.
-
-## Limitaciones conocidas fuera del core audio
-
-Al 2026-08-27 siguen abiertas:
-
-- ringback determinista para el caller durante una transferencia humana;
-- audibilidad fiable del TTS terminal tras `NO_ANSWER`/fallo;
-- coherencia final del preflight workflow Gemini Fast Canary;
-- limpieza de referencias de prompt heredadas de la política antigua de handoff.
-
-Estas limitaciones no autorizan a modificar VAD/audio bridge/codecs/resampler sin demostrar causalidad.
 
 ## Consecuencias
 
@@ -198,8 +193,9 @@ Estas limitaciones no autorizan a modificar VAD/audio bridge/codecs/resampler si
 - [`ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md`](./ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md) — separación estructural de productos.
 - [`SYSTEM_ARCHITECTURE.md`](./SYSTEM_ARCHITECTURE.md) — topología completa actual.
 - [`DESIGN_RULES.md`](./DESIGN_RULES.md) — invariantes transversales.
-- [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md) — estado operativo y limitaciones actuales.
-- [`../HUMAN_HANDOFF.md`](../HUMAN_HANDOFF.md) — contrato/UX de transferencia humana.
+- [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md) — estado operativo y siguiente validación.
+- [`../HUMAN_HANDOFF.md`](../HUMAN_HANDOFF.md) — contrato/UX y limitaciones de transferencia humana.
+- [`../runbooks/Deployment.md`](../runbooks/Deployment.md) — procedimiento/gates de despliegue.
 
 ## Decisión final
 
