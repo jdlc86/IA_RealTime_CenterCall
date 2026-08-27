@@ -63,6 +63,13 @@ function required(value: unknown, field: string, max = 64_000): string {
   return normalized;
 }
 
+function requiredText(value: unknown, field: string, max = 64_000): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`);
+  const normalized = value.trim();
+  if (normalized.length > max || /\u0000/.test(normalized)) throw new Error(`${field} is invalid`);
+  return normalized;
+}
+
 function safeEpoch(value: unknown, field: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error(`${field} is invalid`);
   return value as number;
@@ -157,7 +164,7 @@ export async function buildFastGeminiMediaAdmission(input: FastGeminiMediaAdmiss
   const notAfterEpochMs = safeEpoch(input.notAfterEpochMs, "Fast Gemini admission expiry");
   const edgeUrl = canonicalEdgeUrl(input.edgeUrl);
   const securityContext = canonicalSecurityContext(input.securityContext, { tenantId, callControlId, notAfterEpochMs });
-  const systemInstruction = required(input.systemInstruction, "Fast Gemini system instruction", 64_000);
+  const systemInstruction = requiredText(input.systemInstruction, "Fast Gemini system instruction", 64_000);
   const tools = canonicalTools(input.tools);
   const voiceName = required(input.voiceName ?? "Kore", "Fast Gemini voice name", 128);
   const languageCode = required(input.languageCode ?? "es-ES", "Fast Gemini language code", 32);
