@@ -46,12 +46,6 @@ function latencyMicros(startedNs) {
   return Number((process.hrtime.bigint() - startedNs) / 1_000n);
 }
 
-function speechStateFromMessage(message) {
-  const server = message?.serverContent ?? message?.server_content ?? null;
-  const value = server?.speechState ?? server?.speech_state ?? null;
-  return value === "SPEECH" || value === "NON_SPEECH" ? value : null;
-}
-
 /**
  * One-call Gemini fast-path owner.
  *
@@ -84,8 +78,6 @@ export class FastGeminiRealtimeSession {
     this.lastCallerMediaAtNs = null;
     this.lastGeminiAudioAtNs = null;
     this.firstGeminiAudioObserved = false;
-    this.pendingCallerSpeechEndAtNs = null;
-    this.pendingResponseLatencyMicros = null;
   }
 
   start() {
@@ -124,9 +116,7 @@ export class FastGeminiRealtimeSession {
       if (this.closed || this.gemini !== gemini) return;
       const startedNs = process.hrtime.bigint();
       try {
-        const message = parseJson(raw, "Gemini Live");
-        const frame = parseFastGemini31ServerFrame(message);
-        const speechState = speechStateFromMessage(message);
+        const frame = parseFastGemini31ServerFrame(parseJson(raw, "Gemini Live"));
         if (frame.setupComplete) {
           if (this.setupComplete) throw new Error("Gemini setupComplete repeated");
           this.setupComplete = true;
@@ -139,14 +129,6 @@ export class FastGeminiRealtimeSession {
         if (frame.sessionResumptionToken) this.lastResumptionToken = frame.sessionResumptionToken;
         if (frame.goAwayTimeLeftMs !== null) this.#emit("GEMINI_GO_AWAY", { timeLeftMs: frame.goAwayTimeLeftMs });
 
-        if (speechState === "SPEECH") {
-          this.pendingCallerSpeechEndAtNs = null;
-          this.pendingResponseLatencyMicros = null;
-        } else if (speechState === "NON_SPEECH") {
-          this.pendingCallerSpeechEndAtNs = process.hrtime.bigint();
-          this.pendingResponseLatencyMicros = null;
-        }
-
         if (frame.interrupted) {
           safeSend(this.telnyx, telnyxClearPlaybackMessage(), "Telnyx", this.maxBufferedBytes);
           this.resampler.reset();
@@ -158,9 +140,6 @@ export class FastGeminiRealtimeSession {
           if (!media) continue;
           safeSend(this.telnyx, media, "Telnyx", this.maxBufferedBytes);
           this.lastGeminiAudioAtNs = process.hrtime.bigint();
-          if (this.pendingCallerSpeechEndAtNs !== null && this.pendingResponseLatencyMicros === null) {
-            this.pendingResponseLatencyMicros = Number((this.lastGeminiAudioAtNs - this.pendingCallerSpeechEndAtNs) / 1_000n);
-          }
           if (!this.firstGeminiAudioObserved) {
             this.firstGeminiAudioObserved = true;
             this.#emit("FIRST_GEMINI_AUDIO_TO_TELNYX", {
@@ -170,17 +149,7 @@ export class FastGeminiRealtimeSession {
         }
 
         for (const toolCall of frame.toolCalls) this.#enqueueToolCall(toolCall);
-        if (frame.turnComplete) {
-          this.#emit("GEMINI_TURN_COMPLETE", {
-            ...(this.pendingResponseLatencyMicros !== null ? {
-              observedMs: Math.round(this.pendingResponseLatencyMicros / 1_000),
-              phase: "speech_end_to_first_audio",
-              type: "gemini_speech_state",
-            } : {}),
-          });
-          this.pendingCallerSpeechEndAtNs = null;
-          this.pendingResponseLatencyMicros = null;
-        }
+        if (frame.turnComplete) this.#emit("GEMINI_TURN_COMPLETE");
         this.#emit("GEMINI_FRAME_PROCESSED", { localProcessingMicros: latencyMicros(startedNs), audioParts: frame.audio.length, toolCalls: frame.toolCalls.length });
       } catch (error) {
         this.close("GEMINI_FRAME_REJECTED", error);
@@ -270,8 +239,6 @@ export class FastGeminiRealtimeSession {
     if (this.closed) return;
     this.closed = true;
     this.preSetupMedia.length = 0;
-    this.pendingCallerSpeechEndAtNs = null;
-    this.pendingResponseLatencyMicros = null;
     this.resampler.reset();
     this.#emit("FAST_SESSION_CLOSED", {
       reason,
