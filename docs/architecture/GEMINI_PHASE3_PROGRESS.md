@@ -1,88 +1,76 @@
-# Gemini independiente — progreso vivo Fase 3
+# Gemini independiente — Fase 3 histórica
 
-> Estado: ACTIVO  
-> Rama: `rebuild/v39-stable-baseline`  
-> PR: `#85` (debe permanecer OPEN/DRAFT)  
-> Arquitectura autoridad: `ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md`
+> **Estado:** ARCHIVADO / SUPERADO  
+> **Última actualización como documento vivo:** 2026-08-26  
+> **Archivado:** 2026-08-27  
+> **Sustituido como estado operativo por:** [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md)  
+> **Arquitectura Gemini vigente:** [`ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md`](./ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md)
 
-Este documento es el checkpoint operativo de Fase 3. Debe actualizarse conforme se validen slices. El código híbrido existente no es la especificación del runtime nuevo.
+Este archivo **ya no es un checkpoint operativo** y no debe actualizarse como plan activo.
 
-## 3A — GeminiCallSession / control contract
+La Fase 3 documentada originalmente exploraba/construía una arquitectura Gemini independiente basada, entre otros elementos, en:
 
-- [x] `apps/gemini-control-plane` existe como aplicación separada.
-- [x] `GeminiCallSession` Durable Object independiente de OpenAI.
-- [x] lifecycle pequeño propio, sin herencia `CallSession V2→V54`.
-- [x] direcciones `EDGE_TO_WORKER` / `WORKER_TO_EDGE` explícitas.
-- [x] eventos inválidos por estado reciben NACK y no consumen inbound sequence.
-- [x] lifecycle + message id + inbound sequence se persisten atómicamente en SQLite.
-- [x] outbound sequence persiste tras reconnect.
-- [x] duplicate / gap / reconnect probados en Cloudflare test runtime.
-- [x] admission previa obligatoria antes de WSS.
-- [x] WSS público ya no confía en `call_session_id`, `edge_session_id` ni `credential_id` en query string.
-- [x] capability HMAC `gemini-control-capability.v1` requerida como `Authorization: Bearer`.
-- [x] Worker verifica capability y deriva los bindings; el DO compara tenant/call/session/edge/credential/expiry con admission persistida.
-- [ ] `SYNC`/replay completo de mensajes worker→edge aún no implementado.
-- [ ] comandos worker→edge con effect idempotency aún no conectados al runtime real.
+- `GeminiCallSession` / Durable Object;
+- contrato WSS de control Worker↔Edge;
+- Google Speech v2 como transcript authority;
+- semantic preselection;
+- `TurnAuthorizationQuarantine`;
+- governed speech/TTS;
+- recovery/reconnect gobernado;
+- gates de admission antes de permitir tráfico productivo.
 
-Evidencia validada:
+Ese trabajo produjo aprendizajes, componentes y pruebas útiles, pero **no representa el hot path Gemini Fast que atiende llamadas actualmente**.
 
-- SHA `9044f8df141b5e1363bd13677472cac82361cea8`: cuatro pipelines SUCCESS tras capability + admission.
-- SHA `5275949c7571e1f91d4627cf0b5aea26dd9fb5a7`: handshake integrado admission → capability → router Worker → DO → `EDGE_READY` → `ACK APPLIED`; cuatro pipelines SUCCESS.
+## Por qué quedó superado
 
-## 3B — Admission Telnyx Gemini
+ADR-004 cambió explícitamente el objetivo de runtime hacia un camino audio→audio de latencia mínima:
 
-- [x] verificación Ed25519 sobre `timestamp|raw_body` antes de parsear JSON.
-- [x] PEM/SPKI y raw base64 soportados; ventana temporal bounded configurable.
-- [x] identidad Telnyx retry-stable basada en `data.id` + `occurred_at` firmados.
-- [x] tenant route provider-neutral reutiliza el contrato KV de número llamado.
-- [x] IDs `callSessionId`, `edgeSessionId`, `credentialId` derivados por HMAC domain-separated y estables en retry.
-- [x] admission persistida por RPC interno en `GeminiCallSession`.
-- [x] retry idéntico = idempotente; rebinding de identidad = rechazado.
-- [x] admission emite capability de control con exactamente los mismos bindings/expiry.
-- [x] admission construye bootstrap `gemini-edge-control-bootstrap.v1` efímero con WSS + Bearer capability.
-- [ ] caller-security pre-call compartida todavía no conectada al nuevo Worker.
-- [ ] webhook HTTP Gemini todavía no expuesto.
-- [ ] Telnyx `answer` todavía no conectado.
-- [ ] Telnyx `streaming_start` todavía no conectado.
+```text
+Telnyx media WSS
+      ↕
+Fast Media Edge
+      ↕
+Gemini Live
+```
 
-## 3C — Edge ↔ DO no productivo
+El Fast Worker conserva routing, tenant/config, admission, seguridad, tools/control y diagnóstico, pero no participa en cada chunk/turno de audio.
 
-- [x] bootstrap de control Edge↔Worker separado del bootstrap Gemini Live antiguo.
-- [x] bootstrap prohíbe identidad sensible en query y exige `wss://.../internal/control`.
-- [x] Media Edge canoniza el bootstrap y coloca capability sólo en `Authorization: Bearer`.
-- [x] vistas de auditoría no contienen material de capability.
-- [x] handshake autenticado demostrado en Cloudflare test runtime hasta `EDGE_READY → ACK APPLIED`.
-- [ ] cliente WSS Media Edge mínimo todavía no conectado al runtime real.
-- [ ] medir RTT p50/p95/p99.
-- [ ] medir reconnect/SYNC/replay.
-- [ ] medir quarantine high-water.
+Por tanto, dejaron de ser requisitos obligatorios del camino conversacional normal Fast:
 
-## 3D — Tools / negocio
+- STT externo antes de entregar cada turno a Gemini;
+- semantic preselection aislada por turno;
+- quarantine como gate normal de cada respuesta;
+- DO/control WSS como owner de cada turno;
+- TTS externo como voz conversacional normal.
 
-- [ ] Gemini tool call → DO → ToolGateway → dominio/Supabase.
-- [ ] FunctionResponse mismo tool_call_id en la misma sesión Live.
-- [ ] reserva progresiva / outside-hours / BOOKED.
-- [ ] cero efecto antes de autorización.
+La mera presencia de esos módulos/tests en `apps/gemini-media-edge` no implica que formen parte de `server-fast.mjs` / `fast-runtime.mjs`.
 
-## 3E — Trust/audio
+## Qué decisiones siguen siendo útiles
 
-- [ ] conectar `TurnAuthorizationQuarantine` al runtime nuevo.
-- [ ] Google STT authority en paralelo.
-- [ ] clean restart para contexto rechazado.
-- [ ] control turns single-voice Gemini Live.
+Del trabajo de Fase 3 sobreviven principios que siguen vigentes:
 
-## 3F — E2E / canary antes de tráfico
+- OpenAI y Gemini deben ser productos/runtimes independientes;
+- Cloudflare no transporta audio continuo;
+- tenant, permisos e invariantes no pertenecen al modelo;
+- efectos requieren contratos/identidad/capabilities;
+- ordering debe resolverse por evidencia/identidad, no por sleeps;
+- observabilidad debe ser bounded y redactada;
+- una capability sintética no sustituye una validación E2E.
 
-Pendiente completo. No habilitar número productivo hasta cerrar los gates E2E/canary.
+Estos principios están consolidados en [`DESIGN_RULES.md`](./DESIGN_RULES.md).
 
-## Siguiente acción exacta
+## Estado actual
 
-Implementar un cliente WSS mínimo y provider-specific en Media Edge para `gemini-control.v1` usando el bootstrap autenticado ya validado. Inicialmente sólo debe:
+No usar los checkboxes, SHAs, revisiones o frases originales de este documento para responder preguntas como:
 
-1. abrir WSS con Bearer capability;
-2. emitir `EDGE_READY` con sequence/message id propios;
-3. correlacionar `ACK/NACK`;
-4. mantener estado bounded necesario para reconnect;
-5. ser probado con transporte WebSocket inyectado antes de conectar Cloud Run al Worker nuevo.
+- “¿Gemini recibe tráfico?”
+- “¿qué Worker atiende la llamada?”
+- “¿Google STT es obligatorio?”
+- “¿puedo hacer una llamada manual?”
+- “¿qué revisión Cloud Run está usando Fast?”
 
-No debe ejecutar tools, liberar audio ni tocar Telnyx productivo todavía.
+Para esas preguntas consultar [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md), [`SYSTEM_ARCHITECTURE.md`](./SYSTEM_ARCHITECTURE.md), la configuración remota y los workflows actuales.
+
+## Trazabilidad histórica
+
+El contenido detallado original de este checkpoint permanece disponible en el historial Git anterior a este archivado. No se replica aquí porque mantener un segundo plan exhaustivo “casi vigente” fue precisamente una fuente de confusión documental.
