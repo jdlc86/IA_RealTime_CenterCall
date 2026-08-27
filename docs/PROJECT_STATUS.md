@@ -1,12 +1,12 @@
 # IA_RealTime_CenterCall — estado operativo
 
-> Snapshot documental: 2026-08-27  
+> Snapshot documental: 2026-08-28  
 > Rama estable: `rebuild/v39-stable-baseline`  
 > Baseline verificado al iniciar esta revisión: `794ff32f954c89b80cf3e8973b6bb7ae8b42a5fb`  
 > PR de larga duración: PR #85, OPEN / DRAFT contra `main`  
 > Arquitectura Gemini vigente: [`ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md`](./architecture/ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md)
 
-Este archivo describe el **estado actual**, no el plan histórico que llevó hasta él. Antes de actuar sobre producción se debe volver a verificar HEAD, workflows, bindings y configuración remota.
+Este archivo describe el **estado actual**. El detalle de contratos/procedimientos vive en sus documentos propietarios. Antes de actuar sobre producción se debe volver a verificar HEAD, workflows, bindings y configuración remota.
 
 No confundir:
 
@@ -16,7 +16,7 @@ IMPLEMENTADO ≠ CI VERDE ≠ DESPLEGADO ≠ VALIDADO E2E
 
 ## Resumen ejecutivo
 
-El producto Gemini ya no está en una fase “no productiva” de diseño. Existe una ruta Fast independiente que ha atendido llamadas reales:
+El producto Gemini dispone de una ruta Fast independiente que ha atendido llamadas reales:
 
 ```text
 Telnyx
@@ -27,8 +27,8 @@ Telnyx
 
 La ruta conserva la separación control/media:
 
-- el **Fast Worker** posee admission, tenant routing/KV, configuración, autorización de efectos, señalización/control y persistencia de diagnósticos;
-- el **Fast Media Edge** posee los sockets de audio Telnyx/Gemini, VAD/turn-taking Gemini, barge-in, playback y ejecución realtime local necesaria;
+- el **Fast Worker** posee admission, tenant routing/KV, configuración, autorización/control y persistencia de diagnósticos;
+- el **Fast Media Edge** posee los sockets de audio Telnyx/Gemini, VAD/turn-taking Gemini, barge-in, playback y coordinación realtime local;
 - Cloudflare **no transporta audio continuo**;
 - OpenAI no forma parte del hot path Gemini.
 
@@ -42,28 +42,21 @@ La ruta conserva la separación control/media:
 | Audio Telnyx ↔ Gemini Live | ✅ | ✅ | ✅ | conversación real validada |
 | Tenant routing/config por KV | ✅ | ✅ | ✅ | tenant real resuelto antes de llamada |
 | Transferencia humana Fast | ✅ | ✅ | ✅ | transferencias exitosas y fallidas auditadas |
-| Auditoría `human_handoff_events` | ✅ | ✅ | ✅ | estados de handoff observados en Supabase |
-| Diagnóstico `call_diagnostic_events` | ✅ | ✅ | ✅ | eventos Fast/Gemini persistidos fuera del hot path |
-| Autorización lingüística de handoff sin listas rígidas | ✅ | ✅ | ✅ desplegada en baseline `794ff32f...` | regresiones sintéticas; validar nuevamente en llamada real tras cada cambio relacionado |
-| Snapshot de transcript antes de `turnComplete` | ✅ | ✅ | ✅ desplegado | test específico same-frame |
-| Ringback audible para caller durante transfer | ❌ determinista no implementado | — | depende de early media | **limitación abierta** |
-| TTS terminal audible tras `NO_ANSWER`/fallo | implementación existe | tests parciales | comportamiento observado no fiable | **limitación abierta** |
-| Canary deploy preflight final | endpoint existe | gate de workflow actualmente defectuoso | no bloquea que Worker/edge queden sincronizados | **deuda operativa abierta** |
+| Auditoría `human_handoff_events` | ✅ | ✅ | ✅ | estados observados en Supabase |
+| Diagnóstico `call_diagnostic_events` | ✅ | ✅ | ✅ | eventos persistidos fuera del hot path |
+| Autorización semántica de handoff sin listas rígidas | ✅ | ✅ | ✅ baseline `794ff32f...` | regresiones sintéticas; **pendiente revalidación en llamada real** |
+| Snapshot de transcript antes de `turnComplete` | ✅ | ✅ | ✅ baseline `794ff32f...` | test específico same-frame; **pendiente revalidación en llamada real** |
+| Ringback audible durante transfer | no determinista | — | depende de early media | limitación abierta; ver `HUMAN_HANDOFF.md` |
+| TTS terminal audible tras fallo/no-answer | acción implementada | tests parciales | audibilidad no fiable | limitación abierta; ver `HUMAN_HANDOFF.md` |
+| Canary deploy preflight final | endpoint implementado | gate final desalineado | Worker/edge pueden quedar sincronizados antes del gate | deuda operativa; ver `runbooks/Deployment.md` |
 
 ## Baseline Gemini Fast actual
 
 ### Control plane
 
-Aplicación:
-
 ```text
 apps/gemini-control-plane
-```
-
-Worker:
-
-```text
-ia-realtime-centercall-gemini-fast
+Worker: ia-realtime-centercall-gemini-fast
 ```
 
 Responsabilidades principales:
@@ -73,12 +66,9 @@ Responsabilidades principales:
 - leer `tenant_config:<tenant>` y `tenant_capabilities:<tenant>` antes de la llamada;
 - emitir admission/credenciales efímeras para Media Edge;
 - exponer control de transferencia humana;
-- recibir diagnósticos bounded del Media Edge y persistirlos en Supabase;
-- permanecer fuera del audio continuo.
+- recibir diagnósticos bounded del Media Edge y persistirlos fuera del audio crítico.
 
 ### Media plane
-
-Aplicación:
 
 ```text
 apps/gemini-media-edge
@@ -88,100 +78,43 @@ Fast path:
 
 - Telnyx PCM → Gemini Live con el mínimo de transformaciones necesarias;
 - Gemini audio → Telnyx;
-- modelo baseline actual `gemini-3.1-flash-live-preview` mientras siga siendo el candidato validado por el runtime;
+- modelo baseline actual `gemini-3.1-flash-live-preview` mientras siga validado;
 - VAD/turn-taking Gemini como baseline Fast;
-- `Kore` como voz configurada actualmente por el Fast runtime;
+- `Kore` como voz configurada actualmente;
 - tool calls procesados dentro del contrato Fast sin introducir un hop remoto por cada turno.
 
-## La aparente contradicción `Cloud Run 0%`
+## Routing por revisión etiquetada
 
-El workflow Fast despliega una revisión con:
-
-```text
---no-traffic
---tag fast-<short-sha>
-```
-
-Después configura el Worker con:
+El workflow Fast despliega una revisión con `--no-traffic` y tag `fast-<short-sha>`. Después el Worker se configura con:
 
 ```text
 GEMINI_FAST_CANARY_EDGE_URL=wss://<tagged-revision>/telnyx/gemini
 ```
 
-Por eso el reparto general del servicio Cloud Run puede seguir mostrando `0%` para la revisión Fast mientras **las llamadas admitidas por el Fast Worker se dirigen explícitamente a su URL etiquetada**.
+Por tanto, `0%` de tráfico general de Cloud Run **no implica** que esa revisión no atienda llamadas Fast. Para determinar la revisión efectiva hay que verificar el binding del Worker.
 
-Regla operativa:
+## Transferencia humana — resumen de estado
 
-> Para determinar qué Media Edge atiende la ruta Gemini Fast, verificar el binding del Worker y la URL etiquetada. No inferirlo sólo del porcentaje general de tráfico de Cloud Run.
+El contrato y las limitaciones pertenecen a [`HUMAN_HANDOFF.md`](./HUMAN_HANDOFF.md).
 
-## Transferencia humana — estado actual
+Baseline `794ff32f...`:
 
-La transferencia Fast tiene configuración por tenant y auditoría en `public.human_handoff_events`.
+1. elimina listas rígidas de confirmaciones;
+2. hace que Gemini clasifique semánticamente `EXPLICIT_REQUEST` / `CONFIRMED_OFFER`;
+3. exige `caller_authority_evidence` grounded en el transcript snapshot;
+4. captura el transcript antes de encolar la ejecución asíncrona para evitar la carrera con `turnComplete`.
 
-Estados relevantes incluyen:
+Frontera exacta: la política Fast valida **enum + grounding**; no vuelve a interpretar la frase ni mantiene actualmente `offerPending` para probar por sí sola una oferta previa.
 
-```text
-REQUESTED
-ANNOUNCING
-DIALING
-ANSWERED
-TRANSFERRED
-NO_ANSWER
-BUSY
-FAILED
-CALLBACK_REQUIRED
-TERMINATED
-```
+Limitaciones abiertas de ringback/TTS y divergencia de prompt heredada: ver `HUMAN_HANDOFF.md`.
 
-Los fallos/no-answer pueden dejar `callback_required=true` y `callback_status=PENDING`. Esto demuestra que la necesidad de callback queda registrada; **no implica que exista todavía un proceso automático que ejecute la devolución de llamada**.
+## Deuda operativa de deploy — resumen
 
-### Corrección de autorización lingüística — 2026-08-27
+El detalle pertenece a [`runbooks/Deployment.md`](./runbooks/Deployment.md).
 
-Baseline `794ff32f...` eliminó el patrón de listas rígidas de confirmaciones del handoff Fast.
+La causa demostrada que mantiene inválido el gate final Fast Canary es que el `jq` del workflow todavía espera campos históricos (`telnyxRouting`, `canaryCalledNumber`, `canaryTenant`) que `/internal/preflight` ya no devuelve. El contrato actual devuelve `tenantRouting: KV_RUNTIME_ONLY` y verifica bootstrap/HMAC/WSS sin tenant productivo.
 
-La política actual:
-
-1. Gemini interpreta semánticamente la intención del caller;
-2. la tool declara la autoridad semántica necesaria para el efecto;
-3. el kernel exige evidencia grounded en el turno capturado;
-4. el kernel valida evidencia/estado, no una lista de frases españolas;
-5. el transcript usado por la autorización se captura antes de encolar el tool call para que `turnComplete` no pueda borrarlo durante la ejecución asíncrona.
-
-Esto evita volver al patrón histórico de enumerar `sí`, `vale`, `adelante`, etc. como sustituto de comprensión lingüística.
-
-## Limitaciones abiertas de transferencia
-
-### 1. Ringback del caller
-
-El código actual no genera de forma determinista un tono de llamada local mientras Telnyx intenta el destino. La transferencia puede depender del early media de la red/terminación. Si no llega early media audible, el caller puede escuchar silencio durante el intento.
-
-No declarar este punto resuelto hasta probar una estrategia explícita de ringback compatible con el lifecycle de transferencia.
-
-### 2. Mensaje terminal tras fallo/no-answer
-
-Existe TTS de fallo en el control de handoff, pero una llamada real mostró que el caller no oyó de forma fiable el mensaje posterior al timeout. La auditoría de lifecycle y el TTS audible son evidencias distintas.
-
-No afirmar “se reproduce exactamente una vez” como hecho E2E hasta añadir observabilidad suficiente y repetir una llamada fallida controlada.
-
-## Deuda operativa: preflight del workflow Fast Canary
-
-El workflow `.github/workflows/gemini-fast-canary-deploy.yml` consigue actualmente:
-
-- tests Fast;
-- build inmutable;
-- revisión etiquetada con `0%` de tráfico general;
-- readiness de la revisión;
-- sincronización del Worker con la URL etiquetada;
-- health del Worker.
-
-El último gate `Prove Worker to Media Edge bootstrap and HMAC` quedó rojo en las ejecuciones observadas durante el despliegue de `794ff32f...`.
-
-Hay dos problemas documentados en ese gate:
-
-1. el nonce efímero del preflight puede devolver temporalmente `503 PREFLIGHT_UNAVAILABLE` durante propagación del Worker;
-2. la aserción final del workflow espera campos antiguos (`telnyxRouting`, `canaryCalledNumber`, `canaryTenant`) que el contrato actual de `routeFastGeminiPreflight` ya no devuelve. El endpoint actual devuelve `tenantRouting: KV_RUNTIME_ONLY` y prueba bootstrap/WSS sin variables productivas de tenant o teléfono.
-
-Este fallo debe tratarse como **deuda del gate de despliegue** hasta corregir el workflow; no como prueba de que el audio Fast o el handoff hayan fallado.
+El workflow actual ya dispone de retry bounded para respuestas temporales 401/503; no documentar `set -e` como causa vigente sin nueva evidencia.
 
 ## Supabase
 
@@ -198,6 +131,8 @@ Principios:
 - persistencia de diagnóstico/handoff Fast debe ser asíncrona y no introducir latencia en audio;
 - un fallo de auditoría no puede cambiar el destino ni autorizar un efecto que el kernel haya rechazado.
 
+Los guardrails operativos de `call_diagnostic_events` se documentan en [`runbooks/CROSS_PLANE_CALL_DIAGNOSTICS.md`](./runbooks/CROSS_PLANE_CALL_DIAGNOSTICS.md).
+
 ## Documentos históricos que no describen producción actual
 
 Especialmente:
@@ -207,26 +142,26 @@ Especialmente:
 - snapshots de `SESSION_HANDOFF_*` fechados;
 - partes de ADR-002 previas a ADR-004.
 
-ADR-004 supersede el uso obligatorio de esos mecanismos en el Fast Path. No deben utilizarse para concluir que Gemini sigue “traffic-disabled”.
+ADR-004 supersede el uso obligatorio de esos mecanismos en el Fast Path.
 
 ## Siguiente validación
 
-Prioridad inmediata después de esta limpieza documental:
+Prioridad inmediata:
 
-1. mantener la documentación canónica alineada con el Fast Path real;
-2. corregir el gate final del workflow Fast Canary sin tocar el runtime de llamadas;
-3. realizar una llamada de transferencia con lenguaje natural para confirmar en producción la autorización semántica/snapshot;
-4. diseñar y validar ringback determinista del caller en el control path;
-5. endurecer y observar el TTS terminal de fallo/no-answer;
+1. **realizar una llamada de transferencia con lenguaje natural** para confirmar en producción que no reaparece el bucle de autorización y que el transcript snapshot funciona bajo tráfico real;
+2. correlacionar esa llamada en `call_diagnostic_events` y, si hay handoff aceptado, `human_handoff_events`;
+3. corregir después el `jq` final del gate Fast Canary sin tocar runtime de llamadas;
+4. diseñar/validar ringback determinista del caller en el control path;
+5. endurecer la observabilidad/audibilidad del TTS terminal;
 6. mantener fuera de alcance cualquier cambio innecesario en VAD, codecs, resampler o puente de audio.
 
 ## Restricciones vigentes
 
 - prioridad máxima: no introducir regresiones de latencia ni estabilidad;
 - no añadir Cloudflare al audio continuo;
-- no reintroducir semantic preselection o STT externo como gate obligatorio del Fast Path sin una nueva decisión arquitectónica;
+- no reintroducir semantic preselection o STT externo como gate obligatorio del Fast Path sin nueva decisión arquitectónica;
 - no resolver lenguaje natural mediante catálogos rígidos de frases;
 - no mezclar OpenAI y Gemini dentro de una llamada sin ADR/requisito nuevo;
 - no confundir ruta etiquetada de Cloud Run con reparto general de tráfico;
 - verificar configuración remota antes de cambios de producción;
-- documentar limitaciones observadas aunque el código/CI estén verdes.
+- documentar limitaciones observadas aunque código/CI estén verdes.
