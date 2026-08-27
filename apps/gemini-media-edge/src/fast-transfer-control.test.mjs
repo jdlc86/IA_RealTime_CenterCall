@@ -28,7 +28,9 @@ test("fast transfer control client posts authorize and start with shared bearer 
     tenantId: "tenant-fast",
     callControlId: "v3:call",
     calledPhoneE164: "+34910000001",
+    callerPhoneE164: "+34647944762",
     reason: "caller_requested_human",
+    contextSummary: "Caller requested reception.",
   };
   const authorized = await client.authorizeTransfer(authorizeBody);
   assert.equal(authorized.ok, true);
@@ -40,7 +42,10 @@ test("fast transfer control client posts authorize and start with shared bearer 
     tenantId: "tenant-fast",
     callControlId: "v3:call",
     calledPhoneE164: "+34910000001",
+    callerPhoneE164: "+34647944762",
     handoffId: "handoff-test",
+    reason: "caller_requested_human",
+    contextSummary: "Caller requested reception.",
   });
   assert.equal(started.ok, true);
   assert.equal(started.status, "DIALING");
@@ -51,6 +56,15 @@ test("fast transfer control client posts authorize and start with shared bearer 
   assert.equal(requests[1].url, "https://control.example.test/internal/call-transfer/start");
   assert.equal(requests[0].init.headers.authorization, "Bearer 0123456789abcdef0123456789abcdef");
   assert.deepEqual(JSON.parse(requests[0].init.body), authorizeBody);
+  assert.deepEqual(JSON.parse(requests[1].init.body), {
+    tenantId: "tenant-fast",
+    callControlId: "v3:call",
+    calledPhoneE164: "+34910000001",
+    callerPhoneE164: "+34647944762",
+    handoffId: "handoff-test",
+    reason: "caller_requested_human",
+    contextSummary: "Caller requested reception.",
+  });
 });
 
 test("fast transfer authorization network failure returns fail-closed result instead of throwing", async () => {

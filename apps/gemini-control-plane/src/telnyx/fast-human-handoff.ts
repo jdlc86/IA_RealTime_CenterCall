@@ -1,14 +1,21 @@
 import type { FastGeminiToolDeclaration } from "../admission/fast-media";
+import {
+  createFastHumanHandoffAudit,
+  type FastHumanHandoffAcceptedAudit,
+  type FastHumanHandoffAuditDependencies,
+} from "./fast-human-handoff-audit";
 
 type TenantKv = Readonly<{
   get(key: string): Promise<string | null>;
   put?(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
 }>;
 
-type FastHandoffEnv = Readonly<{
+export type FastHandoffEnv = Readonly<{
   TELNYX_API_KEY: string;
   GEMINI_MEDIA_CONTROL_PLANE_TOKEN: string;
   TENANT_ROUTING_KV: TenantKv;
+  SUPABASE_URL?: string;
+  SUPABASE_SERVICE_ROLE_KEY?: string;
 }>;
 
 export type FastHumanHandoffConfig = Readonly<{
@@ -54,6 +61,39 @@ function json(raw: string | null, field: string): unknown | null {
   if (!raw) return null;
   try { return JSON.parse(raw) as unknown; }
   catch { throw new Error(`${field} is invalid JSON`); }
+}
+
+function optionalE164(value: unknown): string | null {
+  if (value == null) return null;
+  try { return e164(value, "callerPhoneE164"); }
+  catch { return null; }
+}
+
+function auditText(value: unknown, max: number): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized ? normalized.slice(0, max) : null;
+}
+
+function acceptedAudit(
+  body: Record<string, unknown>,
+  config: FastHumanHandoffConfig,
+  handoffId: string,
+  tenantId: string,
+  sourceCallControlId: string,
+): FastHumanHandoffAcceptedAudit | null {
+  const callerPhone = optionalE164(body.callerPhoneE164);
+  if (!callerPhone) return null;
+  return Object.freeze({
+    handoffId,
+    tenantId,
+    callId: sourceCallControlId,
+    callerPhone,
+    reasonCode: auditText(body.reason, 160) ?? "HUMAN_ASSISTANCE_REQUIRED",
+    reasonSummary: auditText(body.contextSummary, 500),
+    destinationLabel: config.destination.label,
+    destinationPhone: config.destination.phone,
+  });
 }
 
 export function parseFastHumanHandoffConfig(tenantConfigValue: unknown): FastHumanHandoffConfig | null {
@@ -213,7 +253,11 @@ async function readRequestJson(request: Request): Promise<Record<string, unknown
   return parsed;
 }
 
-export async function routeFastTransferAuthorize(request: Request, env: FastHandoffEnv): Promise<Response> {
+export async function routeFastTransferAuthorize(
+  request: Request,
+  env: FastHandoffEnv,
+  auditDependencies: FastHumanHandoffAuditDependencies = {},
+): Promise<Response> {
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
   if (!await controlAuthorized(request, env.GEMINI_MEDIA_CONTROL_PLANE_TOKEN)) return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
   try {
@@ -224,6 +268,8 @@ export async function routeFastTransferAuthorize(request: Request, env: FastHand
     await verifyRouting(env.TENANT_ROUTING_KV, tenantId, calledPhoneE164);
     const { config } = await tenantHandoff(env.TENANT_ROUTING_KV, tenantId);
     const handoffId = crypto.randomUUID();
+    const accepted = acceptedAudit(body, config, handoffId, tenantId, sourceCallControlId);
+    if (accepted) createFastHumanHandoffAudit(env, auditDependencies).accepted(accepted);
     return Response.json({
       ok: true,
       status: "HUMAN_HANDOFF_ACCEPTED",
@@ -238,17 +284,27 @@ export async function routeFastTransferAuthorize(request: Request, env: FastHand
   }
 }
 
-export async function routeFastTransferStart(request: Request, env: FastHandoffEnv): Promise<Response> {
+export async function routeFastTransferStart(
+  request: Request,
+  env: FastHandoffEnv,
+  auditDependencies: FastHumanHandoffAuditDependencies = {},
+): Promise<Response> {
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
   if (!await controlAuthorized(request, env.GEMINI_MEDIA_CONTROL_PLANE_TOKEN)) return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  const audit = createFastHumanHandoffAudit(env, auditDependencies);
+  let auditIdentity: Readonly<{ handoffId: string; tenantId: string }> | null = null;
   try {
     const body = await readRequestJson(request);
     const tenantId = required(body.tenantId, "tenantId", 256);
     const calledPhoneE164 = e164(body.calledPhoneE164, "calledPhoneE164");
     const sourceCallControlId = required(body.callControlId, "callControlId", 512);
     const handoffId = required(body.handoffId, "handoffId", 128);
+    auditIdentity = Object.freeze({ handoffId, tenantId });
     await verifyRouting(env.TENANT_ROUTING_KV, tenantId, calledPhoneE164);
     const { config } = await tenantHandoff(env.TENANT_ROUTING_KV, tenantId);
+    const accepted = acceptedAudit(body, config, handoffId, tenantId, sourceCallControlId);
+    if (accepted) audit.accepted(accepted);
+    audit.patch(handoffId, tenantId, { transfer_started_at: (auditDependencies.now ?? (() => new Date()))().toISOString() });
     const state: HandoffState = Object.freeze({ kind: "gemini_handoff_v1", handoffId, tenantId, sourceCallControlId });
     const correlationState = encodeState(state);
     const response = await telnyxAction(env.TELNYX_API_KEY, sourceCallControlId, "transfer", {
@@ -260,11 +316,28 @@ export async function routeFastTransferStart(request: Request, env: FastHandoffE
       target_leg_client_state: correlationState,
     });
     if (!response.ok) {
+      audit.patch(handoffId, tenantId, {
+        status: "FAILED",
+        transfer_ended_at: (auditDependencies.now ?? (() => new Date()))().toISOString(),
+        callback_required: true,
+        callback_status: "PENDING",
+        failure_reason: `TELNYX_TRANSFER_START_HTTP_${response.status}`,
+      });
       await speakFailure(env, state, config.failurePolicy.message, correlationState);
       return Response.json({ ok: false, status: "TRANSFER_FAILED_TERMINAL_MESSAGE_STARTED" }, { status: 502 });
     }
+    audit.patch(handoffId, tenantId, { status: "DIALING" });
     return Response.json({ ok: true, status: "DIALING", handoffId, terminal: true }, { status: 202 });
   } catch {
+    if (auditIdentity) {
+      audit.patch(auditIdentity.handoffId, auditIdentity.tenantId, {
+        status: "FAILED",
+        transfer_ended_at: (auditDependencies.now ?? (() => new Date()))().toISOString(),
+        callback_required: true,
+        callback_status: "PENDING",
+        failure_reason: "TRANSFER_REJECTED",
+      });
+    }
     return Response.json({ ok: false, status: "TRANSFER_REJECTED" }, { status: 403 });
   }
 }
@@ -281,14 +354,37 @@ export function isFastHumanHandoffEventType(eventType: string | null): boolean {
   return eventType === "call.bridged" || eventType === "call.hangup" || eventType === "call.speak.ended";
 }
 
-export async function handleVerifiedFastHumanHandoffEvent(rawBody: string, env: FastHandoffEnv): Promise<boolean> {
+function failureStatus(hangupCause: unknown): "NO_ANSWER" | "BUSY" | "FAILED" | null {
+  const cause = typeof hangupCause === "string" ? hangupCause.toLowerCase() : "";
+  if (cause.includes("timeout") || cause.includes("no_answer") || cause.includes("no-answer")) return "NO_ANSWER";
+  if (cause.includes("busy")) return "BUSY";
+  if (cause.includes("rejected") || cause.includes("failed")) return "FAILED";
+  return null;
+}
+
+export async function handleVerifiedFastHumanHandoffEvent(
+  rawBody: string,
+  env: FastHandoffEnv,
+  auditDependencies: FastHumanHandoffAuditDependencies = {},
+): Promise<boolean> {
   const { eventType, payload } = payloadFromWebhook(rawBody);
   if (!isFastHumanHandoffEventType(eventType) || !payload) return false;
   const stateRaw = payload.client_state ?? payload.target_leg_client_state;
   const state = decodeState(stateRaw);
   if (!state) return false;
+  const audit = createFastHumanHandoffAudit(env, auditDependencies);
+  const now = () => (auditDependencies.now ?? (() => new Date()))().toISOString();
   const callControlId = typeof payload.call_control_id === "string" ? payload.call_control_id.trim() : "";
   if (eventType === "call.bridged") {
+    const completedAt = now();
+    audit.patch(state.handoffId, state.tenantId, {
+      status: "TRANSFERRED",
+      answered_at: completedAt,
+      transfer_ended_at: completedAt,
+      callback_required: false,
+      callback_status: null,
+      ...(callControlId && callControlId !== state.sourceCallControlId ? { target_call_control_id: callControlId } : {}),
+    });
     if (env.TENANT_ROUTING_KV.put) {
       await env.TENANT_ROUTING_KV.put(`handoff_bridged:${state.handoffId}`, "1", { expirationTtl: 3600 });
     }
@@ -300,12 +396,34 @@ export async function handleVerifiedFastHumanHandoffEvent(rawBody: string, env: 
     });
     return true;
   }
+  if (eventType === "call.hangup" && callControlId === state.sourceCallControlId) {
+    const terminatedAt = now();
+    const bridged = await env.TENANT_ROUTING_KV.get(`handoff_bridged:${state.handoffId}`);
+    audit.patch(state.handoffId, state.tenantId, bridged
+      ? { call_terminated_at: terminatedAt }
+      : {
+          status: "TERMINATED",
+          transfer_ended_at: terminatedAt,
+          call_terminated_at: terminatedAt,
+          callback_required: true,
+          callback_status: "PENDING",
+          failure_reason: `SOURCE_CALL_HANGUP:${auditText(payload.hangup_cause, 200) ?? "unknown"}`,
+        });
+    return true;
+  }
   if (eventType === "call.hangup" && callControlId && callControlId !== state.sourceCallControlId) {
-    const cause = typeof payload.hangup_cause === "string" ? payload.hangup_cause.toLowerCase() : "";
-    const failure = cause.includes("timeout") || cause.includes("no_answer") || cause.includes("no-answer") || cause.includes("busy") || cause.includes("rejected") || cause.includes("failed");
-    if (!failure) return true;
+    const status = failureStatus(payload.hangup_cause);
+    if (!status) return true;
     if (await env.TENANT_ROUTING_KV.get(`handoff_bridged:${state.handoffId}`)) return true;
     const { config } = await tenantHandoff(env.TENANT_ROUTING_KV, state.tenantId);
+    audit.patch(state.handoffId, state.tenantId, {
+      status,
+      transfer_ended_at: now(),
+      target_call_control_id: callControlId,
+      callback_required: true,
+      callback_status: "PENDING",
+      failure_reason: `TARGET_CALL_HANGUP:${auditText(payload.hangup_cause, 200) ?? "unknown"}`,
+    });
     await speakFailure(env, state, config.failurePolicy.message, stateRaw as string);
     return true;
   }

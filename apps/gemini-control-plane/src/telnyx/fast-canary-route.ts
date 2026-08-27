@@ -7,6 +7,7 @@ import {
   isFastHumanHandoffEventType,
   parseFastHumanHandoffConfig,
 } from "./fast-human-handoff";
+import type { FastHumanHandoffAuditDependencies } from "./fast-human-handoff-audit";
 
 type TenantRoutingKv = Readonly<{
   get(key: string): Promise<string | null>;
@@ -34,6 +35,8 @@ export type FastGeminiCanaryEnv = Readonly<{
   GEMINI_FAST_CANARY_EDGE_URL: string;
   GEMINI_FAST_CANARY_SYSTEM_INSTRUCTION: string;
   TENANT_ROUTING_KV: TenantRoutingKv;
+  SUPABASE_URL?: string;
+  SUPABASE_SERVICE_ROLE_KEY?: string;
 }>;
 
 type StartIncoming = (
@@ -41,7 +44,11 @@ type StartIncoming = (
   options: FastIncomingRuntimeOptions,
 ) => Promise<FastIncomingRuntimeResult>;
 
-type RouteDependencies = Readonly<{ startIncoming?: StartIncoming; now?: () => number }>;
+type RouteDependencies = Readonly<{
+  startIncoming?: StartIncoming;
+  now?: () => number;
+  handoffAudit?: FastHumanHandoffAuditDependencies;
+}>;
 
 function required(value: unknown, field: string, max = 64_000): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`);
@@ -195,7 +202,7 @@ export async function routeFastGeminiCanaryWebhook(request: Request, env: FastGe
       maxAgeSeconds: 300,
     });
     if (!valid) return Response.json({ ok: false, status: "SIGNATURE_REJECTED" }, { status: 401 });
-    await handleVerifiedFastHumanHandoffEvent(rawBody, env);
+    await handleVerifiedFastHumanHandoffEvent(rawBody, env, dependencies.handoffAudit);
     return new Response(null, { status: 204 });
   }
 

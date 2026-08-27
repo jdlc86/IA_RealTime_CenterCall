@@ -34,6 +34,10 @@ function bootstrap() {
     tenantId: "tenant-runtime",
     callControlId: "v3:runtime-call",
     notAfterEpochMs: Date.now() + 60_000,
+    securityContext: Object.freeze({
+      callerPhoneE164: "+34647944762",
+      calledPhoneE164: "+34910000001",
+    }),
     systemInstruction: "Responde de forma breve y natural.",
     tools: Object.freeze([Object.freeze({
       name: "restaurant_reservation_create",
@@ -159,6 +163,72 @@ test("fast runtime executes Gemini tool locally and continues same Live session"
   assert.equal(effects, 1);
   assert.equal(gemini.closed, null);
   session.close("test-complete");
+});
+
+test("fast runtime carries existing call audit context from authorization into transfer start", async () => {
+  const telnyx = new FakeSocket();
+  telnyx.readyState = 1;
+  let gemini;
+  let authorizeInput = null;
+  let startInput = null;
+  const session = new FastGeminiRealtimeSession({
+    telnyxSocket: telnyx,
+    bootstrap: bootstrap(),
+    geminiApiKey: "test-key-not-production",
+    authorizeTransfer: async (input) => {
+      authorizeInput = input;
+      return {
+        ok: true,
+        status: "HUMAN_HANDOFF_ACCEPTED",
+        handoffId: "00000000-0000-4000-8000-000000000001",
+        successMessage: "Te paso con recepción. Un momento, por favor.",
+      };
+    },
+    startTransfer: async (input) => {
+      startInput = input;
+      return { ok: true, status: "DIALING" };
+    },
+    createGeminiSocket() { gemini = new FakeSocket(); return gemini; },
+  }).start();
+
+  gemini.open();
+  gemini.message({ setupComplete: {} });
+  gemini.message({ serverContent: { inputTranscription: { text: "Quiero hablar con una persona de recepción" } } });
+  gemini.message({
+    toolCall: { functionCalls: [{
+      id: "transfer-fast-1",
+      name: "transfer_call",
+      args: {
+        reason: "USER_REQUESTED_HUMAN",
+        context_summary: "El caller pide hablar con recepción.",
+      },
+    }] },
+  });
+  await settle();
+  await settle();
+
+  assert.deepEqual(authorizeInput, {
+    tenantId: "tenant-runtime",
+    callControlId: "v3:runtime-call",
+    calledPhoneE164: "+34910000001",
+    callerPhoneE164: "+34647944762",
+    reason: "USER_REQUESTED_HUMAN",
+    contextSummary: "El caller pide hablar con recepción.",
+  });
+
+  gemini.message({ serverContent: { turnComplete: true } });
+  await settle();
+  await settle();
+  assert.deepEqual(startInput, {
+    tenantId: "tenant-runtime",
+    callControlId: "v3:runtime-call",
+    calledPhoneE164: "+34910000001",
+    callerPhoneE164: "+34647944762",
+    handoffId: "00000000-0000-4000-8000-000000000001",
+    reason: "USER_REQUESTED_HUMAN",
+    contextSummary: "El caller pide hablar con recepción.",
+  });
+  assert.equal(session.snapshot().closed, true);
 });
 
 test("fast runtime has no legacy hybrid hot-path imports", async () => {

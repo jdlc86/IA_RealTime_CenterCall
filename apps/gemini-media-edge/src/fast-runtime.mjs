@@ -226,12 +226,16 @@ export class FastGeminiRealtimeSession {
       return Object.freeze({ ok: false, status: decision.source });
     }
     if (!this.authorizeTransfer || !this.startTransfer) throw new Error("Fast Gemini transfer control is unavailable");
+    const reason = typeof toolCall.args?.reason === "string" ? toolCall.args.reason.slice(0, 160) : "HUMAN_ASSISTANCE_REQUIRED";
+    const contextSummary = typeof toolCall.args?.context_summary === "string" ? toolCall.args.context_summary.slice(0, 500) : undefined;
+    const callerPhoneE164 = this.bootstrap.securityContext.callerPhoneE164;
     const authorized = await this.authorizeTransfer(Object.freeze({
       tenantId: this.bootstrap.tenantId,
       callControlId: this.bootstrap.callControlId,
       calledPhoneE164: this.bootstrap.securityContext.calledPhoneE164,
-      reason: typeof toolCall.args?.reason === "string" ? toolCall.args.reason.slice(0, 160) : "HUMAN_ASSISTANCE_REQUIRED",
-      contextSummary: typeof toolCall.args?.context_summary === "string" ? toolCall.args.context_summary.slice(0, 500) : undefined,
+      callerPhoneE164,
+      reason,
+      contextSummary,
     }));
     if (!authorized?.ok || authorized.status !== "HUMAN_HANDOFF_ACCEPTED" || typeof authorized.handoffId !== "string") {
       return Object.freeze({ ok: false, status: "HUMAN_HANDOFF_NOT_AVAILABLE" });
@@ -241,6 +245,9 @@ export class FastGeminiRealtimeSession {
     this.pendingHandoff = {
       handoffId: authorized.handoffId,
       successMessage: typeof authorized.successMessage === "string" ? authorized.successMessage : "De acuerdo, te paso con una persona del equipo. Un momento, por favor.",
+      callerPhoneE164,
+      reason,
+      contextSummary,
       starting: false,
     };
     this.#emit("HUMAN_HANDOFF_ACCEPTED", { authorizationSource: decision.source, handoffId: authorized.handoffId });
@@ -282,7 +289,10 @@ export class FastGeminiRealtimeSession {
         tenantId: this.bootstrap.tenantId,
         callControlId: this.bootstrap.callControlId,
         calledPhoneE164: this.bootstrap.securityContext.calledPhoneE164,
+        callerPhoneE164: pending.callerPhoneE164,
         handoffId: pending.handoffId,
+        reason: pending.reason,
+        contextSummary: pending.contextSummary,
       }));
       this.#emit("HUMAN_HANDOFF_TRANSFER_START_RESULT", { handoffId: pending.handoffId, status: result?.status ?? "UNKNOWN" });
       // Whether dialing started or the fixed terminal failure message was started,

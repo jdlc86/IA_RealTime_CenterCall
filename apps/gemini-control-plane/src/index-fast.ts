@@ -6,8 +6,9 @@ import { routeFastTransferAuthorize, routeFastTransferStart } from "./telnyx/fas
 type FastWorkerEnv = FastGeminiPreflightEnv & FastDiagnosticIngestEnv;
 
 export default {
-  async fetch(request: Request, env: FastWorkerEnv): Promise<Response> {
+  async fetch(request: Request, env: FastWorkerEnv, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    const handoffAudit = { waitUntil: (promise: Promise<void>) => ctx.waitUntil(promise) };
     if (url.pathname === "/health") {
       return Response.json({
         ok: true,
@@ -17,9 +18,9 @@ export default {
     }
     if (url.pathname === "/internal/preflight") return routeFastGeminiPreflight(request, env);
     if (url.pathname === "/internal/diagnostics-ingest") return routeFastDiagnosticIngest(request, env);
-    if (url.pathname === "/internal/call-transfer/authorize") return routeFastTransferAuthorize(request, env);
-    if (url.pathname === "/internal/call-transfer/start") return routeFastTransferStart(request, env);
-    if (url.pathname === "/webhooks/telnyx/fast-canary") return routeFastGeminiCanaryWebhook(request, env);
+    if (url.pathname === "/internal/call-transfer/authorize") return routeFastTransferAuthorize(request, env, handoffAudit);
+    if (url.pathname === "/internal/call-transfer/start") return routeFastTransferStart(request, env, handoffAudit);
+    if (url.pathname === "/webhooks/telnyx/fast-canary") return routeFastGeminiCanaryWebhook(request, env, { handoffAudit });
     return new Response("not found", { status: 404 });
   },
 };

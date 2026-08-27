@@ -6,7 +6,7 @@ Human handoff is a transversal CallSession capability. The conversational model 
 
 - A destination phone number is read only from tenant KV and is never exposed to the model.
 - Tenants without `humanHandoff.enabled=true` keep the historical behavior unchanged.
-- Traceability in `human_handoff_events` is created before the caller is told that a transfer will happen.
+- Every accepted handoff receives its stable audit ID before the caller is told that a transfer will happen. Fast-path persistence is scheduled immediately and never gates speech or telephony.
 - Once a configured handoff is accepted, the conversation reaches a point of no return: Lucía does not resume normal dialogue.
 - The transfer announcement is atomic/protected speech with turn detection disabled.
 - On `call.bridged`, the human owns the call and the AI sideband is closed.
@@ -44,5 +44,7 @@ Add this top-level property to the existing tenant document. The phone must be a
 ## Traceability
 
 Each accepted handoff creates a `public.human_handoff_events` row containing tenant, Realtime call, caller phone, reason, destination, lifecycle timestamps, transfer result and callback state. Failed/unanswered handoffs retain the real caller phone for the explicit operational purpose of returning the call.
+
+The Gemini Fast path writes this lifecycle asynchronously through the Worker execution context. Authorization schedules `REQUESTED`; transfer start repeats that INSERT idempotently, records `transfer_started_at`, and then records `DIALING` or a terminal failure from the Telnyx acknowledgement. Verified webhooks record `TRANSFERRED` on `call.bridged`, `NO_ANSWER`/`BUSY`/`FAILED` on target-leg failure, and call termination when the source leg ends. Supabase failures are logged and absorbed; they never change authorization, the configured destination, or Telnyx behavior.
 
 Callback states are `PENDING`, `CONTACTED`, `RESOLVED`, `UNREACHABLE`, or `CANCELLED`.
