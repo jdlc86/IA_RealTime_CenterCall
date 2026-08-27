@@ -1,6 +1,6 @@
 # Prompt de relevo — IA_RealTime_CenterCall
 
-> Última revisión: 2026-08-27  
+> Última revisión: 2026-08-28  
 > Rama estable: `rebuild/v39-stable-baseline`  
 > Baseline de referencia al redactar: `794ff32f954c89b80cf3e8973b6bb7ae8b42a5fb`  
 > PR de larga duración contra `main`: PR #85, OPEN / DRAFT  
@@ -84,8 +84,8 @@ Por tanto, para saber qué revisión atiende llamadas Fast hay que comprobar el 
 3. No tocar VAD, codecs, resampler, buffers o audio bridge para resolver un problema de control si no existe evidencia de que el problema esté allí.
 4. OpenAI y Gemini son runtimes estructuralmente independientes.
 5. No introducir SDK/runtime/secretos OpenAI en Gemini ni viceversa por comodidad.
-6. Un efecto irreversible requiere validación determinista de tenant, identidad, schema, capability y estado.
-7. Gemini puede aportar comprensión semántica; el kernel valida autoridad/grounding/estado. **No reemplazar comprensión lingüística por listas rígidas de frases.**
+6. Un efecto irreversible requiere validación determinista de tenant, identidad, schema, capability y estado aplicable.
+7. Gemini interpreta lenguaje natural. En handoff, el kernel valida el enum de autoridad soportado y el grounding textual en el transcript snapshot; no reinterpreta el español mediante listas rígidas ni reconstruye actualmente por sí mismo una oferta previa para `CONFIRMED_OFFER`.
 8. Una transferencia a humano aceptada entra en lifecycle terminal para la IA; no reanudar conversación normal silenciosamente.
 9. Persistencia de diagnósticos/handoff no puede bloquear audio ni telephony crítica.
 10. No usar timers/sleeps para ocultar carreras de estado cuando puede capturarse identidad/evidencia en el momento correcto.
@@ -118,43 +118,46 @@ Baseline `794ff32f...` corrigió dos problemas:
 1. eliminó el uso de catálogos lingüísticos tipo `sí|vale|adelante|...` para decidir semántica;
 2. eliminó la carrera por la que `turnComplete` podía limpiar `callerTranscript` antes de que el `transfer_call` asíncrono lo usara.
 
-La política actual delega la interpretación semántica en Gemini y exige que la autoridad esté grounded en evidencia real del turno capturado. El runtime toma un snapshot del transcript al recibir/encolar el tool call, antes de que el estado mutable pueda limpiarse.
+Gemini clasifica semánticamente la intención; la política Fast valida que el enum de autoridad sea soportado y que `caller_authority_evidence` esté realmente grounded en el transcript capturado. El runtime toma un snapshot antes de que el estado mutable pueda limpiarse.
 
 La suite Fast incluye una regresión específica para `inputTranscription + transfer_call + turnComplete` en el mismo ciclo.
 
 ### 5. Limitaciones y deuda abiertas
 
-#### A. Ringback del caller durante transferencia
+Mantener aquí sólo el resumen. Los propietarios del detalle son:
 
-No existe todavía ringback local determinista en el control path. Telnyx puede pasar early media, pero eso no garantiza que el caller oiga `tuut... tuut...`. Una llamada puede quedar silenciosa durante el intento aunque el target leg se haya creado.
+- **Handoff / ringback / TTS terminal / contrato semántico:** `docs/HUMAN_HANDOFF.md`.
+- **Deploy Fast / preflight canary:** `docs/runbooks/Deployment.md`.
 
-#### B. TTS terminal tras `NO_ANSWER` / fallo
+Estado resumido:
 
-Existe `speakFailure`, pero una llamada real mostró falta de audio audible para el caller. No declarar este comportamiento solucionado sólo porque exista lifecycle `call.speak.ended` o porque la llamada termine después.
-
-#### C. Gate final de `Gemini Fast Canary Deploy`
-
-El workflow despliega, verifica readiness, sincroniza Worker y pasa health, pero el último preflight ha quedado rojo por deuda del propio gate:
-
-- propagación del nonce efímero puede producir `503 PREFLIGHT_UNAVAILABLE`;
-- la aserción final espera campos antiguos que ya no forman parte del contrato actual de `routeFastGeminiPreflight`.
-
-El endpoint actual prueba bootstrap + HMAC/WSS sin depender de tenant/teléfono productivos y devuelve `tenantRouting: KV_RUNTIME_ONLY`.
-
-No interpretar este rojo por sí solo como fallo del hot path de audio.
+- ringback local determinista para el caller: abierto;
+- audibilidad E2E del TTS terminal tras `NO_ANSWER`/fallo: abierta;
+- gate final de `Gemini Fast Canary Deploy`: el `jq` final sigue desalineado con el contrato actual de `/internal/preflight`; no interpretar ese rojo por sí solo como fallo del hot path.
 
 ### 6. Primera misión
 
-Si esta documentación ya está integrada, la primera misión técnica recomendada es **cerrar la deuda del gate Fast Canary sin tocar el runtime de llamadas**:
+La primera misión técnica recomendada es **validar en una llamada real el fix de autorización semántica + transcript snapshot** antes de continuar ampliando cambios de transferencia.
+
+Prueba controlada:
+
+1. realizar una llamada Gemini Fast real;
+2. pedir handoff con lenguaje natural, sin adaptar la frase a listas antiguas;
+3. si Gemini ofrece transferencia, responder con una confirmación natural;
+4. comprobar que no reaparece un bucle de `HUMAN_HANDOFF_AUTHORIZATION_BLOCKED`;
+5. correlacionar `call_diagnostic_events` y, si el handoff se acepta, `human_handoff_events`;
+6. distinguir autorización correcta de los problemas todavía abiertos de ringback/TTS.
+
+Después de esa E2E, corregir el gate `Gemini Fast Canary Deploy` **sin tocar el runtime de llamadas**:
 
 1. comparar `.github/workflows/gemini-fast-canary-deploy.yml` con `apps/gemini-control-plane/src/fast-preflight.ts` y su test;
-2. hacer que el retry de propagación del nonce sea realmente bounded y no aborte prematuramente bajo `set -e`;
-3. actualizar la aserción jq al contrato actual del endpoint;
+2. mantener el retry bounded existente para respuestas temporales 401/503;
+3. actualizar la aserción `jq` al contrato real (`tenantRouting: KV_RUNTIME_ONLY` y campos actuales);
 4. mantener el preflight sin dependencias de tenant/teléfono productivos;
 5. ejecutar CI y el deploy canary;
 6. exigir `bootstrap == VERIFIED` y `websocketUpgrade == VERIFIED` antes de declarar el gate reparado.
 
-Después, las siguientes prioridades de UX de transferencia son ringback determinista y TTS terminal observable/audible. Mantener esos cambios en control path siempre que sea posible.
+Después, las siguientes prioridades de UX son ringback determinista y TTS terminal observable/audible, manteniendo esos cambios en control path siempre que sea posible.
 
 ### 7. Validación y comandos obligatorios
 
