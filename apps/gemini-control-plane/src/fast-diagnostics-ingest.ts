@@ -176,7 +176,8 @@ export async function routeFastDiagnosticIngest(
       authorization: `Bearer ${serviceRoleKey}`,
       apikey: serviceRoleKey,
       "content-type": "application/json",
-      prefer: "resolution=merge-duplicates,return=minimal",
+      // Diagnostic events are immutable. Retries must not require UPDATE privilege or mutate an existing event.
+      prefer: "resolution=ignore-duplicates,return=minimal",
     },
     body: JSON.stringify(persistenceRows(events, persistedAt)),
   });
