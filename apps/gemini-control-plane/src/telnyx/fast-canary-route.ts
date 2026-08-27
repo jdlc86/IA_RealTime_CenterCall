@@ -1,5 +1,9 @@
-import { startSignedFastGeminiIncomingCall, type FastIncomingRuntimeOptions, type FastIncomingRuntimeResult } from "./fast-incoming-runtime";
+import { startSignedFastGeminiIncomingCall, type FastIncomingRuntimeOptions, type FastIncomingRuntimeResult, type FastTenantRoute } from "./fast-incoming-runtime";
 import type { VerifiedTelnyxIncomingCall } from "./incoming-call";
+
+type TenantRoutingKv = Readonly<{
+  get(key: string): Promise<string | null>;
+}>;
 
 export type FastGeminiCanaryEnv = Readonly<{
   TELNYX_PUBLIC_KEY: string;
@@ -11,6 +15,7 @@ export type FastGeminiCanaryEnv = Readonly<{
   GEMINI_FAST_CANARY_CALLED_NUMBER: string;
   GEMINI_FAST_CANARY_TENANT_ID: string;
   GEMINI_FAST_CANARY_SYSTEM_INSTRUCTION: string;
+  TENANT_ROUTING_KV?: TenantRoutingKv;
 }>;
 
 type StartIncoming = (
@@ -37,8 +42,33 @@ function normalizePhone(value: string): string {
   return digits ? `${hasPlus ? "+" : ""}${digits}` : "";
 }
 
+function canonicalE164(value: string): string {
+  const normalized = normalizePhone(value);
+  if (!/^\+[1-9]\d{7,14}$/.test(normalized)) throw new Error("Called number must be E.164");
+  return normalized;
+}
+
 function canaryMatches(call: VerifiedTelnyxIncomingCall, expected: string): boolean {
   return normalizePhone(call.calledNumber) === expected;
+}
+
+function canonicalTenantRoute(value: unknown): FastTenantRoute | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.enabled !== true) return null;
+  const tenantId = required(record.tenant_id, "KV tenant_id", 256);
+  const routeId = record.route_id == null ? "default" : required(record.route_id, "KV route_id", 256);
+  return Object.freeze({ tenantId, routeId });
+}
+
+async function resolveTenantRouteFromKv(kv: TenantRoutingKv, calledNumber: string): Promise<FastTenantRoute | null> {
+  const e164 = canonicalE164(calledNumber);
+  const raw = await kv.get(`tenant_by_phone:${e164}`);
+  if (!raw) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); }
+  catch { throw new Error("Tenant routing KV value is invalid JSON"); }
+  return canonicalTenantRoute(parsed);
 }
 
 export async function routeFastGeminiCanaryWebhook(
@@ -50,9 +80,8 @@ export async function routeFastGeminiCanaryWebhook(
   const rawBody = await request.text();
   if (rawBody.length > 512_000) return new Response("payload too large", { status: 413 });
 
-  const canaryCalledNumber = normalizePhone(required(env.GEMINI_FAST_CANARY_CALLED_NUMBER, "GEMINI_FAST_CANARY_CALLED_NUMBER", 64));
-  if (!canaryCalledNumber) throw new Error("GEMINI_FAST_CANARY_CALLED_NUMBER is invalid");
-  const tenantId = required(env.GEMINI_FAST_CANARY_TENANT_ID, "GEMINI_FAST_CANARY_TENANT_ID", 256);
+  const canaryCalledNumber = canonicalE164(required(env.GEMINI_FAST_CANARY_CALLED_NUMBER, "GEMINI_FAST_CANARY_CALLED_NUMBER", 64));
+  const fallbackTenantId = required(env.GEMINI_FAST_CANARY_TENANT_ID, "GEMINI_FAST_CANARY_TENANT_ID", 256);
   const systemInstruction = required(env.GEMINI_FAST_CANARY_SYSTEM_INSTRUCTION, "GEMINI_FAST_CANARY_SYSTEM_INSTRUCTION", 64_000);
   const startIncoming = dependencies.startIncoming ?? startSignedFastGeminiIncomingCall;
   const now = dependencies.now ?? Date.now;
@@ -71,8 +100,13 @@ export async function routeFastGeminiCanaryWebhook(
     mediaControlToken: env.GEMINI_MEDIA_CONTROL_PLANE_TOKEN,
     telnyxApiKey: env.TELNYX_API_KEY,
     edgeUrl: env.GEMINI_FAST_CANARY_EDGE_URL,
-    resolveTenantId: async (call) => canaryMatches(call, canaryCalledNumber) ? tenantId : null,
-    isCanaryAllowed: (resolvedTenantId, call) => resolvedTenantId === tenantId && canaryMatches(call, canaryCalledNumber),
+    resolveTenantRoute: async (call) => {
+      if (env.TENANT_ROUTING_KV) return resolveTenantRouteFromKv(env.TENANT_ROUTING_KV, call.calledNumber);
+      return canaryMatches(call, canaryCalledNumber)
+        ? Object.freeze({ tenantId: fallbackTenantId, routeId: "default" })
+        : null;
+    },
+    isCanaryAllowed: (resolvedTenantId, call) => resolvedTenantId === fallbackTenantId && canaryMatches(call, canaryCalledNumber),
     resolveSessionConfig: async () => ({
       systemInstruction,
       tools: [],
