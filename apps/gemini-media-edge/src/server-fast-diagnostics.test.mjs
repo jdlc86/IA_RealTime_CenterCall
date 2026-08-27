@@ -49,12 +49,25 @@ async function listen(server) {
 
 test("post-call diagnostic persistence is fire-and-forget and cannot hold the fast session open", async () => {
   const now = Date.now();
+  const securityContext = Object.freeze({
+    securityVersion: 1,
+    sessionId: "cs_diagnostic-nonblocking",
+    tenantId: "restaurante-centro",
+    routeId: "default",
+    callControlId: "v3:diagnostic-nonblocking",
+    callerPhoneE164: "+34647944762",
+    calledPhoneE164: "+34910000001",
+    provider: "TELNYX",
+    createdAtEpochMs: now,
+    notAfterEpochMs: now + 60_000,
+  });
   const bootstrapRegistry = new InMemoryFastBootstrapRegistry();
   bootstrapRegistry.register({
     credentialId: "cred-diagnostic-nonblocking",
     tenantId: "restaurante-centro",
     callControlId: "v3:diagnostic-nonblocking",
     notAfterEpochMs: now + 60_000,
+    securityContext,
     systemInstruction: "Responde brevemente.",
     tools: [],
   }, now);
@@ -78,6 +91,11 @@ test("post-call diagnostic persistence is fire-and-forget and cannot hold the fa
       provider: "GEMINI",
       tenantId: "restaurante-centro",
       callControlId: "v3:diagnostic-nonblocking",
+      sessionId: securityContext.sessionId,
+      routeId: securityContext.routeId,
+      callerPhoneE164: securityContext.callerPhoneE164,
+      calledPhoneE164: securityContext.calledPhoneE164,
+      securityVersion: securityContext.securityVersion,
       edgeUrl: expectedEdgeUrl,
       targetLegs: "both",
       notAfterEpochMs: now + 60_000,
