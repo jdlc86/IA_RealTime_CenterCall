@@ -81,7 +81,7 @@ describe("tenant KV session configuration", () => {
         expect(config.systemInstruction).toContain("Base estable del agente.");
         expect(config.systemInstruction).toContain("Negocio: Restaurante Centro.");
         expect(config.systemInstruction).toContain("Tu nombre de asistente es Lucía.");
-        expect(config.systemInstruction).toContain("call.transfer=true");
+        expect(config.systemInstruction).toContain("call.transfer=false");
         expect(config.systemInstruction).toContain("message.whatsapp.transactional=true");
         expect(config.systemInstruction).toContain("message.whatsapp.realtime_support=false");
         expect(config.systemInstruction).not.toContain("threshold");
