@@ -3,8 +3,6 @@ import { routeFastGeminiPreflight, type FastGeminiPreflightEnv } from "./fast-pr
 
 const SECRET = "0123456789abcdef0123456789abcdef";
 const TELNYX_PUBLIC_KEY = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
-const NUMBER = "+34600000000";
-const CONNECTION_ID = "connection-canary";
 
 function env(overrides: Partial<FastGeminiPreflightEnv> = {}): FastGeminiPreflightEnv {
   return {
@@ -14,10 +12,11 @@ function env(overrides: Partial<FastGeminiPreflightEnv> = {}): FastGeminiPreflig
     GEMINI_MEDIA_CREDENTIAL_HMAC_SECRET: SECRET,
     GEMINI_MEDIA_CONTROL_PLANE_TOKEN: SECRET,
     GEMINI_FAST_CANARY_EDGE_URL: "wss://fast.example.test/telnyx/gemini",
-    GEMINI_FAST_CANARY_CALLED_NUMBER: NUMBER,
-    GEMINI_FAST_CANARY_TENANT_ID: "restaurante-centro",
     GEMINI_FAST_CANARY_SYSTEM_INSTRUCTION: "Responde brevemente en español.",
     GEMINI_FAST_PREFLIGHT_NONCE: SECRET,
+    TENANT_ROUTING_KV: {
+      async get() { return null; },
+    },
     ...overrides,
   };
 }
@@ -53,67 +52,13 @@ describe("fast runtime preflight", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it("reports a Telnyx webhook mismatch only after proving bootstrap and HMAC", async () => {
-    const accept = vi.fn();
-    const close = vi.fn();
-    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const raw = String(input);
-      const url = new URL(raw);
-      if (url.hostname === "api.telnyx.com" && url.pathname === "/v2/phone_numbers/slim" && url.searchParams.get("filter[phone_number]") === NUMBER) {
-        return Response.json({ data: [{ phone_number: NUMBER, status: "active", connection_id: CONNECTION_ID }] });
-      }
-      if (url.hostname === "api.telnyx.com" && url.pathname === `/v2/call_control_applications/${CONNECTION_ID}`) {
-        return Response.json({ data: { active: true, webhook_event_url: "https://openai.example.test/webhook" } });
-      }
-      if (url.hostname === "api.telnyx.com" && url.pathname === "/v2/phone_numbers/slim" && url.searchParams.get("filter[connection_id]") === CONNECTION_ID) {
-        return Response.json({ data: [{ phone_number: NUMBER }, { phone_number: "+34600000001" }] });
-      }
-      if (raw.endsWith("/internal/bootstrap")) {
-        const bootstrap = JSON.parse(String(init?.body)) as { credentialId: string };
-        return Response.json({ ok: true, credentialId: bootstrap.credentialId }, { status: 201 });
-      }
-      if (raw === "https://fast.example.test/telnyx/gemini") {
-        return { webSocket: { accept, close } } as unknown as Response;
-      }
-      throw new Error(`unexpected URL ${raw}`);
-    });
-
-    const response = await routeFastGeminiPreflight(request(), env(), { fetcher });
-    expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({
-      ok: false,
-      status: "TELNYX_ROUTE_MISMATCH_MEDIA_VERIFIED",
-      routingStatus: "TELNYX_ROUTE_MISMATCH",
-      connectionScope: "SHARED",
-      checks: {
-        mediaCredentialHmac: "VERIFIED",
-        mediaControlToken: "VERIFIED",
-        canaryEdge: "VERIFIED",
-        bootstrap: "VERIFIED",
-        websocketUpgrade: "VERIFIED",
-      },
-    });
-    expect(accept).toHaveBeenCalledOnce();
-    expect(close).toHaveBeenCalledWith(1000, "preflight");
-  });
-
-  it("accepts a shared Telnyx application when the canary number and webhook match, then proves bootstrap and HMAC", async () => {
+  it("proves bootstrap and websocket auth without production tenant or phone routing variables", async () => {
     const accept = vi.fn();
     const close = vi.fn();
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const raw = String(input);
-      const url = new URL(raw);
       calls.push({ url: raw, init });
-      if (url.hostname === "api.telnyx.com" && url.pathname === "/v2/phone_numbers/slim" && url.searchParams.get("filter[phone_number]") === NUMBER) {
-        return Response.json({ data: [{ phone_number: NUMBER, status: "active", connection_id: CONNECTION_ID }] });
-      }
-      if (url.hostname === "api.telnyx.com" && url.pathname === `/v2/call_control_applications/${CONNECTION_ID}`) {
-        return Response.json({ data: { active: true, webhook_event_url: "https://worker.example.test/webhooks/telnyx/fast-canary" } });
-      }
-      if (url.hostname === "api.telnyx.com" && url.pathname === "/v2/phone_numbers/slim" && url.searchParams.get("filter[connection_id]") === CONNECTION_ID) {
-        return Response.json({ data: [{ phone_number: NUMBER }, { phone_number: "+34600000001" }] });
-      }
       if (raw.endsWith("/internal/bootstrap")) {
         const bootstrap = JSON.parse(String(init?.body)) as { credentialId: string };
         return Response.json({ ok: true, credentialId: bootstrap.credentialId }, { status: 201 });
@@ -141,34 +86,25 @@ describe("fast runtime preflight", () => {
       checks: {
         telnyxApiKey: "PRESENT",
         telnyxPublicKey: "PRESENT_VALID",
-        telnyxRouting: "VERIFIED",
         admissionIdentitySecret: "PRESENT",
         mediaCredentialHmac: "VERIFIED",
         mediaControlToken: "VERIFIED",
         canaryEdge: "VERIFIED",
-        canaryCalledNumber: "PRESENT",
-        canaryTenant: "PRESENT",
         systemInstruction: "PRESENT",
         tools: "EMPTY",
         bootstrap: "VERIFIED",
         websocketUpgrade: "VERIFIED",
+        tenantRouting: "KV_RUNTIME_ONLY",
       },
     });
-    expect(calls).toHaveLength(5);
-    expect(new URL(calls[0].url).pathname).toBe("/v2/phone_numbers/slim");
-    expect(new Headers(calls[0].init?.headers).get("authorization")).toBe("Bearer KEY_test");
-    expect(new URL(calls[1].url).pathname).toBe(`/v2/call_control_applications/${CONNECTION_ID}`);
-    expect(new URL(calls[2].url).searchParams.get("filter[connection_id]")).toBe(CONNECTION_ID);
-    expect(calls[3].url).toBe("https://fast.example.test/internal/bootstrap");
-    expect(new Headers(calls[3].init?.headers).get("authorization")).toBe(`Bearer ${SECRET}`);
-    expect(calls[4].url).toBe("https://fast.example.test/telnyx/gemini");
-    expect(new Headers(calls[4].init?.headers).get("upgrade")).toBe("websocket");
-    expect(new Headers(calls[4].init?.headers).get("x-telnyx-streaming-auth-token")).toMatch(/^v1\./);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].url).toBe("https://fast.example.test/internal/bootstrap");
+    expect(new Headers(calls[0].init?.headers).get("authorization")).toBe(`Bearer ${SECRET}`);
+    expect(calls[1].url).toBe("https://fast.example.test/telnyx/gemini");
+    expect(new Headers(calls[1].init?.headers).get("upgrade")).toBe("websocket");
+    expect(new Headers(calls[1].init?.headers).get("x-telnyx-streaming-auth-token")).toMatch(/^v1\./);
     expect(accept).toHaveBeenCalledOnce();
     expect(close).toHaveBeenCalledWith(1000, "preflight");
-    expect(JSON.stringify(body)).not.toContain("restaurante-centro");
     expect(JSON.stringify(body)).not.toContain(SECRET);
-    expect(JSON.stringify(body)).not.toContain(CONNECTION_ID);
-    expect(JSON.stringify(body)).not.toContain(NUMBER);
   });
 });
