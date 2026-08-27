@@ -219,14 +219,29 @@ export async function routeFastGeminiPreflight(
 
   const timestamp = now();
   const credentialId = `preflight_${randomUUID()}`;
+  const callControlId = `preflight:${randomUUID()}`;
+  const notAfterEpochMs = timestamp + 60_000;
+  const securityContext = Object.freeze({
+    securityVersion: 1 as const,
+    sessionId: `preflight-session:${randomUUID()}`,
+    tenantId: config.tenantId,
+    routeId: "default",
+    callControlId,
+    callerPhoneE164: null,
+    calledPhoneE164: config.calledNumber,
+    provider: "TELNYX" as const,
+    createdAtEpochMs: timestamp,
+    notAfterEpochMs,
+  });
   let admission;
   try {
     admission = await buildFastGeminiMediaAdmission({
       tenantId: config.tenantId,
-      callControlId: `preflight:${randomUUID()}`,
+      callControlId,
       credentialId,
-      notAfterEpochMs: timestamp + 60_000,
+      notAfterEpochMs,
       edgeUrl: config.edgeUrl,
+      securityContext,
       systemInstruction: config.systemInstruction,
       tools: [],
       voiceName: "Kore",
