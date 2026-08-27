@@ -1,5 +1,4 @@
 import { startSignedFastGeminiIncomingCall, type FastIncomingRuntimeOptions, type FastIncomingRuntimeResult, type FastTenantRoute } from "./fast-incoming-runtime";
-import type { VerifiedTelnyxIncomingCall } from "./incoming-call";
 
 type TenantRoutingKv = Readonly<{
   get(key: string): Promise<string | null>;
@@ -12,10 +11,8 @@ export type FastGeminiCanaryEnv = Readonly<{
   GEMINI_MEDIA_CREDENTIAL_HMAC_SECRET: string;
   GEMINI_MEDIA_CONTROL_PLANE_TOKEN: string;
   GEMINI_FAST_CANARY_EDGE_URL: string;
-  GEMINI_FAST_CANARY_CALLED_NUMBER: string;
-  GEMINI_FAST_CANARY_TENANT_ID: string;
   GEMINI_FAST_CANARY_SYSTEM_INSTRUCTION: string;
-  TENANT_ROUTING_KV?: TenantRoutingKv;
+  TENANT_ROUTING_KV: TenantRoutingKv;
 }>;
 
 type StartIncoming = (
@@ -35,27 +32,10 @@ function required(value: unknown, field: string, max = 64_000): string {
   return normalized;
 }
 
-function normalizePhone(value: string): string {
-  const trimmed = value.trim();
-  const hasPlus = trimmed.startsWith("+");
-  const digits = trimmed.replace(/\D/g, "");
-  return digits ? `${hasPlus ? "+" : ""}${digits}` : "";
-}
-
 function canonicalE164(value: string): string {
-  const normalized = normalizePhone(value);
+  const normalized = value.trim();
   if (!/^\+[1-9]\d{7,14}$/.test(normalized)) throw new Error("Called number must be E.164");
   return normalized;
-}
-
-function canaryMatches(call: VerifiedTelnyxIncomingCall, expected: string): boolean {
-  return normalizePhone(call.calledNumber) === expected;
-}
-
-function fallbackTenantRoute(call: VerifiedTelnyxIncomingCall, expectedCalledNumber: string, tenantId: string): FastTenantRoute | null {
-  return canaryMatches(call, expectedCalledNumber)
-    ? Object.freeze({ tenantId, routeId: "default" })
-    : null;
 }
 
 function canonicalTenantRoute(value: unknown): FastTenantRoute | null {
@@ -86,8 +66,10 @@ export async function routeFastGeminiCanaryWebhook(
   const rawBody = await request.text();
   if (rawBody.length > 512_000) return new Response("payload too large", { status: 413 });
 
-  const canaryCalledNumber = canonicalE164(required(env.GEMINI_FAST_CANARY_CALLED_NUMBER, "GEMINI_FAST_CANARY_CALLED_NUMBER", 64));
-  const fallbackTenantId = required(env.GEMINI_FAST_CANARY_TENANT_ID, "GEMINI_FAST_CANARY_TENANT_ID", 256);
+  if (!env.TENANT_ROUTING_KV || typeof env.TENANT_ROUTING_KV.get !== "function") {
+    throw new Error("TENANT_ROUTING_KV binding is required");
+  }
+
   const systemInstruction = required(env.GEMINI_FAST_CANARY_SYSTEM_INSTRUCTION, "GEMINI_FAST_CANARY_SYSTEM_INSTRUCTION", 64_000);
   const startIncoming = dependencies.startIncoming ?? startSignedFastGeminiIncomingCall;
   const now = dependencies.now ?? Date.now;
@@ -106,14 +88,10 @@ export async function routeFastGeminiCanaryWebhook(
     mediaControlToken: env.GEMINI_MEDIA_CONTROL_PLANE_TOKEN,
     telnyxApiKey: env.TELNYX_API_KEY,
     edgeUrl: env.GEMINI_FAST_CANARY_EDGE_URL,
-    resolveTenantRoute: async (call) => {
-      if (env.TENANT_ROUTING_KV) {
-        const routed = await resolveTenantRouteFromKv(env.TENANT_ROUTING_KV, call.calledNumber);
-        if (routed) return routed;
-      }
-      return fallbackTenantRoute(call, canaryCalledNumber, fallbackTenantId);
-    },
-    isCanaryAllowed: (resolvedTenantId, call) => resolvedTenantId === fallbackTenantId && canaryMatches(call, canaryCalledNumber),
+    resolveTenantRoute: (call) => resolveTenantRouteFromKv(env.TENANT_ROUTING_KV, call.calledNumber),
+    // A valid, enabled KV route is the admission gate. There is no secondary
+    // tenant/phone allowlist in variables or secrets.
+    isCanaryAllowed: () => true,
     resolveSessionConfig: async () => ({
       systemInstruction,
       tools: [],
