@@ -1,13 +1,23 @@
 # Cross-plane call diagnostics runbook
 
 > **Estado:** vigente  
-> **Última revisión:** 2026-08-27
+> **Última revisión:** 2026-08-28
 
 `public.call_diagnostic_events` es la fuente operacional persistida para reconstruir eventos técnicos de una llamada. **OpenAI y Gemini no necesariamente producen los mismos stages ni el mismo lifecycle**, por lo que este runbook separa consultas neutrales de filtros específicos.
 
 No debe contener audio, base64 media, secretos, tokens, API keys, prompts completos ni transcripts crudos por defecto.
 
 La persistencia de diagnóstico no debe gobernar la llamada: una caída del sink/auditoría no puede introducir latencia en audio ni autorizar/cambiar un efecto telefónico.
+
+## Guardrails de almacenamiento verificados
+
+Al revisar este runbook en 2026-08-28, `public.call_diagnostic_events` mantiene:
+
+- RLS habilitado;
+- privilegios de tabla para `service_role`: `SELECT` e `INSERT` únicamente;
+- cron `purge-redacted-call-diagnostics-7d` cada hora, eliminando filas con `created_at < now() - interval '7 days'`.
+
+Estos guardrails son parte del diseño de diagnóstico mínimo/redactado. No deben eliminarse o debilitarse sin una decisión explícita y verificación equivalente.
 
 ## 1. Empieza por identificar la llamada, no por buscar un stage esperado
 
@@ -153,8 +163,6 @@ El lifecycle/auditoría durable de handoff está en:
 public.human_handoff_events
 ```
 
-Consultar ambos por la misma llamada.
-
 Ejemplo:
 
 ```sql
@@ -206,6 +214,8 @@ callback_required=true, callback_status=PENDING
     demuestra necesidad registrada, NO callback ejecutado
 ```
 
+El detalle de ringback/TTS y del contrato semántico pertenece a [`../HUMAN_HANDOFF.md`](../HUMAN_HANDOFF.md).
+
 ## 8. Ringback y audio terminal
 
 `call_diagnostic_events` puede demostrar signaling/control, pero la ausencia o presencia de ringback/TTS audible es una cuestión acústica.
@@ -220,24 +230,27 @@ Para un incidente “se quedó muda” separar:
 6. ¿Telnyx aceptó/completó el speak?;
 7. ¿el caller lo oyó realmente?
 
-Actualmente el Fast handoff no genera ringback local determinista; no diagnosticar silencio de dialing como VAD/Gemini sin más evidencia.
+No diagnosticar silencio de dialing como VAD/Gemini sin más evidencia.
 
 ## 9. Correlación — smoke check
+
+El productor actual mantiene `event_id`, `call_id`, `call_control_id`, `plane` y `occurred_at` como campos de correlación esperados. Al revisar los eventos de los últimos 7 días, no se observaron nulos en ninguno de esos campos.
 
 ```sql
 select count(*) as uncorrelated_events
 from public.call_diagnostic_events
 where event_id is null
    or call_id is null
+   or call_control_id is null
    or plane is null
    or occurred_at is null;
 ```
 
-`call_control_id` puede tener semántica distinta según el evento/plane; no añadirlo a un `expected zero` universal sin verificar el schema productor actual.
+Resultado esperado: `0` mientras el contrato productor vigente no cambie. Si un runtime futuro necesita otra semántica, cambiar primero el contrato/documentación del productor; no debilitar este smoke check por anticipación.
 
 ## 10. Forbidden-content smoke check
 
-No flags técnicos por contener palabras como `transcript` o `phone` en una clave. Busca contenido real sensible.
+No flags técnicos sólo porque una clave contenga palabras como `transcript` o `phone`. Busca contenido real sensible.
 
 ```sql
 with detail_values as (
