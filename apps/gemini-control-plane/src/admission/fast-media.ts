@@ -1,10 +1,24 @@
 const FAST_BOOTSTRAP_VERSION = "gemini-fast-bootstrap.v1";
 const FAST_PROVIDER = "GEMINI";
+const FAST_SECURITY_VERSION = 1 as const;
 
 export type FastGeminiToolDeclaration = Readonly<{
   name: string;
   description: string;
   parameters: Readonly<Record<string, unknown>>;
+}>;
+
+export type FastSecurityContextV1 = Readonly<{
+  securityVersion: typeof FAST_SECURITY_VERSION;
+  sessionId: string;
+  tenantId: string;
+  routeId: string;
+  callControlId: string;
+  callerPhoneE164: string | null;
+  calledPhoneE164: string;
+  provider: "TELNYX";
+  createdAtEpochMs: number;
+  notAfterEpochMs: number;
 }>;
 
 export type FastGeminiMediaAdmission = Readonly<{
@@ -18,6 +32,7 @@ export type FastGeminiMediaAdmission = Readonly<{
     tenantId: string;
     callControlId: string;
     notAfterEpochMs: number;
+    securityContext: FastSecurityContextV1;
     systemInstruction: string;
     tools: readonly FastGeminiToolDeclaration[];
     voiceName: string;
@@ -31,6 +46,7 @@ type FastGeminiMediaAdmissionInput = Readonly<{
   credentialId: string;
   notAfterEpochMs: number;
   edgeUrl: string;
+  securityContext: FastSecurityContextV1;
   systemInstruction: string;
   tools?: readonly FastGeminiToolDeclaration[];
   voiceName?: string;
@@ -50,6 +66,39 @@ function required(value: unknown, field: string, max = 64_000): string {
 function safeEpoch(value: unknown, field: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error(`${field} is invalid`);
   return value as number;
+}
+
+function canonicalE164(value: unknown, field: string, nullable = false): string | null {
+  if (nullable && (value === null || value === undefined)) return null;
+  const normalized = required(value, field, 16);
+  if (!/^\+[1-9]\d{7,14}$/.test(normalized)) throw new Error(`${field} must be E.164`);
+  return normalized;
+}
+
+function canonicalSecurityContext(value: FastSecurityContextV1, expected: Readonly<{ tenantId: string; callControlId: string; notAfterEpochMs: number }>): FastSecurityContextV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Fast Gemini security context is invalid");
+  if (value.securityVersion !== FAST_SECURITY_VERSION) throw new Error("Fast Gemini security context version is invalid");
+  if (value.provider !== "TELNYX") throw new Error("Fast Gemini security context provider is invalid");
+  const tenantId = required(value.tenantId, "Fast Gemini security tenant id", 256);
+  const callControlId = required(value.callControlId, "Fast Gemini security call control id", 512);
+  const notAfterEpochMs = safeEpoch(value.notAfterEpochMs, "Fast Gemini security expiry");
+  if (tenantId !== expected.tenantId || callControlId !== expected.callControlId || notAfterEpochMs !== expected.notAfterEpochMs) {
+    throw new Error("Fast Gemini security context identity mismatch");
+  }
+  const createdAtEpochMs = safeEpoch(value.createdAtEpochMs, "Fast Gemini security createdAtEpochMs");
+  if (createdAtEpochMs >= notAfterEpochMs) throw new Error("Fast Gemini security context lifetime is invalid");
+  return Object.freeze({
+    securityVersion: FAST_SECURITY_VERSION,
+    sessionId: required(value.sessionId, "Fast Gemini security session id", 256),
+    tenantId,
+    routeId: required(value.routeId, "Fast Gemini security route id", 256),
+    callControlId,
+    callerPhoneE164: canonicalE164(value.callerPhoneE164, "Fast Gemini security caller phone", true),
+    calledPhoneE164: canonicalE164(value.calledPhoneE164, "Fast Gemini security called phone") as string,
+    provider: "TELNYX",
+    createdAtEpochMs,
+    notAfterEpochMs,
+  });
 }
 
 function canonicalEdgeUrl(value: unknown): string {
@@ -107,6 +156,7 @@ export async function buildFastGeminiMediaAdmission(input: FastGeminiMediaAdmiss
   const credentialId = required(input.credentialId, "Fast Gemini credential id", 256);
   const notAfterEpochMs = safeEpoch(input.notAfterEpochMs, "Fast Gemini admission expiry");
   const edgeUrl = canonicalEdgeUrl(input.edgeUrl);
+  const securityContext = canonicalSecurityContext(input.securityContext, { tenantId, callControlId, notAfterEpochMs });
   const systemInstruction = required(input.systemInstruction, "Fast Gemini system instruction", 64_000);
   const tools = canonicalTools(input.tools);
   const voiceName = required(input.voiceName ?? "Kore", "Fast Gemini voice name", 128);
@@ -117,6 +167,11 @@ export async function buildFastGeminiMediaAdmission(input: FastGeminiMediaAdmiss
     provider: FAST_PROVIDER,
     tenantId,
     callControlId,
+    sessionId: securityContext.sessionId,
+    routeId: securityContext.routeId,
+    callerPhoneE164: securityContext.callerPhoneE164,
+    calledPhoneE164: securityContext.calledPhoneE164,
+    securityVersion: securityContext.securityVersion,
     edgeUrl,
     targetLegs: "both",
     notAfterEpochMs,
@@ -137,6 +192,7 @@ export async function buildFastGeminiMediaAdmission(input: FastGeminiMediaAdmiss
       tenantId,
       callControlId,
       notAfterEpochMs,
+      securityContext,
       systemInstruction,
       tools,
       voiceName,
