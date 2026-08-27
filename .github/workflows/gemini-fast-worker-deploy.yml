@@ -162,7 +162,7 @@ jobs:
 
           put_if_missing \
             'tenant_config:TENANT_ID_A_COMPLETAR' \
-            '{"schemaVersion":1,"tenantId":"TENANT_ID_A_COMPLETAR","status":"inactive","humanHandoff":{"enabled":false,"destination":{"type":"PHONE","phone":"+34XXXXXXXXX","label":"Recepción"},"transfer":{"mode":"BLIND","answerTimeoutSeconds":25},"successMessage":"De acuerdo, te paso con una persona del equipo para que continúe contigo. Un momento, por favor.","failurePolicy":{"action":"TERMINATE_AND_CALLBACK","message":"Ahora mismo no ha sido posible comunicarte con una persona del equipo. Hemos registrado tu solicitud para que puedan devolverte la llamada. Gracias."}}}'
+            '{"schemaVersion":1,"tenantId":"TENANT_ID_A_COMPLETAR","status":"inactive","humanHandoff":{"enabled":false,"destination":{"type":"PHONE","phone":"xxxxxxxx","label":"Recepción"},"transfer":{"mode":"BLIND","answerTimeoutSeconds":25},"successMessage":"De acuerdo, te paso con una persona del equipo para que continúe contigo. Un momento, por favor.","failurePolicy":{"action":"TERMINATE_AND_CALLBACK","message":"Ahora mismo no ha sido posible comunicarte con una persona del equipo. Hemos registrado tu solicitud para que puedan devolverte la llamada. Gracias."}}}'
 
       - name: Verify deployed Worker health endpoint
         shell: bash
