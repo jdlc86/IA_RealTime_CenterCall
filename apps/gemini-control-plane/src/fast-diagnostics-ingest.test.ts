@@ -60,13 +60,14 @@ describe("fast diagnostic ingest", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it("persists one bounded call batch with service-role credentials only after ingest", async () => {
+  it("persists one bounded immutable call batch without requiring update privilege", async () => {
     const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       expect(init?.method).toBe("POST");
       const headers = new Headers(init?.headers);
       expect(headers.get("authorization")).toBe(`Bearer ${SERVICE_ROLE}`);
       expect(headers.get("apikey")).toBe(SERVICE_ROLE);
-      expect(headers.get("prefer")).toContain("resolution=merge-duplicates");
+      expect(headers.get("prefer")).toContain("resolution=ignore-duplicates");
+      expect(headers.get("prefer")).not.toContain("resolution=merge-duplicates");
       const rows = JSON.parse(String(init?.body));
       expect(rows).toHaveLength(1);
       expect(rows[0].event).toBe("fast_cross_plane_diagnostic");
