@@ -11,8 +11,7 @@
   },
   "kv_namespaces": [
     {
-      "binding": "TENANT_ROUTING_KV",
-      "id": "b17da3c38d30404b9b19117d8ddfc680"
+      "binding": "TENANT_ROUTING_KV"
     }
   ],
   "observability": {
