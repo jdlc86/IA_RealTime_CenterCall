@@ -52,6 +52,12 @@ function canaryMatches(call: VerifiedTelnyxIncomingCall, expected: string): bool
   return normalizePhone(call.calledNumber) === expected;
 }
 
+function fallbackTenantRoute(call: VerifiedTelnyxIncomingCall, expectedCalledNumber: string, tenantId: string): FastTenantRoute | null {
+  return canaryMatches(call, expectedCalledNumber)
+    ? Object.freeze({ tenantId, routeId: "default" })
+    : null;
+}
+
 function canonicalTenantRoute(value: unknown): FastTenantRoute | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
@@ -101,10 +107,11 @@ export async function routeFastGeminiCanaryWebhook(
     telnyxApiKey: env.TELNYX_API_KEY,
     edgeUrl: env.GEMINI_FAST_CANARY_EDGE_URL,
     resolveTenantRoute: async (call) => {
-      if (env.TENANT_ROUTING_KV) return resolveTenantRouteFromKv(env.TENANT_ROUTING_KV, call.calledNumber);
-      return canaryMatches(call, canaryCalledNumber)
-        ? Object.freeze({ tenantId: fallbackTenantId, routeId: "default" })
-        : null;
+      if (env.TENANT_ROUTING_KV) {
+        const routed = await resolveTenantRouteFromKv(env.TENANT_ROUTING_KV, call.calledNumber);
+        if (routed) return routed;
+      }
+      return fallbackTenantRoute(call, canaryCalledNumber, fallbackTenantId);
     },
     isCanaryAllowed: (resolvedTenantId, call) => resolvedTenantId === fallbackTenantId && canaryMatches(call, canaryCalledNumber),
     resolveSessionConfig: async () => ({
