@@ -14,6 +14,7 @@ import { FastGeminiRealtimeSession } from "./fast-runtime.mjs";
 
 const MEDIA_PATH = "/telnyx/gemini";
 const TELNYX_START_TIMEOUT_MS = 5_000;
+export const DEFAULT_FAST_DIAGNOSTIC_SINK_URL = "https://ia-realtime-centercall-gemini-fast.julopezcardona.workers.dev/internal/diagnostics-ingest";
 const FAST_DIAGNOSTIC_STAGES = new Set([
   "FAST_TELNYX_CONNECTED",
   "FAST_TELNYX_START_AUTHORIZED",
@@ -103,6 +104,11 @@ function safeFastDiagnostic(event) {
   if (!event || typeof event !== "object" || typeof event.stage !== "string") return null;
   if (FAST_DIAGNOSTIC_STAGES.has(event.stage)) return event;
   return null;
+}
+
+export function resolveFastDiagnosticSinkUrl(env = process.env) {
+  const configured = typeof env.FAST_DIAGNOSTIC_SINK_URL === "string" ? env.FAST_DIAGNOSTIC_SINK_URL.trim() : "";
+  return configured || DEFAULT_FAST_DIAGNOSTIC_SINK_URL;
 }
 
 export function createFastGeminiMediaServer(options = {}) {
@@ -323,9 +329,10 @@ export function createFastGeminiMediaServerFromEnv(env = process.env, options = 
   }
   const credentialSecret = required(env.MEDIA_EDGE_CREDENTIAL_HMAC_SECRET, "MEDIA_EDGE_CREDENTIAL_HMAC_SECRET", 8_192);
   const controlToken = required(env.MEDIA_EDGE_CONTROL_PLANE_TOKEN, "MEDIA_EDGE_CONTROL_PLANE_TOKEN", 8_192);
-  const flushDiagnostics = options.flushDiagnostics ?? (env.FAST_DIAGNOSTIC_SINK_URL
-    ? createFastDiagnosticFlusher({ sinkUrl: env.FAST_DIAGNOSTIC_SINK_URL, controlToken })
-    : null);
+  const flushDiagnostics = options.flushDiagnostics ?? createFastDiagnosticFlusher({
+    sinkUrl: resolveFastDiagnosticSinkUrl(env),
+    controlToken,
+  });
   return createFastGeminiMediaServer({
     geminiApiKey: env.GEMINI_API_KEY,
     model: env.GEMINI_LIVE_MODEL || "gemini-3.1-flash-live-preview",
@@ -335,7 +342,7 @@ export function createFastGeminiMediaServerFromEnv(env = process.env, options = 
     revision: env.K_REVISION ?? null,
     maxBufferedBytes: env.MEDIA_EDGE_MAX_BUFFERED_BYTES ? Number(env.MEDIA_EDGE_MAX_BUFFERED_BYTES) : undefined,
     providerReadiness: options.providerReadiness ?? null,
-    ...(flushDiagnostics ? { flushDiagnostics } : {}),
+    flushDiagnostics,
   });
 }
 
