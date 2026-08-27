@@ -95,6 +95,39 @@ it("builds the exact media credential and security-bound fast bootstrap for one 
   });
 });
 
+it("accepts multiline system instructions while still rejecting NUL", async () => {
+  const notAfterEpochMs = Date.now() + 60_000;
+  const multiline = [
+    "Habla en español de forma breve y natural.",
+    "",
+    "Capacidades configuradas para esta sesión:",
+    "- call.transfer=false",
+  ].join("\n");
+
+  const admission = await buildFastGeminiMediaAdmission({
+    tenantId: "tenant-fast",
+    callControlId: "v3:fast-call",
+    credentialId: "cred-fast-call-multiline",
+    notAfterEpochMs,
+    edgeUrl: "wss://fast-example.a.run.app/telnyx/gemini",
+    securityContext: securityContext(notAfterEpochMs),
+    systemInstruction: multiline,
+    credentialSecret: SECRET,
+  });
+  expect(admission.bootstrap.systemInstruction).toBe(multiline);
+
+  await expect(buildFastGeminiMediaAdmission({
+    tenantId: "tenant-fast",
+    callControlId: "v3:fast-call",
+    credentialId: "cred-fast-call-nul",
+    notAfterEpochMs,
+    edgeUrl: "wss://fast-example.a.run.app/telnyx/gemini",
+    securityContext: securityContext(notAfterEpochMs),
+    systemInstruction: "texto\u0000malicioso",
+    credentialSecret: SECRET,
+  })).rejects.toThrow("Fast Gemini system instruction is invalid");
+});
+
 describe("fast media bootstrap provisioning", () => {
   it("posts bootstrap once with control auth and no streaming credential in body", async () => {
     const notAfterEpochMs = Date.now() + 60_000;
