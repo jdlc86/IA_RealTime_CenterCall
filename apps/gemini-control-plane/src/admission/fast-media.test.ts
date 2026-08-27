@@ -36,7 +36,22 @@ async function verifyToken(token: string, secret: string): Promise<Record<string
 
 const SECRET = "0123456789abcdef0123456789abcdef";
 
-it("builds the exact media credential and audio-only fast bootstrap for one call", async () => {
+function securityContext(notAfterEpochMs: number) {
+  return {
+    securityVersion: 1 as const,
+    sessionId: "cs_fast-call",
+    tenantId: "tenant-fast",
+    routeId: "default",
+    callControlId: "v3:fast-call",
+    callerPhoneE164: "+34647944762",
+    calledPhoneE164: "+34910000001",
+    provider: "TELNYX" as const,
+    createdAtEpochMs: notAfterEpochMs - 60_000,
+    notAfterEpochMs,
+  };
+}
+
+it("builds the exact media credential and security-bound fast bootstrap for one call", async () => {
   const notAfterEpochMs = Date.now() + 60_000;
   const admission = await buildFastGeminiMediaAdmission({
     tenantId: "tenant-fast",
@@ -44,6 +59,7 @@ it("builds the exact media credential and audio-only fast bootstrap for one call
     credentialId: "cred-fast-call",
     notAfterEpochMs,
     edgeUrl: "wss://fast-example.a.run.app/telnyx/gemini",
+    securityContext: securityContext(notAfterEpochMs),
     systemInstruction: "Responde de forma breve y natural.",
     tools: [],
     credentialSecret: SECRET,
@@ -51,6 +67,13 @@ it("builds the exact media credential and audio-only fast bootstrap for one call
 
   expect(admission.edgeUrl).toBe("wss://fast-example.a.run.app/telnyx/gemini");
   expect(admission.bootstrapUrl).toBe("https://fast-example.a.run.app/internal/bootstrap");
+  expect(admission.bootstrap.securityContext).toMatchObject({
+    sessionId: "cs_fast-call",
+    tenantId: "tenant-fast",
+    routeId: "default",
+    callerPhoneE164: "+34647944762",
+    calledPhoneE164: "+34910000001",
+  });
   expect(admission.bootstrap.tools).toEqual([]);
   expect(admission.bootstrap.voiceName).toBe("Kore");
   expect(admission.bootstrap.languageCode).toBe("es-ES");
@@ -61,6 +84,11 @@ it("builds the exact media credential and audio-only fast bootstrap for one call
     provider: "GEMINI",
     tenantId: "tenant-fast",
     callControlId: "v3:fast-call",
+    sessionId: "cs_fast-call",
+    routeId: "default",
+    callerPhoneE164: "+34647944762",
+    calledPhoneE164: "+34910000001",
+    securityVersion: 1,
     edgeUrl: "wss://fast-example.a.run.app/telnyx/gemini",
     targetLegs: "both",
     notAfterEpochMs,
@@ -69,12 +97,14 @@ it("builds the exact media credential and audio-only fast bootstrap for one call
 
 describe("fast media bootstrap provisioning", () => {
   it("posts bootstrap once with control auth and no streaming credential in body", async () => {
+    const notAfterEpochMs = Date.now() + 60_000;
     const admission = await buildFastGeminiMediaAdmission({
       tenantId: "tenant-fast",
       callControlId: "v3:fast-call",
       credentialId: "cred-fast-call",
-      notAfterEpochMs: Date.now() + 60_000,
+      notAfterEpochMs,
       edgeUrl: "wss://fast-example.a.run.app/telnyx/gemini",
+      securityContext: securityContext(notAfterEpochMs),
       systemInstruction: "Responde brevemente.",
       credentialSecret: SECRET,
     });
@@ -98,12 +128,14 @@ describe("fast media bootstrap provisioning", () => {
   });
 
   it("fails closed on a mismatched bootstrap acknowledgement", async () => {
+    const notAfterEpochMs = Date.now() + 60_000;
     const admission = await buildFastGeminiMediaAdmission({
       tenantId: "tenant-fast",
       callControlId: "v3:fast-call",
       credentialId: "cred-fast-call",
-      notAfterEpochMs: Date.now() + 60_000,
+      notAfterEpochMs,
       edgeUrl: "wss://fast-example.a.run.app/telnyx/gemini",
+      securityContext: securityContext(notAfterEpochMs),
       systemInstruction: "Responde brevemente.",
       credentialSecret: SECRET,
     });
