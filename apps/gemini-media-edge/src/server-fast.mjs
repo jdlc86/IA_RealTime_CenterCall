@@ -11,6 +11,7 @@ import { InMemoryFastBootstrapRegistry } from "./fast-bootstrap.mjs";
 import { InMemoryDiagnosticJournal } from "./diagnostic-journal.mjs";
 import { createFastDiagnosticFlusher } from "./fast-diagnostic-flush.mjs";
 import { FastGeminiRealtimeSession } from "./fast-runtime.mjs";
+import { createFastTransferControlClient } from "./fast-transfer-control.mjs";
 
 const MEDIA_PATH = "/telnyx/gemini";
 const TELNYX_START_TIMEOUT_MS = 5_000;
@@ -27,6 +28,9 @@ const FAST_DIAGNOSTIC_STAGES = new Set([
   "BARGE_IN_CLEAR_SENT",
   "GEMINI_TURN_COMPLETE",
   "TOOL_RESULT_SENT",
+  "HUMAN_HANDOFF_AUTHORIZATION_BLOCKED",
+  "HUMAN_HANDOFF_ACCEPTED",
+  "HUMAN_HANDOFF_TRANSFER_START_RESULT",
   "GEMINI_GO_AWAY",
   "FAST_SESSION_CLOSED",
 ]);
@@ -111,6 +115,12 @@ export function resolveFastDiagnosticSinkUrl(env = process.env) {
   return configured || DEFAULT_FAST_DIAGNOSTIC_SINK_URL;
 }
 
+export function resolveFastTransferControlUrl(env = process.env) {
+  const configured = typeof env.FAST_CONTROL_PLANE_URL === "string" ? env.FAST_CONTROL_PLANE_URL.trim() : "";
+  if (configured) return configured;
+  return new URL(resolveFastDiagnosticSinkUrl(env)).origin;
+}
+
 export function createFastGeminiMediaServer(options = {}) {
   const geminiApiKey = required(options.geminiApiKey, "GEMINI_API_KEY", 8_192);
   const model = options.model ?? "gemini-3.1-flash-live-preview";
@@ -123,6 +133,8 @@ export function createFastGeminiMediaServer(options = {}) {
   const diagnosticJournal = options.diagnosticJournal ?? new InMemoryDiagnosticJournal({ maxEventsPerCall: 64 });
   const flushDiagnostics = typeof options.flushDiagnostics === "function" ? options.flushDiagnostics : null;
   const toolHandlers = options.toolHandlers ?? {};
+  const authorizeTransfer = typeof options.authorizeTransfer === "function" ? options.authorizeTransfer : null;
+  const startTransfer = typeof options.startTransfer === "function" ? options.startTransfer : null;
   const observe = typeof options.observe === "function" ? options.observe : () => {};
   const providerReadiness = canonicalProviderReadiness(options.providerReadiness);
   const sessions = new Set();
@@ -208,6 +220,8 @@ export function createFastGeminiMediaServer(options = {}) {
         geminiApiKey,
         model,
         toolHandlers,
+        authorizeTransfer,
+        startTransfer,
         observe: sessionObserve,
         ...(options.createGeminiSocket ? { createGeminiSocket: options.createGeminiSocket } : {}),
         ...(options.maxBufferedBytes ? { maxBufferedBytes: options.maxBufferedBytes } : {}),
@@ -333,6 +347,11 @@ export function createFastGeminiMediaServerFromEnv(env = process.env, options = 
     sinkUrl: resolveFastDiagnosticSinkUrl(env),
     controlToken,
   });
+  const transferControl = options.transferControl ?? createFastTransferControlClient({
+    baseUrl: resolveFastTransferControlUrl(env),
+    controlToken,
+    ...(options.transferControlFetch ? { fetcher: options.transferControlFetch } : {}),
+  });
   return createFastGeminiMediaServer({
     geminiApiKey: env.GEMINI_API_KEY,
     model: env.GEMINI_LIVE_MODEL || "gemini-3.1-flash-live-preview",
@@ -343,6 +362,8 @@ export function createFastGeminiMediaServerFromEnv(env = process.env, options = 
     maxBufferedBytes: env.MEDIA_EDGE_MAX_BUFFERED_BYTES ? Number(env.MEDIA_EDGE_MAX_BUFFERED_BYTES) : undefined,
     providerReadiness: options.providerReadiness ?? null,
     flushDiagnostics,
+    authorizeTransfer: transferControl.authorizeTransfer,
+    startTransfer: transferControl.startTransfer,
   });
 }
 
