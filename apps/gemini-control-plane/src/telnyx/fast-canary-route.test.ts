@@ -100,6 +100,36 @@ describe("fast Gemini canary webhook", () => {
     expect(keys).toEqual(["tenant_by_phone:+34600000001"]);
   });
 
+  it("falls back to the configured canary route when the bound KV has not been seeded yet", async () => {
+    const keys: string[] = [];
+    const env: FastGeminiCanaryEnv = {
+      ...ENV,
+      TENANT_ROUTING_KV: {
+        async get(key: string) {
+          keys.push(key);
+          return null;
+        },
+      },
+    };
+    const response = await routeFastGeminiCanaryWebhook(request(), env, {
+      startIncoming: async (_input, options): Promise<FastIncomingRuntimeResult> => {
+        expect(await options.resolveTenantRoute!(CALL)).toEqual({ tenantId: "tenant-fast-canary", routeId: "default" });
+        const otherNumber = { ...CALL, calledNumber: "+34600000999" };
+        expect(await options.resolveTenantRoute!(otherNumber)).toBeNull();
+        return {
+          status: "STARTED",
+          call: CALL,
+          tenantId: "tenant-fast-canary",
+          routeId: "default",
+          credentialId: "credential-fast",
+          edgeUrl: ENV.GEMINI_FAST_CANARY_EDGE_URL,
+        };
+      },
+    });
+    expect(response.status).toBe(202);
+    expect(keys).toEqual(["tenant_by_phone:+34600000001", "tenant_by_phone:+34600000999"]);
+  });
+
   it("forwards Telnyx signature headers to the signed pre-call runtime", async () => {
     let signedInput: { signatureBase64: string | null; timestamp: string | null } | null = null;
     const response = await routeFastGeminiCanaryWebhook(request(), ENV, {
