@@ -57,7 +57,15 @@ describe("fast Gemini canary webhook", () => {
         expect(await options.resolveTenantRoute!(otherNumber)).toBeNull();
         const config = await options.resolveSessionConfig("tenant-fast-canary", CALL);
         expect(config).toEqual({
-          systemInstruction: "Habla en español de forma breve y natural.",
+          systemInstruction: [
+            "Habla en español de forma breve y natural.",
+            "",
+            "Capacidades configuradas para esta sesión (el kernel es la autoridad final):",
+            "- call.transfer=false",
+            "- message.whatsapp.transactional=false",
+            "- message.whatsapp.realtime_support=false",
+            "No afirmes haber ejecutado una capacidad si la herramienta correspondiente no está disponible o no confirma éxito.",
+          ].join("\n"),
           tools: [],
           voiceName: "Kore",
           languageCode: "es-ES",
