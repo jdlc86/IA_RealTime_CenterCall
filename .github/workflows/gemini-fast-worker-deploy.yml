@@ -119,37 +119,50 @@ jobs:
           set -euo pipefail
           npx wrangler deployments list --config wrangler.fast.runtime.jsonc
 
-      - name: Seed safe placeholder tenant route
+      - name: Seed safe tenant configuration placeholders
         shell: bash
         run: |
           set -euo pipefail
-          KEY='tenant_by_phone:+34XXXXXXXXX'
-          VALUE='{"tenant_id":"TENANT_ID_A_COMPLETAR","route_id":"default","enabled":false}'
-          ENCODED_KEY="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$KEY")"
-          URL="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${TENANT_ROUTING_KV_ID}/values/${ENCODED_KEY}"
           AUTH="Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
+          KV_BASE="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${TENANT_ROUTING_KV_ID}/values"
 
-          STATUS="$(curl --silent --show-error \
-            -o /tmp/tenant-routing-placeholder \
-            -w '%{http_code}' \
-            -H "$AUTH" \
-            "$URL")"
+          put_if_missing() {
+            local key="$1"
+            local value="$2"
+            local encoded_key
+            local url
+            local status
+            encoded_key="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$key")"
+            url="${KV_BASE}/${encoded_key}"
+            status="$(curl --silent --show-error -o /tmp/kv-placeholder -w '%{http_code}' -H "$AUTH" "$url")"
+            if [ "$status" = "404" ]; then
+              curl --fail --silent --show-error \
+                -X PUT \
+                -H "$AUTH" \
+                -H 'Content-Type: application/json' \
+                --data "$value" \
+                "$url" >/dev/null
+              echo "Created disabled placeholder: $key"
+            elif [ "$status" = "200" ]; then
+              echo "KV entry already exists; leaving it unchanged: $key"
+            else
+              echo "Unexpected KV lookup status $status for $key" >&2
+              cat /tmp/kv-placeholder >&2 || true
+              exit 1
+            fi
+          }
 
-          if [ "$STATUS" = "404" ]; then
-            curl --fail --silent --show-error \
-              -X PUT \
-              -H "$AUTH" \
-              -H 'Content-Type: application/json' \
-              --data "$VALUE" \
-              "$URL" >/dev/null
-            echo "Created disabled placeholder route: $KEY"
-          elif [ "$STATUS" = "200" ]; then
-            echo "Placeholder route already exists; leaving it unchanged."
-          else
-            echo "Unexpected KV lookup status: $STATUS" >&2
-            cat /tmp/tenant-routing-placeholder >&2 || true
-            exit 1
-          fi
+          put_if_missing \
+            'tenant_by_phone:+34XXXXXXXXX' \
+            '{"tenant_id":"TENANT_ID_A_COMPLETAR","route_id":"default","enabled":false}'
+
+          put_if_missing \
+            'tenant_capabilities:TENANT_ID_A_COMPLETAR' \
+            '{"tenant_id":"TENANT_ID_A_COMPLETAR","call":{"transfer":false},"whatsapp":{"transactional":false,"realtime_support":false}}'
+
+          put_if_missing \
+            'tenant_config:TENANT_ID_A_COMPLETAR' \
+            '{"schemaVersion":1,"tenantId":"TENANT_ID_A_COMPLETAR","status":"inactive","humanHandoff":{"enabled":false,"destination":{"type":"PHONE","phone":"+34XXXXXXXXX","label":"Recepción"},"transfer":{"mode":"BLIND","answerTimeoutSeconds":25},"successMessage":"De acuerdo, te paso con una persona del equipo para que continúe contigo. Un momento, por favor.","failurePolicy":{"action":"TERMINATE_AND_CALLBACK","message":"Ahora mismo no ha sido posible comunicarte con una persona del equipo. Hemos registrado tu solicitud para que puedan devolverte la llamada. Gracias."}}}'
 
       - name: Verify deployed Worker health endpoint
         shell: bash
@@ -182,6 +195,9 @@ jobs:
             echo "- Worker: \`ia-realtime-centercall-gemini-fast\`"
             echo "- Source SHA: \`${GITHUB_SHA}\`"
             echo "- KV binding: \`TENANT_ROUTING_KV\` resolved dynamically by namespace name"
+            echo "- Safe placeholders include route, tenant capabilities and human handoff configuration"
+            echo "- Transfer configuration exposes destination phone, success announcement and fixed failure TTS message in tenant KV"
+            echo "- Existing KV values are never overwritten by deployment seeding"
             echo "- Repository contains no Cloudflare KV namespace ID"
             echo "- Health: \`${FAST_WORKER_ORIGIN}/health\`"
             echo "- Stable OpenAI Worker config was not used by this workflow."
