@@ -5,6 +5,24 @@ function required(value, field) {
   return value.trim();
 }
 
+function nullableE164(value, field) {
+  if (value === null) return null;
+  const normalized = required(value, field);
+  if (!/^\+[1-9]\d{7,14}$/.test(normalized)) throw new Error(`${field} must be E.164`);
+  return normalized;
+}
+
+function e164(value, field) {
+  const normalized = nullableE164(value, field);
+  if (normalized === null) throw new Error(`${field} is required`);
+  return normalized;
+}
+
+function securityVersion(value) {
+  if (value !== 1) throw new Error("Gemini media edge credential security version is invalid");
+  return 1;
+}
+
 function safeEpoch(value, field) {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`${field} must be a positive safe integer`);
@@ -44,6 +62,11 @@ function canonicalClaims(value) {
     provider: "GEMINI",
     tenantId: required(value.tenantId, "Gemini media edge credential tenant_id"),
     callControlId: required(value.callControlId, "Gemini media edge credential call_control_id"),
+    sessionId: required(value.sessionId, "Gemini media edge credential session_id"),
+    routeId: required(value.routeId, "Gemini media edge credential route_id"),
+    callerPhoneE164: nullableE164(value.callerPhoneE164, "Gemini media edge credential caller phone"),
+    calledPhoneE164: e164(value.calledPhoneE164, "Gemini media edge credential called phone"),
+    securityVersion: securityVersion(value.securityVersion),
     edgeUrl: secureEdgeUrl(value.edgeUrl),
     targetLegs: targetLegs(value.targetLegs),
     notAfterEpochMs: safeEpoch(value.notAfterEpochMs, "Gemini media edge credential notAfterEpochMs"),
