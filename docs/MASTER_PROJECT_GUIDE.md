@@ -1,7 +1,7 @@
 # IA_RealTime_CenterCall — Master Project Guide
 
 > **Ruta estable de compatibilidad. No renombrar ni eliminar.**  
-> **Última revisión:** 2026-08-27  
+> **Última revisión:** 2026-08-28  
 > **Carácter:** índice/visión; **no es fuente de verdad del despliegue actual**.
 
 Este archivo orienta hacia la documentación propietaria. No debe duplicar la arquitectura, el estado operativo ni un diario de commits.
@@ -13,11 +13,12 @@ Leer en este orden:
 1. [`README.md`](./README.md) — mapa documental actual/histórico.
 2. [`PROJECT_STATUS.md`](./PROJECT_STATUS.md) — realidad operativa, limitaciones y siguiente validación.
 3. [`SESSION_HANDOFF.md`](./SESSION_HANDOFF.md) — prompt para continuar otra sesión.
-4. [`architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — topología estable actual.
-5. [`architecture/ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md`](./architecture/ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md) cuando el trabajo afecte Gemini.
-6. [`architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — restricciones no negociables.
-7. [`DOCUMENTATION_MAINTENANCE.md`](./DOCUMENTATION_MAINTENANCE.md) — reglas de fuente de verdad documental.
-8. El runbook, código y tests exactos del componente que vaya a modificarse.
+4. [`SYSTEM_OVERVIEW.md`](./SYSTEM_OVERVIEW.md) — resumen de productos y fronteras actuales.
+5. [`architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — topología estable actual.
+6. [`architecture/ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md`](./architecture/ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md) cuando el trabajo afecte Gemini.
+7. [`architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — restricciones no negociables.
+8. [`DOCUMENTATION_MAINTENANCE.md`](./DOCUMENTATION_MAINTENANCE.md) — reglas de fuente de verdad documental.
+9. El runbook, código y tests exactos del componente que vaya a modificarse.
 
 Antes de escribir/deployar, comprobar rama, HEAD remoto, PR #85, CI del SHA y los sistemas remotos que sean relevantes.
 
@@ -30,7 +31,7 @@ PR         #85 (base main; verificar estado remoto)
 Supabase   vutekfkbtvfogouwcfvc
 ```
 
-No existe ya un único `entrypoint` o `Worker` que represente a todo el proyecto.
+No existe un único `entrypoint` o `Worker` que represente a todo el proyecto.
 
 ### Producto OpenAI
 
@@ -104,31 +105,28 @@ Usar `README.md` para distinguir lectura actual de historial.
 
 La documentación propietaria es [`HUMAN_HANDOFF.md`](./HUMAN_HANDOFF.md).
 
-Principios actuales:
+Principios de alto nivel:
 
-- lenguaje natural interpretado semánticamente por Gemini;
-- kernel valida grounding/estado, no listas de “sí/vale/adelante”;
-- transcript/evidencia snapshotteados antes de la ejecución asíncrona del tool;
-- destino privado definido por tenant;
+- Gemini interpreta lenguaje natural;
+- la política Fast valida enum de autoridad + grounding textual, no listas de “sí/vale/adelante”;
+- la política actual no mantiene `offerPending` ni prueba por sí sola el antecedente de `CONFIRMED_OFFER`;
+- transcript/evidencia se snapshottean antes de la ejecución asíncrona del tool;
+- destino/capability pertenecen a configuración/backend;
 - handoff aceptado es lifecycle terminal para la IA;
-- auditoría en `public.human_handoff_events`;
-- ringback determinista y audibilidad del TTS terminal siguen siendo limitaciones abiertas hasta validación E2E.
+- auditoría en `public.human_handoff_events`.
+
+Las limitaciones vivas de transferencia no se duplican aquí; consultar `HUMAN_HANDOFF.md` y `PROJECT_STATUS.md`.
 
 ## Diagnóstico
 
-Tabla principal actual:
+Fuentes principales:
 
 ```text
 public.call_diagnostic_events
-```
-
-Handoff:
-
-```text
 public.human_handoff_events
 ```
 
-Una investigación debe separar control, media y experiencia acústica. Un evento `call.speak.ended` no demuestra que el caller oyera el mensaje; un target leg no demuestra ringback audible.
+Una investigación debe separar control, media y experiencia acústica. El procedimiento exacto vive en [`runbooks/CROSS_PLANE_CALL_DIAGNOSTICS.md`](./runbooks/CROSS_PLANE_CALL_DIAGNOSTICS.md).
 
 ## Recuperación
 
