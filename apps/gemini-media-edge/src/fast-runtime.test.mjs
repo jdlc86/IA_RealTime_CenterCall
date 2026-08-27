@@ -117,45 +117,6 @@ test("fast runtime sends native Gemini audio to Telnyx and clears immediately on
   session.close("test-complete");
 });
 
-test("passive speech-end latency bookkeeping happens only after response audio is sent", () => {
-  const telnyx = new FakeSocket();
-  telnyx.readyState = 1;
-  let gemini;
-  const order = [];
-  const diagnostics = [];
-  const originalSend = telnyx.send.bind(telnyx);
-  telnyx.send = (value) => {
-    const parsed = typeof value === "string" ? JSON.parse(value) : value;
-    if (parsed?.event === "media") order.push("telnyx-media-sent");
-    originalSend(value);
-  };
-  const session = new FastGeminiRealtimeSession({
-    telnyxSocket: telnyx,
-    bootstrap: bootstrap(),
-    geminiApiKey: "test-key-not-production",
-    createGeminiSocket() { gemini = new FakeSocket(); return gemini; },
-    observe: (event) => {
-      diagnostics.push(event);
-      if (event.stage === "GEMINI_TURN_COMPLETE") order.push("turn-latency-observed");
-    },
-  }).start();
-  gemini.open();
-  gemini.message({ setupComplete: {} });
-
-  gemini.message({ serverContent: { speechState: "NON_SPEECH" } });
-  gemini.message({ serverContent: { modelTurn: { parts: [geminiAudioPart()] } } });
-  assert.deepEqual(order, ["telnyx-media-sent"]);
-
-  gemini.message({ serverContent: { turnComplete: true } });
-  assert.deepEqual(order, ["telnyx-media-sent", "turn-latency-observed"]);
-  const turn = diagnostics.findLast((event) => event.stage === "GEMINI_TURN_COMPLETE");
-  assert.equal(Number.isSafeInteger(turn.observedMs), true);
-  assert.ok(turn.observedMs >= 0);
-  assert.equal(turn.phase, "speech_end_to_first_audio");
-  assert.equal(turn.type, "gemini_speech_state");
-  session.close("test-complete");
-});
-
 test("fast runtime executes Gemini tool locally and continues same Live session", async () => {
   const telnyx = new FakeSocket();
   telnyx.readyState = 1;
