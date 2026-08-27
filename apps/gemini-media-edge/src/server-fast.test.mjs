@@ -48,14 +48,41 @@ async function listen(server) {
   return address.port;
 }
 
+function securityContext({ now, callControlId, sessionId }) {
+  return {
+    securityVersion: 1,
+    sessionId,
+    tenantId: "tenant-fast",
+    routeId: "default",
+    callControlId,
+    callerPhoneE164: "+34647944762",
+    calledPhoneE164: "+34910000001",
+    provider: "TELNYX",
+    createdAtEpochMs: now,
+    notAfterEpochMs: now + 60_000,
+  };
+}
+
+function securityClaims(context) {
+  return {
+    sessionId: context.sessionId,
+    routeId: context.routeId,
+    callerPhoneE164: context.callerPhoneE164,
+    calledPhoneE164: context.calledPhoneE164,
+    securityVersion: context.securityVersion,
+  };
+}
+
 test("standalone fast server admits real Telnyx connected then start and starts only the fast Gemini session", async () => {
   const now = Date.now();
+  const context = securityContext({ now, callControlId: "v3:fast-server", sessionId: "cs_fast-server" });
   const bootstrapRegistry = new InMemoryFastBootstrapRegistry();
   bootstrapRegistry.register({
     credentialId: "cred-server-fast",
     tenantId: "tenant-fast",
     callControlId: "v3:fast-server",
     notAfterEpochMs: now + 60_000,
+    securityContext: context,
     systemInstruction: "Responde brevemente.",
     tools: [],
   }, now);
@@ -73,6 +100,7 @@ test("standalone fast server admits real Telnyx connected then start and starts 
         provider: "GEMINI",
         tenantId: "tenant-fast",
         callControlId: "v3:fast-server",
+        ...securityClaims(context),
         edgeUrl: expectedEdgeUrl,
         targetLegs: "both",
         notAfterEpochMs: now + 60_000,
@@ -154,12 +182,14 @@ test("standalone fast server admits real Telnyx connected then start and starts 
 
 test("fast server rejects media before authenticated Telnyx start", async () => {
   const now = Date.now();
+  const context = securityContext({ now, callControlId: "v3:fast-server-reject", sessionId: "cs_fast-server-reject" });
   const bootstrapRegistry = new InMemoryFastBootstrapRegistry();
   bootstrapRegistry.register({
     credentialId: "cred-server-fast-reject",
     tenantId: "tenant-fast",
     callControlId: "v3:fast-server-reject",
     notAfterEpochMs: now + 60_000,
+    securityContext: context,
     systemInstruction: "Responde brevemente.",
     tools: [],
   }, now);
@@ -172,6 +202,7 @@ test("fast server rejects media before authenticated Telnyx start", async () => 
       provider: "GEMINI",
       tenantId: "tenant-fast",
       callControlId: "v3:fast-server-reject",
+      ...securityClaims(context),
       edgeUrl: expectedEdgeUrl,
       targetLegs: "both",
       notAfterEpochMs: now + 60_000,
