@@ -10,9 +10,15 @@ const ENV: FastGeminiCanaryEnv = {
   GEMINI_MEDIA_CREDENTIAL_HMAC_SECRET: "0123456789abcdef0123456789abcdef",
   GEMINI_MEDIA_CONTROL_PLANE_TOKEN: "0123456789abcdef0123456789abcdef",
   GEMINI_FAST_CANARY_EDGE_URL: "wss://fast-canary.example/telnyx/gemini",
-  GEMINI_FAST_CANARY_CALLED_NUMBER: "+34600000001",
-  GEMINI_FAST_CANARY_TENANT_ID: "tenant-fast-canary",
   GEMINI_FAST_CANARY_SYSTEM_INSTRUCTION: "Habla en español de forma breve y natural.",
+  TENANT_ROUTING_KV: {
+    async get(key: string) {
+      if (key === "tenant_by_phone:+34600000001") {
+        return JSON.stringify({ tenant_id: "tenant-fast-canary", route_id: "default", enabled: true });
+      }
+      return null;
+    },
+  },
 };
 
 const CALL: VerifiedTelnyxIncomingCall = {
@@ -38,7 +44,7 @@ function request(method = "POST"): Request {
 }
 
 describe("fast Gemini canary webhook", () => {
-  it("admits only the exact canary called number and defaults route without a KV binding", async () => {
+  it("uses the enabled KV route as the only tenant/phone admission source", async () => {
     const response = await routeFastGeminiCanaryWebhook(request(), ENV, {
       now: () => Date.parse("2026-08-26T13:14:01.000Z"),
       startIncoming: async (_input, options): Promise<FastIncomingRuntimeResult> => {
@@ -49,7 +55,6 @@ describe("fast Gemini canary webhook", () => {
         expect(options.isCanaryAllowed("tenant-fast-canary", CALL)).toBe(true);
         const otherNumber = { ...CALL, calledNumber: "+34600000999" };
         expect(await options.resolveTenantRoute!(otherNumber)).toBeNull();
-        expect(options.isCanaryAllowed("tenant-fast-canary", otherNumber)).toBe(false);
         const config = await options.resolveSessionConfig("tenant-fast-canary", CALL);
         expect(config).toEqual({
           systemInstruction: "Habla en español de forma breve y natural.",
@@ -100,34 +105,37 @@ describe("fast Gemini canary webhook", () => {
     expect(keys).toEqual(["tenant_by_phone:+34600000001"]);
   });
 
-  it("falls back to the configured canary route when the bound KV has not been seeded yet", async () => {
-    const keys: string[] = [];
+  it("fails closed when the called number has no KV route", async () => {
+    const env: FastGeminiCanaryEnv = {
+      ...ENV,
+      TENANT_ROUTING_KV: { async get() { return null; } },
+    };
+    const response = await routeFastGeminiCanaryWebhook(request(), env, {
+      startIncoming: async (_input, options): Promise<FastIncomingRuntimeResult> => {
+        expect(await options.resolveTenantRoute!(CALL)).toBeNull();
+        return { status: "TENANT_NOT_FOUND", call: CALL };
+      },
+    });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ ok: false, status: "TENANT_NOT_FOUND" });
+  });
+
+  it("fails closed when the KV route is disabled", async () => {
     const env: FastGeminiCanaryEnv = {
       ...ENV,
       TENANT_ROUTING_KV: {
-        async get(key: string) {
-          keys.push(key);
-          return null;
+        async get() {
+          return JSON.stringify({ tenant_id: "tenant-fast-canary", route_id: "default", enabled: false });
         },
       },
     };
     const response = await routeFastGeminiCanaryWebhook(request(), env, {
       startIncoming: async (_input, options): Promise<FastIncomingRuntimeResult> => {
-        expect(await options.resolveTenantRoute!(CALL)).toEqual({ tenantId: "tenant-fast-canary", routeId: "default" });
-        const otherNumber = { ...CALL, calledNumber: "+34600000999" };
-        expect(await options.resolveTenantRoute!(otherNumber)).toBeNull();
-        return {
-          status: "STARTED",
-          call: CALL,
-          tenantId: "tenant-fast-canary",
-          routeId: "default",
-          credentialId: "credential-fast",
-          edgeUrl: ENV.GEMINI_FAST_CANARY_EDGE_URL,
-        };
+        expect(await options.resolveTenantRoute!(CALL)).toBeNull();
+        return { status: "TENANT_NOT_FOUND", call: CALL };
       },
     });
-    expect(response.status).toBe(202);
-    expect(keys).toEqual(["tenant_by_phone:+34600000001", "tenant_by_phone:+34600000999"]);
+    expect(response.status).toBe(403);
   });
 
   it("forwards Telnyx signature headers to the signed pre-call runtime", async () => {
