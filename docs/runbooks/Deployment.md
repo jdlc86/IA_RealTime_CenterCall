@@ -1,11 +1,9 @@
 # Runbook — Deployment
 
 > **Estado:** vigente  
-> **Última revisión:** 2026-08-27
+> **Última revisión:** 2026-08-28
 
-El repositorio contiene **dos productos realtime con pipelines distintos**. El runbook antiguo describía sólo `apps/control-plane` y podía inducir a creer que ese flujo también gobernaba Gemini.
-
-No es así.
+El repositorio contiene **dos productos realtime con pipelines distintos**. El flujo de `apps/control-plane` no gobierna por sí solo Gemini Fast.
 
 ## 1. Regla general
 
@@ -48,16 +46,6 @@ Workers históricos:
 
 Este bloque se conserva para la ruta OpenAI. **No usarlo para inferir el estado del Worker Gemini Fast.**
 
-### Verificación OpenAI
-
-Cuando el cambio afecte esa ruta:
-
-1. verificar CI del SHA exacto;
-2. confirmar Worker/version efectiva;
-3. comprobar `/health` y environment/version cuando aplique;
-4. ejecutar E2E de health/routing;
-5. si cambia voz/event ordering/telefonía, realizar la validación de llamada correspondiente.
-
 ## 3. Producto Gemini Fast
 
 Componentes:
@@ -67,7 +55,7 @@ apps/gemini-control-plane   → Gemini Fast Worker (Cloudflare)
 apps/gemini-media-edge      → Fast Media Edge (Cloud Run)
 ```
 
-Workflows relevantes actuales:
+Workflows relevantes:
 
 ```text
 .github/workflows/gemini-fast-worker-deploy.yml
@@ -76,28 +64,28 @@ Workflows relevantes actuales:
 
 ### 3.1 Fast Worker
 
-El workflow `Gemini Fast Worker Deploy` despliega el Worker independiente:
+`Gemini Fast Worker Deploy` despliega:
 
 ```text
 ia-realtime-centercall-gemini-fast
 ```
 
-También resuelve el namespace KV por nombre y aplica seeding seguro sólo cuando la categoría correspondiente no contiene una clave real.
+El workflow también resuelve el namespace KV por nombre y aplica seeding seguro.
 
 Reglas:
 
 - nunca sobrescribir valores KV existentes por seeding;
-- nunca recrear placeholders por ausencia de una clave placeholder si ya hay claves reales del prefijo;
-- configuración/secretos remotos no se copian al repositorio;
-- health del Worker debe validarse después del deploy.
+- no crear placeholders si ya existe una clave real del mismo prefijo;
+- no copiar secretos/configuración remota al repositorio;
+- validar health después del deploy.
 
 ### 3.2 Fast Media Edge canary/tagged revision
 
-El workflow `Gemini Fast Canary Deploy`:
+`Gemini Fast Canary Deploy`:
 
 1. ejecuta checks/tests del runtime Fast;
 2. construye imagen inmutable;
-3. snapshottea tráfico general actual de Cloud Run;
+3. snapshottea el tráfico general de Cloud Run;
 4. despliega una revisión con `--no-traffic`;
 5. asigna tag `fast-<short-sha>`;
 6. verifica readiness del tag;
@@ -105,9 +93,7 @@ El workflow `Gemini Fast Canary Deploy`:
 8. verifica health del Worker;
 9. ejecuta un preflight bootstrap/HMAC/WSS.
 
-### 3.3 Regla crítica: tag ≠ tráfico general
-
-Ejemplo conceptual:
+### 3.3 Tag ≠ tráfico general
 
 ```text
 Cloud Run service
@@ -119,9 +105,7 @@ Gemini Fast Worker
        └──► wss://fast-<sha>---.../telnyx/gemini
 ```
 
-La ruta Fast usa directamente la URL etiquetada.
-
-Por tanto:
+La ruta Fast usa directamente la URL etiquetada. Por tanto:
 
 ```text
 fast revision = 0% general traffic
@@ -129,11 +113,9 @@ NO significa
 fast revision = 0 llamadas
 ```
 
-No promover la revisión a porcentaje general sólo para “hacerla productiva” si el diseño vigente es routing explícito por tag desde el Worker.
+No promover una revisión al tráfico general únicamente para “hacerla productiva” si el diseño vigente usa routing explícito por tag desde el Worker.
 
 ## 4. Verificación Gemini Fast
-
-Después de un cambio que afecte al Fast Path, comprobar según alcance:
 
 ### Worker
 
@@ -151,40 +133,67 @@ Después de un cambio que afecte al Fast Path, comprobar según alcance:
 - provider readiness dentro de budgets aplicables;
 - Worker apuntando exactamente al WSS del tag esperado.
 
-### Preflight
+### Preflight actual
 
-El endpoint actual `/internal/preflight` prueba, entre otros:
+`/internal/preflight` prueba el contrato de infraestructura sin depender de un tenant/teléfono productivos. El response actual incluye:
 
 ```text
-telnyxApiKey          PRESENT
-telnyxPublicKey       PRESENT_VALID
-admissionIdentity     PRESENT
-mediaCredentialHmac   VERIFIED
-mediaControlToken     VERIFIED
-canaryEdge            VERIFIED
-systemInstruction     PRESENT
-tools                 EMPTY
-bootstrap             VERIFIED
-websocketUpgrade      VERIFIED
-tenantRouting         KV_RUNTIME_ONLY
+telnyxApiKey             PRESENT
+telnyxPublicKey          PRESENT_VALID
+admissionIdentitySecret  PRESENT
+mediaCredentialHmac      VERIFIED
+mediaControlToken        VERIFIED
+canaryEdge               VERIFIED
+systemInstruction        PRESENT
+tools                    EMPTY
+bootstrap                VERIFIED
+websocketUpgrade         VERIFIED
+tenantRouting            KV_RUNTIME_ONLY
 ```
-
-No depende de una configuración productiva de tenant/teléfono para probar bootstrap/WSS.
 
 ## 5. Deuda conocida del gate Fast Canary
 
-Al snapshot 2026-08-27, el último paso del workflow tiene una divergencia con el contrato actual:
+Al snapshot 2026-08-28 existe una divergencia **demostrada** entre el `jq` final del workflow y el response real de `routeFastGeminiPreflight`.
 
-- puede recibir `503 PREFLIGHT_UNAVAILABLE` mientras propaga el nonce efímero;
-- su jq final todavía espera campos históricos como `telnyxRouting`, `canaryCalledNumber` y `canaryTenant`;
-- `routeFastGeminiPreflight` actual devuelve en su lugar `tenantRouting: KV_RUNTIME_ONLY` y prueba la infraestructura sin tenant productivo.
+El workflow todavía exige campos históricos:
 
-Hasta corregir ese gate:
+```text
+telnyxRouting
+canaryCalledNumber
+canaryTenant
+```
 
-- registrar el job como **rojo por deuda del verificador**, no como success;
+El endpoint actual ya no devuelve esos campos y en su lugar expone:
+
+```text
+tenantRouting = KV_RUNTIME_ONLY
+```
+
+Por tanto, el gate puede quedar rojo después de que build, revisión etiquetada, readiness, sincronización Worker y health hayan pasado.
+
+### Retry de nonce
+
+El workflow actual **ya implementa retry bounded de 10 intentos** para respuestas temporales `401`/`503`, con espera entre intentos. No documentar `set -e` o ausencia de retry como causa vigente salvo nueva evidencia concreta.
+
+Un `503 PREFLIGHT_UNAVAILABLE` temporal puede seguir aparecer mientras se propaga el nonce, pero el defecto estructural actualmente demostrado es la aserción `jq` desalineada.
+
+### Criterio de corrección
+
+La reparación del gate debe:
+
+1. conservar el retry bounded existente;
+2. actualizar `jq` al contrato real de `fast-preflight.ts`;
+3. mantener el preflight sin tenant/teléfono productivos;
+4. exigir `bootstrap == VERIFIED`;
+5. exigir `websocketUpgrade == VERIFIED`;
+6. no tocar VAD/audio/runtime de llamada para resolver este problema de deployment verification.
+
+Hasta corregirlo:
+
+- registrar el job como rojo por deuda del verificador;
 - revisar qué pasos anteriores sí pasaron;
-- no declarar automáticamente que el hot path falló;
-- tampoco ignorar el rojo: corregir el verificador antes de considerarlo un gate fiable.
+- no convertir el rojo automáticamente en un fallo del hot path;
+- tampoco ignorarlo como si el deploy gate fuera fiable.
 
 ## 6. Cuándo exigir llamada real
 
@@ -212,4 +221,4 @@ Ante una regresión:
 
 ## 8. Regla final
 
-GitHub debe contener siempre el software y la documentación que describen la versión operada. Los paneles cloud son estado de ejecución, no una segunda fuente de verdad de código.
+GitHub debe contener el software y la documentación que describen la versión operada. Los paneles cloud son estado de ejecución, no una segunda fuente de verdad de código.
