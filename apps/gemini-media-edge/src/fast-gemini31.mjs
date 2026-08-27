@@ -22,6 +22,29 @@ function modelResourceName(value) {
   return `models/${identifier}`;
 }
 
+function transferAuthorityContract(description, parameters) {
+  const schema = structuredClone(parameters);
+  const properties = schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties)
+    ? structuredClone(schema.properties)
+    : {};
+  properties.authorization = {
+    type: "string",
+    enum: ["EXPLICIT_REQUEST", "CONFIRMED_OFFER"],
+    description: "Semantic caller authority for the handoff. Use EXPLICIT_REQUEST when the caller asks to speak with a person. Use CONFIRMED_OFFER when the caller accepts your immediately preceding offer to transfer.",
+  };
+  properties.caller_authority_evidence = {
+    type: "string",
+    description: "Quote the caller's current utterance that semantically authorizes this handoff. Preserve the caller's natural wording; do not reduce it to a keyword.",
+  };
+  schema.properties = properties;
+  const required = Array.isArray(schema.required) ? schema.required.filter((item) => typeof item === "string") : [];
+  schema.required = [...new Set([...required, "authorization", "caller_authority_evidence"])];
+  return Object.freeze({
+    description: `${description}\nCaller-authority contract: only call this tool after the caller has semantically authorized a human handoff. Do not require exact phrases or keyword matches. If authority is ambiguous, continue the conversation naturally instead of calling the tool.`,
+    parametersJsonSchema: schema,
+  });
+}
+
 function canonicalTool(tool, index) {
   if (!tool || typeof tool !== "object" || Array.isArray(tool)) throw new Error(`Gemini tool ${index} is invalid`);
   const name = requiredString(tool.name, `Gemini tool ${index} name`, 128);
@@ -30,10 +53,13 @@ function canonicalTool(tool, index) {
   if (!tool.parameters || typeof tool.parameters !== "object" || Array.isArray(tool.parameters)) {
     throw new Error(`Gemini tool ${index} parameters are invalid`);
   }
+  const contract = name === "transfer_call"
+    ? transferAuthorityContract(description, tool.parameters)
+    : Object.freeze({ description, parametersJsonSchema: structuredClone(tool.parameters) });
   return Object.freeze({
     name,
-    description,
-    parametersJsonSchema: structuredClone(tool.parameters),
+    description: contract.description,
+    parametersJsonSchema: contract.parametersJsonSchema,
     behavior: "BLOCKING",
   });
 }

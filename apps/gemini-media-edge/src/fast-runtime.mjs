@@ -160,7 +160,7 @@ export class FastGeminiRealtimeSession {
           }
         }
 
-        for (const toolCall of frame.toolCalls) this.#enqueueToolCall(toolCall);
+        for (const toolCall of frame.toolCalls) this.#enqueueToolCall(toolCall, this.callerTranscript);
         if (frame.turnComplete) {
           this.#emit("GEMINI_TURN_COMPLETE");
           if (this.pendingHandoff && !this.pendingHandoff.starting) {
@@ -217,9 +217,13 @@ export class FastGeminiRealtimeSession {
     if (queued.length) this.#emit("PRESETUP_CALLER_AUDIO_FLUSHED", { chunks: queued.length });
   }
 
-  async #executeTransferTool(toolCall) {
+  async #executeTransferTool(toolCall, callerTranscriptSnapshot) {
     if (this.pendingHandoff || this.terminalHandoff) return Object.freeze({ ok: false, status: "HUMAN_HANDOFF_ALREADY_ACTIVE" });
-    const decision = authorizeFastHumanHandoff(this.handoffAuthorization, this.callerTranscript);
+    const decision = authorizeFastHumanHandoff(this.handoffAuthorization, {
+      authorization: toolCall.args?.authorization,
+      callerAuthorityEvidence: toolCall.args?.caller_authority_evidence,
+      callerTranscript: callerTranscriptSnapshot,
+    });
     this.handoffAuthorization = decision.state;
     if (!decision.allowed) {
       this.#emit("HUMAN_HANDOFF_AUTHORIZATION_BLOCKED", { source: decision.source });
@@ -261,13 +265,14 @@ export class FastGeminiRealtimeSession {
     });
   }
 
-  #enqueueToolCall(toolCall) {
+  #enqueueToolCall(toolCall, callerTranscriptSnapshot = this.callerTranscript) {
+    const transcriptSnapshot = callerTranscriptSnapshot;
     this.toolChain = this.toolChain.then(async () => {
       if (this.closed) return;
       const startedNs = process.hrtime.bigint();
       try {
         const result = toolCall.name === "transfer_call"
-          ? await this.#executeTransferTool(toolCall)
+          ? await this.#executeTransferTool(toolCall, transcriptSnapshot)
           : await this.toolExecutor.execute(toolCall, {
               tenantId: this.bootstrap.tenantId,
               callControlId: this.bootstrap.callControlId,

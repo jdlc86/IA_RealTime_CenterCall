@@ -201,6 +201,8 @@ test("fast runtime carries existing call audit context from authorization into t
       args: {
         reason: "USER_REQUESTED_HUMAN",
         context_summary: "El caller pide hablar con recepción.",
+        authorization: "EXPLICIT_REQUEST",
+        caller_authority_evidence: "Quiero hablar con una persona de recepción",
       },
     }] },
   });
