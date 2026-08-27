@@ -14,17 +14,26 @@ const claims = Object.freeze({
   provider: "GEMINI",
   tenantId: "tenant-1",
   callControlId: "call-123",
+  sessionId: "cs_123",
+  routeId: "default",
+  callerPhoneE164: "+34647944762",
+  calledPhoneE164: "+34910000001",
+  securityVersion: 1,
   edgeUrl,
   targetLegs: "self",
   notAfterEpochMs: 2_000_000_000_000,
 });
 
-test("signed credential verifies exact immutable call binding", async () => {
+test("signed credential verifies exact immutable call and security binding", async () => {
   const token = signHmacCredentialForTest(claims, secret);
   const verify = createHmacCredentialVerifier(secret, edgeUrl);
   const verified = await verify(token, 1_900_000_000_000);
   assert.equal(verified.credentialId, "cred-1");
   assert.equal(verified.callControlId, "call-123");
+  assert.equal(verified.sessionId, "cs_123");
+  assert.equal(verified.routeId, "default");
+  assert.equal(verified.callerPhoneE164, "+34647944762");
+  assert.equal(verified.calledPhoneE164, "+34910000001");
   assert.equal(verified.edgeUrl, edgeUrl);
 });
 
