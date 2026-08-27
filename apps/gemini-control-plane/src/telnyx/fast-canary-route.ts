@@ -25,6 +25,11 @@ const DEFAULT_CAPABILITIES: TenantCapabilities = Object.freeze({
   "message.whatsapp.realtime_support": false,
 });
 
+// Temporary A/B latency baseline. This only changes what Gemini sees for
+// call.transfer; KV, Telnyx, model, VAD, audio bridge and media buffers remain
+// untouched so a short "hola" call can isolate transfer prompt/tool impact.
+const TEMP_DISABLE_TRANSFER_FOR_LATENCY_AB = true;
+
 export type FastGeminiCanaryEnv = Readonly<{
   TELNYX_PUBLIC_KEY: string;
   TELNYX_API_KEY: string;
@@ -142,21 +147,24 @@ function buildTenantInstruction(baseInstruction: string, value: unknown, tenantI
     return waiting.map((entry, index) => required(entry, `Tenant waiting phrase ${index}`, 512));
   })();
 
-  const handoff = config ? parseFastHumanHandoffConfig(config) : null;
-  const transferEnabled = capabilities["call.transfer"] && Boolean(handoff?.enabled);
+  const sessionCapabilities: TenantCapabilities = TEMP_DISABLE_TRANSFER_FOR_LATENCY_AB
+    ? Object.freeze({ ...capabilities, "call.transfer": false })
+    : capabilities;
+  const transferEnabled = sessionCapabilities["call.transfer"] === true;
+  const handoff = transferEnabled && config ? parseFastHumanHandoffConfig(config) : null;
   const lines = [
     displayName ? `Negocio: ${displayName}.` : null,
     assistantName ? `Tu nombre de asistente es ${assistantName}.` : null,
     greeting ? `Saludo configurado: ${greeting}` : null,
     waitingPhrases.length ? `Frases de espera permitidas: ${waitingPhrases.join(" | ")}` : null,
-    capabilityInstruction(capabilities),
-    transferEnabled && handoff ? fastHumanHandoffPrompt(handoff) : null,
+    capabilityInstruction(sessionCapabilities),
+    transferEnabled && handoff?.enabled ? fastHumanHandoffPrompt(handoff) : null,
   ].filter((entry): entry is string => Boolean(entry));
 
   return Object.freeze({
     systemInstruction: `${baseInstruction}${lines.length ? `\n\n${lines.join("\n")}` : ""}`,
     languageCode: language,
-    tools: transferEnabled ? Object.freeze([FAST_TRANSFER_TOOL]) : Object.freeze([]),
+    tools: transferEnabled && handoff?.enabled ? Object.freeze([FAST_TRANSFER_TOOL]) : Object.freeze([]),
   });
 }
 
