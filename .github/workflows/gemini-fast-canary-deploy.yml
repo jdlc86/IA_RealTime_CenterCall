@@ -260,13 +260,11 @@ jobs:
             .status == "READY" and
             .checks.telnyxApiKey == "PRESENT" and
             .checks.telnyxPublicKey == "PRESENT_VALID" and
-            .checks.telnyxRouting == "VERIFIED" and
+            .checks.tenantRouting == "KV_RUNTIME_ONLY" and
             .checks.admissionIdentitySecret == "PRESENT" and
             .checks.mediaCredentialHmac == "VERIFIED" and
             .checks.mediaControlToken == "VERIFIED" and
             .checks.canaryEdge == "VERIFIED" and
-            .checks.canaryCalledNumber == "PRESENT" and
-            .checks.canaryTenant == "PRESENT" and
             .checks.systemInstruction == "PRESENT" and
             .checks.tools == "EMPTY" and
             .checks.bootstrap == "VERIFIED" and
