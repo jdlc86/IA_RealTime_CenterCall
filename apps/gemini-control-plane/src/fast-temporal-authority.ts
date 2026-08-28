@@ -138,7 +138,7 @@ export function buildFastAuthoritativeDateTimeSnapshot(
 export function fastTemporalAuthorityInstruction(snapshot: FastAuthoritativeDateTimeSnapshot): string {
   return [
     "Autoridad temporal del kernel:",
-    `- Snapshot inicial firmado por el Worker: ${JSON.stringify(snapshot)}`,
+    `- Snapshot inicial emitido por el Worker mediante el bootstrap autenticado: ${JSON.stringify(snapshot)}`,
     "- El Worker es la autoridad final del reloj, zona horaria y calendario; no uses conocimiento del modelo para decidir cuál es la fecha u hora actual.",
     "- Gemini conserva la interpretación semántica libre del lenguaje temporal; no reduzcas expresiones naturales a listas de palabras o frases rígidas.",
     "- Usa get_authoritative_datetime antes de afirmar la fecha/hora actual o cuando una referencia temporal dependa de un 'ahora' que pueda haber cambiado desde el inicio de la llamada.",
