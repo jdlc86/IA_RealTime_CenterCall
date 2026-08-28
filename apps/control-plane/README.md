@@ -71,8 +71,8 @@ controlada de producción hay que configurar:
 
 El token compartido tiene como fuente de verdad
 `gemini-media-edge-control-plane-token` en Google Secret Manager. Los workflows
-`Gemini Fast Canary Deploy` y `Gemini Fast Worker Secret Sync` deben copiar esa
-misma versión a `MEDIA_EDGE_CONTROL_PLANE_TOKEN` en este Worker y a
+`Gemini Fast Canary Deploy` y `Gemini Fast Worker Secret Sync` deben copiar el
+mismo valor a `MEDIA_EDGE_CONTROL_PLANE_TOKEN` en este Worker y a
 `GEMINI_MEDIA_CONTROL_PLANE_TOKEN` en el Fast Worker. El canary comprueba la
 paridad con un payload autenticado deliberadamente inválido (`{}`): debe recibir
 `400 INVALID_SECURITY_SIGNAL`, sin crear un evento de reputación.

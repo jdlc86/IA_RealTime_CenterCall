@@ -84,7 +84,7 @@ jobs:
           npm ci --prefix apps/control-plane --no-audit --no-fund
           npm install --prefix apps/gemini-control-plane --no-audit --no-fund
 
-      - name: Pin and synchronize shared Fast secrets
+      - name: Synchronize shared Fast secrets
         id: shared_secrets
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -95,21 +95,10 @@ jobs:
           test -n "$CLOUDFLARE_API_TOKEN"
           test -n "$CLOUDFLARE_ACCOUNT_ID"
 
-          CONTROL_VERSION="$(gcloud secrets versions describe "$CONTROL_TOKEN_SECRET_VERSION" \
-            --project "$GCP_PROJECT_ID" \
-            --secret gemini-media-edge-control-plane-token \
-            --format='value(name)' | awk -F/ '{print $NF}')"
-          CREDENTIAL_VERSION="$(gcloud secrets versions describe "$CREDENTIAL_SECRET_VERSION" \
-            --project "$GCP_PROJECT_ID" \
-            --secret gemini-media-edge-credential-hmac-secret \
-            --format='value(name)' | awk -F/ '{print $NF}')"
-          [[ "$CONTROL_VERSION" =~ ^[0-9]+$ ]]
-          [[ "$CREDENTIAL_VERSION" =~ ^[0-9]+$ ]]
-
-          CONTROL_TOKEN="$(gcloud secrets versions access "$CONTROL_VERSION" \
+          CONTROL_TOKEN="$(gcloud secrets versions access "$CONTROL_TOKEN_SECRET_VERSION" \
             --project "$GCP_PROJECT_ID" \
             --secret gemini-media-edge-control-plane-token)"
-          CREDENTIAL_SECRET="$(gcloud secrets versions access "$CREDENTIAL_VERSION" \
+          CREDENTIAL_SECRET="$(gcloud secrets versions access "$CREDENTIAL_SECRET_VERSION" \
             --project "$GCP_PROJECT_ID" \
             --secret gemini-media-edge-credential-hmac-secret)"
           test "$(printf '%s' "$CONTROL_TOKEN" | wc -c)" -ge 32
@@ -133,8 +122,8 @@ jobs:
               --name "$FAST_WORKER_NAME" --config wrangler.fast.jsonc >/dev/null
           )
 
-          echo "control_version=$CONTROL_VERSION" >> "$GITHUB_OUTPUT"
-          echo "credential_version=$CREDENTIAL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "control_selector=$CONTROL_TOKEN_SECRET_VERSION" >> "$GITHUB_OUTPUT"
+          echo "credential_selector=$CREDENTIAL_SECRET_VERSION" >> "$GITHUB_OUTPUT"
           unset CONTROL_TOKEN CREDENTIAL_SECRET
           echo "Fast shared secrets synchronized"
 
@@ -201,7 +190,7 @@ jobs:
             --max-instances 1 \
             --timeout 3600 \
             --set-env-vars "MEDIA_EDGE_SINGLE_INSTANCE=true,GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview,GEMINI_LIVE_VOICE=Kore" \
-            --set-secrets "GEMINI_API_KEY=gemini-media-edge-gemini-api-key:${GEMINI_API_KEY_SECRET_VERSION},MEDIA_EDGE_CREDENTIAL_HMAC_SECRET=gemini-media-edge-credential-hmac-secret:${{ steps.shared_secrets.outputs.credential_version }},MEDIA_EDGE_CONTROL_PLANE_TOKEN=gemini-media-edge-control-plane-token:${{ steps.shared_secrets.outputs.control_version }}" \
+            --set-secrets "GEMINI_API_KEY=gemini-media-edge-gemini-api-key:${GEMINI_API_KEY_SECRET_VERSION},MEDIA_EDGE_CREDENTIAL_HMAC_SECRET=gemini-media-edge-credential-hmac-secret:${{ steps.shared_secrets.outputs.credential_selector }},MEDIA_EDGE_CONTROL_PLANE_TOKEN=gemini-media-edge-control-plane-token:${{ steps.shared_secrets.outputs.control_selector }}" \
             --no-traffic \
             --tag "${{ steps.image.outputs.tag }}" \
             --quiet
@@ -249,7 +238,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CONTROL_TOKEN="$(gcloud secrets versions access '${{ steps.shared_secrets.outputs.control_version }}' \
+          CONTROL_TOKEN="$(gcloud secrets versions access '${{ steps.shared_secrets.outputs.control_selector }}' \
             --project "$GCP_PROJECT_ID" \
             --secret gemini-media-edge-control-plane-token)"
           test "$(printf '%s' "$CONTROL_TOKEN" | wc -c)" -ge 32
@@ -387,8 +376,8 @@ jobs:
             echo "- Worker -> Media Edge bootstrap: **verified**"
             echo "- Worker -> Media Edge HMAC WSS upgrade: **verified**"
             echo "- Semantic security token parity: **verified**"
-            echo "- Control token secret version: \`${{ steps.shared_secrets.outputs.control_version }}\`"
-            echo "- Credential HMAC secret version: \`${{ steps.shared_secrets.outputs.credential_version }}\`"
+            echo "- Control token secret selector: \`${{ steps.shared_secrets.outputs.control_selector }}\`"
+            echo "- Credential HMAC secret selector: \`${{ steps.shared_secrets.outputs.credential_selector }}\`"
             echo "- Tagged URL: \`${{ steps.deployed.outputs.tag_url }}\`"
             echo "- WSS: \`${{ steps.deployed.outputs.edge_url }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
