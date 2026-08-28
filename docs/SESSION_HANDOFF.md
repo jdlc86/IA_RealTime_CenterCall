@@ -111,7 +111,7 @@ Implementado y desplegado en la línea estable:
 - política de callback registrada para handoffs fallidos;
 - corrección del seeding KV para no crear placeholders cuando existen claves reales.
 
-#### Autorización de handoff sin listas rígidas
+#### Autorización de handoff sin listas rígidas — validada E2E
 
 Baseline `794ff32f...` corrigió dos problemas:
 
@@ -120,7 +120,18 @@ Baseline `794ff32f...` corrigió dos problemas:
 
 Gemini clasifica semánticamente la intención; la política Fast valida que el enum de autoridad sea soportado y que `caller_authority_evidence` esté realmente grounded en el transcript capturado. El runtime toma un snapshot antes de que el estado mutable pueda limpiarse.
 
-La suite Fast incluye una regresión específica para `inputTranscription + transfer_call + turnComplete` en el mismo ciclo.
+Además de la regresión sintética same-frame, una llamada real del **2026-08-28** confirmó:
+
+- `HUMAN_HANDOFF_AUTHORIZATION_BLOCKED = 0`;
+- `HUMAN_HANDOFF_ACCEPTED = 1`;
+- un único `TOOL_RESULT_SENT`;
+- un único `HUMAN_HANDOFF_TRANSFER_START_RESULT`;
+- cierre del runtime IA con `HUMAN_HANDOFF_TERMINAL`;
+- auditoría durable `status=TRANSFERRED`;
+- target leg respondido;
+- sin callback ni failure reason.
+
+El bucle de confirmaciones repetidas no se reprodujo en esta E2E.
 
 ### 5. Limitaciones y deuda abiertas
 
@@ -135,20 +146,11 @@ Estado resumido:
 - audibilidad E2E del TTS terminal tras `NO_ANSWER`/fallo: abierta;
 - gate final de `Gemini Fast Canary Deploy`: el `jq` final sigue desalineado con el contrato actual de `/internal/preflight`; no interpretar ese rojo por sí solo como fallo del hot path.
 
+La llamada exitosa del 2026-08-28 demuestra autorización y transferencia; **no demuestra** por sí sola ringback audible ni el comportamiento del TTS terminal de un fallo/no-answer.
+
 ### 6. Primera misión
 
-La primera misión técnica recomendada es **validar en una llamada real el fix de autorización semántica + transcript snapshot** antes de continuar ampliando cambios de transferencia.
-
-Prueba controlada:
-
-1. realizar una llamada Gemini Fast real;
-2. pedir handoff con lenguaje natural, sin adaptar la frase a listas antiguas;
-3. si Gemini ofrece transferencia, responder con una confirmación natural;
-4. comprobar que no reaparece un bucle de `HUMAN_HANDOFF_AUTHORIZATION_BLOCKED`;
-5. correlacionar `call_diagnostic_events` y, si el handoff se acepta, `human_handoff_events`;
-6. distinguir autorización correcta de los problemas todavía abiertos de ringback/TTS.
-
-Después de esa E2E, corregir el gate `Gemini Fast Canary Deploy` **sin tocar el runtime de llamadas**:
+La primera misión técnica recomendada pasa ahora a ser **reparar el gate `Gemini Fast Canary Deploy` sin tocar el runtime de llamadas**:
 
 1. comparar `.github/workflows/gemini-fast-canary-deploy.yml` con `apps/gemini-control-plane/src/fast-preflight.ts` y su test;
 2. mantener el retry bounded existente para respuestas temporales 401/503;
