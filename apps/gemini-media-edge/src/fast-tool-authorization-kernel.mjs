@@ -58,7 +58,11 @@ function canonicalAllowedSources(authority, value) {
     }
     return Object.freeze([...new Set(source.map((entry) => code(entry, "Fast tool caller authority source")))]);
   }
-  if (value !== undefined) throw new Error("Fast tool allowedSources is only valid for CALLER_AUTHORITY");
+  if (value !== undefined) {
+    if (!Array.isArray(value) || value.length !== 1 || code(value[0], "Fast tool authority source") !== authority) {
+      throw new Error("Fast tool allowedSources does not match its authority");
+    }
+  }
   return Object.freeze([authority]);
 }
 
