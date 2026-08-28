@@ -25,7 +25,7 @@ function request(): Request {
 }
 
 describe("tenant KV session configuration", () => {
-  it("loads tenant config and the three initial capabilities before media starts without overriding realtime voice/VAD", async () => {
+  it("loads tenant config, capabilities and temporal authority before media starts without overriding realtime voice/VAD", async () => {
     const keys: string[] = [];
     const env: FastGeminiCanaryEnv = {
       TELNYX_PUBLIC_KEY: "test-public-key",
@@ -72,18 +72,23 @@ describe("tenant KV session configuration", () => {
     };
 
     const response = await routeFastGeminiCanaryWebhook(request(), env, {
+      now: () => Date.parse("2026-08-27T13:00:01.000Z"),
       startIncoming: async (_input, options): Promise<FastIncomingRuntimeResult> => {
         expect(await options.resolveTenantRoute!(CALL)).toEqual({ tenantId: "restaurante-centro", routeId: "default" });
         const config = await options.resolveSessionConfig("restaurante-centro", CALL);
         expect(config.voiceName).toBe("Kore");
         expect(config.languageCode).toBe("es-ES");
-        expect(config.tools).toEqual([]);
+        expect(config.tools?.map((tool) => tool.name)).toEqual(["get_authoritative_datetime"]);
         expect(config.systemInstruction).toContain("Base estable del agente.");
         expect(config.systemInstruction).toContain("Negocio: Restaurante Centro.");
         expect(config.systemInstruction).toContain("Tu nombre de asistente es Lucía.");
         expect(config.systemInstruction).toContain("call.transfer=true");
         expect(config.systemInstruction).toContain("message.whatsapp.transactional=true");
         expect(config.systemInstruction).toContain("message.whatsapp.realtime_support=false");
+        expect(config.systemInstruction).toContain("Autoridad temporal del kernel:");
+        expect(config.systemInstruction).toContain('"source":"WORKER_CLOCK"');
+        expect(config.systemInstruction).toContain('"timezone":"Europe/Madrid"');
+        expect(config.systemInstruction).toContain('"now_iso":"2026-08-27T15:00:01+02:00"');
         expect(config.systemInstruction).not.toContain("threshold");
         expect(config.systemInstruction).not.toContain("idleTimeoutMs");
         return {
