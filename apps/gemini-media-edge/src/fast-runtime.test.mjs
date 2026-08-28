@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { FastGeminiRealtimeSession } from "./fast-runtime.mjs";
+import {
+  FAST_HORIZONTAL_TOOL_POLICIES,
+  defineFastToolPolicy,
+  mergeFastToolPolicies,
+} from "./fast-tool-authorization-kernel.mjs";
 
 class FakeSocket {
   constructor() {
@@ -26,7 +31,36 @@ class FakeSocket {
   message(value) { this.emit("message", JSON.stringify(value)); }
 }
 
-function bootstrap() {
+const reservationPolicy = defineFastToolPolicy({
+  authority: "CALLER_REQUEST",
+  effect: "MUTATE_BUSINESS_DATA",
+  capability: "reservation.create",
+});
+
+const TEST_TOOL_POLICIES = mergeFastToolPolicies(FAST_HORIZONTAL_TOOL_POLICIES, {
+  restaurant_reservation_create: reservationPolicy,
+});
+
+const RESERVATION_TOOL = Object.freeze({
+  name: "restaurant_reservation_create",
+  description: "Create or continue a reservation.",
+  parameters: Object.freeze({
+    type: "object",
+    properties: Object.freeze({ party_size: Object.freeze({ type: "integer" }) }),
+  }),
+});
+
+const TRANSFER_TOOL = Object.freeze({
+  name: "transfer_call",
+  description: "Transfer the caller to a human.",
+  parameters: Object.freeze({
+    type: "object",
+    properties: Object.freeze({ reason: Object.freeze({ type: "string" }) }),
+    required: Object.freeze(["reason"]),
+  }),
+});
+
+function bootstrap(tools = [RESERVATION_TOOL]) {
   return Object.freeze({
     version: "gemini-fast-bootstrap.v1",
     provider: "GEMINI",
@@ -35,15 +69,11 @@ function bootstrap() {
     callControlId: "v3:runtime-call",
     notAfterEpochMs: Date.now() + 60_000,
     securityContext: Object.freeze({
-      callerPhoneE164: "+34647944762",
+      callerPhoneE164: "+34600000000",
       calledPhoneE164: "+34910000001",
     }),
     systemInstruction: "Responde de forma breve y natural.",
-    tools: Object.freeze([Object.freeze({
-      name: "restaurant_reservation_create",
-      description: "Create or continue a reservation.",
-      parameters: Object.freeze({ type: "object", properties: Object.freeze({}) }),
-    })]),
+    tools: Object.freeze(tools),
     voiceName: "Kore",
     languageCode: "es-ES",
   });
@@ -66,19 +96,30 @@ async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+function sessionOptions(telnyx, createGeminiSocket, extra = {}) {
+  return {
+    telnyxSocket: telnyx,
+    bootstrap: extra.bootstrap ?? bootstrap(),
+    geminiApiKey: "test-key-not-production",
+    toolPolicies: TEST_TOOL_POLICIES,
+    createGeminiSocket,
+    ...extra,
+  };
+}
+
 test("fast runtime buffers caller audio only until setupComplete then streams directly", async () => {
   const telnyx = new FakeSocket();
   telnyx.readyState = 1;
   let gemini;
   const diagnostics = [];
-  const session = new FastGeminiRealtimeSession({
-    telnyxSocket: telnyx,
-    bootstrap: bootstrap(),
-    geminiApiKey: "test-key-not-production",
-    toolHandlers: { restaurant_reservation_create: async () => ({ status: "OK" }) },
-    createGeminiSocket() { gemini = new FakeSocket(); return gemini; },
-    observe: (event) => diagnostics.push(event),
-  }).start();
+  const session = new FastGeminiRealtimeSession(sessionOptions(
+    telnyx,
+    () => { gemini = new FakeSocket(); return gemini; },
+    {
+      toolHandlers: { restaurant_reservation_create: async () => ({ status: "OK" }) },
+      observe: (event) => diagnostics.push(event),
+    },
+  )).start();
 
   telnyx.message(callerMedia(1));
   assert.equal(session.snapshot().queuedCallerChunks, 1);
@@ -100,13 +141,11 @@ test("fast runtime sends native Gemini audio to Telnyx and clears immediately on
   const telnyx = new FakeSocket();
   telnyx.readyState = 1;
   let gemini;
-  const session = new FastGeminiRealtimeSession({
-    telnyxSocket: telnyx,
-    bootstrap: bootstrap(),
-    geminiApiKey: "test-key-not-production",
-    toolHandlers: { restaurant_reservation_create: async () => ({ status: "OK" }) },
-    createGeminiSocket() { gemini = new FakeSocket(); return gemini; },
-  }).start();
+  const session = new FastGeminiRealtimeSession(sessionOptions(
+    telnyx,
+    () => { gemini = new FakeSocket(); return gemini; },
+    { toolHandlers: { restaurant_reservation_create: async () => ({ status: "OK" }) } },
+  )).start();
   gemini.open();
   gemini.message({ setupComplete: {} });
   gemini.message({
@@ -121,31 +160,38 @@ test("fast runtime sends native Gemini audio to Telnyx and clears immediately on
   session.close("test-complete");
 });
 
-test("fast runtime executes Gemini tool locally and continues same Live session", async () => {
+test("fast runtime authorizes then executes a business tool and continues same Live session", async () => {
   const telnyx = new FakeSocket();
   telnyx.readyState = 1;
   let gemini;
   let effects = 0;
-  const session = new FastGeminiRealtimeSession({
-    telnyxSocket: telnyx,
-    bootstrap: bootstrap(),
-    geminiApiKey: "test-key-not-production",
-    toolHandlers: {
-      restaurant_reservation_create: async (call, context) => {
-        effects += 1;
-        assert.equal(context.tenantId, "tenant-runtime");
-        return { status: "NEEDS_TIME", party_size: call.args.party_size };
+  const diagnostics = [];
+  const session = new FastGeminiRealtimeSession(sessionOptions(
+    telnyx,
+    () => { gemini = new FakeSocket(); return gemini; },
+    {
+      toolHandlers: {
+        restaurant_reservation_create: async (call, context) => {
+          effects += 1;
+          assert.equal(context.tenantId, "tenant-runtime");
+          return { status: "NEEDS_TIME", party_size: call.args.party_size };
+        },
       },
+      observe: (event) => diagnostics.push(event),
     },
-    createGeminiSocket() { gemini = new FakeSocket(); return gemini; },
-  }).start();
+  )).start();
   gemini.open();
   gemini.message({ setupComplete: {} });
+  gemini.message({ serverContent: { inputTranscription: { text: "Quiero reservar para dos personas" } } });
   gemini.message({
     toolCall: { functionCalls: [{
       id: "tool-fast-1",
       name: "restaurant_reservation_create",
-      args: { party_size: 2 },
+      args: {
+        party_size: 2,
+        authorization: "CALLER_REQUEST",
+        caller_authority_evidence: "Quiero reservar para dos personas",
+      },
     }] },
   });
   await settle();
@@ -161,35 +207,85 @@ test("fast runtime executes Gemini tool locally and continues same Live session"
     },
   });
   assert.equal(effects, 1);
+  assert.equal(diagnostics.some((item) => item.stage === "TOOL_AUTHORIZATION_ALLOWED"), true);
+  assert.equal(session.snapshot().toolAuthorization.allowed, 1);
   assert.equal(gemini.closed, null);
   session.close("test-complete");
 });
 
-test("fast runtime carries existing call audit context from authorization into transfer start", async () => {
+test("fast runtime blocks an ungrounded business tool before any side effect", async () => {
+  const telnyx = new FakeSocket();
+  telnyx.readyState = 1;
+  let gemini;
+  let effects = 0;
+  const diagnostics = [];
+  const session = new FastGeminiRealtimeSession(sessionOptions(
+    telnyx,
+    () => { gemini = new FakeSocket(); return gemini; },
+    {
+      toolHandlers: {
+        restaurant_reservation_create: async () => { effects += 1; return { ok: true }; },
+      },
+      observe: (event) => diagnostics.push(event),
+    },
+  )).start();
+  gemini.open();
+  gemini.message({ setupComplete: {} });
+  gemini.message({ serverContent: { inputTranscription: { text: "Solo quería saber dónde estáis" } } });
+  gemini.message({
+    toolCall: { functionCalls: [{
+      id: "tool-fast-blocked",
+      name: "restaurant_reservation_create",
+      args: {
+        party_size: 2,
+        authorization: "CALLER_REQUEST",
+        caller_authority_evidence: "Quiero reservar para dos personas",
+      },
+    }] },
+  });
+  await settle();
+  await settle();
+
+  assert.equal(effects, 0);
+  const response = gemini.sent.find((item) => item.toolResponse)?.toolResponse.functionResponses[0].response.result;
+  assert.equal(response.tool_authorized, false);
+  assert.equal(response.status, "TOOL_AUTHORITY_EVIDENCE_MISMATCH");
+  const blocked = diagnostics.find((item) => item.stage === "TOOL_AUTHORIZATION_BLOCKED");
+  assert.equal(blocked.kind, "restaurant_reservation_create");
+  assert.equal(blocked.capability, "reservation.create");
+  assert.equal(session.snapshot().toolAuthorization.blocked, 1);
+  assert.equal(gemini.closed, null);
+  session.close("test-complete");
+});
+
+test("fast runtime carries existing call audit context from generic authorization into transfer start", async () => {
   const telnyx = new FakeSocket();
   telnyx.readyState = 1;
   let gemini;
   let authorizeInput = null;
   let startInput = null;
-  const session = new FastGeminiRealtimeSession({
-    telnyxSocket: telnyx,
-    bootstrap: bootstrap(),
-    geminiApiKey: "test-key-not-production",
-    authorizeTransfer: async (input) => {
-      authorizeInput = input;
-      return {
-        ok: true,
-        status: "HUMAN_HANDOFF_ACCEPTED",
-        handoffId: "00000000-0000-4000-8000-000000000001",
-        successMessage: "Te paso con recepción. Un momento, por favor.",
-      };
+  const diagnostics = [];
+  const session = new FastGeminiRealtimeSession(sessionOptions(
+    telnyx,
+    () => { gemini = new FakeSocket(); return gemini; },
+    {
+      bootstrap: bootstrap([TRANSFER_TOOL]),
+      authorizeTransfer: async (input) => {
+        authorizeInput = input;
+        return {
+          ok: true,
+          status: "HUMAN_HANDOFF_ACCEPTED",
+          handoffId: "00000000-0000-4000-8000-000000000001",
+          successMessage: "Te paso con recepción. Un momento, por favor.",
+        };
+      },
+      startTransfer: async (input) => {
+        startInput = input;
+        return { ok: true, status: "DIALING" };
+      },
+      observe: (event) => diagnostics.push(event),
     },
-    startTransfer: async (input) => {
-      startInput = input;
-      return { ok: true, status: "DIALING" };
-    },
-    createGeminiSocket() { gemini = new FakeSocket(); return gemini; },
-  }).start();
+  )).start();
 
   gemini.open();
   gemini.message({ setupComplete: {} });
@@ -213,10 +309,13 @@ test("fast runtime carries existing call audit context from authorization into t
     tenantId: "tenant-runtime",
     callControlId: "v3:runtime-call",
     calledPhoneE164: "+34910000001",
-    callerPhoneE164: "+34647944762",
+    callerPhoneE164: "+34600000000",
     reason: "USER_REQUESTED_HUMAN",
     contextSummary: "El caller pide hablar con recepción.",
   });
+  const genericAllowed = diagnostics.find((item) => item.stage === "TOOL_AUTHORIZATION_ALLOWED");
+  assert.equal(genericAllowed.kind, "transfer_call");
+  assert.equal(genericAllowed.source, "EXPLICIT_REQUEST");
 
   gemini.message({ serverContent: { turnComplete: true } });
   await settle();
@@ -225,7 +324,7 @@ test("fast runtime carries existing call audit context from authorization into t
     tenantId: "tenant-runtime",
     callControlId: "v3:runtime-call",
     calledPhoneE164: "+34910000001",
-    callerPhoneE164: "+34647944762",
+    callerPhoneE164: "+34600000000",
     handoffId: "00000000-0000-4000-8000-000000000001",
     reason: "USER_REQUESTED_HUMAN",
     contextSummary: "El caller pide hablar con recepción.",
