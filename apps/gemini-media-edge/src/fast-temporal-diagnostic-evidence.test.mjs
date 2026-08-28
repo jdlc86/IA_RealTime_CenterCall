@@ -77,15 +77,14 @@ async function runTemporalTool(result, options = {}) {
 
   gemini.open();
   gemini.message({ setupComplete: {} });
-  gemini.message({ serverContent: { inputTranscription: { text: options.transcript ?? "¿Qué hora es ahora?" } } });
+  if (typeof options.transcript === "string") {
+    gemini.message({ serverContent: { inputTranscription: { text: options.transcript } } });
+  }
   gemini.message({
     toolCall: { functionCalls: [{
       id: "temporal-tool-1",
       name: "get_authoritative_datetime",
-      args: {
-        authorization: "SEMANTIC_NECESSITY",
-        caller_authority_evidence: options.evidence ?? "Qué hora es ahora",
-      },
+      args: { authorization: options.authorization ?? "SEMANTIC_NECESSITY" },
     }] },
   });
   await settle();
@@ -94,7 +93,7 @@ async function runTemporalTool(result, options = {}) {
   return Object.freeze({ observed, handlerCalls, gemini });
 }
 
-test("verified temporal tool persists authorization then only kind and WORKER_CLOCK result source", async () => {
+test("verified temporal tool is not coupled to provider transcript arrival order", async () => {
   const run = await runTemporalTool(Object.freeze({
     ok: true,
     status: "AUTHORITATIVE_DATETIME",
@@ -112,7 +111,7 @@ test("verified temporal tool persists authorization then only kind and WORKER_CL
     instruction: "Dato temporal certificado por el kernel.",
   }));
 
-  assert.equal(run.handlerCalls, 1);
+  assert.equal(run.handlerCalls, 1, "read-only semantic necessity must work even when toolCall precedes input transcription");
   const authorization = run.observed.find((event) => event.stage === "TOOL_AUTHORIZATION_ALLOWED");
   assert.equal(authorization.kind, "get_authoritative_datetime");
   assert.equal(authorization.source, "SEMANTIC_NECESSITY");
@@ -144,18 +143,18 @@ test("verified temporal tool persists authorization then only kind and WORKER_CL
   assert.equal(serialized.includes("Dato temporal certificado"), false);
 });
 
-test("ungrounded temporal proposal is blocked before the Worker clock handler", async () => {
+test("temporal tool with the wrong authority is blocked before the Worker clock handler", async () => {
   const run = await runTemporalTool(Object.freeze({ ok: true }), {
-    transcript: "Solo quería saber vuestra dirección",
-    evidence: "Qué hora es ahora",
+    transcript: "¿Qué fecha es hoy?",
+    authorization: "CALLER_REQUEST",
   });
   assert.equal(run.handlerCalls, 0);
   const blocked = run.observed.find((event) => event.stage === "TOOL_AUTHORIZATION_BLOCKED");
   assert.equal(blocked.kind, "get_authoritative_datetime");
-  assert.equal(blocked.source, "TOOL_AUTHORITY_EVIDENCE_MISMATCH");
+  assert.equal(blocked.source, "TOOL_AUTHORITY_REQUIRED");
   const response = run.gemini.sent.find((item) => item.toolResponse)?.toolResponse.functionResponses[0].response.result;
   assert.equal(response.tool_authorized, false);
-  assert.equal(response.status, "TOOL_AUTHORITY_EVIDENCE_MISMATCH");
+  assert.equal(response.status, "TOOL_AUTHORITY_REQUIRED");
 });
 
 test("unavailable temporal authority never persists a false WORKER_CLOCK source", async () => {

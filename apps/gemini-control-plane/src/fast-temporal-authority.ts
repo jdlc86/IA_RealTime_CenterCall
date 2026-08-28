@@ -28,7 +28,7 @@ type FastTemporalAuthorityDependencies = Readonly<{
 
 export const FAST_AUTHORITATIVE_DATETIME_TOOL: FastGeminiToolDeclaration = Object.freeze({
   name: "get_authoritative_datetime",
-  description: "Obtiene del kernel la fecha y hora actuales autoritativas para el tenant. Usa esta herramienta antes de afirmar la fecha/hora actual o cuando una interpretación temporal relativa dependa del momento actual. La semántica del lenguaje pertenece a Gemini, pero el reloj, la zona horaria y el calendario pertenecen al kernel. Nunca inventes ni derives por tu cuenta la fecha u hora actuales cuando esta herramienta sea necesaria.",
+  description: "Obtiene del kernel la fecha y hora actuales autoritativas para el tenant. Su dominio es exclusivamente el anclaje del reloj y calendario actuales. Las consultas meteorológicas, de clima, previsión del tiempo, duración u otros sentidos de 'tiempo' están fuera de alcance: no invoques esta herramienta si la petición no depende del momento calendario actual. Decide por el significado completo del turno, no por coincidencias de palabras. Usa esta herramienta antes de afirmar la fecha/hora actual o cuando una interpretación temporal relativa dependa del momento actual. La semántica del lenguaje pertenece a Gemini, pero el reloj, la zona horaria y el calendario pertenecen al kernel. Nunca inventes ni derives por tu cuenta la fecha u hora actuales cuando esta herramienta sea necesaria.",
   parameters: Object.freeze({
     type: "object",
     properties: Object.freeze({}),
@@ -140,6 +140,8 @@ export function fastTemporalAuthorityInstruction(snapshot: FastAuthoritativeDate
     "Autoridad temporal del kernel:",
     `- Snapshot inicial emitido por el Worker mediante el bootstrap autenticado: ${JSON.stringify(snapshot)}`,
     "- El Worker es la autoridad final del reloj, zona horaria y calendario; no uses conocimiento del modelo para decidir cuál es la fecha u hora actual.",
+    "- El dominio de get_authoritative_datetime es únicamente el reloj/calendario actual y referencias relativas que dependan de ese momento. Meteorología, clima, previsión del tiempo, duración u otros significados de 'tiempo' quedan fuera de ese dominio.",
+    "- Decide la necesidad por el significado completo del turno; no actives la herramienta por una palabra aislada ni por coincidencia léxica.",
     "- Gemini conserva la interpretación semántica libre del lenguaje temporal; no reduzcas expresiones naturales a listas de palabras o frases rígidas.",
     "- Usa get_authoritative_datetime antes de afirmar la fecha/hora actual o cuando una referencia temporal dependa de un 'ahora' que pueda haber cambiado desde el inicio de la llamada.",
     "- El resultado más reciente de get_authoritative_datetime sustituye este snapshot inicial para el turno correlacionado.",

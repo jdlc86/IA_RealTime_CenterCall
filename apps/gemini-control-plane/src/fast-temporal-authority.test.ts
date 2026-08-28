@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  FAST_AUTHORITATIVE_DATETIME_TOOL,
   buildFastAuthoritativeDateTimeSnapshot,
   canonicalFastTimeZone,
+  fastTemporalAuthorityInstruction,
   resolveFastTenantTimeZone,
   routeFastAuthoritativeDateTime,
 } from "./fast-temporal-authority";
@@ -20,6 +22,21 @@ function request(body: unknown, token = TOKEN): Request {
 }
 
 describe("Gemini Fast temporal authority", () => {
+  it("scopes the temporal tool to clock/calendar meaning rather than ambiguous weather wording", () => {
+    expect(FAST_AUTHORITATIVE_DATETIME_TOOL.description).toContain("reloj y calendario");
+    expect(FAST_AUTHORITATIVE_DATETIME_TOOL.description).toContain("meteorológicas");
+    expect(FAST_AUTHORITATIVE_DATETIME_TOOL.description).toContain("significado completo del turno");
+
+    const snapshot = buildFastAuthoritativeDateTimeSnapshot(
+      "Europe/Madrid",
+      Date.parse("2026-08-28T07:28:00.000Z"),
+    );
+    const instruction = fastTemporalAuthorityInstruction(snapshot);
+    expect(instruction).toContain("Meteorología");
+    expect(instruction).toContain("no actives la herramienta por una palabra aislada");
+    expect(instruction).toContain("no reduzcas expresiones naturales a listas de palabras o frases rígidas");
+  });
+
   it("materializes Madrid summer time with the correct DST offset", () => {
     const snapshot = buildFastAuthoritativeDateTimeSnapshot(
       "Europe/Madrid",
