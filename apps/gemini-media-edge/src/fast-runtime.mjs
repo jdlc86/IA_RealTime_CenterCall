@@ -332,6 +332,7 @@ export class FastGeminiRealtimeSession {
             : await this.toolExecutor.execute(toolCall, {
                 tenantId: this.bootstrap.tenantId,
                 callControlId: this.bootstrap.callControlId,
+                callerPhoneE164: this.bootstrap.securityContext.callerPhoneE164,
               });
         }
         if (this.closed) return;

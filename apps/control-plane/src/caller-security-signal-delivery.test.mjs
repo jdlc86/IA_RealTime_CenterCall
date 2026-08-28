@@ -56,3 +56,34 @@ test("successful direct persistence does not enqueue", async (t) => {
   assert.equal(result.decision.security_strikes, 1);
   assert.equal(queueCalls, 0);
 });
+
+test("caller security delivery preserves a source-provided deterministic event key across direct and queue attempts", async (t) => {
+  const deterministicEventKey = `gemini-fast-semsec-v1:${"b".repeat(64)}`;
+  let rpcEventKey;
+  let queuedEventKey;
+  t.mock.method(globalThis, "fetch", async (_url, init) => {
+    rpcEventKey = JSON.parse(init.body).p_event_key;
+    return new Response("unavailable", { status: 503 });
+  });
+  const result = await recordCallerSecuritySignalDurably({
+    env: {
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_SECRET_KEY: "test-secret",
+      CALLER_SECURITY_SIGNALS: { async send(body) { queuedEventKey = body.eventKey; } },
+    },
+  }, { ...signal, eventKey: deterministicEventKey });
+  assert.equal(result.delivery, "QUEUED");
+  assert.equal(rpcEventKey, deterministicEventKey);
+  assert.equal(queuedEventKey, deterministicEventKey);
+});
+
+test("caller HMAC identity remains isolated by both tenant and trusted caller", async () => {
+  const { CallerSecurityService } = await import("../.test-dist/caller-security.js");
+  const service = new CallerSecurityService({
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SECRET_KEY: "shared-caller-identity-secret",
+  });
+  const base = await service.callerKey("tenant-a", "+34600000000");
+  assert.notEqual(base, await service.callerKey("tenant-b", "+34600000000"));
+  assert.notEqual(base, await service.callerKey("tenant-a", "+34600000001"));
+});

@@ -19,9 +19,11 @@ export type SecuritySignalDelivery =
  */
 export async function recordCallerSecuritySignalDurably(
   host: SecuritySignalHost,
-  signal: Omit<CallerSecuritySignal, "eventKey"> & { callerPhone: string },
+  signal: Omit<CallerSecuritySignal, "eventKey"> & { eventKey?: string; callerPhone: string },
 ): Promise<SecuritySignalDelivery> {
-  const eventKey = crypto.randomUUID();
+  const eventKey = typeof signal.eventKey === "string" && signal.eventKey.trim()
+    ? signal.eventKey.trim()
+    : crypto.randomUUID();
   const port = callerSecurityPortFor(host);
   const callerKey = await port.callerKey(signal.tenantId, signal.callerPhone);
   const queuedSignal: QueuedCallerSecuritySignal = {
