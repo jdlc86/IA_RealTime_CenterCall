@@ -186,6 +186,40 @@ CANCELLED
 
 `callback_required=true` + `callback_status=PENDING` significa que el sistema **registró una necesidad operativa de devolución de llamada**. No significa por sí solo que exista un proceso automático que ya haya llamado al caller.
 
+## E2E real — autorización semántica y transferencia
+
+El **2026-08-28** se realizó una llamada real posterior al despliegue de `794ff32f...` para revalidar específicamente la corrección de confirmaciones repetidas y la carrera del transcript.
+
+Evidencia observada en `public.call_diagnostic_events`:
+
+```text
+HUMAN_HANDOFF_AUTHORIZATION_BLOCKED = 0
+HUMAN_HANDOFF_ACCEPTED               = 1
+TOOL_RESULT_SENT                     = 1
+HUMAN_HANDOFF_TRANSFER_START_RESULT  = 1
+FAST_SESSION_CLOSED                  = HUMAN_HANDOFF_TERMINAL
+```
+
+Evidencia durable en `public.human_handoff_events`:
+
+```text
+status               = TRANSFERRED
+answered_at          = presente
+target_call_control_id = presente
+callback_required    = false
+callback_status      = null
+failure_reason       = null
+```
+
+La transferencia fue solicitada, aceptada, iniciada y el target leg respondió. El bucle de confirmaciones repetidas **no se reprodujo** en esta llamada real.
+
+Esta E2E valida el comportamiento de autorización/handoff observado, pero no debe sobreinterpretarse:
+
+- los diagnósticos no persisten el transcript crudo ni `caller_authority_evidence`, por diseño;
+- la aceptación demuestra que la política vigente no bloqueó la autoridad y que el lifecycle llegó a transferencia;
+- una transferencia exitosa no demuestra por sí sola que el caller oyera ringback;
+- no prueba el TTS terminal de `NO_ANSWER`/fallo porque este handoff terminó en `TRANSFERRED`.
+
 ## Limitaciones conocidas — no declarar resueltas
 
 ### 1. Ringback audible para el caller
