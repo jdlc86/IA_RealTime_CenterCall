@@ -90,7 +90,6 @@ export function safeFastSemanticSecurityDiagnostic(toolCall, result) {
     return Object.freeze({
       kind: "SEMANTIC_SECURITY_INCIDENT_RECORDED",
       category: result.category,
-      reputationSignal: result.reputation_signal_status === "RECORDED" ? "RECORDED" : "UNAVAILABLE",
     });
   }
   return Object.freeze({ kind: "SEMANTIC_SECURITY_INCIDENT_UNVERIFIED" });
