@@ -13,6 +13,10 @@ import { createFastDiagnosticFlusher } from "./fast-diagnostic-flush.mjs";
 import { FastGeminiRealtimeSession } from "./fast-runtime.mjs";
 import { createFastTransferControlClient } from "./fast-transfer-control.mjs";
 import { createFastTemporalControlClient } from "./fast-temporal-control.mjs";
+import {
+  FAST_HORIZONTAL_TOOL_POLICIES,
+  mergeFastToolPolicies,
+} from "./fast-tool-authorization-kernel.mjs";
 
 const MEDIA_PATH = "/telnyx/gemini";
 const TELNYX_START_TIMEOUT_MS = 5_000;
@@ -28,6 +32,8 @@ const FAST_DIAGNOSTIC_STAGES = new Set([
   "FAST_FIRST_GEMINI_AUDIO_TO_TELNYX",
   "BARGE_IN_CLEAR_SENT",
   "GEMINI_TURN_COMPLETE",
+  "TOOL_AUTHORIZATION_ALLOWED",
+  "TOOL_AUTHORIZATION_BLOCKED",
   "TOOL_RESULT_SENT",
   "HUMAN_HANDOFF_AUTHORIZATION_BLOCKED",
   "HUMAN_HANDOFF_ACCEPTED",
@@ -56,6 +62,20 @@ function canonicalProviderReadiness(value) {
     setupMs: optionalPositiveMetric(value.setupMs, "Fast Gemini provider setupMs"),
     firstAudioMs: optionalPositiveMetric(value.firstAudioMs, "Fast Gemini provider firstAudioMs"),
   });
+}
+
+function canonicalToolHandlers(value) {
+  if (value == null) return Object.freeze({});
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Fast Gemini tool handlers are invalid");
+  const handlers = {};
+  for (const [name, handler] of Object.entries(value)) {
+    const toolName = required(name, "Fast Gemini tool handler name", 128);
+    if (!/^[A-Za-z0-9_-]+$/.test(toolName) || typeof handler !== "function") {
+      throw new Error(`Fast Gemini tool handler ${toolName} is invalid`);
+    }
+    handlers[toolName] = handler;
+  }
+  return Object.freeze(handlers);
 }
 
 function secureTokenEqual(actual, expected) {
@@ -133,7 +153,11 @@ export function createFastGeminiMediaServer(options = {}) {
   const bootstrapRegistry = options.bootstrapRegistry ?? new InMemoryFastBootstrapRegistry();
   const diagnosticJournal = options.diagnosticJournal ?? new InMemoryDiagnosticJournal({ maxEventsPerCall: 64 });
   const flushDiagnostics = typeof options.flushDiagnostics === "function" ? options.flushDiagnostics : null;
-  const toolHandlers = options.toolHandlers ?? {};
+  const toolHandlers = canonicalToolHandlers(options.toolHandlers);
+  const toolPolicies = mergeFastToolPolicies(FAST_HORIZONTAL_TOOL_POLICIES, options.toolPolicies ?? {});
+  for (const name of Object.keys(toolHandlers)) {
+    if (!toolPolicies[name]) throw new Error(`Fast Gemini tool policy required for handler: ${name}`);
+  }
   const authorizeTransfer = typeof options.authorizeTransfer === "function" ? options.authorizeTransfer : null;
   const startTransfer = typeof options.startTransfer === "function" ? options.startTransfer : null;
   const observe = typeof options.observe === "function" ? options.observe : () => {};
@@ -221,6 +245,7 @@ export function createFastGeminiMediaServer(options = {}) {
         geminiApiKey,
         model,
         toolHandlers,
+        toolPolicies,
         authorizeTransfer,
         startTransfer,
         observe: sessionObserve,
@@ -377,6 +402,7 @@ export function createFastGeminiMediaServerFromEnv(env = process.env, options = 
     providerReadiness: options.providerReadiness ?? null,
     flushDiagnostics,
     toolHandlers,
+    toolPolicies: options.toolPolicies ?? {},
     authorizeTransfer: transferControl.authorizeTransfer,
     startTransfer: transferControl.startTransfer,
   });

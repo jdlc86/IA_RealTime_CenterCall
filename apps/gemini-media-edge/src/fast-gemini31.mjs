@@ -1,3 +1,5 @@
+import { buildFastToolAuthorityContract } from "./fast-tool-authorization-kernel.mjs";
+
 const DEFAULT_MODEL = "gemini-3.1-flash-live-preview";
 const DEFAULT_VOICE = "Kore";
 const DEFAULT_LANGUAGE = "es-ES";
@@ -22,30 +24,13 @@ function modelResourceName(value) {
   return `models/${identifier}`;
 }
 
-function transferAuthorityContract(description, parameters) {
-  const schema = structuredClone(parameters);
-  const properties = schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties)
-    ? structuredClone(schema.properties)
-    : {};
-  properties.authorization = {
-    type: "string",
-    enum: ["EXPLICIT_REQUEST", "CONFIRMED_OFFER"],
-    description: "Semantic caller authority for the handoff. Use EXPLICIT_REQUEST when the caller asks to speak with a person. Use CONFIRMED_OFFER when the caller accepts your immediately preceding offer to transfer.",
-  };
-  properties.caller_authority_evidence = {
-    type: "string",
-    description: "Quote the caller's current utterance that semantically authorizes this handoff. Preserve the caller's natural wording; do not reduce it to a keyword.",
-  };
-  schema.properties = properties;
-  const required = Array.isArray(schema.required) ? schema.required.filter((item) => typeof item === "string") : [];
-  schema.required = [...new Set([...required, "authorization", "caller_authority_evidence"])];
-  return Object.freeze({
-    description: `${description}\nCaller-authority contract: only call this tool after the caller has semantically authorized a human handoff. Do not require exact phrases or keyword matches. If authority is ambiguous, continue the conversation naturally instead of calling the tool.`,
-    parametersJsonSchema: schema,
-  });
+function canonicalToolPolicies(value) {
+  if (value == null) return Object.freeze({});
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Gemini tool policies are invalid");
+  return value;
 }
 
-function canonicalTool(tool, index) {
+function canonicalTool(tool, index, toolPolicies) {
   if (!tool || typeof tool !== "object" || Array.isArray(tool)) throw new Error(`Gemini tool ${index} is invalid`);
   const name = requiredString(tool.name, `Gemini tool ${index} name`, 128);
   if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error(`Gemini tool ${index} name is invalid`);
@@ -53,9 +38,9 @@ function canonicalTool(tool, index) {
   if (!tool.parameters || typeof tool.parameters !== "object" || Array.isArray(tool.parameters)) {
     throw new Error(`Gemini tool ${index} parameters are invalid`);
   }
-  const contract = name === "transfer_call"
-    ? transferAuthorityContract(description, tool.parameters)
-    : Object.freeze({ description, parametersJsonSchema: structuredClone(tool.parameters) });
+  const policy = toolPolicies[name];
+  if (!policy) throw new Error(`Gemini tool policy required: ${name}`);
+  const contract = buildFastToolAuthorityContract(description, tool.parameters, policy);
   return Object.freeze({
     name,
     description: contract.description,
@@ -68,7 +53,8 @@ export function buildFastGemini31Setup(options = {}) {
   const instruction = requiredString(options.systemInstruction, "Gemini system instruction", 64_000);
   const voiceName = requiredString(options.voiceName ?? DEFAULT_VOICE, "Gemini voice name", 128);
   const languageCode = requiredString(options.languageCode ?? DEFAULT_LANGUAGE, "Gemini language code", 32);
-  const tools = Array.isArray(options.tools) ? options.tools.map(canonicalTool) : [];
+  const toolPolicies = canonicalToolPolicies(options.toolPolicies);
+  const tools = Array.isArray(options.tools) ? options.tools.map((tool, index) => canonicalTool(tool, index, toolPolicies)) : [];
   const prefixPaddingMs = safeInteger(options.prefixPaddingMs ?? 20, "Gemini VAD prefixPaddingMs", 0, 2_000);
   const silenceDurationMs = safeInteger(options.silenceDurationMs ?? 100, "Gemini VAD silenceDurationMs", 50, 5_000);
 

@@ -3,6 +3,7 @@ import test from "node:test";
 import { buildFastGemini31Setup } from "./fast-gemini31.mjs";
 import { authorizeFastHumanHandoff, initialFastHandoffAuthorizationState } from "./fast-human-handoff-policy.mjs";
 import { FastGeminiRealtimeSession } from "./fast-runtime.mjs";
+import { FAST_HORIZONTAL_TOOL_POLICIES } from "./fast-tool-authorization-kernel.mjs";
 
 class FakeSocket {
   constructor() {
@@ -65,17 +66,18 @@ async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-test("transfer tool delegates natural-language authority to Gemini without phrase lists", () => {
+test("transfer tool uses the same generic authority contract without phrase lists", () => {
   const setup = buildFastGemini31Setup({
     systemInstruction: "Habla con naturalidad.",
     tools: [transferTool()],
+    toolPolicies: FAST_HORIZONTAL_TOOL_POLICIES,
   });
   const declaration = setup.setup.tools[0].functionDeclarations[0];
   assert.deepEqual(declaration.parametersJsonSchema.properties.authorization.enum, ["EXPLICIT_REQUEST", "CONFIRMED_OFFER"]);
   assert.equal(declaration.parametersJsonSchema.required.includes("authorization"), true);
   assert.equal(declaration.parametersJsonSchema.required.includes("caller_authority_evidence"), true);
-  assert.match(declaration.description, /semantically authorized/i);
-  assert.match(declaration.description, /Do not require exact phrases or keyword matches/i);
+  assert.match(declaration.description, /kernel valida la evidencia/i);
+  assert.match(declaration.parametersJsonSchema.properties.caller_authority_evidence.description, /lenguaje natural/i);
 });
 
 test("handoff policy accepts free natural wording when Gemini grounds its semantic decision", () => {
@@ -121,6 +123,7 @@ test("fast runtime snapshots caller transcript before same-frame turnComplete ca
     telnyxSocket: telnyx,
     bootstrap: bootstrap(),
     geminiApiKey: "test-key-not-production",
+    toolPolicies: FAST_HORIZONTAL_TOOL_POLICIES,
     authorizeTransfer: async (input) => {
       authorizeInput = input;
       return {
@@ -163,6 +166,7 @@ test("fast runtime snapshots caller transcript before same-frame turnComplete ca
   await settle();
   await settle();
   assert.ok(authorizeInput, "transfer authorization must survive same-frame turnComplete");
+  assert.equal(diagnostics.some((event) => event.stage === "TOOL_AUTHORIZATION_ALLOWED"), true);
   assert.equal(diagnostics.some((event) => event.stage === "HUMAN_HANDOFF_AUTHORIZATION_BLOCKED"), false);
   assert.equal(session.snapshot().handoffPending, true);
 
