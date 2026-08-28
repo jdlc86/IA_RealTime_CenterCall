@@ -183,8 +183,11 @@ export function buildFastToolAuthorityContract(description, parameters, policyIn
     ...(policy.evidence === "CALLER_TRANSCRIPT" ? ["caller_authority_evidence"] : []),
   ])];
   schema.additionalProperties = false;
+  const kernelValidation = policy.evidence === "CALLER_TRANSCRIPT"
+    ? "El kernel valida la evidencia y la política y decide ALLOW/DENY"
+    : "El kernel valida la política y decide ALLOW/DENY";
   return Object.freeze({
-    description: `${description}\nKernel tool-authority contract: ${authorityDescription(policy)} El kernel valida la política y decide ALLOW/DENY; una function call de Gemini es solo una propuesta y nunca constituye por sí sola autorización para ejecutar una herramienta con efectos.`,
+    description: `${description}\nKernel tool-authority contract: ${authorityDescription(policy)} ${kernelValidation}; una function call de Gemini es solo una propuesta y nunca constituye por sí sola autorización para ejecutar una herramienta con efectos.`,
     parametersJsonSchema: schema,
     policy,
   });
