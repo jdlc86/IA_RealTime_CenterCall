@@ -53,6 +53,22 @@ function appendTranscript(current, fragment) {
   return next.slice(-2_000);
 }
 
+function safeTemporalToolDiagnostic(toolCall, result) {
+  if (toolCall?.name !== "get_authoritative_datetime") return Object.freeze({});
+  if (
+    result?.ok === true
+    && result?.status === "AUTHORITATIVE_DATETIME"
+    && result?.time_authoritative === true
+    && result?.authoritative_temporal_context?.source === "WORKER_CLOCK"
+  ) {
+    return Object.freeze({ kind: "AUTHORITATIVE_DATETIME", source: "WORKER_CLOCK" });
+  }
+  if (result?.status === "TEMPORAL_AUTHORITY_UNAVAILABLE") {
+    return Object.freeze({ kind: "TEMPORAL_AUTHORITY_UNAVAILABLE" });
+  }
+  return Object.freeze({ kind: "AUTHORITATIVE_DATETIME_UNVERIFIED" });
+}
+
 /**
  * One-call Gemini fast-path owner. Audio forwarding remains exactly direct;
  * transfer policy executes only when Gemini emits the transfer tool.
@@ -279,7 +295,12 @@ export class FastGeminiRealtimeSession {
             });
         if (this.closed) return;
         safeSend(this.gemini, buildFastFunctionResponse(toolCall, result), "Gemini", this.maxBufferedBytes);
-        this.#emit("TOOL_RESULT_SENT", { toolName: toolCall.name, toolCallId: toolCall.id, durationMicros: latencyMicros(startedNs) });
+        this.#emit("TOOL_RESULT_SENT", {
+          toolName: toolCall.name,
+          toolCallId: toolCall.id,
+          durationMicros: latencyMicros(startedNs),
+          ...safeTemporalToolDiagnostic(toolCall, result),
+        });
       } catch (error) {
         this.close("TOOL_EXECUTION_FAILED", error);
       }
