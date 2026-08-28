@@ -11,6 +11,7 @@ import {
   telnyxInboundMediaToGemini,
 } from "./fast-audio-bridge.mjs";
 import { FastGeminiToolExecutor } from "./fast-tool-executor.mjs";
+import { FastToolAuthorizationKernel } from "./fast-tool-authorization-kernel.mjs";
 import { authorizeFastHumanHandoff, initialFastHandoffAuthorizationState } from "./fast-human-handoff-policy.mjs";
 
 const OPEN = 1;
@@ -55,6 +56,7 @@ function appendTranscript(current, fragment) {
 
 function safeTemporalToolDiagnostic(toolCall, result) {
   if (toolCall?.name !== "get_authoritative_datetime") return Object.freeze({});
+  if (result?.tool_authorized === false) return Object.freeze({ kind: "TOOL_AUTHORIZATION_BLOCKED" });
   if (
     result?.ok === true
     && result?.status === "AUTHORITATIVE_DATETIME"
@@ -69,9 +71,19 @@ function safeTemporalToolDiagnostic(toolCall, result) {
   return Object.freeze({ kind: "AUTHORITATIVE_DATETIME_UNVERIFIED" });
 }
 
+function blockedToolResult(decision) {
+  return Object.freeze({
+    ok: false,
+    status: decision.status,
+    tool_authorized: false,
+    instruction: "El kernel bloqueó esta propuesta de herramienta. No afirmes que se ejecutó ni inventes su resultado; continúa la conversación de forma natural y obtén la autoridad del caller que exija la política si realmente es necesaria.",
+  });
+}
+
 /**
- * One-call Gemini fast-path owner. Audio forwarding remains exactly direct;
- * transfer policy executes only when Gemini emits the transfer tool.
+ * One-call Gemini fast-path owner. Audio forwarding remains exactly direct.
+ * Every Gemini function call is only a proposal and must pass the local,
+ * call-scoped authorization kernel before any handler or external effect runs.
  */
 export class FastGeminiRealtimeSession {
   constructor(options = {}) {
@@ -86,6 +98,11 @@ export class FastGeminiRealtimeSession {
     this.maxBufferedBytes = Number.isSafeInteger(options.maxBufferedBytes) ? options.maxBufferedBytes : DEFAULT_MAX_BUFFERED_BYTES;
     this.maxPreSetupChunks = Number.isSafeInteger(options.maxPreSetupChunks) ? options.maxPreSetupChunks : DEFAULT_MAX_PRESETUP_CHUNKS;
     if (this.maxBufferedBytes < 65_536 || this.maxPreSetupChunks < 1) throw new Error("Fast Gemini runtime limits are invalid");
+    this.toolPolicies = options.toolPolicies ?? {};
+    this.toolAuthorization = new FastToolAuthorizationKernel({
+      policies: this.toolPolicies,
+      declaredTools: this.bootstrap.tools ?? [],
+    });
     this.toolExecutor = options.toolExecutor instanceof FastGeminiToolExecutor
       ? options.toolExecutor
       : new FastGeminiToolExecutor({ handlers: options.toolHandlers });
@@ -130,6 +147,7 @@ export class FastGeminiRealtimeSession {
           model: this.model,
           systemInstruction: this.bootstrap.systemInstruction,
           tools: this.bootstrap.tools,
+          toolPolicies: this.toolPolicies,
           voiceName: this.bootstrap.voiceName,
           languageCode: this.bootstrap.languageCode,
         }), "Gemini", this.maxBufferedBytes);
@@ -287,12 +305,35 @@ export class FastGeminiRealtimeSession {
       if (this.closed) return;
       const startedNs = process.hrtime.bigint();
       try {
-        const result = toolCall.name === "transfer_call"
-          ? await this.#executeTransferTool(toolCall, transcriptSnapshot)
-          : await this.toolExecutor.execute(toolCall, {
-              tenantId: this.bootstrap.tenantId,
-              callControlId: this.bootstrap.callControlId,
-            });
+        const authorization = this.toolAuthorization.authorize(toolCall, {
+          tenantId: this.bootstrap.tenantId,
+          callControlId: this.bootstrap.callControlId,
+          callerTranscript: transcriptSnapshot,
+        });
+        let result;
+        if (!authorization.allowed) {
+          this.#emit("TOOL_AUTHORIZATION_BLOCKED", {
+            kind: toolCall.name,
+            source: authorization.status,
+            effect: authorization.effect,
+            capability: authorization.capability,
+          });
+          result = blockedToolResult(authorization);
+        } else {
+          this.#emit("TOOL_AUTHORIZATION_ALLOWED", {
+            kind: toolCall.name,
+            source: authorization.authoritySource,
+            authority: authorization.authority,
+            effect: authorization.effect,
+            capability: authorization.capability,
+          });
+          result = toolCall.name === "transfer_call"
+            ? await this.#executeTransferTool(toolCall, transcriptSnapshot)
+            : await this.toolExecutor.execute(toolCall, {
+                tenantId: this.bootstrap.tenantId,
+                callControlId: this.bootstrap.callControlId,
+              });
+        }
         if (this.closed) return;
         safeSend(this.gemini, buildFastFunctionResponse(toolCall, result), "Gemini", this.maxBufferedBytes);
         this.#emit("TOOL_RESULT_SENT", {
@@ -347,6 +388,7 @@ export class FastGeminiRealtimeSession {
       queuedCallerChunks: this.preSetupMedia.length,
       hasResumptionToken: Boolean(this.lastResumptionToken),
       toolState: this.toolExecutor.snapshot(),
+      toolAuthorization: this.toolAuthorization.snapshot(),
       terminalHandoff: this.terminalHandoff,
       handoffPending: Boolean(this.pendingHandoff),
     });
