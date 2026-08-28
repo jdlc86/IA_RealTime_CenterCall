@@ -7,6 +7,13 @@ import {
   buildFastRealtimeAudio,
   parseFastGemini31ServerFrame,
 } from "./fast-gemini31.mjs";
+import { defineFastToolPolicy } from "./fast-tool-authorization-kernel.mjs";
+
+const reservationPolicy = defineFastToolPolicy({
+  authority: "CALLER_REQUEST",
+  effect: "MUTATE_BUSINESS_DATA",
+  capability: "reservation.create",
+});
 
 test("fast Gemini 3.1 setup is audio-native, minimal-thinking and automatic-VAD", () => {
   const setup = buildFastGemini31Setup({
@@ -19,6 +26,7 @@ test("fast Gemini 3.1 setup is audio-native, minimal-thinking and automatic-VAD"
         properties: { party_size: { type: "integer" } },
       },
     }],
+    toolPolicies: { restaurant_reservation_create: reservationPolicy },
   });
 
   assert.equal(setup.setup.model, "models/gemini-3.1-flash-live-preview");
@@ -34,7 +42,21 @@ test("fast Gemini 3.1 setup is audio-native, minimal-thinking and automatic-VAD"
   assert.equal(setup.setup.realtimeInputConfig.activityHandling, "START_OF_ACTIVITY_INTERRUPTS");
   assert.equal(setup.setup.realtimeInputConfig.turnCoverage, "TURN_INCLUDES_ONLY_ACTIVITY");
   assert.deepEqual(setup.setup.sessionResumption, {});
-  assert.equal(setup.setup.tools[0].functionDeclarations[0].behavior, "BLOCKING");
+  const declaration = setup.setup.tools[0].functionDeclarations[0];
+  assert.equal(declaration.behavior, "BLOCKING");
+  assert.deepEqual(declaration.parametersJsonSchema.properties.authorization.enum, ["CALLER_REQUEST"]);
+  assert.ok(declaration.parametersJsonSchema.required.includes("caller_authority_evidence"));
+});
+
+test("fast Gemini setup fails closed when a declared tool has no local policy", () => {
+  assert.throws(() => buildFastGemini31Setup({
+    systemInstruction: "Test.",
+    tools: [{
+      name: "unregistered_business_tool",
+      description: "Do something.",
+      parameters: { type: "object", properties: {} },
+    }],
+  }), /tool policy required/);
 });
 
 test("caller PCM base64 can be forwarded to Gemini without decode/re-encode", () => {
