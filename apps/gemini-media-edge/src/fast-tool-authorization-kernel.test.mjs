@@ -21,16 +21,17 @@ const context = Object.freeze({
   callerTranscript: "Quiero reservar mañana a las nueve para cuatro personas",
 });
 
-test("semantic necessity requires grounded current-turn caller evidence", () => {
+test("read-only semantic necessity is independent of provider transcript arrival order", () => {
   const kernel = kernelFor("get_authoritative_datetime", FAST_HORIZONTAL_TOOL_POLICIES.get_authoritative_datetime);
   const allowed = kernel.authorize({
     id: "clock-1",
     name: "get_authoritative_datetime",
-    args: {
-      authorization: "SEMANTIC_NECESSITY",
-      caller_authority_evidence: "reservar mañana a las nueve",
-    },
-  }, context);
+    args: { authorization: "SEMANTIC_NECESSITY" },
+  }, {
+    tenantId: "tenant-1",
+    callControlId: "v3:call-1",
+    callerTranscript: "",
+  });
   assert.equal(allowed.allowed, true);
   assert.equal(allowed.effect, "READ_CONTEXT");
   assert.equal(allowed.capability, "time.authoritative");
@@ -38,13 +39,26 @@ test("semantic necessity requires grounded current-turn caller evidence", () => 
   const blocked = kernel.authorize({
     id: "clock-2",
     name: "get_authoritative_datetime",
-    args: {
-      authorization: "SEMANTIC_NECESSITY",
-      caller_authority_evidence: "qué fecha es hoy",
-    },
+    args: { authorization: "CALLER_REQUEST" },
   }, context);
   assert.equal(blocked.allowed, false);
-  assert.equal(blocked.status, "TOOL_AUTHORITY_EVIDENCE_MISMATCH");
+  assert.equal(blocked.status, "TOOL_AUTHORITY_REQUIRED");
+});
+
+test("only read-only semantic necessity may omit caller transcript evidence", () => {
+  const readPolicy = defineFastToolPolicy({
+    authority: "SEMANTIC_NECESSITY",
+    effect: "READ_BUSINESS_DATA",
+    capability: "reservation.read",
+  });
+  assert.equal(readPolicy.evidence, "NONE");
+
+  assert.throws(() => defineFastToolPolicy({
+    authority: "SEMANTIC_NECESSITY",
+    effect: "MUTATE_BUSINESS_DATA",
+    capability: "reservation.create",
+    evidence: "NONE",
+  }), /Only read-only semantic necessity/);
 });
 
 test("transfer keeps semantic caller authority without rigid phrase matching", () => {
@@ -129,7 +143,7 @@ test("horizontal minimum policies cannot be overridden by business extensions", 
   }), /override is forbidden/);
 });
 
-test("tool authority contract injects required semantic authority and evidence", () => {
+test("read-only semantic tool contract requires authority but no transcript quote", () => {
   const contract = buildFastToolAuthorityContract(
     "Consulta disponibilidad.",
     { type: "object", properties: { date: { type: "string" } }, required: ["date"] },
@@ -140,6 +154,7 @@ test("tool authority contract injects required semantic authority and evidence",
     }),
   );
   assert.deepEqual(contract.parametersJsonSchema.properties.authorization.enum, ["SEMANTIC_NECESSITY"]);
-  assert.deepEqual(contract.parametersJsonSchema.required.sort(), ["authorization", "caller_authority_evidence", "date"].sort());
+  assert.equal("caller_authority_evidence" in contract.parametersJsonSchema.properties, false);
+  assert.deepEqual(contract.parametersJsonSchema.required.sort(), ["authorization", "date"].sort());
   assert.equal(contract.parametersJsonSchema.additionalProperties, false);
 });
