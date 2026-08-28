@@ -44,7 +44,7 @@ function request(method = "POST"): Request {
 }
 
 describe("fast Gemini canary webhook", () => {
-  it("uses the enabled KV route and injects the Worker clock as temporal authority", async () => {
+  it("uses the enabled KV route and injects temporal plus semantic security authority", async () => {
     const callStart = Date.parse("2026-08-26T13:14:01.000Z");
     const response = await routeFastGeminiCanaryWebhook(request(), ENV, {
       now: () => callStart,
@@ -66,7 +66,13 @@ describe("fast Gemini canary webhook", () => {
         expect(config.systemInstruction).toContain('"timezone":"Europe/Madrid"');
         expect(config.systemInstruction).toContain('"now_iso":"2026-08-26T15:14:01+02:00"');
         expect(config.systemInstruction).toContain("get_authoritative_datetime");
-        expect(config.tools?.map((tool) => tool.name)).toEqual(["get_authoritative_datetime"]);
+        expect(config.systemInstruction).toContain("Frontera semántica de seguridad:");
+        expect(config.systemInstruction).toContain("No decidas por keywords, frases rígidas o coincidencias léxicas");
+        expect(config.systemInstruction).toContain("report_semantic_security_incident");
+        expect(config.tools?.map((tool) => tool.name)).toEqual([
+          "get_authoritative_datetime",
+          "report_semantic_security_incident",
+        ]);
         return {
           status: "STARTED",
           call: CALL,

@@ -25,7 +25,7 @@ function request(): Request {
 }
 
 describe("tenant KV session configuration", () => {
-  it("loads tenant config, capabilities and temporal authority before media starts without overriding realtime voice/VAD", async () => {
+  it("loads tenant config, capabilities, temporal authority and semantic security before media starts without overriding realtime voice/VAD", async () => {
     const keys: string[] = [];
     const env: FastGeminiCanaryEnv = {
       TELNYX_PUBLIC_KEY: "test-public-key",
@@ -78,7 +78,10 @@ describe("tenant KV session configuration", () => {
         const config = await options.resolveSessionConfig("restaurante-centro", CALL);
         expect(config.voiceName).toBe("Kore");
         expect(config.languageCode).toBe("es-ES");
-        expect(config.tools?.map((tool) => tool.name)).toEqual(["get_authoritative_datetime"]);
+        expect(config.tools?.map((tool) => tool.name)).toEqual([
+          "get_authoritative_datetime",
+          "report_semantic_security_incident",
+        ]);
         expect(config.systemInstruction).toContain("Base estable del agente.");
         expect(config.systemInstruction).toContain("Negocio: Restaurante Centro.");
         expect(config.systemInstruction).toContain("Tu nombre de asistente es Lucía.");
@@ -89,6 +92,8 @@ describe("tenant KV session configuration", () => {
         expect(config.systemInstruction).toContain('"source":"WORKER_CLOCK"');
         expect(config.systemInstruction).toContain('"timezone":"Europe/Madrid"');
         expect(config.systemInstruction).toContain('"now_iso":"2026-08-27T15:00:01+02:00"');
+        expect(config.systemInstruction).toContain("Frontera semántica de seguridad:");
+        expect(config.systemInstruction).toContain("report_semantic_security_incident");
         expect(config.systemInstruction).not.toContain("threshold");
         expect(config.systemInstruction).not.toContain("idleTimeoutMs");
         return {

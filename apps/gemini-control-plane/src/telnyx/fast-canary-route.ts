@@ -14,6 +14,10 @@ import {
   fastTemporalAuthorityInstruction,
   resolveFastTenantTimeZone,
 } from "../fast-temporal-authority";
+import {
+  FAST_SEMANTIC_SECURITY_TOOL,
+  fastSemanticSecurityInstruction,
+} from "../fast-semantic-security-boundary";
 
 type TenantRoutingKv = Readonly<{
   get(key: string): Promise<string | null>;
@@ -172,6 +176,7 @@ function buildTenantInstruction(
     waitingPhrases.length ? `Frases de espera permitidas: ${waitingPhrases.join(" | ")}` : null,
     capabilityInstruction(capabilities),
     fastTemporalAuthorityInstruction(temporalSnapshot),
+    fastSemanticSecurityInstruction(),
     transferEnabled && handoff ? fastHumanHandoffPrompt(handoff) : null,
   ].filter((entry): entry is string => Boolean(entry));
 
@@ -180,6 +185,7 @@ function buildTenantInstruction(
     languageCode: language,
     tools: Object.freeze([
       FAST_AUTHORITATIVE_DATETIME_TOOL,
+      FAST_SEMANTIC_SECURITY_TOOL,
       ...(transferEnabled ? [FAST_TRANSFER_TOOL] : []),
     ]),
   });
