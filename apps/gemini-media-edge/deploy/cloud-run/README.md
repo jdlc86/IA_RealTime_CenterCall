@@ -29,6 +29,13 @@ gcloud secrets versions add gemini-media-edge-control-plane-token --project YOUR
 The HMAC secret and control-plane token must each contain at least 32 bytes. Record
 the numeric versions returned by Google Cloud.
 
+Google Secret Manager is the source of truth for both shared values. The Fast
+canary workflow resolves `latest` to numeric versions, synchronizes the control
+token to both Cloudflare control planes, synchronizes the credential HMAC to the
+Fast Worker, and deploys Cloud Run with those exact numeric versions. It then
+proves semantic-security authentication using a malformed, non-persisting
+preflight before changing the canary edge binding.
+
 ## 2. Build and deploy an immutable revision
 
 ```powershell

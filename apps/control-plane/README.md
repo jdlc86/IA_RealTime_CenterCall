@@ -69,6 +69,14 @@ controlada de producción hay que configurar:
 - `MEDIA_EDGE_CREDENTIAL_HMAC_SECRET` (el mismo secreto que Cloud Run);
 - `MEDIA_EDGE_CONTROL_PLANE_TOKEN` (el mismo secreto que Cloud Run).
 
+El token compartido tiene como fuente de verdad
+`gemini-media-edge-control-plane-token` en Google Secret Manager. Los workflows
+`Gemini Fast Canary Deploy` y `Gemini Fast Worker Secret Sync` deben copiar esa
+misma versión a `MEDIA_EDGE_CONTROL_PLANE_TOKEN` en este Worker y a
+`GEMINI_MEDIA_CONTROL_PLANE_TOKEN` en el Fast Worker. El canary comprueba la
+paridad con un payload autenticado deliberadamente inválido (`{}`): debe recibir
+`400 INVALID_SECURITY_SIGNAL`, sin crear un evento de reputación.
+
 La admisión exige simultáneamente un entorno `preview` o `production`, el flag
 explícito y la coincidencia exacta del tenant. Desarrollo siempre rechaza Gemini.
 La ausencia del tenant canario o de cualquiera de los secretos también falla

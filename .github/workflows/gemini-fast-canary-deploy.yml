@@ -33,6 +33,8 @@ env:
   GEMINI_API_KEY_SECRET_VERSION: "1"
   CREDENTIAL_SECRET_VERSION: "latest"
   CONTROL_TOKEN_SECRET_VERSION: "latest"
+  CONTROL_WORKER_NAME: ia-realtime-centercall
+  FAST_WORKER_NAME: ia-realtime-centercall-gemini-fast
   DEPLOY_SERVICE: gemini-media-edge
   ARTIFACT_REPOSITORY: ia-realtime-centercall
   FAST_PROVIDER_SETUP_BUDGET_MS: "5000"
@@ -74,6 +76,67 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Install Worker deployment dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix apps/control-plane --no-audit --no-fund
+          npm install --prefix apps/gemini-control-plane --no-audit --no-fund
+
+      - name: Pin and synchronize shared Fast secrets
+        id: shared_secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+
+          CONTROL_VERSION="$(gcloud secrets versions describe "$CONTROL_TOKEN_SECRET_VERSION" \
+            --project "$GCP_PROJECT_ID" \
+            --secret gemini-media-edge-control-plane-token \
+            --format='value(name)' | awk -F/ '{print $NF}')"
+          CREDENTIAL_VERSION="$(gcloud secrets versions describe "$CREDENTIAL_SECRET_VERSION" \
+            --project "$GCP_PROJECT_ID" \
+            --secret gemini-media-edge-credential-hmac-secret \
+            --format='value(name)' | awk -F/ '{print $NF}')"
+          [[ "$CONTROL_VERSION" =~ ^[0-9]+$ ]]
+          [[ "$CREDENTIAL_VERSION" =~ ^[0-9]+$ ]]
+
+          CONTROL_TOKEN="$(gcloud secrets versions access "$CONTROL_VERSION" \
+            --project "$GCP_PROJECT_ID" \
+            --secret gemini-media-edge-control-plane-token)"
+          CREDENTIAL_SECRET="$(gcloud secrets versions access "$CREDENTIAL_VERSION" \
+            --project "$GCP_PROJECT_ID" \
+            --secret gemini-media-edge-credential-hmac-secret)"
+          test "$(printf '%s' "$CONTROL_TOKEN" | wc -c)" -ge 32
+          test "$(printf '%s' "$CREDENTIAL_SECRET" | wc -c)" -ge 32
+          echo "::add-mask::$CONTROL_TOKEN"
+          echo "::add-mask::$CREDENTIAL_SECRET"
+
+          printf '%s' "$CONTROL_TOKEN" | (
+            cd apps/control-plane
+            npx wrangler secret put MEDIA_EDGE_CONTROL_PLANE_TOKEN \
+              --name "$CONTROL_WORKER_NAME" --config wrangler.jsonc >/dev/null
+          )
+          printf '%s' "$CONTROL_TOKEN" | (
+            cd apps/gemini-control-plane
+            npx wrangler secret put GEMINI_MEDIA_CONTROL_PLANE_TOKEN \
+              --name "$FAST_WORKER_NAME" --config wrangler.fast.jsonc >/dev/null
+          )
+          printf '%s' "$CREDENTIAL_SECRET" | (
+            cd apps/gemini-control-plane
+            npx wrangler secret put GEMINI_MEDIA_CREDENTIAL_HMAC_SECRET \
+              --name "$FAST_WORKER_NAME" --config wrangler.fast.jsonc >/dev/null
+          )
+
+          echo "control_version=$CONTROL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "credential_version=$CREDENTIAL_VERSION" >> "$GITHUB_OUTPUT"
+          unset CONTROL_TOKEN CREDENTIAL_SECRET
+          echo "Fast shared secrets synchronized"
 
       - name: Build immutable fast image
         id: image
@@ -138,7 +201,7 @@ jobs:
             --max-instances 1 \
             --timeout 3600 \
             --set-env-vars "MEDIA_EDGE_SINGLE_INSTANCE=true,GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview,GEMINI_LIVE_VOICE=Kore" \
-            --set-secrets "GEMINI_API_KEY=gemini-media-edge-gemini-api-key:${GEMINI_API_KEY_SECRET_VERSION},MEDIA_EDGE_CREDENTIAL_HMAC_SECRET=gemini-media-edge-credential-hmac-secret:${CREDENTIAL_SECRET_VERSION},MEDIA_EDGE_CONTROL_PLANE_TOKEN=gemini-media-edge-control-plane-token:${CONTROL_TOKEN_SECRET_VERSION}" \
+            --set-secrets "GEMINI_API_KEY=gemini-media-edge-gemini-api-key:${GEMINI_API_KEY_SECRET_VERSION},MEDIA_EDGE_CREDENTIAL_HMAC_SECRET=gemini-media-edge-credential-hmac-secret:${{ steps.shared_secrets.outputs.credential_version }},MEDIA_EDGE_CONTROL_PLANE_TOKEN=gemini-media-edge-control-plane-token:${{ steps.shared_secrets.outputs.control_version }}" \
             --no-traffic \
             --tag "${{ steps.image.outputs.tag }}" \
             --quiet
@@ -182,6 +245,39 @@ jobs:
           echo "setup_ms=$SETUP_MS" >> "$GITHUB_OUTPUT"
           echo "first_audio_ms=$FIRST_AUDIO_MS" >> "$GITHUB_OUTPUT"
 
+      - name: Verify semantic-security token parity without persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTROL_TOKEN="$(gcloud secrets versions access '${{ steps.shared_secrets.outputs.control_version }}' \
+            --project "$GCP_PROJECT_ID" \
+            --secret gemini-media-edge-control-plane-token)"
+          test "$(printf '%s' "$CONTROL_TOKEN" | wc -c)" -ge 32
+          echo "::add-mask::$CONTROL_TOKEN"
+
+          RESPONSE=""
+          STATUS=""
+          BODY=""
+          for attempt in $(seq 1 30); do
+            RESPONSE="$(curl --silent --show-error --max-time 10 \
+              --request POST \
+              --header "Authorization: Bearer ${CONTROL_TOKEN}" \
+              --header 'Content-Type: application/json' \
+              --data '{}' \
+              --write-out $'\n%{http_code}' \
+              https://ia-realtime-centercall.julopezcardona.workers.dev/internal/fast-semantic-security-signal)"
+            STATUS="${RESPONSE##*$'\n'}"
+            BODY="${RESPONSE%$'\n'*}"
+            if [ "$STATUS" = "400" ] && echo "$BODY" | jq -e '.status == "INVALID_SECURITY_SIGNAL"' >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -lt 30 ]; then sleep 2; fi
+          done
+          test "$STATUS" = "400"
+          echo "$BODY" | jq -e '.ok == false and .status == "INVALID_SECURITY_SIGNAL"' >/dev/null
+          unset CONTROL_TOKEN BODY RESPONSE
+          echo "Fast semantic-security authentication preflight: VERIFIED"
+
       - name: Point Gemini fast Worker at tagged canary
         working-directory: apps/gemini-control-plane
         env:
@@ -192,7 +288,6 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN"; test -n "$CLOUDFLARE_ACCOUNT_ID"; test -n "$FAST_EDGE_URL"
-          npm install --no-audit --no-fund
           npx wrangler deploy --config wrangler.fast.jsonc --var "GEMINI_FAST_CANARY_EDGE_URL:${FAST_EDGE_URL}" --var "GEMINI_FAST_PREFLIGHT_NONCE:"
           if ! npx wrangler deployments list --config wrangler.fast.jsonc; then
             echo "::warning::Cloudflare deployment listing failed after a successful Worker deploy; continuing to health/preflight verification."
@@ -291,6 +386,9 @@ jobs:
             echo "- Worker edge binding: **synced**"
             echo "- Worker -> Media Edge bootstrap: **verified**"
             echo "- Worker -> Media Edge HMAC WSS upgrade: **verified**"
+            echo "- Semantic security token parity: **verified**"
+            echo "- Control token secret version: \`${{ steps.shared_secrets.outputs.control_version }}\`"
+            echo "- Credential HMAC secret version: \`${{ steps.shared_secrets.outputs.credential_version }}\`"
             echo "- Tagged URL: \`${{ steps.deployed.outputs.tag_url }}\`"
             echo "- WSS: \`${{ steps.deployed.outputs.edge_url }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
