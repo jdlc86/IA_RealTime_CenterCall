@@ -54,12 +54,14 @@ describe("Fast security signal route", () => {
     expect(String(rpc.p_event_key)).toMatch(/^gemini-fast-semsec-v1:[a-f0-9]{64}$/);
     expect(String(rpc.p_caller_key)).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(rpc)).not.toContain(BODY.callerPhoneE164);
-    expect(JSON.stringify(rpc)).not.toContain("transcript");
+    expect(rpc).not.toHaveProperty("transcript");
+    expect(rpc).not.toHaveProperty("p_transcript");
     expect(rpc.p_metadata).toEqual({
       source: "GEMINI_FAST_SEMANTIC_BOUNDARY",
       category: "PROMPT_INJECTION",
       raw_transcript_stored: false,
     });
+    expect(rpc.p_metadata as Record<string, unknown>).not.toHaveProperty("transcript");
   });
 
   it("derives the same event key for a retry of the same tool call", async () => {
