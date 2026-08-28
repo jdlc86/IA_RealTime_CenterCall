@@ -2,9 +2,10 @@ import process from "node:process";
 import { createFastDiagnosticFlusher } from "./fast-diagnostic-flush.mjs";
 import { runFastGeminiLiveProbe } from "./fast-live-probe.mjs";
 import { createFastGeminiMediaServerFromEnv } from "./server-fast.mjs";
+import { createFastSecurityControlClient } from "./fast-security-control.mjs";
 import {
   FAST_SEMANTIC_SECURITY_TOOL_NAME,
-  executeFastSemanticSecurityBoundary,
+  createFastSemanticSecurityBoundaryHandler,
 } from "./fast-semantic-security-boundary.mjs";
 
 const DEFAULT_DIAGNOSTIC_SINK_URL = "https://ia-realtime-centercall-gemini-fast.julopezcardona.workers.dev/internal/diagnostics-ingest";
@@ -26,9 +27,17 @@ const providerReadiness = Object.freeze({
   setupMs: probe.setupMs,
   firstAudioMs: probe.firstAudioMs,
 });
+const diagnosticSinkUrl = process.env.FAST_DIAGNOSTIC_SINK_URL || DEFAULT_DIAGNOSTIC_SINK_URL;
 const flushDiagnostics = createFastDiagnosticFlusher({
-  sinkUrl: process.env.FAST_DIAGNOSTIC_SINK_URL || DEFAULT_DIAGNOSTIC_SINK_URL,
+  sinkUrl: diagnosticSinkUrl,
   controlToken: process.env.MEDIA_EDGE_CONTROL_PLANE_TOKEN,
+});
+const securityControl = createFastSecurityControlClient({
+  baseUrl: process.env.FAST_CONTROL_PLANE_URL || new URL(diagnosticSinkUrl).origin,
+  controlToken: process.env.MEDIA_EDGE_CONTROL_PLANE_TOKEN,
+});
+const semanticSecurityHandler = createFastSemanticSecurityBoundaryHandler({
+  recordSemanticIncident: securityControl.recordSemanticIncident,
 });
 const port = Number(process.env.PORT ?? "8080");
 if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("PORT is invalid");
@@ -36,7 +45,7 @@ const runtime = createFastGeminiMediaServerFromEnv(process.env, {
   providerReadiness,
   flushDiagnostics,
   toolHandlers: Object.freeze({
-    [FAST_SEMANTIC_SECURITY_TOOL_NAME]: executeFastSemanticSecurityBoundary,
+    [FAST_SEMANTIC_SECURITY_TOOL_NAME]: semanticSecurityHandler,
   }),
 });
 runtime.server.listen(port, "0.0.0.0", () => {
