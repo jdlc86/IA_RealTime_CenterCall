@@ -54,11 +54,15 @@ function defaultPlane(component) {
 
 function safeDetails(input) {
   const details = {};
+  const toolAuthorizationStage = input.stage === "TOOL_AUTHORIZATION_ALLOWED" || input.stage === "TOOL_AUTHORIZATION_BLOCKED";
   const codeFields = [
     ["phase", input.phase],
     ["reason", input.reason],
     ["kind", input.kind ?? input.selectedTool],
-    ["source", input.stage === "TOOL_RESULT_SENT" ? input.source : undefined],
+    ["source", input.stage === "TOOL_RESULT_SENT" || toolAuthorizationStage ? input.source : undefined],
+    ["authority", toolAuthorizationStage ? input.authority : undefined],
+    ["effect", toolAuthorizationStage ? input.effect : undefined],
+    ["capability", toolAuthorizationStage ? input.capability : undefined],
     ["type", input.type],
     ["providerErrorCode", input.providerErrorCode],
     ["failureCategory", input.failureCategory],
