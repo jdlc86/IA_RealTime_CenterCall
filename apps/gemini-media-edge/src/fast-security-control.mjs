@@ -21,23 +21,44 @@ function record(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
 
+async function sha256Hex(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export function createFastSecurityControlClient(options = {}) {
   const baseUrl = canonicalBaseUrl(options.baseUrl);
   const controlToken = required(options.controlToken, "Fast security control token");
+  const timeoutMs = options.timeoutMs ?? 1_500;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 10_000) {
+    throw new Error("Fast security control timeout is invalid");
+  }
   const sourceFetch = typeof options.fetcher === "function" ? options.fetcher : fetch;
   const fetcher = (...args) => sourceFetch(...args);
 
   return Object.freeze({
     async recordSemanticIncident(input) {
       try {
-        const response = await fetcher(new URL("/internal/security-signal", baseUrl), {
+        const tenantId = required(input?.tenantId, "semantic security tenantId", 256);
+        const callControlId = required(input?.callControlId, "semantic security callControlId", 512);
+        const callerPhoneE164 = required(input?.callerPhoneE164, "semantic security callerPhoneE164", 16);
+        const toolCallId = required(input?.toolCallId, "semantic security toolCallId", 256);
+        const category = required(input?.category, "semantic security category", 64);
+        const eventDigest = await sha256Hex(`gemini-fast-semantic-security-v1|${tenantId}|${callControlId}|${toolCallId}|${category}`);
+        const response = await fetcher(new URL("/internal/fast-semantic-security-signal", baseUrl), {
           method: "POST",
           headers: {
             authorization: `Bearer ${controlToken}`,
             "content-type": "application/json",
             accept: "application/json",
           },
-          body: JSON.stringify(input),
+          body: JSON.stringify({
+            tenantId,
+            callerPhoneE164,
+            category,
+            eventKey: `gemini-fast-semsec-v1:${eventDigest}`,
+          }),
+          signal: AbortSignal.timeout(timeoutMs),
         });
         let payload = null;
         try {

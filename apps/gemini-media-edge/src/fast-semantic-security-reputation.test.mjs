@@ -48,6 +48,16 @@ test("semantic security persistence failure does not terminate or throw into the
   assert.equal(result.call_terminated, false);
 });
 
+test("semantic security reports durable background acceptance without claiming synchronous persistence", async () => {
+  const handler = createFastSemanticSecurityBoundaryHandler({
+    recordSemanticIncident: async () => ({ ok: true, status: "SECURITY_SIGNAL_ACCEPTED" }),
+  });
+  const result = await handler(CALL, CONTEXT);
+  assert.equal(result.reputation_signal_status, "ACCEPTED");
+  assert.equal(result.persistent_reputation_changed, false);
+  assert.equal(result.call_terminated, false);
+});
+
 test("semantic security refuses reputation persistence when caller identity is unavailable", async () => {
   let called = false;
   const handler = createFastSemanticSecurityBoundaryHandler({

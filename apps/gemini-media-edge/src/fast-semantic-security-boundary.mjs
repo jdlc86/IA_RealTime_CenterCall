@@ -67,11 +67,14 @@ export function createFastSemanticSecurityBoundaryHandler(options = {}) {
       toolCallId: required(toolCall?.id, "semantic security toolCallId", 256),
       category: local.category,
     }));
+    const status = result?.ok === true && typeof result?.status === "string" ? result.status : "";
     return Object.freeze({
       ...local,
-      reputation_signal_status: result?.ok === true && result?.status === "SECURITY_SIGNAL_RECORDED"
+      reputation_signal_status: status === "SECURITY_SIGNAL_RECORDED"
         ? "RECORDED"
-        : "UNAVAILABLE",
+        : status === "SECURITY_SIGNAL_ACCEPTED" || status === "SECURITY_SIGNAL_QUEUED"
+          ? "ACCEPTED"
+          : "UNAVAILABLE",
     });
   };
 }

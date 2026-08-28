@@ -9,6 +9,7 @@ import {
 } from "./fast-semantic-security-boundary.mjs";
 
 const DEFAULT_DIAGNOSTIC_SINK_URL = "https://ia-realtime-centercall-gemini-fast.julopezcardona.workers.dev/internal/diagnostics-ingest";
+const DEFAULT_SECURITY_CONTROL_URL = "https://ia-realtime-centercall.julopezcardona.workers.dev";
 const model = process.env.GEMINI_LIVE_MODEL || "gemini-3.1-flash-live-preview";
 const probe = await runFastGeminiLiveProbe({
   apiKey: process.env.GEMINI_API_KEY,
@@ -33,7 +34,7 @@ const flushDiagnostics = createFastDiagnosticFlusher({
   controlToken: process.env.MEDIA_EDGE_CONTROL_PLANE_TOKEN,
 });
 const securityControl = createFastSecurityControlClient({
-  baseUrl: process.env.FAST_CONTROL_PLANE_URL || new URL(diagnosticSinkUrl).origin,
+  baseUrl: process.env.FAST_SECURITY_CONTROL_URL || DEFAULT_SECURITY_CONTROL_URL,
   controlToken: process.env.MEDIA_EDGE_CONTROL_PLANE_TOKEN,
 });
 const semanticSecurityHandler = createFastSemanticSecurityBoundaryHandler({

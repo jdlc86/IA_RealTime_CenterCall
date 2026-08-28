@@ -4,6 +4,7 @@ import {
   callDiagnosticPersistencePortForEnv,
   type CrossPlaneDiagnosticEvent,
 } from "./call-diagnostic-persistence-port.js";
+import { routeFastSemanticSecuritySignal } from "./fast-semantic-security-signal.js";
 
 // Keep the CallSession runtime chain capped at V54. This entrypoint only adds
 // cross-plane observability around the existing Worker handler.
@@ -221,6 +222,11 @@ export default {
   async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
     if (!baseHandler.fetch) return new Response("Worker fetch handler unavailable", { status: 503 });
     const url = new URL(request.url);
+    if (url.pathname === "/internal/fast-semantic-security-signal") {
+      return routeFastSemanticSecuritySignal(request, { env }, {
+        waitUntil: (promise) => ctx.waitUntil(promise),
+      });
+    }
     if (request.method !== "POST" || url.pathname !== "/webhooks/telnyx") {
       return baseHandler.fetch(request, env as never, ctx);
     }
