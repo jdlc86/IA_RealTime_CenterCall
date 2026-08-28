@@ -44,8 +44,8 @@ La ruta conserva la separación control/media:
 | Transferencia humana Fast | ✅ | ✅ | ✅ | transferencias exitosas y fallidas auditadas |
 | Auditoría `human_handoff_events` | ✅ | ✅ | ✅ | estados observados en Supabase |
 | Diagnóstico `call_diagnostic_events` | ✅ | ✅ | ✅ | eventos persistidos fuera del hot path |
-| Autorización semántica de handoff sin listas rígidas | ✅ | ✅ | ✅ baseline `794ff32f...` | regresiones sintéticas; **pendiente revalidación en llamada real** |
-| Snapshot de transcript antes de `turnComplete` | ✅ | ✅ | ✅ baseline `794ff32f...` | test específico same-frame; **pendiente revalidación en llamada real** |
+| Autorización semántica de handoff sin listas rígidas | ✅ | ✅ | ✅ baseline `794ff32f...` | **E2E real 2026-08-28: 0 bloqueos, 1 aceptación, transferencia completada** |
+| Snapshot de transcript antes de `turnComplete` | ✅ | ✅ | ✅ baseline `794ff32f...` | test same-frame + llamada real sin reproducir la carrera |
 | Ringback audible durante transfer | no determinista | — | depende de early media | limitación abierta; ver `HUMAN_HANDOFF.md` |
 | TTS terminal audible tras fallo/no-answer | acción implementada | tests parciales | audibilidad no fiable | limitación abierta; ver `HUMAN_HANDOFF.md` |
 | Canary deploy preflight final | endpoint implementado | gate final desalineado | Worker/edge pueden quedar sincronizados antes del gate | deuda operativa; ver `runbooks/Deployment.md` |
@@ -106,6 +106,22 @@ Baseline `794ff32f...`:
 
 Frontera exacta: la política Fast valida **enum + grounding**; no vuelve a interpretar la frase ni mantiene actualmente `offerPending` para probar por sí sola una oferta previa.
 
+### E2E real de autorización y transferencia — 2026-08-28
+
+Una llamada real posterior al despliegue de `794ff32f...` validó el comportamiento que estaba pendiente:
+
+- `HUMAN_HANDOFF_AUTHORIZATION_BLOCKED`: **0**;
+- `HUMAN_HANDOFF_ACCEPTED`: **1**;
+- `TOOL_RESULT_SENT`: **1**;
+- `HUMAN_HANDOFF_TRANSFER_START_RESULT`: **1**;
+- cierre del runtime IA con `HUMAN_HANDOFF_TERMINAL`;
+- fila durable de handoff con `status=TRANSFERRED`;
+- target leg respondido;
+- `callback_required=false`;
+- `failure_reason=null`.
+
+El bucle de confirmaciones no se reprodujo y la transferencia llegó a humano. Esta evidencia **no demuestra** ringback audible ni resuelve el TTS terminal de una transferencia fallida.
+
 Limitaciones abiertas de ringback/TTS y divergencia de prompt heredada: ver `HUMAN_HANDOFF.md`.
 
 ## Deuda operativa de deploy — resumen
@@ -146,14 +162,13 @@ ADR-004 supersede el uso obligatorio de esos mecanismos en el Fast Path.
 
 ## Siguiente validación
 
-Prioridad inmediata:
+Prioridad inmediata después de cerrar la E2E de autorización/handoff:
 
-1. **realizar una llamada de transferencia con lenguaje natural** para confirmar en producción que no reaparece el bucle de autorización y que el transcript snapshot funciona bajo tráfico real;
-2. correlacionar esa llamada en `call_diagnostic_events` y, si hay handoff aceptado, `human_handoff_events`;
-3. corregir después el `jq` final del gate Fast Canary sin tocar runtime de llamadas;
-4. diseñar/validar ringback determinista del caller en el control path;
-5. endurecer la observabilidad/audibilidad del TTS terminal;
-6. mantener fuera de alcance cualquier cambio innecesario en VAD, codecs, resampler o puente de audio.
+1. corregir el `jq` final del gate Fast Canary sin tocar runtime de llamadas;
+2. ejecutar CI y el deploy canary hasta obtener preflight bootstrap/HMAC/WSS verde;
+3. diseñar/validar ringback determinista del caller en el control path;
+4. endurecer la observabilidad/audibilidad del TTS terminal;
+5. mantener fuera de alcance cualquier cambio innecesario en VAD, codecs, resampler o puente de audio.
 
 ## Restricciones vigentes
 
