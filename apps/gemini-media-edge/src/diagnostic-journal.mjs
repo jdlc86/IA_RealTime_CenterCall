@@ -58,6 +58,7 @@ function safeDetails(input) {
     ["phase", input.phase],
     ["reason", input.reason],
     ["kind", input.kind ?? input.selectedTool],
+    ["source", input.stage === "TOOL_RESULT_SENT" ? input.source : undefined],
     ["type", input.type],
     ["providerErrorCode", input.providerErrorCode],
     ["failureCategory", input.failureCategory],
