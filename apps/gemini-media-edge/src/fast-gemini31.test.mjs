@@ -7,7 +7,7 @@ import {
   buildFastRealtimeAudio,
   parseFastGemini31ServerFrame,
 } from "./fast-gemini31.mjs";
-import { defineFastToolPolicy } from "./fast-tool-authorization-kernel.mjs";
+import { FAST_HORIZONTAL_TOOL_POLICIES, defineFastToolPolicy } from "./fast-tool-authorization-kernel.mjs";
 
 const reservationPolicy = defineFastToolPolicy({
   authority: "CALLER_REQUEST",
@@ -46,6 +46,22 @@ test("fast Gemini 3.1 setup is audio-native, minimal-thinking and automatic-VAD"
   assert.equal(declaration.behavior, "BLOCKING");
   assert.deepEqual(declaration.parametersJsonSchema.properties.authorization.enum, ["CALLER_REQUEST"]);
   assert.ok(declaration.parametersJsonSchema.required.includes("caller_authority_evidence"));
+});
+
+test("read-only temporal setup requires semantic authority without transcript evidence", () => {
+  const setup = buildFastGemini31Setup({
+    systemInstruction: "Usa el reloj solo cuando el significado completo del turno lo requiera.",
+    tools: [{
+      name: "get_authoritative_datetime",
+      description: "Current clock/calendar authority only.",
+      parameters: { type: "object", properties: {} },
+    }],
+    toolPolicies: FAST_HORIZONTAL_TOOL_POLICIES,
+  });
+  const declaration = setup.setup.tools[0].functionDeclarations[0];
+  assert.deepEqual(declaration.parametersJsonSchema.properties.authorization.enum, ["SEMANTIC_NECESSITY"]);
+  assert.equal("caller_authority_evidence" in declaration.parametersJsonSchema.properties, false);
+  assert.deepEqual(declaration.parametersJsonSchema.required, ["authorization"]);
 });
 
 test("fast Gemini setup fails closed when a declared tool has no local policy", () => {
