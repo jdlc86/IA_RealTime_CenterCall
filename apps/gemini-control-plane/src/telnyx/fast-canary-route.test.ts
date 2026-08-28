@@ -44,32 +44,29 @@ function request(method = "POST"): Request {
 }
 
 describe("fast Gemini canary webhook", () => {
-  it("uses the enabled KV route as the only tenant/phone admission source", async () => {
+  it("uses the enabled KV route and injects the Worker clock as temporal authority", async () => {
+    const callStart = Date.parse("2026-08-26T13:14:01.000Z");
     const response = await routeFastGeminiCanaryWebhook(request(), ENV, {
-      now: () => Date.parse("2026-08-26T13:14:01.000Z"),
+      now: () => callStart,
       startIncoming: async (_input, options): Promise<FastIncomingRuntimeResult> => {
         expect(options.edgeUrl).toBe("wss://fast-canary.example/telnyx/gemini");
         expect(options.admissionTtlMs).toBe(60_000);
         expect(options.signatureMaxAgeSeconds).toBe(300);
+        expect(options.nowEpochMs).toBe(callStart);
         expect(await options.resolveTenantRoute!(CALL)).toEqual({ tenantId: "tenant-fast-canary", routeId: "default" });
         expect(options.isCanaryAllowed("tenant-fast-canary", CALL)).toBe(true);
         const otherNumber = { ...CALL, calledNumber: "+34600000999" };
         expect(await options.resolveTenantRoute!(otherNumber)).toBeNull();
         const config = await options.resolveSessionConfig("tenant-fast-canary", CALL);
-        expect(config).toEqual({
-          systemInstruction: [
-            "Habla en español de forma breve y natural.",
-            "",
-            "Capacidades configuradas para esta sesión (el kernel es la autoridad final):",
-            "- call.transfer=false",
-            "- message.whatsapp.transactional=false",
-            "- message.whatsapp.realtime_support=false",
-            "No afirmes haber ejecutado una capacidad si la herramienta correspondiente no está disponible o no confirma éxito.",
-          ].join("\n"),
-          tools: [],
-          voiceName: "Kore",
-          languageCode: "es-ES",
-        });
+        expect(config.voiceName).toBe("Kore");
+        expect(config.languageCode).toBe("es-ES");
+        expect(config.systemInstruction).toContain("Habla en español de forma breve y natural.");
+        expect(config.systemInstruction).toContain("Autoridad temporal del kernel:");
+        expect(config.systemInstruction).toContain('"source":"WORKER_CLOCK"');
+        expect(config.systemInstruction).toContain('"timezone":"Europe/Madrid"');
+        expect(config.systemInstruction).toContain('"now_iso":"2026-08-26T15:14:01+02:00"');
+        expect(config.systemInstruction).toContain("get_authoritative_datetime");
+        expect(config.tools?.map((tool) => tool.name)).toEqual(["get_authoritative_datetime"]);
         return {
           status: "STARTED",
           call: CALL,
@@ -83,6 +80,44 @@ describe("fast Gemini canary webhook", () => {
 
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual({ ok: true, status: "STARTED" });
+  });
+
+  it("uses the tenant business timezone for the signed temporal snapshot", async () => {
+    const env: FastGeminiCanaryEnv = {
+      ...ENV,
+      TENANT_ROUTING_KV: {
+        async get(key: string) {
+          if (key === "tenant_by_phone:+34600000001") {
+            return JSON.stringify({ tenant_id: "tenant-fast-canary", route_id: "default", enabled: true });
+          }
+          if (key === "tenant_config:tenant-fast-canary") {
+            return JSON.stringify({
+              tenant_id: "tenant-fast-canary",
+              status: "active",
+              business: { timezone: "America/Bogota" },
+            });
+          }
+          return null;
+        },
+      },
+    };
+    const response = await routeFastGeminiCanaryWebhook(request(), env, {
+      now: () => Date.parse("2026-08-26T14:14:01.000Z"),
+      startIncoming: async (_input, options): Promise<FastIncomingRuntimeResult> => {
+        const config = await options.resolveSessionConfig("tenant-fast-canary", CALL);
+        expect(config.systemInstruction).toContain('"timezone":"America/Bogota"');
+        expect(config.systemInstruction).toContain('"now_iso":"2026-08-26T09:14:01-05:00"');
+        return {
+          status: "STARTED",
+          call: CALL,
+          tenantId: "tenant-fast-canary",
+          routeId: "default",
+          credentialId: "credential-fast",
+          edgeUrl: env.GEMINI_FAST_CANARY_EDGE_URL,
+        };
+      },
+    });
+    expect(response.status).toBe(202);
   });
 
   it("resolves tenant and route with one KV read keyed by the called E.164 number", async () => {

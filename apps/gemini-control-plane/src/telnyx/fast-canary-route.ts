@@ -8,6 +8,12 @@ import {
   parseFastHumanHandoffConfig,
 } from "./fast-human-handoff";
 import type { FastHumanHandoffAuditDependencies } from "./fast-human-handoff-audit";
+import {
+  FAST_AUTHORITATIVE_DATETIME_TOOL,
+  buildFastAuthoritativeDateTimeSnapshot,
+  fastTemporalAuthorityInstruction,
+  resolveFastTenantTimeZone,
+} from "../fast-temporal-authority";
 
 type TenantRoutingKv = Readonly<{
   get(key: string): Promise<string | null>;
@@ -129,7 +135,13 @@ function capabilityInstruction(capabilities: TenantCapabilities): string {
   ].join("\n");
 }
 
-function buildTenantInstruction(baseInstruction: string, value: unknown, tenantId: string, capabilities: TenantCapabilities) {
+function buildTenantInstruction(
+  baseInstruction: string,
+  value: unknown,
+  tenantId: string,
+  capabilities: TenantCapabilities,
+  nowEpochMs: number,
+) {
   const config = value == null ? null : record(value);
   if (value != null && !config) throw new Error("Tenant config KV value is invalid");
   const declaredTenant = config?.tenant_id ?? config?.tenantId;
@@ -149,6 +161,8 @@ function buildTenantInstruction(baseInstruction: string, value: unknown, tenantI
     return waiting.map((entry, index) => required(entry, `Tenant waiting phrase ${index}`, 512));
   })();
 
+  const timezone = resolveFastTenantTimeZone(value);
+  const temporalSnapshot = buildFastAuthoritativeDateTimeSnapshot(timezone, nowEpochMs);
   const handoff = config ? parseFastHumanHandoffConfig(config) : null;
   const transferEnabled = capabilities["call.transfer"] && Boolean(handoff?.enabled);
   const lines = [
@@ -157,24 +171,34 @@ function buildTenantInstruction(baseInstruction: string, value: unknown, tenantI
     greeting ? `Saludo configurado: ${greeting}` : null,
     waitingPhrases.length ? `Frases de espera permitidas: ${waitingPhrases.join(" | ")}` : null,
     capabilityInstruction(capabilities),
+    fastTemporalAuthorityInstruction(temporalSnapshot),
     transferEnabled && handoff ? fastHumanHandoffPrompt(handoff) : null,
   ].filter((entry): entry is string => Boolean(entry));
 
   return Object.freeze({
     systemInstruction: `${baseInstruction}${lines.length ? `\n\n${lines.join("\n")}` : ""}`,
     languageCode: language,
-    tools: transferEnabled ? Object.freeze([FAST_TRANSFER_TOOL]) : Object.freeze([]),
+    tools: Object.freeze([
+      FAST_AUTHORITATIVE_DATETIME_TOOL,
+      ...(transferEnabled ? [FAST_TRANSFER_TOOL] : []),
+    ]),
   });
 }
 
-async function resolveTenantSessionConfig(kv: TenantRoutingKv, tenantId: string, baseInstruction: string) {
+async function resolveTenantSessionConfig(
+  kv: TenantRoutingKv,
+  tenantId: string,
+  baseInstruction: string,
+  nowEpochMs: number,
+) {
   // Both reads are pre-call only and parallel; no KV access is added to audio forwarding.
   const [configRaw, capabilitiesRaw] = await Promise.all([
     kv.get(`tenant_config:${tenantId}`),
     kv.get(`tenant_capabilities:${tenantId}`),
   ]);
+  const configValue = parseJson(configRaw, "Tenant config KV value");
   const capabilities = canonicalCapabilities(parseJson(capabilitiesRaw, "Tenant capabilities KV value"), tenantId);
-  const tenant = buildTenantInstruction(baseInstruction, parseJson(configRaw, "Tenant config KV value"), tenantId, capabilities);
+  const tenant = buildTenantInstruction(baseInstruction, configValue, tenantId, capabilities, nowEpochMs);
   return Object.freeze({
     systemInstruction: tenant.systemInstruction,
     tools: tenant.tools,
@@ -206,6 +230,7 @@ export async function routeFastGeminiCanaryWebhook(request: Request, env: FastGe
     return new Response(null, { status: 204 });
   }
 
+  const requestNowEpochMs = now();
   const systemInstruction = required(env.GEMINI_FAST_CANARY_SYSTEM_INSTRUCTION, "GEMINI_FAST_CANARY_SYSTEM_INSTRUCTION", 64_000);
   const startIncoming = dependencies.startIncoming ?? startSignedFastGeminiIncomingCall;
   const result = await startIncoming({
@@ -213,7 +238,7 @@ export async function routeFastGeminiCanaryWebhook(request: Request, env: FastGe
     signatureBase64: request.headers.get("telnyx-signature-ed25519"),
     timestamp: request.headers.get("telnyx-timestamp"),
   }, {
-    nowEpochMs: now(),
+    nowEpochMs: requestNowEpochMs,
     signatureMaxAgeSeconds: 300,
     admissionTtlMs: 60_000,
     telnyxPublicKey: env.TELNYX_PUBLIC_KEY,
@@ -224,7 +249,12 @@ export async function routeFastGeminiCanaryWebhook(request: Request, env: FastGe
     edgeUrl: env.GEMINI_FAST_CANARY_EDGE_URL,
     resolveTenantRoute: (call) => resolveTenantRouteFromKv(env.TENANT_ROUTING_KV, call.calledNumber),
     isCanaryAllowed: () => true,
-    resolveSessionConfig: (tenantId) => resolveTenantSessionConfig(env.TENANT_ROUTING_KV, tenantId, systemInstruction),
+    resolveSessionConfig: (tenantId) => resolveTenantSessionConfig(
+      env.TENANT_ROUTING_KV,
+      tenantId,
+      systemInstruction,
+      requestNowEpochMs,
+    ),
   });
 
   switch (result.status) {

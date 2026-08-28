@@ -12,6 +12,7 @@ import { InMemoryDiagnosticJournal } from "./diagnostic-journal.mjs";
 import { createFastDiagnosticFlusher } from "./fast-diagnostic-flush.mjs";
 import { FastGeminiRealtimeSession } from "./fast-runtime.mjs";
 import { createFastTransferControlClient } from "./fast-transfer-control.mjs";
+import { createFastTemporalControlClient } from "./fast-temporal-control.mjs";
 
 const MEDIA_PATH = "/telnyx/gemini";
 const TELNYX_START_TIMEOUT_MS = 5_000;
@@ -347,10 +348,23 @@ export function createFastGeminiMediaServerFromEnv(env = process.env, options = 
     sinkUrl: resolveFastDiagnosticSinkUrl(env),
     controlToken,
   });
+  const controlPlaneUrl = resolveFastTransferControlUrl(env);
   const transferControl = options.transferControl ?? createFastTransferControlClient({
-    baseUrl: resolveFastTransferControlUrl(env),
+    baseUrl: controlPlaneUrl,
     controlToken,
     ...(options.transferControlFetch ? { fetcher: options.transferControlFetch } : {}),
+  });
+  const temporalControl = options.temporalControl ?? createFastTemporalControlClient({
+    baseUrl: controlPlaneUrl,
+    controlToken,
+    ...(options.temporalControlFetch ? { fetcher: options.temporalControlFetch } : {}),
+  });
+  const toolHandlers = Object.freeze({
+    ...(options.toolHandlers ?? {}),
+    get_authoritative_datetime: (_call, context) => temporalControl.getAuthoritativeDateTime({
+      tenantId: context.tenantId,
+      callControlId: context.callControlId,
+    }),
   });
   return createFastGeminiMediaServer({
     geminiApiKey: env.GEMINI_API_KEY,
@@ -362,6 +376,7 @@ export function createFastGeminiMediaServerFromEnv(env = process.env, options = 
     maxBufferedBytes: env.MEDIA_EDGE_MAX_BUFFERED_BYTES ? Number(env.MEDIA_EDGE_MAX_BUFFERED_BYTES) : undefined,
     providerReadiness: options.providerReadiness ?? null,
     flushDiagnostics,
+    toolHandlers,
     authorizeTransfer: transferControl.authorizeTransfer,
     startTransfer: transferControl.startTransfer,
   });
