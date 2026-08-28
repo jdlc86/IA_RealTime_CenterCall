@@ -17,6 +17,7 @@ const EFFECT_TYPES = new Set([
   "FINANCIAL_ACTION",
 ]);
 
+const READ_ONLY_EFFECT_TYPES = new Set(["READ_CONTEXT", "READ_BUSINESS_DATA"]);
 const CALLER_AUTHORITY_DEFAULT_SOURCES = Object.freeze(["EXPLICIT_REQUEST", "CONFIRMED_OFFER"]);
 
 function required(value, field, max = 512) {
@@ -66,16 +67,24 @@ function canonicalAllowedSources(authority, value) {
   return Object.freeze([authority]);
 }
 
+function defaultEvidence(authority, effect) {
+  if (authority === "SYSTEM_AUTHORITY") return "NONE";
+  if (authority === "SEMANTIC_NECESSITY" && READ_ONLY_EFFECT_TYPES.has(effect)) return "NONE";
+  return "CALLER_TRANSCRIPT";
+}
+
 export function defineFastToolPolicy(input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Fast tool policy is invalid");
   const authority = code(input.authority, "Fast tool authority");
   const effect = code(input.effect, "Fast tool effect");
   if (!AUTHORITY_TYPES.has(authority)) throw new Error(`Fast tool authority ${authority} is unsupported`);
   if (!EFFECT_TYPES.has(effect)) throw new Error(`Fast tool effect ${effect} is unsupported`);
-  const evidence = input.evidence ?? (authority === "SYSTEM_AUTHORITY" ? "NONE" : "CALLER_TRANSCRIPT");
+  const evidence = input.evidence ?? defaultEvidence(authority, effect);
   if (evidence !== "NONE" && evidence !== "CALLER_TRANSCRIPT") throw new Error("Fast tool evidence policy is invalid");
-  if (authority !== "SYSTEM_AUTHORITY" && evidence === "NONE") {
-    throw new Error("Caller-governed Fast tool policy must require caller transcript evidence");
+  if (evidence === "NONE" && authority !== "SYSTEM_AUTHORITY") {
+    if (authority !== "SEMANTIC_NECESSITY" || !READ_ONLY_EFFECT_TYPES.has(effect)) {
+      throw new Error("Only read-only semantic necessity may omit caller transcript evidence");
+    }
   }
   return Object.freeze({
     authority,
@@ -91,6 +100,7 @@ export const FAST_HORIZONTAL_TOOL_POLICIES = Object.freeze({
     authority: "SEMANTIC_NECESSITY",
     effect: "READ_CONTEXT",
     capability: "time.authoritative",
+    evidence: "NONE",
   }),
   transfer_call: defineFastToolPolicy({
     authority: "CALLER_AUTHORITY",
@@ -132,7 +142,7 @@ export function mergeFastToolPolicies(basePolicies = {}, extensionPolicies = {})
 function authorityDescription(policy) {
   switch (policy.authority) {
     case "SEMANTIC_NECESSITY":
-      return "Declara SEMANTIC_NECESSITY solo cuando esta herramienta sea necesaria para responder o completar de forma segura la petición actual del caller. No la uses de forma proactiva para enriquecer una respuesta.";
+      return "Declara SEMANTIC_NECESSITY solo cuando esta herramienta sea necesaria por el significado completo de la petición actual del caller. No decidas por coincidencias léxicas ni palabras aisladas y no la uses de forma proactiva para enriquecer una respuesta.";
     case "CALLER_REQUEST":
       return "Declara CALLER_REQUEST solo cuando el caller haya pedido semánticamente esta acción en el turno actual.";
     case "CALLER_CONFIRMATION":
@@ -174,7 +184,7 @@ export function buildFastToolAuthorityContract(description, parameters, policyIn
   ])];
   schema.additionalProperties = false;
   return Object.freeze({
-    description: `${description}\nKernel tool-authority contract: ${authorityDescription(policy)} El kernel valida la evidencia y decide ALLOW/DENY; una function call de Gemini es solo una propuesta y nunca constituye por sí sola autorización para ejecutar la herramienta.`,
+    description: `${description}\nKernel tool-authority contract: ${authorityDescription(policy)} El kernel valida la política y decide ALLOW/DENY; una function call de Gemini es solo una propuesta y nunca constituye por sí sola autorización para ejecutar una herramienta con efectos.`,
     parametersJsonSchema: schema,
     policy,
   });
@@ -208,8 +218,9 @@ function denied(status, toolName, policy = null) {
  * Generic, call-scoped authorization boundary. The authenticated bootstrap owns
  * which tools are available to this tenant/call; the local policy registry owns
  * the minimum authority/effect contract and cannot be weakened by Gemini.
- * Natural-language interpretation remains with Gemini. The kernel validates only
- * declared authority, grounded caller evidence, call identity and policy presence.
+ * Natural-language interpretation remains with Gemini. Caller-governed effects
+ * require grounded caller evidence; read-only semantic necessity does not depend
+ * on provider transcription arrival order.
  */
 export class FastToolAuthorizationKernel {
   constructor(options = {}) {
