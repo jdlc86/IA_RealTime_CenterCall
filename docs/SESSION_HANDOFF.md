@@ -1,12 +1,14 @@
 # Prompt de relevo — IA_RealTime_CenterCall
 
-> Última revisión: 2026-08-26  
-> Decisión vigente: [`ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md`](./architecture/ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md)  
-> Plan vivo: [`OPENAI_GEMINI_SEPARATION_WORKPLAN.md`](./architecture/OPENAI_GEMINI_SEPARATION_WORKPLAN.md)
+> Última revisión: 2026-08-28  
+> Rama estable: `rebuild/v39-stable-baseline`  
+> Baseline de referencia al redactar: `794ff32f954c89b80cf3e8973b6bb7ae8b42a5fb`  
+> PR de larga duración contra `main`: PR #85, OPEN / DRAFT  
+> Arquitectura Gemini vigente: [`ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md`](./architecture/ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md)
 
 ## INICIO DEL PROMPT
 
-Continúa autónomamente el trabajo sobre `jdlc86/IA_RealTime_CenterCall` como Staff/Principal Engineer de sistemas realtime de voz.
+Continúa autónomamente el trabajo sobre `jdlc86/IA_RealTime_CenterCall` como Staff/Principal Engineer de sistemas realtime de voz. Prioriza estabilidad, evidencia y latencia. No conviertas documentación histórica en estado operativo sin contrastarla con código, workflows y servicios remotos.
 
 ### 1. Fuente de verdad y arranque obligatorio
 
@@ -17,137 +19,151 @@ PR     #85
 base   main
 ```
 
-Usa exclusivamente esa rama y PR. PR #85 debe permanecer OPEN y DRAFT. No crees ramas/PR, no merge, no ready-for-review, no force-push y no reescribas historia. Antes de escribir verifica HEAD remoto/PR/CI y si otra sesión publicó cambios.
+La rama estable es la fuente de trabajo del proyecto. PR #85 sigue siendo el PR de larga duración contra `main`; verifica su estado remoto antes de asumirlo.
 
-Lee en este orden:
+Antes de escribir o desplegar:
 
-1. `docs/architecture/ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md`
-2. `docs/architecture/OPENAI_GEMINI_SEPARATION_WORKPLAN.md`
-3. `docs/architecture/GEMINI_INDEPENDENT_RUNTIME_DESIGN.md`
-4. `docs/architecture/GEMINI_INDEPENDENT_RUNTIME_DESIGN_REVIEW.md`
-5. `docs/architecture/GEMINI_CONTROL_CONTRACT_V1.md`
-6. `docs/architecture/GEMINI_TRANSCRIPT_AUTHORITY_D1.md`
-7. `docs/architecture/GEMINI_AUTHORIZATION_TRUST_D3_D5.md`
-8. `docs/PROJECT_STATUS.md`
-9. `docs/architecture/DESIGN_RULES.md`, interpretadas mediante ADR-003 si existe conflicto.
+1. leer `docs/README.md`;
+2. leer `docs/PROJECT_STATUS.md`;
+3. leer `docs/SYSTEM_OVERVIEW.md`;
+4. leer `docs/architecture/ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md`;
+5. leer `docs/architecture/DESIGN_RULES.md`;
+6. si el trabajo afecta a transferencias, leer `docs/HUMAN_HANDOFF.md`;
+7. verificar HEAD remoto y workflows del SHA exacto;
+8. comprobar configuración remota cuando el resultado dependa de Worker, KV, Cloud Run, Supabase o Telnyx.
 
-### 2. Paradigma aprobado
+Documentos como `GEMINI_PHASE3_PROGRESS.md`, diseños/reviews de Fase 2/3 y snapshots `SESSION_HANDOFF_*` son historial. No pueden usarse para afirmar que Gemini sigue no productivo.
 
-La arquitectura híbrida OpenAI/Gemini ya no es objetivo. Se construyen dos productos independientes:
+### 2. Arquitectura operativa actual
+
+El producto Gemini dispone de un Fast Path independiente:
 
 ```text
-OPENAI PRODUCT                      GEMINI PRODUCT
-OpenAI Worker                       Gemini Worker
-OpenAI runtime                      GeminiCallSession DO
-OpenAI lifecycle                    Gemini lifecycle propio
-OpenAI tool flow                    shared ToolGateway/domain
-OpenAI audio/voz                           │
-       │                                   ▼
-OpenAI Realtime                     Gemini Media Edge
-                                            │
-                                       Gemini Live
+Telnyx
+  │ webhook / señalización
+  ▼
+Gemini Fast Worker — Cloudflare
+  │ admission + tenant/KV + credenciales + control/tools + diagnóstico
+  │
+  └─────────────► WSS etiquetado
+                    │
+                    ▼
+              Fast Media Edge — Cloud Run
+                │              │
+        Telnyx media WSS   Gemini Live WSS
+                │              │
+                └──── audio ────┘
 ```
 
-Supabase se comparte en esta fase. Gemini debe poder operar sin SDK/runtime/secretos/fallback OpenAI. OpenAI se limpiará después.
+Aplicaciones:
+
+```text
+apps/gemini-control-plane
+apps/gemini-media-edge
+```
+
+OpenAI conserva su producto/ruta independiente:
+
+```text
+apps/control-plane
+apps/media-edge
+```
+
+No existe requisito actual de coexistencia OpenAI/Gemini dentro de la misma llamada.
+
+#### `0%` de Cloud Run no significa `0%` de llamadas Fast
+
+El deploy Gemini Fast crea una revisión con `--no-traffic` y un tag. Después el Worker recibe `GEMINI_FAST_CANARY_EDGE_URL` apuntando directamente a esa URL etiquetada.
+
+Por tanto, para saber qué revisión atiende llamadas Fast hay que comprobar el binding del Worker. El reparto general de tráfico del servicio Cloud Run por sí solo no responde esa pregunta.
 
 ### 3. Reglas arquitectónicas que no puedes violar
 
-1. Dos Workers/runtimes independientes.
-2. No copiar `CallSession V2→V54`, `realtime-provider-runtime` ni sideband híbrido.
-3. El código histórico no es especificación óptima.
-4. Compartir sólo dominio/persistencia/seguridad/diagnóstico realmente neutrales.
-5. One state owner per concern.
-6. No timers/sleeps para ocultar ordering; usar identidad, sequence, ACK/NACK y estado persistente.
-7. Gemini Live socket permanece en Media Edge; DO es autoridad control/business.
-8. Tools requieren ToolGateway/capability/schema/business invariant/confirmación cuando aplique.
-9. Session resumption es continuidad, nunca rollback de seguridad.
-10. Output quarantine bloquea efectos/audio, pero no borra contexto ya enviado a Gemini.
-11. Rejected context no terminal exige fresh provider session; resumption está prohibido.
-12. Una sola identidad vocal Gemini Live; no volver silenciosamente a Google TTS.
-13. Google STT v2 es transcript authority baseline inicial; Gemini input transcription es auxiliar hasta evidencia posterior.
-14. No exponer secretos para probes.
-15. Supabase único por ahora; no coexistencia/failover/N-Supabase sin ADR posterior.
+1. **Cloudflare no transporta audio continuo.**
+2. El hot path Gemini normal es Telnyx Media Edge ↔ Gemini Live; no introducir un hop remoto obligatorio por cada chunk o turno.
+3. No tocar VAD, codecs, resampler, buffers o audio bridge para resolver un problema de control si no existe evidencia de que el problema esté allí.
+4. OpenAI y Gemini son runtimes estructuralmente independientes.
+5. No introducir SDK/runtime/secretos OpenAI en Gemini ni viceversa por comodidad.
+6. Un efecto irreversible requiere validación determinista de tenant, identidad, schema, capability y estado aplicable.
+7. Gemini interpreta lenguaje natural. En handoff, el kernel valida el enum de autoridad soportado y el grounding textual en el transcript snapshot; no reinterpreta el español mediante listas rígidas ni reconstruye actualmente por sí mismo una oferta previa para `CONFIRMED_OFFER`.
+8. Una transferencia a humano aceptada entra en lifecycle terminal para la IA; no reanudar conversación normal silenciosamente.
+9. Persistencia de diagnósticos/handoff no puede bloquear audio ni telephony crítica.
+10. No usar timers/sleeps para ocultar carreras de estado cuando puede capturarse identidad/evidencia en el momento correcto.
+11. El transcript/evidencia usados para autorizar un tool deben pertenecer al turno capturado; no leer estado mutable que pueda haber sido limpiado después de encolar el efecto.
+12. Supabase puede ser compartido entre productos mientras los contratos sean neutrales; no crear N bases/failover por defecto.
+13. No almacenar audio, secretos o transcripts crudos en diagnóstico por defecto.
+14. Una prueba sintética, CI verde o health endpoint no sustituyen una validación E2E cuando el comportamiento es acústico/telefónico.
+15. Distinguir explícitamente **limitación conocida** de **regresión nueva**.
 
 ### 4. Estado real alcanzado
 
-Fases 0, 1 y **2 están COMPLETADAS**. **Fase 3 está ACTIVA.**
+El Gemini Fast Path ya ha atendido llamadas reales. No está en la antigua Fase 3 “no productiva”.
 
-El nuevo paquete `apps/gemini-control-plane/` existe pero **NO recibe tráfico productivo**.
+Implementado y desplegado en la línea estable:
 
-Implementado/validado:
+- Fast Worker independiente en `apps/gemini-control-plane`;
+- Fast Media Edge independiente en `apps/gemini-media-edge`;
+- Gemini Live audio→audio con VAD/turn-taking Fast;
+- tenant routing/configuración mediante KV antes de la llamada;
+- diagnósticos bounded hacia `public.call_diagnostic_events`;
+- transferencia humana Fast con auditoría en `public.human_handoff_events`;
+- lifecycle de éxito/fallo/no-answer de transferencia;
+- política de callback registrada para handoffs fallidos;
+- corrección del seeding KV para no crear placeholders cuando existen claves reales.
 
-- `gemini-control.v1`: envelope, payload validation, sequence, ACK/NACK, replay/SYNC contract;
-- `GeminiCallSession` experimental DO + WebSocket Hibernation + SQLite sequence/idempotency;
-- `TurnAuthorizationQuarantine` bounded en Media Edge, todavía aislada del runtime de llamadas;
-- `planRejectedTurnRecovery` en Gemini Control Plane;
-- CI independiente Gemini Control Plane;
-- D2 real single-voice/control-speech capability;
-- D1 transcript authority baseline;
-- D3/D5 policies/test owners.
+#### Autorización de handoff sin listas rígidas — validada E2E
 
-#### D1
+Baseline `794ff32f...` corrigió dos problemas:
 
-Google Speech v2 permanece autoridad textual inicial. Datos reales últimos 7 días: 37 completados, p50 445 ms, p95 598.4 ms, avg 457.7 ms, min 324, max 648; 1 fallo y 3 empty. Gemini `inputAudioTranscription` no es autoridad porque la API la envía independientemente y sin ordering garantizado.
+1. eliminó el uso de catálogos lingüísticos tipo `sí|vale|adelante|...` para decidir semántica;
+2. eliminó la carrera por la que `turnComplete` podía limpiar `callerTranscript` antes de que el `transfer_call` asíncrono lo usara.
 
-#### D2
+Gemini clasifica semánticamente la intención; la política Fast valida que el enum de autoridad sea soportado y que `caller_authority_evidence` esté realmente grounded en el transcript capturado. El runtime toma un snapshot antes de que el estado mutable pueda limpiarse.
 
-Capability gate SHA `880e09b0203be5a009f7cb5b6491aa263e042ed6`.
+Además de la regresión sintética same-frame, una llamada real del **2026-08-28** confirmó:
 
-Canary `Gemini Media Edge Canary Deploy` run #43 / id `32959778772`: SUCCESS. Final revision `gemini-media-edge-00073-qfk`, 100% traffic, image `sha256:c8ca1bf77b342755bfdfc0ec5be81d5813ff4ba34c13cdf33b76c5473181ee07`.
+- `HUMAN_HANDOFF_AUTHORIZATION_BLOCKED = 0`;
+- `HUMAN_HANDOFF_ACCEPTED = 1`;
+- un único `TOOL_RESULT_SENT`;
+- un único `HUMAN_HANDOFF_TRANSFER_START_RESULT`;
+- cierre del runtime IA con `HUMAN_HANDOFF_TERMINAL`;
+- auditoría durable `status=TRANSFERRED`;
+- target leg respondido;
+- sin callback ni failure reason.
 
-Prueba dos control turns en UNA sesión Live, voz `Kore` baseline, audio nativo + `turnComplete` en ambos. Esto demuestra capability, NO que las llamadas híbridas actuales ya usen una sola voz.
+El bucle de confirmaciones repetidas no se reprodujo en esta E2E.
 
-#### D3
+### 5. Limitaciones y deuda abiertas
 
-`TurnAuthorizationQuarantine`:
+Mantener aquí sólo el resumen. Los propietarios del detalle son:
 
-- 128 KiB máximo ≈2.73 s PCM16/24 kHz;
-- audio/tools retenidos antes de auth;
-- authorize libera en orden;
-- reject descarta;
-- overflow fail closed → clean restart;
-- no timers.
+- **Handoff / ringback / TTS terminal / contrato semántico:** `docs/HUMAN_HANDOFF.md`.
+- **Deploy Fast / preflight canary:** `docs/runbooks/Deployment.md`.
 
-#### D4
+Estado resumido:
 
-DO probe: seq=1 ACK/APPLIED; reconnect+duplicate ACK/DUPLICATE; gap NACK/OUT_OF_ORDER. Estado crítico en SQLite.
+- ringback local determinista para el caller: abierto;
+- audibilidad E2E del TTS terminal tras `NO_ANSWER`/fallo: abierta;
+- gate final de `Gemini Fast Canary Deploy`: el `jq` final sigue desalineado con el contrato actual de `/internal/preflight`; no interpretar ese rojo por sí solo como fallo del hot path.
 
-#### D5
-
-Terminal reject → terminate. Non-terminal rejected input que entró a Gemini → `CLEAN_RESTART_PROVIDER`, `allowSessionResumption=false`, fresh connection y `PROVIDER_RECONNECTED(mode=CLEAN_RESTART)` antes de LISTENING.
-
-### 5. CI conocido
-
-SHA de cierre Fase 2: `884209db652bd8e4d5fc8d61f5bc4583566e6e90`.
-
-Todos SUCCESS:
-
-- Control Plane CI run `32960868003`;
-- Gemini Control Plane CI run `32960867952`;
-- Gemini Media Edge CI run `32960868029`;
-- Gemini Media Edge Benchmark CI run `32960867963`.
-
-Gemini Control Plane CI ejecutó 16 tests reales: 12 contrato, 3 trust recovery, 1 DO/reconnect. La cobertura `src/**/*.test.ts` fue restaurada después de detectar que el primer config Vitest la había excluido accidentalmente.
+La llamada exitosa del 2026-08-28 demuestra autorización y transferencia; **no demuestra** por sí sola ringback audible ni el comportamiento del TTS terminal de un fallo/no-answer.
 
 ### 6. Primera misión
 
-**Fase 3A — consolidar `GeminiCallSession` y el contrato antes de cualquier tráfico.**
+La primera misión técnica recomendada pasa ahora a ser **reparar el gate `Gemini Fast Canary Deploy` sin tocar el runtime de llamadas**:
 
-Primero:
+1. comparar `.github/workflows/gemini-fast-canary-deploy.yml` con `apps/gemini-control-plane/src/fast-preflight.ts` y su test;
+2. mantener el retry bounded existente para respuestas temporales 401/503;
+3. actualizar la aserción `jq` al contrato real (`tenantRouting: KV_RUNTIME_ONLY` y campos actuales);
+4. mantener el preflight sin dependencias de tenant/teléfono productivos;
+5. ejecutar CI y el deploy canary;
+6. exigir `bootstrap == VERIFIED` y `websocketUpgrade == VERIFIED` antes de declarar el gate reparado.
 
-1. definir direcciones estrictas `EDGE_TO_WORKER` y `WORKER_TO_EDGE` en `gemini-control.v1`;
-2. hacer que el endpoint WSS del DO rechace mensajes Worker-only enviados por Edge;
-3. crear lifecycle state owner pequeño (`CALL_BOOTSTRAP`, `LISTENING`, `CALLER_ACTIVE`, `TURN_GATING`, `TOOL_PENDING`, `ASSISTANT_ACTIVE`, `CLOSING`, `TERMINAL`);
-4. persistir lifecycle/turn/provider epoch mínimo en SQLite;
-5. validar state + identity antes de ACK `APPLIED`;
-6. conservar sequence/idempotency/reconnect existentes;
-7. añadir tests de invalid direction/state sin conectar Telnyx ni Media Edge real todavía.
-
-Después avanzar a admission Telnyx Gemini no productivo.
+Después, las siguientes prioridades de UX son ringback determinista y TTS terminal observable/audible, manteniendo esos cambios en control path siempre que sea posible.
 
 ### 7. Validación y comandos obligatorios
 
-Para documentación/Control Plane:
+Para documentación/Control Plane legado:
 
 ```bash
 npm run docs:check
@@ -155,7 +171,7 @@ npm test
 npm run check
 ```
 
-Para `apps/gemini-control-plane`, ejecutar `npm run check`/CI independiente. Para Media Edge, `npm run check` + `npm test`; canary sólo cuando el cambio lo requiera.
+Para `apps/gemini-control-plane`, ejecutar su `npm run check`/tests/CI correspondiente. Para `apps/gemini-media-edge`, ejecutar `npm run check` + `npm test` y cualquier CI Fast requerido por el cambio.
 
 Distinguir siempre:
 
@@ -163,24 +179,28 @@ Distinguir siempre:
 IMPLEMENTADO ≠ CI VERDE ≠ DESPLEGADO ≠ VALIDADO E2E
 ```
 
-### 8. Qué NO hacer ahora
+En cambios acústicos o telefónicos, añadir además evidencia de llamada real antes de cerrar el problema.
 
-- no conectar número productivo al nuevo Worker;
-- no pedir llamada manual todavía;
-- no retirar camino híbrido;
-- no limpiar OpenAI todavía;
-- no volver a semantic preselection híbrida;
-- no declarar single-voice productivo sólo por D2;
-- no introducir OpenAI SDK/secretos en `gemini-control-plane`.
+### 8. Qué NO hacer
+
+- no reintroducir listas rígidas de palabras para interpretar aceptación/rechazo;
+- no volver a Google STT/semantic preselection como gate obligatorio de cada turno Fast sin nueva decisión arquitectónica;
+- no introducir latencia en audio para resolver problemas de handoff/control;
+- no asumir que `0%` de tráfico general Cloud Run desactiva la URL etiquetada usada por el Worker;
+- no declarar ringback o failure TTS resueltos sin escucharlos/observarlos E2E;
+- no usar documentos de fase antiguos como estado actual;
+- no exponer secretos ni números de destino reales en documentación pública cuando un placeholder sea suficiente;
+- no cambiar modelo/VAD/audio estable como efecto colateral de una limpieza de control o documentación.
 
 ### 9. Cierre de sesión
 
-Antes de terminar:
+Antes de terminar una sesión relevante:
 
-1. actualizar `OPENAI_GEMINI_SEPARATION_WORKPLAN.md`;
-2. actualizar este handoff si cambia misión;
-3. registrar SHA/CI/deploy exactos;
-4. dejar siguiente acción exacta;
-5. mantener PR #85 OPEN/DRAFT.
+1. actualizar `PROJECT_STATUS.md` si cambió estado operativo;
+2. actualizar este handoff si cambió la siguiente misión o una restricción crítica;
+3. actualizar el runbook/ADR correspondiente cuando cambie procedimiento o arquitectura;
+4. registrar evidencia suficiente para distinguir código, CI, deploy y E2E;
+5. comprobar `npm run docs:check` cuando se modifiquen documentos canónicos;
+6. dejar claro qué limitaciones siguen abiertas.
 
 ## FIN DEL PROMPT

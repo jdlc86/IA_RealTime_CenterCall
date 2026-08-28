@@ -1,12 +1,25 @@
 # Cross-plane call diagnostics runbook
 
-`public.call_diagnostic_events` is the server-only operational source for reconstructing a call across the Worker, `CallSession`, Media Edge and provider adapters. It must never contain audio, base64 media, raw transcripts, caller/business PII, prompts, provider response bodies, credentials, tokens or secrets.
+> **Estado:** vigente  
+> **Última revisión:** 2026-08-28
 
-The Worker remains the only durable Supabase writer. Media Edge keeps a bounded short-lived in-memory journal and exposes it only through the existing authenticated Control Plane → Media Edge internal bearer boundary. After a signed Telnyx `call.hangup` is accepted by the existing webhook handler, the Worker reads that journal and inserts the events idempotently by `event_id`. Failure to read or persist telemetry is best-effort and must not change call state.
+`public.call_diagnostic_events` es la fuente operacional persistida para reconstruir eventos técnicos de una llamada. **OpenAI y Gemini no necesariamente producen los mismos stages ni el mismo lifecycle**, por lo que este runbook separa consultas neutrales de filtros específicos.
 
-RLS remains enabled. `public`, `anon` and `authenticated` have no table privileges; `service_role` has only `select, insert`. The existing hourly cron deletes rows older than seven days using `created_at`.
+No debe contener audio, base64 media, secretos, tokens, API keys, prompts completos ni transcripts crudos por defecto.
 
-## Latest calls
+La persistencia de diagnóstico no debe gobernar la llamada: una caída del sink/auditoría no puede introducir latencia en audio ni autorizar/cambiar un efecto telefónico.
+
+## Guardrails de almacenamiento verificados
+
+Al revisar este runbook en 2026-08-28, `public.call_diagnostic_events` mantiene:
+
+- RLS habilitado;
+- privilegios de tabla para `service_role`: `SELECT` e `INSERT` únicamente;
+- cron `purge-redacted-call-diagnostics-7d` cada hora, eliminando filas con `created_at < now() - interval '7 days'`.
+
+Estos guardrails son parte del diseño de diagnóstico mínimo/redactado. No deben eliminarse o debilitarse sin una decisión explícita y verificación equivalente.
+
+## 1. Empieza por identificar la llamada, no por buscar un stage esperado
 
 ```sql
 select
@@ -24,7 +37,9 @@ order by last_event_at desc
 limit 25;
 ```
 
-## Full timeline for one call
+No asumas que la llamada más reciente tiene un lifecycle completo sólo porque exista una fila. Verifica timestamps y planes.
+
+## 2. Timeline completa
 
 ```sql
 select
@@ -34,6 +49,7 @@ select
   plane,
   component,
   stage,
+  event,
   severity,
   error_code,
   response_id,
@@ -44,61 +60,181 @@ select
   audio_duration_ms,
   chunk_count,
   sample_count,
+  recovery,
   details
 from public.call_diagnostic_events
 where call_id = :'call_id'
 order by occurred_at, persisted_at, sequence nulls last, id;
 ```
 
-## First error per call
+La timeline completa es preferible a buscar primero un string concreto, porque los nombres de stage cambian entre productos/runtimes.
+
+## 3. Primer error por llamada
 
 ```sql
 select distinct on (call_id)
-  call_id, occurred_at, plane, component, stage, error_code, details
+  call_id,
+  occurred_at,
+  plane,
+  component,
+  stage,
+  error_code,
+  details
 from public.call_diagnostic_events
 where severity = 'error'
 order by call_id, occurred_at, persisted_at;
 ```
 
-## Admission, greeting, VAD, STT, Gemini and playback evidence
+Un error de observabilidad/deploy/preflight no debe clasificarse automáticamente como error del audio hot path. Usa `plane`, `component` y causalidad.
+
+## 4. Gemini Fast — stages útiles
+
+En llamadas Fast reales se han observado families/stages como:
+
+```text
+FAST_TELNYX_CONNECTED
+FAST_TELNYX_START_AUTHORIZED
+FAST_SESSION_STARTED
+FAST_MEDIA_AUTHORIZED
+FAST_FIRST_CALLER_MEDIA
+GEMINI_SETUP_SENT
+GEMINI_SETUP_COMPLETE
+FAST_FIRST_GEMINI_AUDIO_TO_TELNYX
+GEMINI_TURN_COMPLETE
+HUMAN_HANDOFF_AUTHORIZATION_BLOCKED
+HUMAN_HANDOFF_ACCEPTED
+HUMAN_HANDOFF_TRANSFER_START_RESULT
+FAST_SESSION_CLOSED
+```
+
+Consulta orientativa:
 
 ```sql
 select
-  call_id,
-  stage,
-  plane,
   occurred_at,
+  sequence,
+  plane,
+  component,
+  stage,
+  severity,
+  elapsed_ms,
   duration_ms,
-  audio_duration_ms,
-  error_code,
-  response_id,
-  item_id,
   details
 from public.call_diagnostic_events
 where call_id = :'call_id'
   and (
-    stage like '%ADMISSION%'
-    or stage like '%GREETING%'
-    or stage like 'VAD_%'
-    or stage like 'STT_%'
+    stage like 'FAST_%'
     or stage like 'GEMINI_%'
-    or stage like '%PLAYBACK%'
+    or stage like 'HUMAN_HANDOFF_%'
   )
 order by occurred_at, sequence nulls last;
 ```
 
-## Calls closed without transcript authority
+No convertir esta lista en un contrato exhaustivo: es un filtro de investigación, no una máquina de estados documental.
 
-```sql
-select call_id, max(occurred_at) as closed_at
-from public.call_diagnostic_events
-group by call_id
-having bool_or(stage in ('MEDIA_SESSION_CLOSING', 'TELNYX_HANGUP_OBSERVED', 'SIDEBAND_CLOSED'))
-   and not bool_or(stage in ('TRANSCRIPT_AUTHORITY_COMPLETED', 'CALLER_TRANSCRIPT_COMPLETED'))
-order by closed_at desc;
+## 5. No reutilizar queries del runtime híbrido para afirmar fallos Fast
+
+Queries antiguas buscaban por defecto:
+
+```text
+STT_%
+TRANSCRIPT_AUTHORITY_COMPLETED
+CALLER_TRANSCRIPT_COMPLETED
+SIDEBAND_CLOSED
+semantic preselection
+quarantine
 ```
 
-## Correlation invariant — expected zero
+Esos mecanismos pueden seguir existiendo en código/rutas históricas, pero ADR-004 los eliminó como gates obligatorios del Fast Path normal.
+
+Por tanto, una llamada Fast sin `STT_*` externo **no está incompleta por definición**.
+
+## 6. Transferencia humana requiere dos fuentes
+
+La timeline general está en:
+
+```text
+public.call_diagnostic_events
+```
+
+El lifecycle/auditoría durable de handoff está en:
+
+```text
+public.human_handoff_events
+```
+
+Ejemplo:
+
+```sql
+select
+  id,
+  tenant_id,
+  call_id,
+  status,
+  requested_at,
+  transfer_started_at,
+  answered_at,
+  transfer_ended_at,
+  call_terminated_at,
+  target_call_control_id,
+  callback_required,
+  callback_status,
+  failure_reason
+from public.human_handoff_events
+where call_id = :'call_id'
+order by requested_at desc;
+```
+
+Evitar exponer `caller_phone` o `destination_phone` en una revisión ordinaria salvo que sean estrictamente necesarios; en documentación/resúmenes, enmascararlos.
+
+## 7. Separar los hitos de handoff
+
+No inferir un hito a partir de otro:
+
+```text
+HUMAN_HANDOFF_ACCEPTED
+    demuestra autorización/aceptación del lifecycle
+
+HUMAN_HANDOFF_TRANSFER_START_RESULT
+    demuestra resultado del comando de inicio
+
+target_call_control_id
+    demuestra que existe/evidenció un leg remoto
+
+call.bridged / TRANSFERRED
+    demuestra bridge exitoso
+
+NO_ANSWER / BUSY / FAILED
+    demuestra resultado terminal de intento
+
+call.speak.ended
+    demuestra lifecycle de speak, NO audibilidad al caller
+
+callback_required=true, callback_status=PENDING
+    demuestra necesidad registrada, NO callback ejecutado
+```
+
+El detalle de ringback/TTS y del contrato semántico pertenece a [`../HUMAN_HANDOFF.md`](../HUMAN_HANDOFF.md).
+
+## 8. Ringback y audio terminal
+
+`call_diagnostic_events` puede demostrar signaling/control, pero la ausencia o presencia de ringback/TTS audible es una cuestión acústica.
+
+Para un incidente “se quedó muda” separar:
+
+1. ¿Gemini dejó de producir audio porque el handoff entró en terminal?;
+2. ¿Telnyx inició el target leg?;
+3. ¿había early media?;
+4. ¿la aplicación generó ringback local?;
+5. ¿se solicitó failure TTS?;
+6. ¿Telnyx aceptó/completó el speak?;
+7. ¿el caller lo oyó realmente?
+
+No diagnosticar silencio de dialing como VAD/Gemini sin más evidencia.
+
+## 9. Correlación — smoke check
+
+El productor actual mantiene `event_id`, `call_id`, `call_control_id`, `plane` y `occurred_at` como campos de correlación esperados. Al revisar los eventos de los últimos 7 días, no se observaron nulos en ninguno de esos campos.
 
 ```sql
 select count(*) as uncorrelated_events
@@ -110,9 +246,11 @@ where event_id is null
    or occurred_at is null;
 ```
 
-## Forbidden-content smoke check — expected zero
+Resultado esperado: `0` mientras el contrato productor vigente no cambie. Si un runtime futuro necesita otra semántica, cambiar primero el contrato/documentación del productor; no debilitar este smoke check por anticipación.
 
-Do not flag technical booleans merely because their key contains words such as `transcript`, `reservation` or `phone`. Check exact forbidden content-bearing keys and PII/media-shaped string values instead.
+## 10. Forbidden-content smoke check
+
+No flags técnicos sólo porque una clave contenga palabras como `transcript` o `phone`. Busca contenido real sensible.
 
 ```sql
 with detail_values as (
@@ -127,18 +265,30 @@ where key = any (array[
     'audio_payload', 'audio_base64', 'base64_audio',
     'authorization', 'api_key', 'secret', 'credential', 'credential_url', 'token',
     'phone_number', 'customer_phone', 'caller_phone',
-    'email', 'email_address', 'address',
+    'email', 'email_address',
     'provider_body', 'prompt', 'instruction'
   ])
    or value ~* '^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$'
    or (
      key ~ '(phone|caller|customer|destination|contact)'
      and regexp_replace(value, '[^0-9+]', '', 'g') ~ '^\+?[0-9]{9,15}$'
-   )
-   or (
-     length(value) >= 128
-     and value ~ '^[A-Za-z0-9+/=]+$'
    );
 ```
 
-For failures, diagnose from this table first. `STT_FAILED` carries only a stable `error_code`, optional HTTP status and bounded timing/audio metrics; provider error bodies and transcript text are intentionally absent.
+Revisar manualmente cualquier resultado; no borrar evidencia automáticamente a partir de este smoke test.
+
+## 11. Método recomendado de investigación
+
+```text
+1. localizar call_id exacto por ventana temporal
+2. timeline completa de call_diagnostic_events
+3. identificar runtime/producto por stages/planes
+4. localizar primer desvío respecto al lifecycle esperado de ESE runtime
+5. si hay handoff, unir human_handoff_events
+6. distinguir signaling/control de experiencia acústica
+7. contrastar configuración remota sólo si afecta al incidente
+8. cambiar el owner mínimo responsable
+9. añadir regresión del fallo real
+```
+
+No empezar por modificar VAD/audio si la primera divergencia aparece en autorización, routing, transfer, deploy o telemetry.

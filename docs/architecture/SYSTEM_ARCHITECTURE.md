@@ -1,449 +1,376 @@
 # IA_RealTime_CenterCall — System Architecture
 
-> **Arquitectura oficial v2.3**
-> **Estado:** vigente
-> **Última revisión:** 2026-08-22
-> **Carácter:** normativo
+> **Arquitectura oficial v3.0**  
+> **Estado:** vigente  
+> **Última revisión:** 2026-08-27  
+> **Carácter:** normativo  
+> **ADR de runtime Gemini aplicable:** [`ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md`](./ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md)
 
-Este documento es la referencia canónica de arquitectura. Si otro documento contradice este, prevalece este documento salvo ADR posterior que lo modifique explícitamente.
+Este documento describe la arquitectura estable del sistema completo. Cuando una ADR posterior define un mecanismo más específico para un runtime, prevalece esa ADR en su ámbito.
 
 ## 1. Principios
 
-1. Media plane mínimo.
-2. Cloudflare no transporta audio.
-3. Core/Conversation Platform agnóstico al sector.
-4. Multi-tenant desde el modelo de dominio.
-5. Configuración por negocio, no forks por cliente.
-6. Proveedores externos detrás de contratos/adaptadores.
-7. El modelo conversa; los sistemas empresariales son la fuente de verdad.
-8. Toda operación empresarial originada por el modelo pasa por ToolGateway.
-9. GitHub es la fuente de verdad del software y documentación.
-10. Desarrollo/deploy normal cloud-first mediante Cloudflare Workers Builds.
-11. El carrier y la numeración no deben condicionar la lógica del Core.
-12. El destino de una llamada se decide en el Control Plane mediante un `CallOrchestrator`.
-13. Cloudflare mantiene configuración operativa rápida de la conversación; Supabase mantiene el estado empresarial cambiante y persistente.
-14. La app de negocio y Carolina comparten la misma fuente de verdad empresarial, pero obtienen `tenant_id` por mecanismos de confianza diferentes.
-15. Ninguna credencial maestra del negocio se usa como credencial directa de Supabase ni se expone una `service_role` en clientes.
+1. Media plane mínimo y explícito.
+2. Cloudflare no transporta audio continuo.
+3. OpenAI y Gemini son runtimes de voz independientes.
+4. Dominio, persistencia y contratos se comparten sólo cuando son realmente neutrales al proveedor.
+5. Multi-tenant desde la raíz: una llamada se vincula a un tenant desde contexto de routing confiable.
+6. Configuración por negocio, no forks por cliente.
+7. El modelo conversa e interpreta lenguaje natural; el kernel/sistema es autoridad de permisos, identidad, invariantes y efectos.
+8. No se simula comprensión lingüística abierta mediante listas crecientes de frases.
+9. Los sistemas empresariales son fuente de verdad para disponibilidad, reservas, citas, estados y escrituras.
+10. GitHub es fuente de verdad de código y documentación; producción debe poder reconciliarse con un SHA publicado.
+11. `IMPLEMENTADO`, `CI VERDE`, `DESPLEGADO` y `VALIDADO E2E` son estados distintos.
+12. Una optimización o cambio de audio exige evidencia; problemas de control no justifican tocar VAD/codecs/resampling sin causalidad demostrada.
 
-## 2. Arquitectura física
+## 2. Productos realtime independientes
+
+La decisión estructural vigente es ADR-003: dos productos ejecutables independientes.
 
 ```text
-                            ┌────────────────────┐
-                            │       GitHub       │
-                            │ código + docs      │
-                            └─────────┬──────────┘
-                                      │ push
-                                      ▼
-                            ┌────────────────────┐
-                            │ CI + Deploy gate   │
-                            │ SHA exacto         │
-                            └─────────┬──────────┘
-                                      │
-                                      ▼
-┌─────────────┐      PSTN       ┌──────────────────────┐
-│   Cliente   │◄───────────────►│ Telnyx               │
-└─────────────┘                  │ Number + Voice API   │
-                                 └──────────┬───────────┘
-                                            │ webhook de control
-                                            ▼
-                                 ┌──────────────────────┐
-                                 │ Cloudflare Worker    │
-                                 │ Conversation Platform│
-                                 │ + CallOrchestrator   │
-                                 └──────────┬───────────┘
-                                            │ decide routing
-                                            ▼
-                                 ┌──────────────────────┐
-                                 │ OpenAI Realtime      │
-                                 │ speech-to-speech     │
-                                 └──────────┬───────────┘
-                                            │
-                 ┌──────────────────────────┼──────────────────────┐
-                 ▼                          ▼                      ▼
-           Tenant config               ToolGateway          Observabilidad
-                                            │
-                                            ▼
-                                   Business Modules
-                                            │
-                                            ▼
-                                   Providers/Adapters
-                                            │
-                                            ▼
-                                   Supabase / sistemas
-                                      empresariales
+PRODUCTO OPENAI                         PRODUCTO GEMINI FAST
+
+PSTN                                    PSTN
+  ↕                                       ↕
+Telnyx                                  Telnyx
+  ↕ señalización / SIP                   ↕ webhook + media WSS
+OpenAI Control Plane                    Gemini Fast Worker
+  ↕                                      │ admission / tenant / tools / control
+OpenAI Realtime                         │
+                                          └──► Fast Media Edge (Cloud Run)
+                                                   ↕
+                                               Gemini Live
 ```
 
-La futura app web/escritorio accede al mismo estado empresarial mediante una API autenticada de la plataforma, no mediante credenciales privilegiadas embebidas en el cliente.
-
-Telnyx es el proveedor telefónico inicial. Twilio queda como alternativa futura compatible mediante `TelephonyProvider`.
-
-## 3. Media plane
-
-Objetivo arquitectónico del audio una vez establecida la llamada:
+Aplicaciones del repositorio:
 
 ```text
-PSTN → Telnyx/TelephonyProvider → RealtimeProvider → Telnyx/TelephonyProvider → PSTN
+OpenAI:
+  apps/control-plane
+  apps/media-edge
+
+Gemini:
+  apps/gemini-control-plane
+  apps/gemini-media-edge
 ```
 
-Cloudflare, bases de datos, ToolGateway, TenantResolver y sistemas empresariales quedan fuera del transporte continuo de audio. El Control Plane puede participar en señalización, bootstrap, routing y comandos de llamada sin convertirse en relay de audio.
+No se comparte estado efímero de conversación entre OpenAI y Gemini. No existe failover cross-provider a mitad de llamada.
 
-Cualquier cambio que añada un relay de audio requiere benchmark, justificación y ADR.
+## 3. Gemini Fast — topología operativa actual
 
-## 4. Control plane y CallOrchestrator
-
-El Control Plane vive inicialmente en Cloudflare Workers y contiene progresivamente:
-
-- recepción/verificación de webhooks de Telnyx y OpenAI;
-- `CallOrchestrator`;
-- Call Bootstrap;
-- TenantResolver;
-- carga de TenantConfiguration;
-- construcción de RealtimeSessionConfiguration;
-- selección del destino realtime/humano;
-- ToolGateway;
-- autorización y políticas;
-- autenticación/autorización de la futura app;
-- módulos de negocio;
-- selección de providers;
-- observabilidad;
-- handoff futuro.
-
-### CallOrchestrator
-
-Responsabilidad: decidir el destino y bootstrap de una llamada usando contexto confiable de telefonía y tenant.
+La ruta Gemini que atiende llamadas configuradas para este producto es:
 
 ```text
-Telnyx webhook
-    ↓
-CallOrchestrator
-    ↓
-TenantResolver
-    ↓
-TenantConfiguration
-    ↓
-RoutingDecision
-    ├── OpenAI Realtime
-    ├── otro RealtimeProvider
-    ├── HumanHandoff
-    └── fallback/terminate
+                                  ┌───────────────────────────┐
+                                  │ Gemini Fast Worker        │
+Telnyx webhook ──────────────────►│ Cloudflare                │
+                                  │                           │
+                                  │ - firma Telnyx            │
+                                  │ - tenant routing/KV       │
+                                  │ - session configuration   │
+                                  │ - admission/credentials   │
+                                  │ - transfer/control        │
+                                  │ - diagnostics ingest      │
+                                  └────────────┬──────────────┘
+                                               │ bootstrap / control
+                                               │ no audio continuo
+                                               ▼
+Caller ─ PSTN ─ Telnyx media WSS ◄────► Fast Media Edge ◄────► Gemini Live
+                                          Cloud Run
 ```
 
-El `CallOrchestrator` no contiene lógica específica de clínica/restaurante ni reglas empresariales de citas/reservas.
+### Fast Worker
 
-## 5. Flujo de establecimiento de llamada
+Responsabilidades:
+
+- validar señalización/webhooks Telnyx;
+- resolver `called_number → tenant_id`;
+- cargar configuración y capabilities del tenant antes de iniciar sesión;
+- construir admission y credenciales efímeras;
+- suministrar la URL WSS del Media Edge;
+- autorizar/ejecutar efectos de control que no deben residir en el audio hot path;
+- gobernar transferencia humana y lifecycle Telnyx asociado;
+- recibir/persistir diagnóstico bounded fuera del tramo crítico.
+
+### Fast Media Edge
+
+Responsabilidades por llamada:
+
+- socket Telnyx media;
+- socket Gemini Live;
+- forwarding del audio caller → Gemini;
+- única conversión necesaria de audio Gemini → Telnyx;
+- VAD/turn-taking Gemini del Fast Path;
+- barge-in/interruption y playback;
+- parser de eventos Gemini 3.1 incluyendo múltiples parts por frame;
+- tool execution realtime local cuando el contrato lo permite;
+- captura de evidencia necesaria para tool authorization sin añadir hops al audio.
+
+El Media Edge **no** decide tenant, números privados de transferencia ni permisos empresariales.
+
+## 4. `0%` de tráfico general de Cloud Run no desactiva Gemini Fast
+
+El workflow Fast despliega el Media Edge con una revisión etiquetada y `--no-traffic`:
 
 ```text
-incoming PSTN call
-    ↓
-Telnyx Voice API event
-    ↓
-Cloudflare / CallOrchestrator
-    ↓
-called_number / route
-    ↓
-TenantResolver
-    ↓
+gemini-media-edge revision
+  tag = fast-<sha>
+  general service traffic = 0%
+```
+
+Después el Worker recibe:
+
+```text
+GEMINI_FAST_CANARY_EDGE_URL=wss://<tagged-revision>/telnyx/gemini
+```
+
+Las llamadas Fast usan **esa URL etiquetada directamente**. Por tanto:
+
+```text
+Cloud Run general traffic 0%
+!=
+Gemini Fast route inactive
+```
+
+Al diagnosticar una llamada, verificar el binding del Worker y la revisión etiquetada; no inferir el Media Edge efectivo únicamente desde `.status.traffic[].percent` del servicio.
+
+## 5. Media plane
+
+### OpenAI
+
+OpenAI puede usar una topología SIP/directa propia de su producto.
+
+### Gemini
+
+Gemini Live requiere un Media Edge dedicado:
+
+```text
+Telnyx media WSS
+      ↕
+Fast Media Edge
+      ↕
+Gemini Live WSS
+```
+
+Cloudflare, Supabase, tenant resolver y sistemas empresariales quedan fuera del transporte continuo de audio.
+
+Regla:
+
+> Todo nuevo hop obligatorio entre audio Telnyx y Gemini, o entre Gemini y Telnyx, necesita justificación, benchmark y una decisión arquitectónica aplicable.
+
+## 6. Audio y turn-taking Gemini Fast
+
+Baseline actual del Fast Path:
+
+- Gemini Live recibe audio inmediatamente después del bootstrap/setup, sin Google STT como gate obligatorio;
+- VAD automático de Gemini es el owner de turn-taking conversacional baseline;
+- `START_OF_ACTIVITY_INTERRUPTS` permite barge-in natural;
+- Gemini produce audio nativo y el Media Edge transforma únicamente lo necesario para Telnyx;
+- Google Speech/TTS y módulos híbridos históricos pueden seguir existiendo en el repositorio, pero **no son por ello parte del hot path Fast actual**.
+
+ADR-004 supersede las decisiones antiguas que hacían obligatorios STT externo, semantic preselection, quarantine o control WSS/DO en cada turno Gemini.
+
+## 7. Tools, comprensión semántica y efectos
+
+Gemini function calling es la puerta normal a efectos externos en su runtime.
+
+```text
+caller lenguaje natural
+        ↓
+Gemini comprensión semántica
+        ↓
+tool call estructurado
+        ↓
+validación determinista
+tenant + capability + schema + estado + invariantes
+        ↓
+efecto / dominio / sistema externo
+        ↓
+FunctionResponse
+```
+
+La división de autoridad es intencionada:
+
+- **modelo:** intención abierta, lenguaje natural, formulación;
+- **kernel:** identidad, permisos, capability, estado, grounding requerido, idempotencia y efectos.
+
+No se deben ampliar regex/listas de expresiones para intentar reemplazar la comprensión del modelo.
+
+### Handoff humano
+
+Para `transfer_call`, Gemini declara autoridad semántica y evidencia del caller. El runtime verifica que esa evidencia pertenezca al transcript capturado para el tool call. La política no interpreta de nuevo el significado de la frase mediante listas.
+
+Ver [`../HUMAN_HANDOFF.md`](../HUMAN_HANDOFF.md).
+
+## 8. Multi-tenant y configuración
+
+Modelo conceptual:
+
+```text
+called_number
+   ↓
+TenantResolver / tenant routing KV
+   ↓
 tenant_id
-    ↓
-TenantConfiguration
-    ↓
-RoutingDecision
-    ↓
-RealtimeSessionConfiguration
-    ↓
-RealtimeProvider
-    ↓
-ACTIVE
+   ├── tenant_config:<tenant>
+   └── tenant_capabilities:<tenant>
 ```
 
-Para OpenAI Realtime vía SIP, el destino se expresa conceptualmente como `sip:<OPENAI_PROJECT_ID>@sip.api.openai.com;transport=tls`. El Project ID se mantiene como configuración y no se hardcodea en documentación ni lógica del dominio.
+La personalización vive en configuración y módulos, no en ramas específicas de cliente dentro del Core.
 
-La IA no puede iniciar un saludo específico del negocio antes de completar el tenant binding.
+Una conversación específica del negocio no debe iniciarse antes de resolver el tenant de forma confiable.
 
-## 6. Multi-tenant y personalización
+La configuración puede contener, entre otros:
 
-Modelo inicial:
-
-```text
-Número A → tenant_id=clinica_madrid
-Número B → tenant_id=restaurante_centro
-```
-
-`TenantConfiguration` contiene configuración operativa de conversación:
-
-```text
-TenantConfiguration
-├── tenant_id
-├── BusinessProfile
-├── instructions/persona
-├── idioma/voz/VAD
-├── módulos habilitados
-├── permisos de tools
-├── providers
-├── telefonía
-└── handoff
-```
-
-`BusinessProfile` contiene información descriptiva relativamente estable. No sustituye a `TenantConfiguration` ni a la base empresarial. Pacientes, citas, reservas, agenda y otros datos transaccionales no pertenecen a `TenantConfiguration`.
-
-No se permiten condicionales de Core específicos de cliente como `if tenant === "clinica_madrid"`.
-
-## 7. Separación de datos: Cloudflare y Supabase
-
-### 7.1 Cloudflare: plano de ejecución/configuración rápida
-
-Cloudflare conserva la información necesaria para establecer y gobernar la conversación con baja latencia:
-
-- `tenant_id` y routing;
 - identidad/nombre del negocio;
-- nombre y persona del asistente;
-- prompt/instructions;
-- voz, idioma y VAD;
-- tools y módulos autorizados;
-- providers y políticas;
-- configuración de telefonía/handoff;
-- estado efímero de llamada y control cuando corresponda.
+- instrucciones/persona;
+- idioma/voz aplicables al runtime;
+- capabilities/tools habilitadas;
+- políticas de handoff;
+- configuración operativa necesaria antes de la llamada.
 
-Principio: **Cloudflare sabe cómo debe funcionar el negocio durante la conversación.**
+No confundir configuración con estado empresarial transaccional.
 
-### 7.2 Supabase PostgreSQL: estado empresarial persistente
+## 9. Cloudflare y Supabase
 
-Supabase es la persistencia empresarial inicial seleccionada, detrás de contratos/adaptadores. Contendrá progresivamente:
+### Cloudflare
 
-```text
-tenants / referencias empresariales persistentes
-patients
-services
-professionals
-schedules
-appointments
-reservations (cuando aplique)
-business operational data
-audit_events / trazabilidad empresarial según diseño posterior
-```
+Plano de routing/configuración/control de baja latencia:
 
-Todas las entidades multi-tenant que corresponda incluyen `tenant_id`. El aislamiento se aplica en la API/módulos y adicionalmente mediante políticas de base de datos/RLS cuando proceda.
+- tenant routing;
+- configuración/capabilities;
+- admission;
+- secretos/bindings operativos backend;
+- Worker Gemini/OpenAI según producto;
+- coordinación/control que no transporte audio continuo.
 
-Principio: **Supabase sabe cuál es el estado actual del negocio.**
+### Supabase
 
-No se introduce Supabase en el camino crítico de bootstrap de voz salvo necesidad arquitectónica posterior explícitamente justificada.
+Persistencia empresarial y operativa duradera detrás de fronteras backend.
 
-### 7.3 Fuente de verdad compartida
-
-Carolina y la futura app leen/escriben el mismo estado empresarial:
+Además de tablas de negocio, el producto actual utiliza trazabilidad como:
 
 ```text
-Carolina / Realtime                    App web/escritorio
-       │                                      │
-       ▼                                      ▼
- ToolGateway                           Platform API/Auth
-       │                                      │
-       └──────────────┬───────────────────────┘
-                      ▼
-               Business Modules
-                      ↓
-               SupabaseAdapter
-                      ↓
-            Supabase PostgreSQL
+public.call_diagnostic_events
+public.human_handoff_events
 ```
 
-Una modificación confirmada por la app debe ser visible posteriormente para Carolina y viceversa.
+La persistencia de diagnósticos/handoff Fast se diseña para no bloquear el audio hot path.
 
-## 8. Identidad de tenant y credencial maestra de la app
+`callback_required=true` expresa una necesidad registrada; no demuestra que exista un ejecutor automático de callbacks.
 
-La llamada y la app obtienen el tenant mediante raíces de confianza distintas:
+## 10. Handoff humano y telefonía
+
+El destino de transferencia pertenece a configuración segura del tenant; nunca al modelo.
+
+Lifecycle conceptual:
 
 ```text
-LLAMADA
-called_number/routing confiable
-→ TenantResolver
-→ tenant_id
-
-APP
-credencial maestra del negocio
-→ Authentication Service / Platform API
-→ tenant_id autenticado
-→ sesión/token de corta duración
+caller solicita/acepta handoff
+  → Gemini emite transfer_call con autoridad grounded
+  → kernel autoriza
+  → anuncio de handoff
+  → Telnyx transfer
+       ├── bridge → humano
+       └── busy/no-answer/failure → auditoría + política terminal/callback
 ```
 
-### Tarjeta maestra
+Limitaciones abiertas actuales:
 
-Al cliente se le podrá entregar una tarjeta maestra con una credencial secreta de alta entropía asociada al negocio. Esa credencial sirve para demostrar identidad ante la plataforma, **no como contraseña directa de Supabase**.
+- no existe ringback local determinista garantizado para el caller durante el intento;
+- el TTS terminal tras fallo/no-answer existe como acción de control, pero su audibilidad E2E no se considera todavía garantizada.
 
-Flujo objetivo:
+Estas limitaciones pertenecen al control/UX de transferencia y no justifican tocar el audio Fast principal sin evidencia causal.
 
-```text
-Tarjeta maestra / App
-        ↓ credencial
-Cloudflare Authentication Service
-        ↓ validación + tenant binding
-sesión/token corto
-        ↓
-App API
-        ↓ autorización por tenant/scope
-Business Modules
-        ↓
-SupabaseAdapter
-        ↓
-Supabase
-```
+## 11. Seguridad
 
-El token de sesión puede expresar `tenant_id`, identidad de usuario/dispositivo, scopes/permisos y expiración. La credencial maestra debe poder revocarse y rotarse. No se almacena en texto plano; se almacena/verifica mediante representación criptográfica apropiada. Las credenciales privilegiadas de Supabase permanecen exclusivamente en backend.
-
-La tarjeta maestra es bootstrap/autenticación fuerte del negocio, no autorización ilimitada permanente. En fases posteriores podrán añadirse usuarios, roles, dispositivos y MFA sin alterar el modelo de tenant.
-
-## 9. Contratos arquitectónicos
-
-### TelephonyProvider
-Aísla Telnyx, Twilio u otros carriers/Voice APIs/SIP providers.
-
-### NumberProvider
-Responsabilidad separada para adquisición/portabilidad/asociación de numeración.
-
-### RealtimeProvider
-Aísla OpenAI Realtime u otro proveedor de conversación realtime.
-
-### TenantResolver
-Convierte contexto de routing confiable en `tenant_id`. Inicialmente la clave principal es `called_number`.
-
-### RealtimeSessionConfiguration
-Contrato independiente del proveedor realtime. Expresa persona, voice, language, VAD, tools permitidas, políticas conversacionales y metadata de llamada/tenant.
-
-### ToolGateway
-Frontera única desde el modelo hacia acciones empresariales.
-
-```text
-Model tool call
-      ↓
-ToolGateway
-      ↓
-ToolExecutor
-      ↓
-Business Module
-      ↓
-Provider/Adapter
-      ↓
-Supabase / External System
-```
-
-### SupabaseAdapter
-Aísla PostgreSQL/Supabase de los módulos de dominio. Los módulos no dependen directamente del SDK de Supabase. Permite sustituir el sistema fuente sin reescribir `CallSession`, ToolGateway o reglas de negocio.
-
-### Platform API / App Authentication
-Frontera de acceso para la futura app. Convierte una identidad autenticada en contexto de tenant y scopes autorizados. La app nunca elige libremente un `tenant_id` para ampliar acceso.
-
-## 10. Módulos de negocio
-
-Módulos compartidos previstos:
-
-- BusinessInformationModule;
-- PatientModule;
-- AppointmentModule;
-- ReservationModule;
-- OrderModule;
-- HumanHandoffModule.
-
-Los módulos contienen reglas reutilizables y no SDKs de terceros. Tanto ToolGateway como Platform API reutilizan estos módulos cuando realizan la misma operación empresarial, evitando dos implementaciones divergentes de citas/pacientes.
-
-## 11. Estado de llamada
-
-Estados principales:
-
-```text
-RECEIVED → BOOTSTRAPPING → ROUTING → ACCEPTING → ACTIVE → COMPLETED
-             │               │           │           │
-             └──────────────► FAILED ◄────┴───────────┘
-ACTIVE → HANDOFF → COMPLETED / FAILED
-```
-
-Estados conversacionales derivados durante ACTIVE:
-
-`LISTENING · THINKING · SPEAKING · TOOL_WAIT · INTERRUPTED`
-
-## 12. Seguridad y aislamiento
-
-- secretos nunca en Git;
+- secretos nunca en Git ni en documentación;
 - tenant de llamada derivado de routing confiable, no del texto libre del caller/modelo;
-- tenant de app derivado de autenticación validada, no de un campo libre enviado por el cliente;
-- tools autorizadas por tenant;
-- credenciales/providers aislados por tenant;
-- todas las consultas empresariales deben quedar acotadas al tenant;
-- RLS/controles de base de datos como defensa adicional, no única barrera;
-- ninguna `service_role` o secreto backend de Supabase en app web/escritorio;
-- credencial maestra revocable y rotatable; no texto plano en persistencia;
-- tokens/sesiones de app de duración limitada y con scopes;
-- logs con redacción de datos sensibles;
-- pruebas cross-tenant obligatorias para voz, API y persistencia;
 - el modelo nunca decide permisos;
-- ninguna operación WRITE se confirma sin resultado válido del sistema fuente;
-- minimizar datos personales/sanitarios hasta definir controles de privacidad y necesidad real.
+- tools/capabilities autorizadas por tenant;
+- destino de handoff privado;
+- credenciales efímeras/bearer/HMAC no se registran en diagnóstico;
+- consultas y escrituras empresariales acotadas al tenant;
+- backend privilegiado no se expone a apps cliente;
+- datos sensibles/minimizados en logs;
+- una evidencia acústica no se infiere de un evento de control distinto.
 
-## 13. Arquitectura de desarrollo y despliegue
+## 12. Observabilidad
 
-```text
-rama publicada + PR
-   ↓
-CI del SHA exacto: tests + Workers runtime + dry-runs
-   ↓
-Workers Builds o Wrangler autorizado
-   ↓
-versión Cloudflare
-   ↓
-promoción verificada al porcentaje de tráfico esperado
-   ↓
-health/version + E2E cuando el cambio afecta voz/event ordering
-```
-
-El mecanismo de despliegue no cambia la fuente de verdad: producción debe corresponder a un SHA publicado en GitHub. Una versión subida al histórico no está desplegada hasta que recibe tráfico.
-
-La app web/escritorio tendrá su propio pipeline de build/release definido en su fase específica.
-
-## 14. Fases
+Diagnóstico debe permitir separar al menos:
 
 ```text
-F0 Voz E2E
-  ↓
-F1 Baseline + observabilidad + TenantResolver
-  ↓
-F2 Latencia + barge-in
-  ↓
-F3 ToolGateway
-  ↓
-F4 Clínica + validación multi-negocio
-  ↓
-F5 Persistencia empresarial + Supabase + post-call
-  ↓
-F6 Handoff humano
-  ↓
-F7 Concurrencia
-  ↓
-F8 Hardening producción
-  ↓
-F9 App de gestión web/escritorio
+Telnyx signaling
+Telnyx media
+Fast Worker
+Fast Media Edge
+Gemini Live
+Tool/effect
+Human handoff target leg
+Persistence
 ```
 
-### F9 — App de gestión web/escritorio
+Principios:
 
-Objetivo: entregar al negocio una interfaz de gestión que comparta la misma fuente de verdad que los asistentes de voz.
+- métricas bounded;
+- persistencia remota preferentemente fuera del tramo crítico;
+- no audio ni secretos en diagnóstico por defecto;
+- no guardar transcript crudo salvo decisión explícita y necesidad demostrada;
+- usar timestamps/IDs/causalidad para reconstruir carreras, no `sleep` como herramienta de ordering.
 
-Alcance previsto:
+## 13. Desarrollo y despliegue
 
-- autenticación/bootstrap mediante tarjeta maestra;
-- intercambio seguro por sesión/token corto;
-- revocación/rotación de credenciales;
-- usuarios/roles posteriores sin romper tenant binding;
-- consulta y edición de pacientes según permisos;
-- agenda, servicios, profesionales y citas;
-- altas/cambios/cancelaciones mediante Platform API;
-- actualización consistente con las operaciones realizadas por Carolina;
-- aislamiento multi-tenant y pruebas negativas/cross-tenant;
-- auditoría de operaciones sensibles;
-- experiencia web y, si se confirma, empaquetado de escritorio sobre la misma API.
+Fuente de verdad:
 
-La app no accede con credenciales privilegiadas directamente a Supabase. La lógica empresarial reutiliza los mismos Business Modules/contratos del backend.
+```text
+GitHub SHA publicado
+   ↓
+CI aplicable
+   ↓
+deploy específico del producto
+   ↓
+verificación de servicio/bindings
+   ↓
+E2E cuando el cambio afecta comportamiento real
+```
 
-**Dependencia:** aunque F9 sea la fase de producto de la app, F4/F5 deben diseñar desde ahora contratos y esquema de datos reutilizables por ella. No se pospone el diseño correcto de API/dominio hasta F9.
+OpenAI y Gemini tienen pipelines distintos. El runbook genérico antiguo de `apps/control-plane` no describe por sí solo el despliegue Gemini Fast.
 
-## 15. Estado actual
+Para Gemini Fast, un deploy correcto debe distinguir:
 
-El restaurante es el vertical activo en producción. ToolGateway, persistencia Supabase, handoff, concurrencia y hardening están implementados en distintos grados; el estado verificable y la próxima E2E viven únicamente en [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md). OpenAI continúa como único realtime provider activo.
+1. imagen/revisión de Media Edge;
+2. tag WSS de esa revisión;
+3. binding `GEMINI_FAST_CANARY_EDGE_URL` del Worker;
+4. health/readiness;
+5. preflight/bootstrap/HMAC cuando el gate correspondiente sea válido;
+6. llamada E2E cuando el cambio sea telefónico/acústico.
+
+Ver [`../runbooks/Deployment.md`](../runbooks/Deployment.md).
+
+## 14. Documentación histórica
+
+Los siguientes artefactos siguen siendo útiles para reconstruir decisiones, pero no describen por sí solos el runtime actual:
+
+- ADR-002 en sus gates previos a Fast Path;
+- diseños/reviews de Gemini Fase 2/3;
+- `GEMINI_PHASE3_PROGRESS.md`;
+- módulos híbridos existentes en código;
+- snapshots de handoff fechados.
+
+La mera existencia de un módulo histórico no significa que esté conectado al Fast Path.
+
+## 15. Criterio para resolver contradicciones
+
+En caso de conflicto:
+
+```text
+ADR posterior aplicable
+  → DESIGN_RULES.md
+  → este documento
+  → PROJECT_STATUS.md
+  → SESSION_HANDOFF.md
+  → runbook específico
+  → documento histórico
+```
+
+Y siempre contrastar estado remoto cuando la afirmación dependa de producción.
