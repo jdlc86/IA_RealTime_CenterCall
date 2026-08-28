@@ -102,6 +102,12 @@ export const FAST_HORIZONTAL_TOOL_POLICIES = Object.freeze({
     capability: "time.authoritative",
     evidence: "NONE",
   }),
+  report_semantic_security_incident: defineFastToolPolicy({
+    authority: "SEMANTIC_NECESSITY",
+    effect: "READ_CONTEXT",
+    capability: "security.semantic_boundary",
+    evidence: "NONE",
+  }),
   transfer_call: defineFastToolPolicy({
     authority: "CALLER_AUTHORITY",
     allowedSources: ["EXPLICIT_REQUEST", "CONFIRMED_OFFER"],
