@@ -65,6 +65,8 @@ El modelo interpreta lenguaje natural; el sistema determinista posee permisos, t
 
 Toda tool declara un contrato cerrado: nombre/schema, autoridad, efecto, capability, evidencia, handler y contexto tenant/call; una mutación añade idempotencia, confirmación e invariantes de dominio.
 
+En Gemini Fast la autorización no depende sólo del orden del runtime: el kernel emite un recibo opaco ligado a la call y al contexto autenticado. Tanto el executor como `transfer_call` validan ese recibo en el sink y ejecutan exclusivamente la instantánea de argumentos autorizada. Así, una invocación directa del handler/executor o un `ALLOW` fabricado falla cerrado sin side effects.
+
 Para human handoff Fast, Gemini declara una autoridad semántica estructurada y evidencia del caller. El kernel valida que el valor de autoridad sea soportado y que la evidencia esté realmente grounded en el transcript snapshot del tool call. **El kernel no vuelve a interpretar el español mediante listas rígidas y actualmente no reconstruye por sí mismo que existiera una oferta previa para `CONFIRMED_OFFER`.**
 
 La definición completa está en [`HUMAN_HANDOFF.md`](./HUMAN_HANDOFF.md).

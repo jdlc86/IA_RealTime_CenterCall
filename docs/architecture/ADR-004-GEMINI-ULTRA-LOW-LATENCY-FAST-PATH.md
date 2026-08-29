@@ -59,6 +59,8 @@ Por defecto, el Worker/DO no participa en:
 
 Una tool/effect puede requerir control/autorización externa sin convertir esa frontera en relay de audio.
 
+La autorización local se hace exigible en el sink mediante un recibo opaco, ligado a la function call exacta y al contexto autenticado tenant/call. El executor y los sinks especiales sólo consumen la instantánea de argumentos autorizada. Esta comprobación es local, no introduce RPC, inferencia ni trabajo por chunk de audio.
+
 ## Owners del Fast Media Edge
 
 Por llamada, el Fast Media Edge posee:

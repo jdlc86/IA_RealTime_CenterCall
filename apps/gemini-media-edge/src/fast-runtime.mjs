@@ -11,7 +11,7 @@ import {
   telnyxInboundMediaToGemini,
 } from "./fast-audio-bridge.mjs";
 import { FastGeminiToolExecutor } from "./fast-tool-executor.mjs";
-import { FastToolAuthorizationKernel } from "./fast-tool-authorization-kernel.mjs";
+import { FastToolAuthorizationKernel, requireFastToolAuthorizationReceipt } from "./fast-tool-authorization-kernel.mjs";
 import { authorizeFastHumanHandoff, initialFastHandoffAuthorizationState } from "./fast-human-handoff-policy.mjs";
 
 const OPEN = 1;
@@ -251,11 +251,15 @@ export class FastGeminiRealtimeSession {
     if (queued.length) this.#emit("PRESETUP_CALLER_AUDIO_FLUSHED", { chunks: queued.length });
   }
 
-  async #executeTransferTool(toolCall, callerTranscriptSnapshot) {
+  async #executeTransferTool(toolCall, authorization, callerTranscriptSnapshot) {
+    const authorizedCall = requireFastToolAuthorizationReceipt(authorization, toolCall, {
+      tenantId: this.bootstrap.tenantId,
+      callControlId: this.bootstrap.callControlId,
+    });
     if (this.pendingHandoff || this.terminalHandoff) return Object.freeze({ ok: false, status: "HUMAN_HANDOFF_ALREADY_ACTIVE" });
     const decision = authorizeFastHumanHandoff(this.handoffAuthorization, {
-      authorization: toolCall.args?.authorization,
-      callerAuthorityEvidence: toolCall.args?.caller_authority_evidence,
+      authorization: authorizedCall.args?.authorization,
+      callerAuthorityEvidence: authorizedCall.args?.caller_authority_evidence,
       callerTranscript: callerTranscriptSnapshot,
     });
     this.handoffAuthorization = decision.state;
@@ -264,8 +268,8 @@ export class FastGeminiRealtimeSession {
       return Object.freeze({ ok: false, status: decision.source });
     }
     if (!this.authorizeTransfer || !this.startTransfer) throw new Error("Fast Gemini transfer control is unavailable");
-    const reason = typeof toolCall.args?.reason === "string" ? toolCall.args.reason.slice(0, 160) : "HUMAN_ASSISTANCE_REQUIRED";
-    const contextSummary = typeof toolCall.args?.context_summary === "string" ? toolCall.args.context_summary.slice(0, 500) : undefined;
+    const reason = typeof authorizedCall.args?.reason === "string" ? authorizedCall.args.reason.slice(0, 160) : "HUMAN_ASSISTANCE_REQUIRED";
+    const contextSummary = typeof authorizedCall.args?.context_summary === "string" ? authorizedCall.args.context_summary.slice(0, 500) : undefined;
     const callerPhoneE164 = this.bootstrap.securityContext.callerPhoneE164;
     const authorized = await this.authorizeTransfer(Object.freeze({
       tenantId: this.bootstrap.tenantId,
@@ -328,8 +332,8 @@ export class FastGeminiRealtimeSession {
             capability: authorization.capability,
           });
           result = toolCall.name === "transfer_call"
-            ? await this.#executeTransferTool(toolCall, transcriptSnapshot)
-            : await this.toolExecutor.execute(toolCall, {
+            ? await this.#executeTransferTool(toolCall, authorization, transcriptSnapshot)
+            : await this.toolExecutor.execute(toolCall, authorization, {
                 tenantId: this.bootstrap.tenantId,
                 callControlId: this.bootstrap.callControlId,
                 callerPhoneE164: this.bootstrap.securityContext.callerPhoneE164,

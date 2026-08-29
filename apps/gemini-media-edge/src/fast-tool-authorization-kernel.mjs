@@ -19,6 +19,7 @@ const EFFECT_TYPES = new Set([
 
 const READ_ONLY_EFFECT_TYPES = new Set(["READ_CONTEXT", "READ_BUSINESS_DATA"]);
 const CALLER_AUTHORITY_DEFAULT_SOURCES = Object.freeze(["EXPLICIT_REQUEST", "CONFIRMED_OFFER"]);
+const AUTHORIZATION_RECEIPTS = new WeakMap();
 
 function required(value, field, max = 512) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`);
@@ -223,6 +224,43 @@ function denied(status, toolName, policy = null) {
   });
 }
 
+function deepFreezeJson(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const entry of Array.isArray(value) ? value : Object.values(value)) deepFreezeJson(entry);
+  return Object.freeze(value);
+}
+
+function authorizedCallSnapshot(call) {
+  const id = required(call?.id, "Fast authorization tool call id", 256);
+  const name = required(call?.name, "Fast authorization tool name", 128);
+  const args = call?.args && typeof call.args === "object" && !Array.isArray(call.args) ? structuredClone(call.args) : {};
+  let argsJson;
+  try { argsJson = JSON.stringify(args); }
+  catch { throw new Error("Fast authorization tool arguments are not JSON serializable"); }
+  if (argsJson === undefined) throw new Error("Fast authorization tool arguments are not JSON serializable");
+  return Object.freeze({ id, name, args: deepFreezeJson(args), argsJson });
+}
+
+/**
+ * Validates the opaque receipt issued by the authorization kernel and returns
+ * the exact argument snapshot that was authorized. The private WeakMap makes a
+ * fabricated or copied decision unusable at every effectful sink.
+ */
+export function requireFastToolAuthorizationReceipt(decision, call, context = {}) {
+  const receipt = decision && typeof decision === "object" ? AUTHORIZATION_RECEIPTS.get(decision) : undefined;
+  if (!receipt || decision.allowed !== true) throw new Error("Fast tool authorization receipt is required");
+  if (call !== receipt.callRef) throw new Error("Fast tool authorization receipt does not match the function call");
+  if (required(call?.id, "Fast authorization tool call id", 256) !== receipt.id
+    || required(call?.name, "Fast authorization tool name", 128) !== receipt.name) {
+    throw new Error("Fast tool authorization receipt does not match the function call");
+  }
+  if (required(context.tenantId, "Fast authorization tenant id", 256) !== receipt.tenantId
+    || required(context.callControlId, "Fast authorization call control id", 512) !== receipt.callControlId) {
+    throw new Error("Fast tool authorization receipt does not match the call context");
+  }
+  return receipt.authorizedCall;
+}
+
 /**
  * Generic, call-scoped authorization boundary. The authenticated bootstrap owns
  * which tools are available to this tenant/call; the local policy registry owns
@@ -254,8 +292,8 @@ export class FastToolAuthorizationKernel {
       return denied("TOOL_POLICY_REQUIRED", toolName);
     }
 
-    required(context.tenantId, "Fast authorization tenant id", 256);
-    required(context.callControlId, "Fast authorization call control id", 512);
+    const tenantId = required(context.tenantId, "Fast authorization tenant id", 256);
+    const callControlId = required(context.callControlId, "Fast authorization call control id", 512);
     const args = call?.args && typeof call.args === "object" && !Array.isArray(call.args) ? call.args : {};
     const source = typeof args.authorization === "string" ? args.authorization.trim() : "";
     if (!policy.allowedSources.includes(source)) {
@@ -272,8 +310,8 @@ export class FastToolAuthorizationKernel {
       }
     }
 
-    this.allowed += 1;
-    return Object.freeze({
+    const authorizedCall = authorizedCallSnapshot(call);
+    const decision = Object.freeze({
       allowed: true,
       status: "TOOL_AUTHORIZED",
       toolName,
@@ -282,6 +320,16 @@ export class FastToolAuthorizationKernel {
       effect: policy.effect,
       capability: policy.capability,
     });
+    AUTHORIZATION_RECEIPTS.set(decision, Object.freeze({
+      callRef: call,
+      id: authorizedCall.id,
+      name: authorizedCall.name,
+      tenantId,
+      callControlId,
+      authorizedCall,
+    }));
+    this.allowed += 1;
+    return decision;
   }
 
   snapshot() {

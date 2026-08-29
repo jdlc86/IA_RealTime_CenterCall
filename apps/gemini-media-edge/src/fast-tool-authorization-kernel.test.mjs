@@ -6,6 +6,7 @@ import {
   buildFastToolAuthorityContract,
   defineFastToolPolicy,
   mergeFastToolPolicies,
+  requireFastToolAuthorizationReceipt,
 } from "./fast-tool-authorization-kernel.mjs";
 
 function kernelFor(name, policy) {
@@ -106,6 +107,7 @@ test("future business tools register declarative policy without kernel changes",
   });
 
   const create = kernel.authorize({
+    id: "create-1",
     name: "create_reservation",
     args: {
       authorization: "CALLER_REQUEST",
@@ -116,6 +118,7 @@ test("future business tools register declarative policy without kernel changes",
   assert.equal(create.capability, "reservation.create");
 
   const cancel = kernel.authorize({
+    id: "cancel-1",
     name: "cancel_reservation",
     args: {
       authorization: "CALLER_REQUEST",
@@ -124,6 +127,32 @@ test("future business tools register declarative policy without kernel changes",
   }, context);
   assert.equal(cancel.allowed, false);
   assert.equal(cancel.status, "TOOL_AUTHORITY_REQUIRED");
+});
+
+test("authorization receipt is opaque and bound to exact call and authenticated context", () => {
+  const kernel = kernelFor("get_authoritative_datetime", FAST_HORIZONTAL_TOOL_POLICIES.get_authoritative_datetime);
+  const call = {
+    id: "clock-bound-1",
+    name: "get_authoritative_datetime",
+    args: { authorization: "SEMANTIC_NECESSITY" },
+  };
+  const decision = kernel.authorize(call, context);
+  const authorizedCall = requireFastToolAuthorizationReceipt(decision, call, context);
+  assert.equal(authorizedCall.id, call.id);
+  assert.deepEqual(authorizedCall.args, call.args);
+  assert.equal(Object.isFrozen(authorizedCall.args), true);
+  assert.throws(
+    () => requireFastToolAuthorizationReceipt({ ...decision }, call, context),
+    /authorization receipt is required/,
+  );
+  assert.throws(
+    () => requireFastToolAuthorizationReceipt(decision, structuredClone(call), context),
+    /does not match the function call/,
+  );
+  assert.throws(
+    () => requireFastToolAuthorizationReceipt(decision, call, { ...context, callControlId: "v3:other" }),
+    /does not match the call context/,
+  );
 });
 
 test("declared tool without local policy fails closed at session construction boundary", () => {

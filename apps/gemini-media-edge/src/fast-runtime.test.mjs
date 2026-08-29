@@ -258,6 +258,45 @@ test("fast runtime blocks an ungrounded business tool before any side effect", a
   session.close("test-complete");
 });
 
+test("fast runtime blocks transfer before its special effect sink when caller evidence is ungrounded", async () => {
+  const telnyx = new FakeSocket();
+  telnyx.readyState = 1;
+  let gemini;
+  let transferAuthorizations = 0;
+  const session = new FastGeminiRealtimeSession(sessionOptions(
+    telnyx,
+    () => { gemini = new FakeSocket(); return gemini; },
+    {
+      bootstrap: bootstrap([TRANSFER_TOOL]),
+      authorizeTransfer: async () => { transferAuthorizations += 1; return { ok: true }; },
+      startTransfer: async () => { throw new Error("transfer start must be unreachable"); },
+    },
+  )).start();
+
+  gemini.open();
+  gemini.message({ setupComplete: {} });
+  gemini.message({ serverContent: { inputTranscription: { text: "Quiero conocer vuestro horario" } } });
+  gemini.message({
+    toolCall: { functionCalls: [{
+      id: "transfer-fast-blocked",
+      name: "transfer_call",
+      args: {
+        authorization: "EXPLICIT_REQUEST",
+        caller_authority_evidence: "Quiero hablar con una persona",
+      },
+    }] },
+  });
+  await settle();
+  await settle();
+
+  assert.equal(transferAuthorizations, 0);
+  const response = gemini.sent.find((item) => item.toolResponse)?.toolResponse.functionResponses[0].response.result;
+  assert.equal(response.status, "TOOL_AUTHORITY_EVIDENCE_MISMATCH");
+  assert.equal(session.snapshot().toolAuthorization.blocked, 1);
+  assert.equal(gemini.closed, null);
+  session.close("test-complete");
+});
+
 test("fast runtime carries existing call audit context from generic authorization into transfer start", async () => {
   const telnyx = new FakeSocket();
   telnyx.readyState = 1;

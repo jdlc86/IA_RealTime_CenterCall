@@ -62,6 +62,7 @@ Estas reglas son obligatorias salvo ADR posterior que las modifique explícitame
 - **RA-053 — Contrato mínimo de toda tool.** Toda tool declara nombre y schema cerrado, `authority`, `effect`, `capability`, `evidence`, handler permitido y contexto confiable de tenant/call. Las mutaciones añaden idempotencia, confirmación e invariantes de dominio. El modelo propone; el kernel autoriza; el dominio valida; el backend ejecuta.
 - **RA-054 — Seguridad durable sin transcript crudo.** Las señales semánticas de seguridad se persisten de forma autenticada, idempotente y sideband cuando la invariante lo permite. No se almacenan audio, prompts, secretos, payload hostil ni transcript crudo.
 - **RA-055 — Comunicaciones externas opt-in.** Cada canal/modo se autoriza por capability de tenant. WhatsApp separa `message.whatsapp.transactional` de `message.whatsapp.realtime_support`; habilitar una no autoriza la otra.
+- **RA-056 — La autorización debe ser exigible en el sink.** El orden `kernel → executor/handler` no basta como convención. Cada sink effectful exige una prueba no fabricable ligada a la operación exacta y al contexto tenant/call; ejecuta la instantánea autorizada y falla cerrado ante ausencia, rebinding o contexto distinto.
 
 ## Applicability notes del Fast Path Gemini
 
