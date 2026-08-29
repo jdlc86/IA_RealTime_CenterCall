@@ -56,9 +56,11 @@ El kernel distingue dos clases de capacidad:
 
 Toda tool cruza un contrato declarativo mínimo: nombre/schema cerrado, `authority`, `effect`, `capability`, `evidence`, handler permitido y contexto tenant/call. Las mutaciones añaden idempotencia, confirmación e invariantes de dominio. Gemini propone; el kernel autoriza; el dominio valida; el backend ejecuta.
 
-SEC-P0-04 está publicado en `codex/fix-fast-security-persistence` mediante el commit `1d514b5617a9f10691359ba6eb2493a478324baf`, todavía sin deploy/E2E: una decisión `ALLOW` genera un recibo opaco ligado a la function call exacta y al contexto autenticado `tenantId/callControlId`. El executor genérico y el sink especial `transfer_call` exigen ese recibo antes de cualquier handler; una autorización ausente, fabricada o reutilizada en otra llamada produce cero efectos. El handler recibe la instantánea de argumentos autorizada, no un payload mutable posterior.
+SEC-P0-04 está publicado en `codex/fix-fast-security-persistence` mediante el commit `1d514b5617a9f10691359ba6eb2493a478324baf` e incluido en el canary posterior de SEC-P0-05; no se repitió E2E telefónico: una decisión `ALLOW` genera un recibo opaco ligado a la function call exacta y al contexto autenticado `tenantId/callControlId`. El executor genérico y el sink especial `transfer_call` exigen ese recibo antes de cualquier handler; una autorización ausente, fabricada o reutilizada en otra llamada produce cero efectos. El handler recibe la instantánea de argumentos autorizada, no un payload mutable posterior.
 
-SEC-P0-05 está implementado y verificado **localmente**, todavía sin commit/CI/deploy. El bootstrap autenticado evoluciona a `gemini-fast-bootstrap.v2` y toda declaración de tool lleva una `capability` explícita. Media Edge exige que esa concesión coincida exactamente con la policy local antes de construir la sesión; capability ausente o distinta falla cerrada. El registro de bootstrap continúa ligando credencial, tenant y llamada, y el Worker rechaza un registro de capabilities perteneciente a otro tenant antes de provisionar el Media Edge. La reproducción previa produjo `effects=1` con una capability declarada ajena; después del cambio produce `effects=0`.
+SEC-P0-05 está publicado en `a95a9311b4f9c68d1ad1894c1273b6ccf181a462` y desplegado en el canary mediante `Gemini Fast Canary Deploy` run `33261676273`. El bootstrap autenticado evoluciona a `gemini-fast-bootstrap.v2` y toda declaración de tool lleva una `capability` explícita. Media Edge exige que esa concesión coincida exactamente con la policy local antes de construir la sesión; capability ausente o distinta falla cerrada. El registro de bootstrap continúa ligando credencial, tenant y llamada, y el Worker rechaza un registro de capabilities perteneciente a otro tenant antes de provisionar el Media Edge. La reproducción previa produjo `effects=1` con una capability declarada ajena; después del cambio produce `effects=0`.
+
+SEC-P0-06 está implementado y verificado **localmente**, todavía sin commit/CI/deploy. El endpoint Gemini `/internal/diagnostics-ingest` reconstruye cada evento desde un schema cerrado y aplica una allowlist común de detalles escalares justo antes del sink Supabase. Campos desconocidos —incluidos transcript, prompt, token, teléfono y payloads anidados— se descartan; un valor inválido en una clave permitida falla cerrado antes de persistir. La reproducción previa demostró que esos campos arbitrarios llegaban a `call_diagnostic_events`; tras el cambio sólo persisten metadatos técnicos bounded. No se importa el redactor OpenAI ni se modifica el runtime de audio.
 
 ## Regla de latencia
 
@@ -121,11 +123,10 @@ Umbrales de frecuencia: 5 llamadas/minuto, 8/5 minutos o 20/hora. Los bloqueos e
 
 ```text
 workflow          Gemini Fast Canary Deploy
-run_id            33252047260
-media canary run  33252047272
-source SHA        d7435fd81915c470f74bce81eb87d8ae7bda1c1f
-Cloud Run         gemini-media-edge-00202-coh
-Fast Worker       3100c432-69a0-44ea-a59f-fdaaa4458221
+run_id            33261676273
+source SHA        a95a9311b4f9c68d1ad1894c1273b6ccf181a462
+Cloud Run         gemini-media-edge-00205-mub
+Fast Worker       318b36d8-a900-4fe9-99ba-64863891883f
 canary traffic    0 %, accesible por tag/Fast Worker
 production        sin cambios
 ```
@@ -148,7 +149,7 @@ La transferencia real quedó `TRANSFERRED`, destino `Reception`, contestada apro
 
 La seguridad probada debe conservarse sin más llamadas adversariales. Los asuntos abiertos son:
 
-1. completar CI/canary/E2E de SEC-P0-04 desde el commit publicado `1d514b5617a9f10691359ba6eb2493a478324baf`;
-2. publicar SEC-P0-05 y completar sus estados separados de CI/canary/E2E;
+1. decidir si SEC-P0-04/05 requieren una nueva llamada E2E específica; ambos ya están publicados e incluidos en el canary `a95a9311...`;
+2. publicar SEC-P0-06 y completar sus estados separados de CI/canary; al ser un control sideband de persistencia, no requiere otra llamada adversarial para demostrar la redacción;
 3. decidir si la política necesita decay/reset administrado de `risk_score`;
 4. validar la persistencia/idempotencia Gemini-native con una prueba sintética o controlada antes de otra llamada adversarial real.
