@@ -1,6 +1,6 @@
 # Remediación administrada de caller security
 
-> Estado: diseño implementado localmente; no operativo hasta desplegar SEC-P1-02
+> Estado: operativo; migración Supabase `20260829215407` aplicada y verificada el 2026-08-29
 > Última revisión: 2026-08-29
 
 ## Propósito
@@ -62,6 +62,14 @@ Comprobar en la misma ventana operativa:
 
 No realizar una llamada adversarial para validar el reset. Usar identidades sintéticas o una consulta administrativa controlada.
 
+## Evidencia de publicación
+
+- Commit: `db210c54b939eee49a2a0159cfa1d528c62b839c`.
+- CI: `Control Plane CI` run `33277134222`, `SUCCESS`.
+- Verificación productiva: decay `5→2`, conservación de strikes/rate-limit/bloqueo temporal, reset idempotente y `service_role` sin `EXECUTE` sobre el reset.
+- La transacción de verificación terminó con `ROLLBACK`; la consulta posterior confirmó cero filas sintéticas.
+- Los advisors posteriores no añadieron lints respecto del baseline anterior.
+
 ## Rollback
 
-Antes del deploy, descartar el commit restaura el comportamiento acumulativo actual. Después de aplicar la migración, cualquier reversión debe ser una migración forward que restaure las definiciones anteriores de las RPC y retire la función administrativa; no editar el historial aplicado ni ejecutar un reset masivo.
+La migración ya está aplicada. Cualquier reversión debe ser una migración forward que restaure las definiciones anteriores de las RPC y retire la función administrativa; no editar el historial aplicado ni ejecutar un reset masivo.

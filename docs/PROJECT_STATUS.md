@@ -62,7 +62,7 @@ SEC-P0-05 está publicado en `a95a9311b4f9c68d1ad1894c1273b6ccf181a462` y desple
 
 SEC-P0-06 está publicado en `021d134625758cc9228284fecc4f49599a419182` y desplegado mediante `Gemini Fast Canary Deploy` run `33264338263`. El endpoint Gemini `/internal/diagnostics-ingest` reconstruye cada evento desde un schema cerrado y aplica una allowlist común de detalles escalares justo antes del sink Supabase. Campos desconocidos —incluidos transcript, prompt, token, teléfono y payloads anidados— se descartan; un valor inválido en una clave permitida falla cerrado antes de persistir. La sonda post-deploy `p06-synthetic-1788032648-ee74fd87` confirmó `201/PERSISTED` para el evento válido, `400/INVALID_DIAGNOSTICS` para el inválido, tres campos seguros exactos y cero marcas prohibidas o filas inválidas. No se importa el redactor OpenAI ni se modifica el runtime de audio.
 
-SEC-P1-02 está implementado **localmente**, todavía sin commit/CI/deploy ni migración aplicada. La migración `20260829200938_caller_security_risk_lifecycle.sql` añade decay perezoso de un punto por cada 24 horas completas sin nueva evidencia de riesgo dentro de las RPC existentes, sin viajes de red adicionales. No reduce automáticamente strikes, historial de rate limit ni bloqueos temporales/permanentes. El reset es idempotente, auditable, exige motivo cerrado y actor con hash SHA-256, y queda revocado incluso para `service_role`: sólo un administrador Postgres puede ejecutarlo. La migración completa pasó una prueba transaccional real con `ROLLBACK`; producción permanece sin cambios.
+SEC-P1-02 está publicado en `db210c54b939eee49a2a0159cfa1d528c62b839c`; `Control Plane CI` run `33277134222` finalizó `SUCCESS` y la migración productiva `caller_security_risk_lifecycle` quedó registrada en Supabase como versión `20260829215407`. Añade decay perezoso de un punto por cada 24 horas completas sin nueva evidencia de riesgo dentro de las RPC existentes, sin viajes de red adicionales. No reduce automáticamente strikes, historial de rate limit ni bloqueos temporales/permanentes. El reset es idempotente, auditable, exige motivo cerrado y actor con hash SHA-256, y queda revocado incluso para `service_role`: sólo un administrador Postgres puede ejecutarlo. La prueba productiva sintética confirmó decay `5→2`, conservación de strikes/rate-limit/bloqueo temporal, reset idempotente y ACL; terminó con `ROLLBACK` y cero filas residuales. No hubo redeploy del runtime de voz porque este bloque sólo modifica PostgreSQL.
 
 ## Regla de latencia
 
@@ -117,7 +117,7 @@ blocked_until      null
 permanent_block    false
 ```
 
-El `risk_score` desplegado continúa siendo acumulativo mientras SEC-P1-02 no se publique: Gemini semántico suma 1; una detección determinista de alta confianza suma 5 y un strike; un bloqueo por frecuencia suma 3. Los duplicados idempotentes y llamadas normales no suman. El cambio local pendiente aplicará un punto de decay por cada 24 horas completas sin evidencia nueva, sin modificar strikes ni bloqueos.
+El `risk_score` desplegado aplica un punto de decay por cada 24 horas completas sin evidencia nueva, sin modificar strikes ni bloqueos. Gemini semántico suma 1; una detección determinista de alta confianza suma 5 y un strike; un bloqueo por frecuencia suma 3. Los duplicados idempotentes y llamadas normales no suman ni reinician el reloj de decay.
 
 Umbrales de frecuencia: 5 llamadas/minuto, 8/5 minutos o 20/hora. Los bloqueos escalan 1 hora, 24 horas y 7 días. El bloqueo permanente requiere simultáneamente `security_strikes>=8`, `rate_limit_blocks>=3` y `risk_score>=25`.
 
@@ -151,7 +151,7 @@ La transferencia real quedó `TRANSFERRED`, destino `Reception`, contestada apro
 
 La seguridad probada debe conservarse sin más llamadas adversariales. Los asuntos abiertos son:
 
-1. revisar, publicar y ejecutar CI de SEC-P1-02 sin aplicar aún la migración productiva;
-2. aplicar la migración sólo con autorización explícita, ejecutar advisors y repetir las pruebas sintéticas de decay/reset con identidades de prueba;
-3. mantener SEC-P0-06 como PASS post-deploy y no repetir llamadas adversariales reales;
+1. observar SEC-P1-02 con métricas y eventos técnicos, sin llamadas adversariales reales ni resets sobre identidades reales;
+2. mantener los avisos preexistentes de advisors en backlog separado: SEC-P1-02 no añadió lints nuevos;
+3. mantener SEC-P0-06 como PASS post-deploy;
 4. tratar en una misión separada la cobertura de caller-security en admission Gemini y la retirada física del legado OpenAI.

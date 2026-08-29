@@ -102,7 +102,7 @@ blocked_until=null
 permanent_block=false
 ```
 
-El score desplegado todavía no decae automáticamente. SEC-P1-02 está implementado sólo localmente: un punto por cada 24 horas completas sin evidencia nueva, reset Postgres-admin-only e historial before/after. La migración pasó un dry-run transaccional con `ROLLBACK`, pero no está aplicada. No repitas ataques desde el número real.
+SEC-P1-02 está publicado en `db210c54b939eee49a2a0159cfa1d528c62b839c`, con `Control Plane CI` run `33277134222` en `SUCCESS`, y aplicado en Supabase como migración `20260829215407`. El score decae un punto por cada 24 horas completas sin evidencia nueva; el reset continúa Postgres-admin-only y conserva historial before/after. La verificación productiva sintética terminó con `ROLLBACK` y cero filas residuales. No repitas ataques desde el número real.
 
 ### 6. Primera misión
 
@@ -110,9 +110,9 @@ Primero realiza sólo inspección y confirma que el SHA/CI/deploy/documentos con
 
 Si se continúa esta misión de seguridad, el orden es:
 
-1. tratar `021d134625758cc9228284fecc4f49599a419182` y el run `33264338263` como baseline desplegado de P06, sin exponer valores de secretos;
-2. revisar la migración local `20260829200938_caller_security_risk_lifecycle.sql` y su test de contrato antes de commit/push;
-3. no aplicar la migración ni desplegar SEC-P1-02 sin autorización explícita; después de aplicarla, ejecutar advisors y pruebas sintéticas, nunca ataques reales;
+1. tratar `021d134625758cc9228284fecc4f49599a419182` y el run `33264338263` como baseline desplegado del runtime P06;
+2. tratar `db210c54b939eee49a2a0159cfa1d528c62b839c`, CI `33277134222` y migración Supabase `20260829215407` como baseline aplicado de SEC-P1-02;
+3. observar decay/reset sólo con métricas técnicas o identidades sintéticas; nunca ataques reales;
 4. dejar para otra misión la cobertura de caller-security en admission Gemini y la eliminación física del código OpenAI legado.
 
 Cualquier propuesta debe indicar amenaza, invariante, archivo/frontera, impacto de latencia, plan de prueba y rollback. No hagas otra llamada.
