@@ -14,7 +14,7 @@ repo   jdlc86/IA_RealTime_CenterCall
 rama   rebuild/v39-stable-baseline
 PR     PR #85, mantener OPEN/DRAFT
 SHA canary de seguridad
-       d7435fd81915c470f74bce81eb87d8ae7bda1c1f
+       021d134625758cc9228284fecc4f49599a419182
 ```
 
 Antes de escribir, verifica de nuevo HEAD remoto, PR, CI, deploy efectivo y estado local. No sobrescribas cambios ajenos. No hagas merge, ready-for-review, force-push, rebase destructivo ni otra rama/PR. No hagas commit, push, deploy, llamadas, IAM o configuración sin autorización explícita.
@@ -46,7 +46,7 @@ Ambos → contratos neutrales de dominio/seguridad → Supabase compartido
 
 Gemini ya dispone de Worker y Media Edge propios. No puede depender de SDK, secretos, sockets, voz, lifecycle, persistencia sideband ni coordinadores OpenAI. El stack OpenAI queda como legado independiente pendiente de retirada y no forma parte del modelo de negocio objetivo.
 
-La extracción de caller security está desplegada en el canary del SHA `d7435fd81915c470f74bce81eb87d8ae7bda1c1f`: Gemini Fast Worker posee endpoint, adaptador Supabase, cola y DLQ; Media Edge usa el origen Gemini y los workflows Fast no tocan el Worker histórico. La ruta confirma primero Queue y usa Supabase directo como fallback; nunca responde éxito por `waitUntil`. `caller-security-hmac-secret` y `caller-security-hmac-sha256` están provisionados en Secret Manager con los bytes históricos y su huella independiente; CI verificó la coincidencia.
+La extracción de caller security y SEC-P0-06 están desplegados en el canary del SHA `021d134625758cc9228284fecc4f49599a419182`: Gemini Fast Worker posee endpoint, adaptador Supabase, cola y DLQ; Media Edge usa el origen Gemini y los workflows Fast no tocan el Worker histórico. La ruta confirma primero Queue y usa Supabase directo como fallback; nunca responde éxito por `waitUntil`. `caller-security-hmac-secret` y `caller-security-hmac-sha256` están provisionados en Secret Manager con los bytes históricos y su huella independiente; CI verificó la coincidencia.
 
 Capacidades transversales: seguridad, admission/identidad, voz/lifecycle, tool authorization, human handoff, tiempo, diagnóstico y comunicaciones. WhatsApp tiene dos capabilities KV independientes: `message.whatsapp.transactional` y `message.whatsapp.realtime_support`. Las verticales —por ejemplo reservas— pertenecen al tenant/dominio y consumen las capacidades transversales sin duplicarlas.
 
@@ -79,11 +79,10 @@ IAM desplegado: `github-cloud-run-deployer@iacallcenterv1.iam.gserviceaccount.co
 ### 5. CI, deploy y E2E verificados
 
 ```text
-SHA                d7435fd81915c470f74bce81eb87d8ae7bda1c1f
-Fast Canary run    33252047260, SUCCESS
-Media Canary run   33252047272, SUCCESS
-Cloud Run revision gemini-media-edge-00202-coh
-Fast Worker ver.   3100c432-69a0-44ea-a59f-fdaaa4458221
+SHA                021d134625758cc9228284fecc4f49599a419182
+Fast Canary run    33264338263, SUCCESS
+Cloud Run revision gemini-media-edge-00206-pid
+Fast Worker ver.   a62e7fac-598d-4944-8ccb-78971284c326
 production traffic sin cambios
 ```
 
@@ -103,7 +102,7 @@ blocked_until=null
 permanent_block=false
 ```
 
-El score no decae automáticamente. No repitas ataques desde el número real: podrías activar limitación y contaminar posteriores E2E funcionales.
+El score desplegado todavía no decae automáticamente. SEC-P1-02 está implementado sólo localmente: un punto por cada 24 horas completas sin evidencia nueva, reset Postgres-admin-only e historial before/after. La migración pasó un dry-run transaccional con `ROLLBACK`, pero no está aplicada. No repitas ataques desde el número real.
 
 ### 6. Primera misión
 
@@ -111,9 +110,10 @@ Primero realiza sólo inspección y confirma que el SHA/CI/deploy/documentos con
 
 Si se continúa esta misión de seguridad, el orden es:
 
-1. tratar `d7435fd81915c470f74bce81eb87d8ae7bda1c1f` y sus runs canary como baseline desplegado, sin exponer valores de secretos;
-2. validar persistencia/idempotencia con una prueba sintética o controlada antes de otra llamada adversarial real;
-3. dejar para una misión separada el decay/reset administrativo y la eliminación física del código OpenAI legado.
+1. tratar `021d134625758cc9228284fecc4f49599a419182` y el run `33264338263` como baseline desplegado de P06, sin exponer valores de secretos;
+2. revisar la migración local `20260829200938_caller_security_risk_lifecycle.sql` y su test de contrato antes de commit/push;
+3. no aplicar la migración ni desplegar SEC-P1-02 sin autorización explícita; después de aplicarla, ejecutar advisors y pruebas sintéticas, nunca ataques reales;
+4. dejar para otra misión la cobertura de caller-security en admission Gemini y la eliminación física del código OpenAI legado.
 
 Cualquier propuesta debe indicar amenaza, invariante, archivo/frontera, impacto de latencia, plan de prueba y rollback. No hagas otra llamada.
 

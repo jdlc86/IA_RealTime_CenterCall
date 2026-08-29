@@ -13,7 +13,7 @@ Los datos remotos deben verificarse al comenzar cualquier sesión. `IMPLEMENTADO
 repo      jdlc86/IA_RealTime_CenterCall
 rama      rebuild/v39-stable-baseline
 PR        #85 — OPEN / DRAFT / MERGEABLE
-SHA canary d7435fd81915c470f74bce81eb87d8ae7bda1c1f
+SHA canary 021d134625758cc9228284fecc4f49599a419182
 fecha     2026-08-29 (verificación GitHub)
 ```
 
@@ -60,7 +60,9 @@ SEC-P0-04 está publicado en `codex/fix-fast-security-persistence` mediante el c
 
 SEC-P0-05 está publicado en `a95a9311b4f9c68d1ad1894c1273b6ccf181a462` y desplegado en el canary mediante `Gemini Fast Canary Deploy` run `33261676273`. El bootstrap autenticado evoluciona a `gemini-fast-bootstrap.v2` y toda declaración de tool lleva una `capability` explícita. Media Edge exige que esa concesión coincida exactamente con la policy local antes de construir la sesión; capability ausente o distinta falla cerrada. El registro de bootstrap continúa ligando credencial, tenant y llamada, y el Worker rechaza un registro de capabilities perteneciente a otro tenant antes de provisionar el Media Edge. La reproducción previa produjo `effects=1` con una capability declarada ajena; después del cambio produce `effects=0`.
 
-SEC-P0-06 está implementado y verificado **localmente**, todavía sin commit/CI/deploy. El endpoint Gemini `/internal/diagnostics-ingest` reconstruye cada evento desde un schema cerrado y aplica una allowlist común de detalles escalares justo antes del sink Supabase. Campos desconocidos —incluidos transcript, prompt, token, teléfono y payloads anidados— se descartan; un valor inválido en una clave permitida falla cerrado antes de persistir. La reproducción previa demostró que esos campos arbitrarios llegaban a `call_diagnostic_events`; tras el cambio sólo persisten metadatos técnicos bounded. No se importa el redactor OpenAI ni se modifica el runtime de audio.
+SEC-P0-06 está publicado en `021d134625758cc9228284fecc4f49599a419182` y desplegado mediante `Gemini Fast Canary Deploy` run `33264338263`. El endpoint Gemini `/internal/diagnostics-ingest` reconstruye cada evento desde un schema cerrado y aplica una allowlist común de detalles escalares justo antes del sink Supabase. Campos desconocidos —incluidos transcript, prompt, token, teléfono y payloads anidados— se descartan; un valor inválido en una clave permitida falla cerrado antes de persistir. La sonda post-deploy `p06-synthetic-1788032648-ee74fd87` confirmó `201/PERSISTED` para el evento válido, `400/INVALID_DIAGNOSTICS` para el inválido, tres campos seguros exactos y cero marcas prohibidas o filas inválidas. No se importa el redactor OpenAI ni se modifica el runtime de audio.
+
+SEC-P1-02 está implementado **localmente**, todavía sin commit/CI/deploy ni migración aplicada. La migración `20260829200938_caller_security_risk_lifecycle.sql` añade decay perezoso de un punto por cada 24 horas completas sin nueva evidencia de riesgo dentro de las RPC existentes, sin viajes de red adicionales. No reduce automáticamente strikes, historial de rate limit ni bloqueos temporales/permanentes. El reset es idempotente, auditable, exige motivo cerrado y actor con hash SHA-256, y queda revocado incluso para `service_role`: sólo un administrador Postgres puede ejecutarlo. La migración completa pasó una prueba transaccional real con `ROLLBACK`; producción permanece sin cambios.
 
 ## Regla de latencia
 
@@ -115,7 +117,7 @@ blocked_until      null
 permanent_block    false
 ```
 
-El `risk_score` actual es acumulativo y no tiene decay automático: Gemini semántico suma 1; una detección determinista de alta confianza suma 5 y un strike; un bloqueo por frecuencia suma 3. Los duplicados idempotentes y llamadas normales no suman.
+El `risk_score` desplegado continúa siendo acumulativo mientras SEC-P1-02 no se publique: Gemini semántico suma 1; una detección determinista de alta confianza suma 5 y un strike; un bloqueo por frecuencia suma 3. Los duplicados idempotentes y llamadas normales no suman. El cambio local pendiente aplicará un punto de decay por cada 24 horas completas sin evidencia nueva, sin modificar strikes ni bloqueos.
 
 Umbrales de frecuencia: 5 llamadas/minuto, 8/5 minutos o 20/hora. Los bloqueos escalan 1 hora, 24 horas y 7 días. El bloqueo permanente requiere simultáneamente `security_strikes>=8`, `rate_limit_blocks>=3` y `risk_score>=25`.
 
@@ -123,10 +125,10 @@ Umbrales de frecuencia: 5 llamadas/minuto, 8/5 minutos o 20/hora. Los bloqueos e
 
 ```text
 workflow          Gemini Fast Canary Deploy
-run_id            33261676273
-source SHA        a95a9311b4f9c68d1ad1894c1273b6ccf181a462
-Cloud Run         gemini-media-edge-00205-mub
-Fast Worker       318b36d8-a900-4fe9-99ba-64863891883f
+run_id            33264338263
+source SHA        021d134625758cc9228284fecc4f49599a419182
+Cloud Run         gemini-media-edge-00206-pid
+Fast Worker       a62e7fac-598d-4944-8ccb-78971284c326
 canary traffic    0 %, accesible por tag/Fast Worker
 production        sin cambios
 ```
@@ -149,7 +151,7 @@ La transferencia real quedó `TRANSFERRED`, destino `Reception`, contestada apro
 
 La seguridad probada debe conservarse sin más llamadas adversariales. Los asuntos abiertos son:
 
-1. decidir si SEC-P0-04/05 requieren una nueva llamada E2E específica; ambos ya están publicados e incluidos en el canary `a95a9311...`;
-2. publicar SEC-P0-06 y completar sus estados separados de CI/canary; al ser un control sideband de persistencia, no requiere otra llamada adversarial para demostrar la redacción;
-3. decidir si la política necesita decay/reset administrado de `risk_score`;
-4. validar la persistencia/idempotencia Gemini-native con una prueba sintética o controlada antes de otra llamada adversarial real.
+1. revisar, publicar y ejecutar CI de SEC-P1-02 sin aplicar aún la migración productiva;
+2. aplicar la migración sólo con autorización explícita, ejecutar advisors y repetir las pruebas sintéticas de decay/reset con identidades de prueba;
+3. mantener SEC-P0-06 como PASS post-deploy y no repetir llamadas adversariales reales;
+4. tratar en una misión separada la cobertura de caller-security en admission Gemini y la retirada física del legado OpenAI.

@@ -17,6 +17,7 @@ La documentación distingue explícitamente **estado actual**, **decisiones arqu
 7. [`HUMAN_HANDOFF.md`](./HUMAN_HANDOFF.md) — transferencia a humano, autorización semántica y limitaciones conocidas.
 8. [`../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx`](../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx) — inventario, decisiones y backlog vivo de seguridad.
 9. [`DOCUMENTATION_MAINTENANCE.md`](./DOCUMENTATION_MAINTENANCE.md) — cómo mantener una única fuente de verdad.
+10. [`runbooks/CALLER_SECURITY_REMEDIATION.md`](./runbooks/CALLER_SECURITY_REMEDIATION.md) — revisión, decay y reset administrado de reputación del caller.
 
 [`MASTER_PROJECT_GUIDE.md`](./MASTER_PROJECT_GUIDE.md) conserva la visión funcional y de producto. No debe usarse por sí solo para inferir qué runtime está desplegado actualmente.
 
@@ -77,7 +78,7 @@ No usar estas palabras como sinónimos:
 IMPLEMENTADO ≠ CI VERDE ≠ DESPLEGADO ≠ VALIDADO E2E
 ```
 
-Este índice no duplica incidencias operativas. Consultar `PROJECT_STATUS.md` para el resumen vivo y el documento propietario para el detalle: `HUMAN_HANDOFF.md` para transferencia, `runbooks/Deployment.md` para deploy/preflight y `runbooks/CROSS_PLANE_CALL_DIAGNOSTICS.md` para investigación de llamadas.
+Este índice no duplica incidencias operativas. Consultar `PROJECT_STATUS.md` para el resumen vivo y el documento propietario para el detalle: `HUMAN_HANDOFF.md` para transferencia, `runbooks/Deployment.md` para deploy/preflight, `runbooks/CROSS_PLANE_CALL_DIAGNOSTICS.md` para investigación de llamadas y `runbooks/CALLER_SECURITY_REMEDIATION.md` para falsos positivos/reset.
 
 ## Verificación documental
 
