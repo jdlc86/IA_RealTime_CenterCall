@@ -1,6 +1,6 @@
 # IA_RealTime_CenterCall — Business Verticals
 
-> **Estado:** decisión arquitectónica vigente  
+> **Estado:** decisión arquitectónica vigente; base multi-vertical implementada, expansión funcional por vertical incremental
 > **Fecha:** 2026-08-11  
 > **Ámbito:** F4 multi-tenant y preparación de F5 persistencia/operaciones empresariales
 

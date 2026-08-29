@@ -1,61 +1,90 @@
 # IA_RealTime_CenterCall — Design Rules
 
-> **Versión:** 2.3
+> **Versión:** 3.0
 > **Estado:** vigente y normativo
-> **Última revisión:** 2026-08-23
+> **Última revisión:** 2026-08-29
+> **Aplicabilidad:** reglas transversales; un mecanismo específico de provider sólo es obligatorio cuando la regla o una ADR lo indiquen.
 
-Estas reglas son obligatorias salvo ADR que las modifique explícitamente.
+Estas reglas son obligatorias salvo ADR posterior que las modifique explícitamente. **No se debe convertir una implementación histórica de OpenAI o de la arquitectura Gemini previa al Fast Path en una regla universal por accidente.**
 
 - **RA-001** — El dominio no importa SDKs externos.
-- **RA-002** — Toda integración externa tiene contrato/provider/adaptador.
-- **RA-003** — Cloudflare queda fuera del audio path continuo; cualquier media bridge futuro requiere frontera explícita y ADR.
-- **RA-004** — Toda herramienta empresarial entra por `ToolGateway` antes de llegar a módulos/providers.
-- **RA-005** — No se amplía el media plane sin benchmark + ADR.
-- **RA-006** — No se optimiza sin baseline.
-- **RA-007** — Ningún gate se cierra sin evidencia.
-- **RA-008** — Nuevas features preservan sustituibilidad de providers realtime y telefonía.
-- **RA-009** — Ningún secreto se almacena en Git.
-- **RA-010** — El modelo nunca es autoridad de permisos.
-- **RA-011** — El Core no contiene lógica específica de clínica/restaurante/etc.
+- **RA-002** — Toda integración externa tiene contrato/provider/adaptador o una frontera explícita equivalente dentro del runtime que la posee.
+- **RA-003** — Cloudflare queda fuera del audio path continuo.
+- **RA-004** — Toda herramienta empresarial entra por `ToolGateway` o por la frontera de efectos autorizada del runtime antes de llegar a módulos/providers. Un Fast Path puede ejecutar localmente la coordinación realtime sin saltarse capability, schema, tenant e invariantes.
+- **RA-005** — No se amplía el media plane con nuevos hops obligatorios sin benchmark + ADR.
+- **RA-006** — No se optimiza sin baseline o evidencia medible.
+- **RA-007** — Ningún gate se cierra sin evidencia adecuada al comportamiento que afirma probar.
+- **RA-008** — Nuevas features preservan la independencia estructural de los productos realtime y la sustituibilidad donde exista un contrato neutral real.
+- **RA-009** — Ningún secreto se almacena en Git ni se copia a documentación.
+- **RA-010** — El modelo nunca es autoridad de permisos, tenant, credenciales ni invariantes empresariales.
+- **RA-011** — El Core/dominio no contiene lógica específica de clínica/restaurante/cliente concreto.
 - **RA-012** — El modelo no inventa disponibilidad ni confirma operaciones sin fuente de verdad.
-- **RA-013** — Toda sesión/operación empresarial tiene `tenant_id`.
-- **RA-014** — Los módulos no dependen de SDKs/modelos de datos de sistemas externos.
-- **RA-015** — El tenant se resuelve desde routing de entrada; inicialmente `called_number → tenant_id`.
-- **RA-016** — La personalización se realiza mediante `TenantConfiguration`, módulos y providers; nunca mediante forks o condicionales específicos por cliente.
-- **RA-017** — No comienza conversación específica de negocio antes de completar Call Bootstrap + Tenant Binding.
-- **RA-018** — `RealtimeSessionConfiguration` es un contrato propio; cada adaptador realtime traduce al formato del proveedor seleccionado.
-- **RA-019** — GitHub es la fuente de verdad; cambios manuales en Cloudflare solo se permiten como diagnóstico excepcional y deben reconciliarse en GitHub.
-- **RA-020** — Todo deploy parte de un SHA publicado y CI-verde. Puede ejecutarse mediante Workers Builds o Wrangler autorizado, pero la versión efectiva, el porcentaje de tráfico y la reconciliación con GitHub son obligatorios.
+- **RA-013** — Toda sesión/operación empresarial tiene `tenant_id` confiable.
+- **RA-014** — Los módulos de dominio no dependen de SDKs/modelos de datos de sistemas externos.
+- **RA-015** — El tenant de llamada se resuelve desde routing confiable; inicialmente `called_number → tenant_id`.
+- **RA-016** — La personalización se realiza mediante configuración, módulos y providers; nunca mediante forks o condicionales específicos por cliente.
+- **RA-017** — No comienza conversación específica de negocio antes de completar tenant binding/admission necesario para el runtime.
+- **RA-018** — La configuración conversacional neutral sólo incluye conceptos realmente compartidos; cada runtime traduce o posee sus detalles específicos sin forzar falsa paridad de wire.
+- **RA-019** — GitHub es la fuente de verdad; cambios manuales remotos sólo se permiten como diagnóstico/contingencia y deben reconciliarse.
+- **RA-020** — Todo deploy de producción parte de un SHA publicado y de los gates aplicables. Deben verificarse versión efectiva, bindings/routing y E2E cuando el cambio lo requiera.
 - **RA-021 — One state owner per concern.** Cada estado mutable, permiso o transición importante tiene una sola autoridad. Un port expone una capacidad; no crea un segundo owner.
-- **RA-022 — Capability first, provider second.** Dominio y `CallSession` solicitan capacidades (`checkAvailability`, `createReservation`, `transferCall`, `terminateCall`); no invocan SDKs, endpoints, RPC ni wire formats externos.
-- **RA-023 — Provider details at the edge.** OpenAI, Gemini, Telnyx, Supabase y Cloudflare se traducen únicamente en adapters/ports de borde. Las capas neutrales consumen eventos y comandos propios.
-- **RA-024 — Sin estado privado entre generaciones.** Una capa `CallSession` no alcanza internals de otra mediante `this as any`, prototipos, flags heredados o métodos privados. La coordinación entre capas usa runtimes/ports neutrales.
-- **RA-025 — Ordering por evidencia, no por tiempo.** Carreras de voz y lifecycle se resuelven con identidad de evento, `item_id`, `response_id`, ownership y estados explícitos. No se añaden `sleep`, delays ni ventanas heurísticas para tapar desorden de eventos.
-- **RA-026 — La intención conversacional pertenece al modelo.** No se enumeran todas las frases posibles del usuario para simular comprensión. Los matchers léxicos existentes no se amplían sin justificar que representan un protocolo cerrado.
-- **RA-027 — Determinismo solo en invariantes.** Permisos, validación, idempotencia, tenant binding, confirmación, concurrencia, seguridad y lifecycle son deterministas. La interpretación abierta y la formulación natural siguen siendo model-owned dentro de esos límites.
-- **RA-028 — Habla protegida atómica.** Saludo, recuperación y otros mensajes marcados como protegidos no admiten barge-in. Durante el saludo se suspende el VAD, se descarta el audio solapado y solo `assistant_audio_stopped` libera la escucha. Un buffer borrado solicita replay acotado; no se acepta como finalización.
-- **RA-029 — Una respuesta activa y una decisión semántica por turno.** Ninguna capa puede crear respuestas o consumir tools en paralelo sin pasar por los owners de respuesta, turno y autorización.
-- **RA-030 — Confirmación empresarial basada en backend.** El modelo nunca afirma reserva, cancelación, transferencia o escritura hasta recibir evidencia estructurada de éxito. Una confirmación anterior no se reutiliza después de cambiar fecha, hora, capacidad o alternativa.
-- **RA-031 — Concurrencia adjudicada en commit.** La disponibilidad conversacional es informativa. PostgreSQL y las invariantes de persistencia deciden el ganador al confirmar; el perdedor recibe una explicación clara y una nueva elección, nunca una reserva ficticia.
-- **RA-032 — Handoff inclusivo.** Necesidades de bebés, movilidad, audición u otras adaptaciones se derivan con lenguaje cuidadoso y orientado a asegurar una buena experiencia; nunca se presentan como exclusión o discriminación.
-- **RA-033 — Seguridad por intención y fronteras.** La extracción de prompt, manipulación de instrucciones/tools y abusos reiterados se gobiernan por políticas de seguridad y sanciones durables. No se depende exclusivamente de una lista de palabras ni se exponen prompts, secretos o wire interno.
-- **RA-034 — Diagnóstico mínimo y redactado.** Se conserva únicamente trazabilidad técnica necesaria —transcripción redactada, estados, tools y decisiones— con retención corta. No se persisten secretos ni datos personales sin necesidad.
-- **RA-035 — Una fuente documental por decisión.** Arquitectura estable vive aquí/ADR; estado operativo en `PROJECT_STATUS.md`; relevo en `SESSION_HANDOFF.md`; procedimientos en runbooks. No se copian cronologías completas entre documentos.
-- **RA-036 — Provider realtime seleccionado por tenant y fijado por llamada.** `TenantConfiguration` elige un `realtime_provider` registrado (inicialmente `OPENAI` o `GEMINI`). La selección se resuelve antes de crear el runtime realtime y queda inmutable durante la llamada. No hay failover OpenAI↔Gemini a mitad de sesión hasta que un ADR futuro demuestre cómo preservar contexto, ownership, tools y audio pendiente.
-- **RA-037 — Aislamiento estricto entre providers realtime.** OpenAI y Gemini no comparten wire events, SDK types, sockets, buffers ni estado privado. Cada adapter traduce sus eventos/comandos a los mismos contratos neutrales. `ResponseCoordinator`, lifecycle, seguridad, tools y dominio no contienen ramas `if provider === ...` para compensar semántica específica del proveedor.
-- **RA-038 — Paridad de invariantes, no paridad de wire.** Un provider nuevo debe demostrar saludo protegido, turn ownership, one-shot response authorization, barge-in, tool authorization, cierre, handoff, liveness y diagnóstico mediante los contratos neutrales existentes. Las diferencias de protocolo se absorben en el edge.
-- **RA-039 — Identidad neutral obligatoria.** Cuando un provider no ofrezca equivalentes directos de `response_id`, `item_id` u otras identidades necesarias, su adapter genera/mapea identidades neutrales estables. El core nunca depende de identificadores propietarios de OpenAI o Gemini.
-- **RA-040 — Media plane por provider es una capacidad explícita.** OpenAI puede conservar SIP/RTP directo con Telnyx. Si Gemini Live requiere streaming/codec/resampling o un media bridge distinto, ese transporte se implementa como edge/media adapter separado; no se introduce audio continuo en `CallSession` ni se contamina el camino OpenAI.
-- **RA-041 — Activación de provider por gates.** Registrar Gemini no implica habilitar tráfico. La secuencia mínima es: contrato/capabilities → conformance text/tools → media → invariantes de voz → tenant canary. OpenAI permanece disponible y sin cambios funcionales durante la incorporación de Gemini.
-- **RA-042 — Setup Live inmutable y propiedad de sesión.** Un provider cuyo protocolo configure la sesión únicamente al abrir conexión se compone antes de iniciar tráfico y se configura una sola vez. En Gemini Live, `setup` es el primer y único mensaje de configuración y el edge espera `setupComplete`; `updateSessionPolicy` no puede fingir una mutación dinámica enviando un segundo `setup`.
-- **RA-043 — No falsificar roles para obtener paridad.** Una orden del sistema/asistente, una decisión aislada o una continuación post-tool nunca se implementan inyectándolas como input del caller/usuario solo porque el provider carezca de un equivalente directo. Si la capacidad no existe con semántica demostrada, falla cerrada o se compone mediante otro port apropiado.
-- **RA-044 — Evidencia de transcript/lifecycle debe existir realmente.** Un adapter no inventa flags de finalización ni promociona chunks parciales a `*_TRANSCRIPT_COMPLETED`. Si el provider entrega transcripción, generación e interrupción con ordering distinto, un owner stateful de borde correlaciona por eventos/identidad antes de emitir evidencia neutral; no se usan timers para inferir completion.
-- **RA-045 — Capabilities describen semántica validada.** `functionCalling`, `governedSpeech`, `isolatedTextDecision`, `dynamicSessionPolicy`, `correlatedResponseLifecycle`, cancelación y media se habilitan de forma independiente. Que el vendor anuncie una feature o que una prueba sintáctica pase no autoriza marcar paridad funcional en el producto.
+- **RA-022 — Capability first.** Los efectos se expresan como capacidades de producto (`checkAvailability`, `createReservation`, `transferCall`, etc.); las capas de dominio no invocan wire formats/SDKs arbitrarios.
+- **RA-023 — Provider details at the edge/runtime owner.** OpenAI, Gemini, Telnyx, Supabase y Cloudflare se traducen en las fronteras que los poseen; no contaminan el dominio neutral.
+- **RA-024 — Sin estado privado entre generaciones o productos.** Ninguna capa alcanza internals de otra mediante casts, prototipos, flags heredados o estado compartido accidental. OpenAI y Gemini no comparten estado efímero de llamada.
+- **RA-025 — Ordering por evidencia, no por tiempo.** Carreras de voz, tools y lifecycle se resuelven con identidad, ownership, sequence/eventos y estado explícito. No se añaden `sleep`, delays ni ventanas heurísticas para tapar desorden.
+- **RA-026 — La intención conversacional pertenece al modelo.** No se enumeran todas las frases posibles del usuario para simular comprensión. Los matchers léxicos sólo son apropiados para protocolos cerrados y acotados, no para lenguaje natural abierto.
+- **RA-027 — Determinismo sólo en invariantes.** Permisos, validación, idempotencia, tenant binding, confirmación empresarial, concurrencia, seguridad y lifecycle son deterministas. Interpretación abierta y formulación natural siguen siendo model-owned dentro de esos límites.
+- **RA-028 — Habla protegida sólo cuando el lifecycle la declara.** Saludos, anuncios de handoff u otros mensajes que un runtime marque explícitamente como protegidos/atómicos deben tener un owner claro de playback y reglas de interrupción verificables. Los mecanismos concretos (`VAD suspend`, `assistant_audio_stopped`, marks, etc.) son provider/runtime-specific y no se extrapolan automáticamente a todos los caminos.
+- **RA-029 — Una respuesta activa y una decisión de efecto por turno/owner.** Ninguna capa crea respuestas o consume tools en paralelo saltándose el owner de respuesta, turno o autorización aplicable.
+- **RA-030 — Confirmación empresarial basada en backend.** El modelo nunca afirma reserva, cancelación, transferencia completada o escritura hasta recibir evidencia estructurada adecuada. Una confirmación conversacional no sustituye el resultado del sistema.
+- **RA-031 — Concurrencia adjudicada en commit.** La disponibilidad conversacional es informativa. PostgreSQL/sistema fuente decide el ganador al confirmar; el perdedor recibe una nueva alternativa, nunca un éxito ficticio.
+- **RA-032 — Handoff inclusivo.** Necesidades de movilidad, audición, bebés u otras adaptaciones se derivan con lenguaje cuidadoso y orientado a asegurar una buena experiencia; nunca como exclusión.
+- **RA-033 — Seguridad por intención y fronteras.** Prompt extraction, manipulación de tools e intentos abusivos se gobiernan por políticas/autoridades; no exclusivamente por listas de palabras. No se exponen prompts privados, secretos o wire interno.
+- **RA-034 — Diagnóstico mínimo y redactado.** Se conserva sólo trazabilidad técnica necesaria, bounded y con retención apropiada. No se persisten audio, secretos ni datos personales/transcripts crudos sin necesidad explícita.
+- **RA-035 — Una fuente documental por decisión.** Arquitectura estable vive aquí/ADR; estado operativo en `PROJECT_STATUS.md`; relevo en `SESSION_HANDOFF.md`; procedimientos en runbooks. Los documentos históricos deben marcarse como tales y no duplicar una segunda “verdad actual”.
+- **RA-036 — Provider realtime seleccionado por tenant y fijado por llamada.** Una llamada no cambia silenciosamente OpenAI↔Gemini. Cualquier failover cross-provider requiere ADR que preserve contexto, ownership, tools y audio pendiente.
+- **RA-037 — Aislamiento estricto entre productos realtime.** OpenAI y Gemini no comparten sockets, buffers, wire events ni estado privado. El dominio neutral no contiene ramas para compensar semántica específica de un provider; cada producto puede tener su propio runtime y lifecycle.
+- **RA-038 — Paridad de invariantes, no paridad de wire.** Cuando ambos productos ofrecen una misma capacidad, deben preservar sus invariantes de producto/seguridad, pero no necesitan implementar idéntico lifecycle, STT, VAD, response IDs ni transporte.
+- **RA-039 — Identidad suficiente para causalidad.** Cada runtime debe conservar/generar identidades estables suficientes para correlación, idempotencia y diagnóstico; el dominio no depende de identificadores propietarios concretos si no son necesarios.
+- **RA-040 — Media plane por provider es explícito.** OpenAI puede conservar SIP/direct media; Gemini puede usar Media Edge. Ninguna diferencia justifica introducir audio continuo en Cloudflare.
+- **RA-041 — Activación de provider por gates.** Registrar/codificar un provider no equivale a habilitar llamadas. Contratos, media, seguridad, deployment y E2E se prueban antes de activación. **Para Gemini Fast este gate histórico ya fue cruzado; no debe leerse como “Gemini sigue deshabilitado”.**
+- **RA-042 — Setup Live y propiedad de sesión siguen el contrato real del provider.** En Gemini Live el setup inicial se compone antes de tráfico y se espera `setupComplete`; no se finge mutación dinámica mediante un segundo setup incompatible.
+- **RA-043 — No falsificar roles para obtener paridad.** Una orden del sistema/asistente o continuación post-tool no se inyecta como caller input sólo porque otro provider tuviera una primitiva diferente.
+- **RA-044 — Evidencia de transcript/lifecycle debe existir realmente.** Un adapter/runtime no inventa completion ni promueve evidencia parcial a definitiva. Si eventos coexisten o llegan con ordering distinto, el owner los correlaciona explícitamente.
+- **RA-045 — Capabilities describen semántica validada.** Que el vendor anuncie una feature o un unit test pase no autoriza a declarar comportamiento E2E que no se ha observado.
+- **RA-046 — Autoridad semántica grounded para efectos conversacionales.** Cuando el modelo decide una intención abierta que habilita un efecto sensible, el kernel puede exigir evidencia del turno; esa comprobación valida grounding/estado, no vuelve a interpretar el lenguaje mediante una lista de frases.
+- **RA-047 — Capturar evidencia antes de encolar efectos asíncronos.** Si un tool depende del turno actual, la evidencia/transcript relevante se snapshottea antes de que `turnComplete`, cleanup u otro lifecycle pueda mutar o borrar el estado. La ejecución posterior usa ese snapshot.
+- **RA-048 — Routing etiquetado es tráfico real.** En despliegues donde un Worker apunta directamente a una URL etiquetada de Cloud Run, `0%` de tráfico general del servicio no implica que esa revisión no atienda llamadas. La ruta efectiva se determina por el binding/URL usado por el caller path.
+- **RA-049 — Evidencia de control no demuestra experiencia acústica.** `call.bridged`, `call.speak.ended`, un target leg creado o un HTTP 2xx no demuestran por sí solos que el caller oyera ringback/TTS. Los problemas acústicos requieren evidencia acústica/E2E proporcional.
+- **RA-050 — Fallos de observabilidad/deploy gate no se convierten automáticamente en fallos del hot path.** Debe identificarse qué capa falló antes de modificar audio, VAD, codecs o runtime estable.
+- **RA-051 — Presupuesto de latencia obligatorio.** Ningún cambio introduce inferencia, RPC, persistencia, `sleep`, buffer o transformación síncrona en audio/turn/post-tool sin baseline, presupuesto explícito y medición p50/p95/p99. El trabajo por chunk requiere ADR y benchmark.
+- **RA-052 — Capacidades transversales frente a verticales.** Seguridad, admission/identidad, voz/lifecycle, autorización de tools, handoff, tiempo autoritativo, diagnóstico/redacción y comunicación externa pertenecen al kernel transversal. Reservas, citas, disponibilidad, mesas y reglas sectoriales pertenecen al vertical/tenant y no se duplican por provider.
+- **RA-053 — Contrato mínimo de toda tool.** Toda tool declara nombre y schema cerrado, `authority`, `effect`, `capability`, `evidence`, handler permitido y contexto confiable de tenant/call. Las mutaciones añaden idempotencia, confirmación e invariantes de dominio. El modelo propone; el kernel autoriza; el dominio valida; el backend ejecuta.
+- **RA-054 — Seguridad durable sin transcript crudo.** Las señales semánticas de seguridad se persisten de forma autenticada, idempotente y sideband cuando la invariante lo permite. No se almacenan audio, prompts, secretos, payload hostil ni transcript crudo.
+- **RA-055 — Comunicaciones externas opt-in.** Cada canal/modo se autoriza por capability de tenant. WhatsApp separa `message.whatsapp.transactional` de `message.whatsapp.realtime_support`; habilitar una no autoriza la otra.
+
+## Applicability notes del Fast Path Gemini
+
+ADR-004 supersede para el Fast Path la obligatoriedad de mecanismos de la arquitectura Gemini anterior como:
+
+- Google STT como gate de cada turno;
+- semantic preselection aislada antes de entregar audio a Gemini;
+- output quarantine como paso normal de cada respuesta;
+- Durable Object/control WSS en el camino de cada turno;
+- TTS externo como voz normal de conversación.
+
+Esos módulos pueden seguir existiendo para compatibilidad, experimentación o rutas no Fast. **Existencia de código ≠ participación en producción Fast.**
 
 ## Definition of Done arquitectónica
 
-Una feature no está terminada si viola una regla aplicable, carece de prueba de comportamiento y, cuando cambia una frontera, de guard estructural. También requiere manejo de error, observabilidad proporcional y actualización de la única fuente documental que posea la decisión.
+Una feature no está terminada si:
 
-Para un realtime provider nuevo, la Definition of Done incluye además tests de conformance compartidos y guards que impidan tipos/wire del provider fuera de su adapter.
+- viola una regla aplicable;
+- carece de prueba de comportamiento;
+- cambia una frontera sin guard/contrato suficiente;
+- no maneja error/observabilidad proporcional;
+- deja documentación canónica afirmando algo distinto del runtime real.
 
-`CI verde`, `desplegado` y `validado E2E` son estados distintos. Ninguno sustituye a los demás.
+Para cambios de voz/telefonía, una suite verde no sustituye la evidencia E2E adecuada. Para cambios de documentación, `docs:check` no sustituye la comprobación contra código, workflows y estado remoto cuando se describen producción o despliegues.
+
+`CI verde`, `desplegado` y `validado E2E` siguen siendo estados distintos.

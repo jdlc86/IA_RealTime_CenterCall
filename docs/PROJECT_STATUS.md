@@ -1,118 +1,144 @@
 # IA_RealTime_CenterCall — estado operativo
 
-> Snapshot: 2026-08-26  
-> Para continuar: [`SESSION_HANDOFF.md`](./SESSION_HANDOFF.md)  
-> Decisión vigente: [`ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md`](./architecture/ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md)  
-> Plan activo: [`OPENAI_GEMINI_SEPARATION_WORKPLAN.md`](./architecture/OPENAI_GEMINI_SEPARATION_WORKPLAN.md)
+> Snapshot: 2026-08-29
+> Para continuar: [`SESSION_HANDOFF.md`](./SESSION_HANDOFF.md)
+> Decisiones vigentes: [`ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md`](./architecture/ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md) y [`ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md`](./architecture/ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md)
+> Seguridad viva: [`IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx`](../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx)
 
-Los datos remotos deben verificarse al comenzar cualquier sesión. Este archivo distingue implementación, CI, Producción y E2E; ningún estado sustituye a otro.
+Los datos remotos deben verificarse al comenzar cualquier sesión. `IMPLEMENTADO`, `CI VERDE`, `DESPLEGADO`, `CANARY` y `VALIDADO E2E` son estados distintos.
 
-## Baseline actual
-
-```text
-rama   rebuild/v39-stable-baseline
-PR     #85 — debe permanecer OPEN / DRAFT
-HEAD   verificar en GitHub al comenzar
-```
-
-La integración híbrida OpenAI/Gemini existente sigue siendo evidencia ejecutable útil, pero **ya no es la arquitectura objetivo**.
-
-## Cambio de dirección aprobado — 2026-08-26
-
-Se adoptan dos productos realtime independientes:
+## Baseline verificado
 
 ```text
-OPENAI PRODUCT                      GEMINI PRODUCT
-OpenAI Worker                       Gemini Worker
-OpenAI runtime                      Gemini runtime
-OpenAI lifecycle                    Gemini lifecycle
-OpenAI tool flow                    Gemini tool flow
-OpenAI audio/voz                    Gemini audio/voz
-       │                                   │
-OpenAI Realtime                     Gemini Media Edge
-                                            │
-                                       Gemini Live
+repo      jdlc86/IA_RealTime_CenterCall
+rama      rebuild/v39-stable-baseline
+PR        #85 — OPEN / DRAFT / MERGEABLE
+HEAD      154fdcfd31af22fde7c270b04074cf6cc3898aee
+fecha     2026-08-29 (verificación GitHub)
 ```
 
-Ambos productos utilizan en esta fase el mismo Supabase y los mismos contratos de dominio/persistencia realmente neutrales.
-
-No es requisito actual ejecutar ambos productos simultáneamente para un mismo cliente. Un cliente Gemini podrá operar sin runtime, secretos ni dependencias OpenAI; un cliente OpenAI podrá operar sin runtime, secretos ni dependencias Gemini.
+Los CI de Control Plane, Gemini Control Plane, Gemini Media Edge y Benchmark del SHA están verdes. El despliegue `Gemini Fast Canary Deploy` run `33208639554` terminó correctamente.
 
 ## Estado por preocupación
 
 | Área | Implementado | CI | Producción | E2E |
 |---|---:|---:|---:|---:|
-| ADR-003: runtimes independientes | ✅ | docs CI pendiente del SHA actual | n/a | n/a |
-| Plan operativo persistente de separación | ✅ | docs CI pendiente del SHA actual | n/a | n/a |
-| Supabase compartido en esta fase | ✅ decisión | n/a | ✅ base actual | ya utilizada por ambos caminos de prueba |
-| Worker OpenAI independiente/limpio | ❌ pendiente | — | Worker existente sigue operativo | baseline previa existe; revalidar tras limpieza |
-| Worker Gemini independiente | ❌ pendiente | — | ❌ | ❌ |
-| Gemini Media Edge | existe implementación actual | verificar CI/deploy antes de usar | existe despliegue previo | evidencia previa; será revalidado bajo nuevo runtime |
-| Inventario arquitectónico proveedor por proveedor | ❌ próxima fase | — | n/a | n/a |
-| Limpieza posterior del Worker OpenAI | ❌ bloqueada hasta Gemini independiente | — | — | — |
+| OpenAI independiente | baseline existente | verde | sin cambios | no repetido en esta sesión |
+| Gemini Fast Worker | sí | verde | canary aislado | PASS A–G |
+| Gemini Media Edge | sí | verde | revisión canary | PASS A–G |
+| Seguridad semántica durable | sí | verde | frontera compartida activa | 4/4 eventos persistidos |
+| Limpieza física del Worker OpenAI | pendiente | — | Worker actual preservado | — |
 
-## Interpretación del código actual
+## Arquitectura vigente
 
-El código alojado hoy en el Worker principal **no se considera automáticamente arquitectura óptima**.
-
-Durante la historia del proyecto se añadieron capas para:
-
-- necesidades específicas de OpenAI;
-- compatibilidad entre generaciones;
-- abstracciones provider-neutral;
-- incorporación progresiva de Gemini;
-- hardening de concurrencia, seguridad y observabilidad.
-
-Cada pieza se evaluará por su propósito real. El inventario utilizará estas etiquetas:
+OpenAI y Gemini son productos realtime independientes:
 
 ```text
-SHARED_DOMAIN
-OPENAI_NATIVE
-GEMINI_NATIVE
-LEGACY_COMPAT_REDESSIGN
-UNRESOLVED
+OPENAI PRODUCT                      GEMINI PRODUCT
+OpenAI Worker                       Gemini Fast Worker
+OpenAI runtime/lifecycle            Gemini runtime/lifecycle
+OpenAI tool flow                    Gemini tool flow
+OpenAI Realtime                     Gemini Media Edge → Gemini Live
+          └──────── contratos neutrales + Supabase compartido ────────┘
 ```
 
-El hardening general útil no se elimina por asociación con Gemini. La lógica específica de convivencia híbrida sí será candidata a retirada cuando la separación esté probada.
+- OpenAI continúa operativo y no ha sido sustituido por Gemini.
+- Gemini tiene Worker y Media Edge propios; su canary no utiliza runtime, SDK, socket, voz ni lifecycle OpenAI.
+- No hay failover OpenAI↔Gemini a mitad de llamada.
+- Supabase, dominio empresarial y caller security se comparten sólo detrás de contratos neutrales.
+- Matiz transitorio: la autoridad neutral de caller security está físicamente alojada en el Control Plane existente. Gemini la consume mediante un endpoint autenticado/idempotente; no consume el runtime conversacional OpenAI. Debe extraerse físicamente antes de declarar aislamiento operativo total.
 
-## Plan activo por fases
+El kernel distingue dos clases de capacidad:
 
-1. **Fase 0 — documentación y decisión:** prácticamente completada.
-2. **Fase 1 — inventario arquitectónico:** próxima misión; no mover runtime todavía.
-3. **Fase 2 — diseño detallado del Gemini Worker independiente.**
-4. **Fase 3 — construcción/migración Gemini y E2E autónomo.**
-5. **Fase 4 — limpieza y optimización del Worker OpenAI.**
-6. **Fase 5 — CI/deploy/secrets separados.**
-7. **Fase 6 — N bases/coexistencia/failover sólo si aparece requisito futuro.**
+- **Transversales:** seguridad, admission/identidad, flujo y lifecycle de voz, autorización de tools, transferencia humana, hora autoritativa, diagnóstico/redacción y comunicación externa. En KV, WhatsApp se divide en `message.whatsapp.transactional` y `message.whatsapp.realtime_support`; ambas capacidades son opt-in por tenant.
+- **Verticales:** reservas, disponibilidad, horarios, mesas y demás reglas propias del negocio configurado para el tenant.
 
-Checklist detallado: [`OPENAI_GEMINI_SEPARATION_WORKPLAN.md`](./architecture/OPENAI_GEMINI_SEPARATION_WORKPLAN.md).
+Toda tool cruza un contrato declarativo mínimo: nombre/schema cerrado, `authority`, `effect`, `capability`, `evidence`, handler permitido y contexto tenant/call. Las mutaciones añaden idempotencia, confirmación e invariantes de dominio. Gemini propone; el kernel autoriza; el dominio valida; el backend ejecuta.
+
+## Regla de latencia
+
+Está prohibido añadir latencia evitable al turno o al audio. Un cambio no puede introducir inferencias, RPC, persistencia, sleeps, buffers o transformaciones síncronas en el camino crítico sin:
+
+1. baseline previo;
+2. presupuesto explícito;
+3. medición p50/p95/p99;
+4. prueba de que no degrada voz, barge-in ni continuación post-tool.
+
+No se añade trabajo por cada chunk de audio salvo necesidad demostrada por ADR+benchmark. Seguridad, auditoría y diagnóstico se ejecutan sideband/asíncronos cuando la invariante lo permite.
+
+## Estado de seguridad Gemini
+
+La causa del fallo persistente anterior quedó corregida. El token de control estaba sincronizado en Cloud Run y Fast Worker, pero no en la frontera de persistencia del Control Plane. El deploy ahora sincroniza:
+
+- `gemini-media-edge-control-plane-token` con Cloud Run, Gemini Fast Worker y `MEDIA_EDGE_CONTROL_PLANE_TOKEN` del Control Plane;
+- `gemini-media-edge-credential-hmac-secret` entre Cloud Run y Gemini Fast Worker;
+- preflight autenticado a `/internal/fast-semantic-security-signal`, que exige `400 INVALID_SECURITY_SIGNAL` para `{}` sin persistir un evento;
+- probe HMAC del upgrade WSS.
+
+IAM mínimo aplicado a `github-cloud-run-deployer@iacallcenterv1.iam.gserviceaccount.com`: `roles/secretmanager.secretAccessor` únicamente sobre esos dos secretos.
+
+### E2E real A–G
+
+```text
+call_id   v3:uHjdAfDtH2KmuPKzJ2cKyGY_nbIQankHLScOdnq2oN4TNewNo5xxpg
+resultado PASS técnico A–G
+```
+
+Se verificaron conversación, pregunta educativa legítima, prompt exfiltration, role escalation parafraseada, tool manipulation, hora autoritativa y transferencia humana contestada.
+
+Persistencia demostrada:
+
+- 2 × `GEMINI_SEMANTIC_PROMPT_EXFILTRATION`;
+- 1 × `GEMINI_SEMANTIC_ROLE_ESCALATION`;
+- 1 × `GEMINI_SEMANTIC_TOOL_MANIPULATION`;
+- `severity=MEDIUM`, `risk_delta=1`, claves idempotentes distintas;
+- `source=GEMINI_FAST_SEMANTIC_BOUNDARY`;
+- `raw_transcript_stored=false`;
+- latencias observadas: 135, 74, 89 y 40 ms;
+- ningún `TOOL_EXECUTION_FAILED`.
+
+Estado del llamante tras la prueba:
+
+```text
+risk_score         21
+security_strikes   3
+rate_limit_blocks  0
+blocked_until      null
+permanent_block    false
+```
+
+El `risk_score` actual es acumulativo y no tiene decay automático: Gemini semántico suma 1; una detección determinista de alta confianza suma 5 y un strike; un bloqueo por frecuencia suma 3. Los duplicados idempotentes y llamadas normales no suman.
+
+Umbrales de frecuencia: 5 llamadas/minuto, 8/5 minutos o 20/hora. Los bloqueos escalan 1 hora, 24 horas y 7 días. El bloqueo permanente requiere simultáneamente `security_strikes>=8`, `rate_limit_blocks>=3` y `risk_score>=25`.
+
+## Despliegue canary vigente
+
+```text
+workflow          Gemini Fast Canary Deploy
+run_id            33208639554
+Cloud Run         gemini-media-edge-00201-xav
+Fast Worker       a9281c81-0574-43d4-ba18-ccb2388db7ba
+canary traffic    0 %, accesible por tag/Fast Worker
+production        sin cambios
+```
+
+La transferencia real quedó `TRANSFERRED`, destino `Reception`, contestada aproximadamente 2.23 s después de iniciar el transfer, `failure_reason=null` y cierre esperado `HUMAN_HANDOFF_TERMINAL`.
+
+## Restricciones para la siguiente sesión
+
+- No realizar otra llamada ni repetir ataques desde el número real sin petición expresa.
+- No modificar OpenAI para corregir Gemini.
+- No copiar la cadena histórica `CallSession V2→V54` al producto Gemini.
+- No añadir latencia ni trabajo por chunk sin benchmark/ADR.
+- No almacenar prompts, secretos, audio o transcript crudo en eventos de seguridad.
+- El modelo propone intención; kernel, ToolGateway, backend y base de datos autorizan efectos.
+- No cambiar IAM, secretos, tráfico, deploy o configuración sin autorización explícita.
+- No hacer commit/push con cambios ajenos; verificar worktree antes de editar.
+- Mantener PR #85 OPEN/DRAFT y distinguir siempre código, CI, deploy, canary y E2E.
 
 ## Siguiente validación
 
-La siguiente tarea **no es corregir G3/G4 ni continuar estabilizando la arquitectura híbrida**.
+La seguridad probada debe conservarse sin más llamadas adversariales. Los dos asuntos abiertos son:
 
-La próxima sesión debe:
-
-1. verificar HEAD remoto, PR #85 y CI del SHA exacto;
-2. leer ADR-003 y el plan de separación;
-3. crear `docs/architecture/PROVIDER_RUNTIME_INVENTORY.md`;
-4. inventariar entrypoints, Workers, Media Edge, lifecycle, response coordination, turn ownership, tool flow, OpenAI adapters, Gemini branches/sideband, dominio, Supabase, observabilidad y Telnyx;
-5. clasificar cada componente sin mover código todavía;
-6. marcar el progreso en el checklist antes de cerrar.
-
-## Restricciones vigentes
-
-- Un único PR: #85.
-- Una única rama: `rebuild/v39-stable-baseline`.
-- No merge, no ready-for-review, no force-push, no reescritura de historia.
-- No crear otro Worker mediante ramas/PR paralelos; todo el trabajo continúa en esta línea hasta nueva decisión.
-- No copiar automáticamente la arquitectura OpenAI al nuevo Gemini Worker.
-- No asumir que el Worker OpenAI actual es óptimo; será auditado posteriormente.
-- No seguir corrigiendo defectos híbridos si el código será reemplazado, salvo bloqueo de la separación o impacto compartido demostrado.
-- Supabase permanece compartido en esta fase.
-- No introducir coexistencia/failover OpenAI↔Gemini sin requisito y ADR posterior.
-- No confundir `IMPLEMENTADO`, `CI`, `Producción` y `E2E`.
-
-## Evidencia reciente útil
-
-La última llamada Gemini previa al cambio de paradigma demostró que la ruta híbrida podía avanzar hasta reserva progresiva y disponibilidad, pero aún exponía divergencias de lifecycle/post-tool y mezcla de identidad vocal. Esos fallos se conservan como evidencia para diseñar Gemini nativo; no constituyen por sí solos mandato para seguir parchando el runtime híbrido.
+1. decidir si la política necesita decay/reset administrado de `risk_score`;
+2. extraer físicamente caller security neutral fuera del Worker OpenAI antes de declarar aislamiento operativo total, preservando idempotencia y sin añadir latencia al camino de voz.

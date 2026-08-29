@@ -1,5 +1,8 @@
 # Reservation search and table-capacity policy
 
+> **Estado:** política vertical RESTAURANT vigente
+> **Última revisión documental:** 2026-08-29
+
 ## Automatic allocation rule
 
 Automatic reservation is allowed only when the total capacity assigned is at least the requested party size and leaves at most one unused seat in total.

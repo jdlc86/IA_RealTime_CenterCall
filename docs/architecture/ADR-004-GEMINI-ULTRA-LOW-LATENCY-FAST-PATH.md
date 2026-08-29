@@ -1,199 +1,202 @@
 # ADR-004 — Gemini Ultra-Low-Latency Production Fast Path
 
-- **Estado:** Aceptado — implementación activa
-- **Fecha:** 2026-08-26
-- **Ámbito:** producto Gemini / realtime / media / tools / latencia / producción
-- **Supersede parcialmente:** decisiones de Fase 2/3 que obligaban a Google STT, semantic preselection, quarantine o `GeminiCallSession`/control WSS en cada turno del camino conversacional.
-- **No supersede:** ADR-003 sobre independencia OpenAI/Gemini ni la separación del producto Gemini respecto a OpenAI.
+> **Estado:** Aceptado — IMPLEMENTADO / operativo
+> **Fecha:** 2026-08-26
+> **Última aclaración:** 2026-08-28
+> **Ámbito:** producto Gemini / realtime / media / tools / latencia / producción
+> **Supersede parcialmente:** decisiones de Fase 2/3 que obligaban a Google STT, semantic preselection, quarantine o `GeminiCallSession`/control WSS en cada turno
+> **No supersede:** ADR-003 sobre independencia OpenAI/Gemini ni la prohibición de Cloudflare en audio continuo
 
 ## Contexto
 
-El objetivo inmediato del producto cambia: sacar cuanto antes un sistema Gemini autónomo, con arquitectura limpia, medible y de latencia conversacional mínima.
+El runtime Gemini histórico acumuló mecanismos creados para convivir con una arquitectura OpenAI-first: Google Speech autoritativo por turno, semantic preselection, governed TTS, provider rotation, sideband, quarantine y múltiples owners de playback/turn state.
 
-El runtime Gemini histórico acumuló mecanismos creados para convivir con un control plane OpenAI-first: Google Speech autoritativo por turno, semantic preselection aislada, governed TTS, provider rotation, sideband, quarantine y múltiples owners de playback/turn state. Aunque varios mecanismos son correctos en aislamiento, juntos introducen hops, esperas y estados que no son inherentes a Gemini Live.
+Aunque esos mecanismos podían ser correctos de forma aislada, añadían hops, esperas y estados que no son inherentes al modelo audio→audio Gemini Live.
 
-Gemini 3.1 Flash Live está diseñado como modelo audio→audio de baja latencia. Su VAD puede operar sobre el flujo continuo y su function calling es secuencial: cuando el modelo llama una función, espera el FunctionResponse antes de continuar. Esto permite un diseño mucho más directo.
+El objetivo del Fast Path es mantener la conversación Gemini lo más directa posible sin renunciar a tenant binding, seguridad, capabilities, effects ni observabilidad.
 
 ## Decisión
 
-El producto Gemini adopta un **fast path realtime único**:
+El producto Gemini adopta como camino normal:
 
 ```text
 PSTN
   ↕
 Telnyx
-  ↕ WebSocket media PCM
-Gemini Media Runtime (Cloud Run)
+  ↕ WebSocket media
+Fast Gemini Media Edge (Cloud Run)
   ↕ WebSocket Live
 Gemini 3.1 Flash Live
 ```
 
-El `Gemini Media Runtime` es el único owner del estado efímero de la conversación activa:
+El Gemini Fast Worker participa antes/alrededor del media path, no dentro del transporte continuo:
 
-- socket Telnyx;
-- socket Gemini Live;
-- ingestión de audio;
-- turn-taking/VAD;
-- barge-in/interruption;
-- reproducción;
-- tool calls pendientes;
-- reconnect/resumption de Gemini;
-- métricas de latencia de la llamada.
+```text
+Telnyx webhook
+   ↓
+Gemini Fast Worker
+   ├── tenant/KV
+   ├── session config
+   ├── admission/credentials
+   ├── transfer/control
+   └── diagnostics ingest
+           │
+           └──► tagged Fast Media Edge URL
+```
 
-### Principio de hot path
+## Principio de hot path
 
-> **Ningún hop remoto es obligatorio entre audio del caller y Gemini, ni entre audio de Gemini y Telnyx.**
+> **Ningún hop remoto es obligatorio entre audio del caller y Gemini ni entre audio de Gemini y Telnyx.**
 
-El Worker/DO no participa por defecto en:
+Por defecto, el Worker/DO no participa en:
 
 - cada chunk de audio;
-- inicio/fin de habla;
-- `EDGE_READY`;
-- `MEDIA_STARTED`;
-- playback start/complete;
-- turn authorization conversacional;
-- semantic preselection;
+- inicio/fin de habla normal;
+- cada decisión de turn authorization;
+- semantic preselection por turno;
+- playback normal;
 - respuesta oral normal.
 
-## Configuración baseline Gemini
+Una tool/effect puede requerir control/autorización externa sin convertir esa frontera en relay de audio.
 
-Para el candidato de producción:
+## Owners del Fast Media Edge
 
-- modelo: `gemini-3.1-flash-live-preview` mientras sea el modelo Live de menor latencia validado;
-- `responseModalities: [AUDIO]`;
-- `thinkingLevel: minimal` salvo prueba A/B que demuestre necesidad de más razonamiento;
-- una única voz nativa Gemini para toda la conversación;
-- VAD automático Gemini como baseline;
-- `START_OF_ACTIVITY_INTERRUPTS` para barge-in natural;
-- VAD configurable, comenzando con `prefixPaddingMs=20` y `silenceDurationMs=100`;
-- procesar **todas** las parts de cada evento de Gemini 3.1, porque un evento puede contener varias simultáneamente;
-- `inputAudioTranscription`/`outputAudioTranscription` pueden habilitarse para diagnóstico, pero no bloquean el audio.
+Por llamada, el Fast Media Edge posee:
+
+- socket Telnyx media;
+- socket Gemini Live;
+- ingestión/forwarding de audio;
+- VAD/turn-taking Gemini;
+- interruption/barge-in;
+- playback;
+- parser de frames Gemini;
+- tool calls pendientes y su ejecución realtime local cuando corresponda;
+- reconnect/resumption Gemini;
+- métricas de latencia del tramo realtime.
+
+No posee:
+
+- tenant selection;
+- número privado de handoff;
+- permissions/capabilities empresariales;
+- persistencia empresarial como fuente de verdad.
+
+## Baseline Gemini Fast
+
+La implementación actual usa como baseline:
+
+```text
+model: gemini-3.1-flash-live-preview
+voice: Kore
+language: es-ES
+response: AUDIO
+thinking: MINIMAL
+Gemini automatic VAD: enabled
+activityHandling: START_OF_ACTIVITY_INTERRUPTS
+```
+
+Estos valores son configuración de implementación actual, no una obligación eterna del ADR. Cambiarlos exige benchmark/regresión adecuados si afectan latencia o experiencia acústica.
 
 ## Audio
 
-### Caller → Gemini
-
-Si el stream Telnyx está verificado como PCM16 little-endian a 16 kHz, el runtime debe reutilizar el payload de audio sin decode/re-encode innecesario y enviarlo como:
-
-`audio/pcm;rate=16000`
-
-Si el formato real difiere, se hará una sola transformación en el Media Runtime.
-
-### Gemini → Telnyx
-
-Gemini Live produce PCM16 a 24 kHz. El Media Runtime realiza una única conversión 24→16 kHz sólo si Telnyx requiere 16 kHz.
-
-No se usa Google TTS en la ruta normal.
-
-## Turn-taking y STT
-
-Google Speech deja de ser autoridad obligatoria de cada turno en el fast path.
-
-- Gemini recibe el audio inmediatamente.
-- El VAD de Gemini determina el turno conversacional por defecto.
-- La transcripción externa puede ejecutarse como dark/observability path, nunca delante de Gemini.
-- Políticas de negocio críticas se validan en el tool boundary, no retrasando toda conversación.
-
-Si una política futura exige bloquear contenido antes de que Gemini lo procese, debe justificar explícitamente el coste de latencia y pertenecer a un modo de seguridad distinto del baseline ultrarrápido.
-
-## Tools y efectos de negocio
-
-Gemini function calling es la única puerta normal a efectos externos.
-
-Flujo:
+Entrada caller:
 
 ```text
-Gemini toolCall(id, name, args)
-  → ToolExecutor local/low-latency
-  → validación determinista de tenant + schema + business rules
-  → shared domain / Supabase
-  → FunctionResponse con el mismo id
-  → misma sesión Gemini Live continúa
+Telnyx PCM/L16 → Media Edge → Gemini realtime input
 ```
 
-Reglas:
+Salida assistant:
 
-1. no hay efecto antes de validar tool name, id, argumentos y tenant;
-2. business idempotency es independiente de transport idempotency;
-3. un tool call no necesita semantic preselection previa;
-4. el modelo no recibe un segundo generador/TTS para continuar;
-5. outside-hours, disponibilidad, reserva progresiva y booking se resuelven en contratos de dominio deterministas;
-6. el ToolExecutor puede vivir dentro del Media Runtime para el MVP si esto reduce hops y mantiene una frontera de código clara.
+```text
+Gemini native PCM → conversión/resampling necesario → Telnyx media
+```
 
-## Worker / Durable Object
+No introducir STT externo, base de datos o Worker como gate obligatorio para audio normal.
 
-El Gemini Worker sigue siendo útil para tareas **fuera del hot path**:
+## Tools
 
-- webhook/admission pre-call;
-- tenant routing/configuración;
-- emisión de credenciales efímeras;
-- administración;
-- observabilidad o coordinación que no bloquee audio.
+Gemini function calling es secuencial respecto a su `FunctionResponse`, por lo que el Fast runtime puede ejecutar una tool sin reconstruir una arquitectura de autorización conversacional por turnos completa.
 
-`GeminiCallSession` DO deja de ser requisito del MVP de baja latencia. Sólo se mantiene si una prueba demuestra valor para:
+Aun así, toda tool sensible debe preservar:
 
-- coordinación multi-conexión;
-- recuperación que el Media Runtime no pueda resolver;
-- persistencia fuerte de estado no derivable.
+- tenant/call identity;
+- schema;
+- capability;
+- idempotency;
+- business invariants;
+- confirmación/autoridad cuando aplique;
+- diagnóstico proporcional.
 
-No se seguirá implementando `SYNC/replay` simplemente por completar una abstracción si no es necesario para el producto de producción.
+### Handoff humano
+
+La comprensión lingüística pertenece a Gemini. Para la política Fast actual, el kernel verifica que `authorization` use un valor soportado y que `caller_authority_evidence` esté grounded en el transcript snapshot capturado para ese tool call. No vuelve a interpretar el significado mediante listas de frases.
+
+La política actual tampoco mantiene `offerPending` ni prueba por sí sola que existiera una oferta previa para `CONFIRMED_OFFER`; si esa garantía adicional se exige en el futuro, debe modelarse como estado/protocolo explícito, no como matching léxico.
+
+El transcript/evidencia se captura antes de encolar la ejecución asíncrona para evitar carreras con `turnComplete`.
+
+El contrato y las limitaciones operativas de transferencia pertenecen a [`../HUMAN_HANDOFF.md`](../HUMAN_HANDOFF.md).
 
 ## Observabilidad
 
-El hot path sólo emite métricas bounded y no bloqueantes:
+La observabilidad Fast debe ser bounded y no bloquear el audio.
 
-- `telnyx_audio_received → gemini_send`;
-- `caller_activity_end → gemini_first_audio`;
-- `gemini_audio_received → telnyx_send`;
-- tool call → tool result;
-- reconnect/resumption;
-- barge-in clear;
-- buffer high-water;
-- error category.
+El Media Edge puede acumular diagnóstico seguro y enviarlo/persistirlo fuera del tramo crítico. No registrar audio, API keys, bearer/HMAC tokens ni transcripts crudos por defecto.
 
-Persistencia/telemetría remota se realiza fuera del tramo crítico siempre que sea posible.
+## Deployment con revisión etiquetada
 
-No almacenar audio, API keys, credentials, teléfonos ni transcripts crudos en diagnóstico por defecto.
+El Fast Media Edge se despliega de forma deliberada como revisión etiquetada con `--no-traffic` general. El Worker se configura después con la URL WSS etiquetada.
 
-## Budgets iniciales de rendimiento
+```text
+Cloud Run service general traffic: revisión estable previa puede seguir 100%
+Fast tagged revision: 0% general
+Fast Worker binding: apunta directamente al tag
+```
 
-Estos son gates de ingeniería, no promesas comerciales:
+Por tanto, **0% general no significa 0 llamadas Fast**.
 
-- Media Runtime processing caller chunk: **p95 ≤ 10 ms**;
-- Gemini audio chunk → Telnyx queue: **p95 ≤ 10 ms**;
-- overhead local de tool dispatch excluyendo I/O: **p95 ≤ 5 ms**;
-- caller end → first Gemini audio: medir primero; objetivo inicial **p50 < 500 ms, p95 < 900 ms** en llamadas reales sanas;
-- cero espera artificial basada en timers para ordering.
+El estado real debe comprobarse desde el binding `GEMINI_FAST_CANARY_EDGE_URL`, readiness del tag y Worker correspondiente.
 
-Los objetivos se ajustan con evidencia de producción/canary.
+El procedimiento y cualquier deuda temporal del gate de despliegue pertenecen a [`../runbooks/Deployment.md`](../runbooks/Deployment.md), no a esta ADR.
 
-## Estrategia de implementación
+## Gates de producción
 
-1. crear un nuevo fast-path core independiente del runtime híbrido;
-2. implementar parser de eventos Gemini 3.1 que consume todas las parts;
-3. implementar audio pass-through caller→Gemini y playback Gemini→Telnyx;
-4. usar VAD automático Gemini y barge-in nativo;
-5. implementar tool executor en la misma sesión;
-6. añadir benchmark sintético de overhead local;
-7. añadir E2E real contra Gemini Live;
-8. desplegar como canary separado/no productivo;
-9. probar llamada manual de producción controlada;
-10. sólo después retirar módulos híbridos que ya no formen parte del producto.
+El Fast Path ya cruzó los gates que históricamente impedían llamadas reales. A partir de ahora, cada cambio debe demostrar sólo los gates que le correspondan:
 
-## Fuera de alcance del fast path inicial
+1. tests/checks del componente modificado;
+2. build/deploy del SHA exacto;
+3. readiness/health/bindings;
+4. bootstrap/HMAC preflight cuando el gate esté operativo;
+5. E2E de llamada si el cambio afecta comportamiento telefónico/acústico.
 
-- coexistencia OpenAI/Gemini en una misma llamada;
-- failover cross-provider;
-- semantic preselection;
-- governed Google TTS para conversación ordinaria;
-- Google STT como gate de cada turno;
-- control WSS/DO como requisito de cada transición;
-- provider rotation para simular semántica de otro proveedor.
+No volver a interpretar esta sección como “Gemini no puede recibir tráfico hasta una futura fase”.
 
-## Criterio de éxito
+## Consecuencias
 
-El producto Gemini puede desplegarse y probarse independientemente con esta cadena:
+### Positivas
 
-`Telnyx ↔ Gemini Media Runtime ↔ Gemini Live ↔ ToolExecutor ↔ dominio/Supabase`
+- menos hops y menor latencia;
+- ownership realtime más claro;
+- Gemini evoluciona sin arrastrar lifecycle OpenAI;
+- problemas de control pueden corregirse sin tocar audio estable;
+- arquitectura medible y desplegable por revisión inmutable/tag.
 
-sin OpenAI, sin sideband híbrido y sin servicios auxiliares en la ruta normal de una respuesta hablada.
+### Riesgos
+
+- la baja latencia no puede conseguirse saltándose permisos/invariantes;
+- tools locales requieren disciplina estricta de schema/idempotency;
+- una revisión etiquetada puede confundirse con “sin tráfico” si se mira sólo el porcentaje general de Cloud Run;
+- módulos históricos pueden inducir a reintroducir complejidad si no están claramente marcados.
+
+## Relación con otros documentos
+
+- [`ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md`](./ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md) — separación estructural de productos.
+- [`SYSTEM_ARCHITECTURE.md`](./SYSTEM_ARCHITECTURE.md) — topología completa actual.
+- [`DESIGN_RULES.md`](./DESIGN_RULES.md) — invariantes transversales.
+- [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md) — estado operativo y siguiente validación.
+- [`../HUMAN_HANDOFF.md`](../HUMAN_HANDOFF.md) — contrato/UX y limitaciones de transferencia humana.
+- [`../runbooks/Deployment.md`](../runbooks/Deployment.md) — procedimiento/gates de despliegue.
+
+## Decisión final
+
+El Fast Path es la arquitectura Gemini operativa de referencia. Los diseños previos de STT/quarantine/DO/semantic preselection se conservan como historia/compatibilidad, no como requisitos implícitos del camino de producción.

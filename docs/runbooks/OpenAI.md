@@ -1,49 +1,40 @@
-# Runbook — OpenAI Realtime
+# Runbook — producto OpenAI Realtime
 
-## FASE 0
+> **Estado:** vigente
+> **Última revisión:** 2026-08-29
 
-Objetivo: recibir una llamada SIP, generar `realtime.call.incoming` y permitir que el Worker acepte/configure la llamada.
+## Alcance
 
-## Configuración necesaria
+Este runbook corresponde sólo al producto OpenAI (`apps/control-plane` + `apps/media-edge`). Gemini Fast no usa su SDK, socket, voz, lifecycle ni estado efímero.
 
-1. Proyecto OpenAI dedicado al desarrollo.
-2. API key del proyecto.
-3. Webhook público:
-
-```text
-https://ia-realtime-centercall.julopezcardona.workers.dev/webhooks/openai
-```
-
-4. Evento: `realtime.call.incoming`.
-5. Signing secret del webhook.
-6. Endpoint SIP del proyecto OpenAI Realtime.
-
-## Secretos
-
-Guardar en Cloudflare:
+## Flujo
 
 ```text
-OPENAI_API_KEY
-OPENAI_WEBHOOK_SECRET
+Telnyx / SIP y señalización
+  → OpenAI Control Plane
+  → OpenAI Realtime
+  → tools y dominio autorizados
 ```
 
-## Flujo esperado
+Cloudflare participa en control/bootstrap y permanece fuera del audio continuo.
 
-```text
-SIP inbound
-  ↓
-OpenAI Realtime
-  ↓ realtime.call.incoming
-Worker
-  ↓ verify signature
-POST /v1/realtime/calls/{call_id}/accept
-  ↓
-conversation active
+## Diagnóstico mínimo
+
+1. Verificar la rama y el SHA desplegado antes de cambiar nada.
+2. Comprobar `/health`, recepción y firma de webhooks.
+3. Correlacionar `call_id` entre Telnyx, Worker, OpenAI y Supabase.
+4. Separar aceptación/configuración de llamada, sideband, tool execution y lifecycle terminal.
+5. No tocar Gemini para corregir una incidencia OpenAI ni introducir failover entre providers a mitad de llamada.
+
+Los nombres/valores de secretos se verifican en configuración remota; nunca se copian a documentación o logs.
+
+## Validación
+
+Desde `apps/control-plane`:
+
+```powershell
+npm test
+npm run check
 ```
 
-## Reglas
-
-- Copiar el endpoint SIP exactamente desde OpenAI Platform.
-- No almacenar API keys en GitHub.
-- No saltarse la verificación de firma del webhook.
-- F0 no habilita tools empresariales.
+Una incidencia de voz requiere evidencia E2E proporcional; CI verde no demuestra audio real.

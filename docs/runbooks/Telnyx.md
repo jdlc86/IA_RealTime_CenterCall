@@ -1,125 +1,36 @@
-# Runbook — Telnyx FASE 0
+# Runbook — Telnyx
 
-> **Estado:** vigente  
-> **Fecha:** 2026-08-08
+> **Estado:** vigente
+> **Última revisión:** 2026-08-29
 
-## Objetivo
+## Alcance
 
-Configurar Telnyx como proveedor telefónico inicial de FASE 0 usando Programmable Voice / Voice API Application, manteniendo Cloudflare como Control Plane y OpenAI Realtime como proveedor conversacional.
+Telnyx es el carrier actual de ambos productos realtime. El routing confiable del número llamado determina tenant y producto antes de iniciar conversación específica del negocio.
 
-## Estado actual
+## Separación de rutas
 
-Completado:
+### OpenAI
 
-- [x] Telnyx seleccionado como proveedor inicial de F0.
-- [x] SIP Trunking/FQDN evaluado y descartado como ruta principal de esta implementación.
-- [x] Voice API Application creada.
-- [x] Nombre: `IA-RealTime-CenterCall-F0`.
-- [x] Webhook API v2 seleccionado.
-- [x] Configuración inbound iniciada.
-- [x] Outbound Voice Profile creado para Europa.
-- [x] OVP asociado a la aplicación.
+Telnyx usa la ruta de señalización/media propia del producto OpenAI descrita por su runtime.
 
-Pendiente:
-
-- [ ] finalizar configuración de la Voice API Application;
-- [ ] asociar número +34;
-- [ ] implementar/verificar webhook `/webhooks/telnyx`;
-- [ ] ejecutar routing/dial hacia OpenAI Realtime;
-- [ ] validar primera llamada.
-
-## Voice API Application
-
-Ruta aproximada:
+### Gemini Fast
 
 ```text
-Telnyx → Voice → Programmable Voice → Create Voice API Application
+Telnyx webhook firmado
+  → Gemini Fast Worker
+  → credencial/bootstrap acotado
+  → Telnyx media WSS ↔ Fast Media Edge ↔ Gemini Live
 ```
 
-Nombre:
+Para transferencia humana, el destino procede exclusivamente de la configuración privada del tenant. El modelo nunca proporciona un teléfono arbitrario.
 
-```text
-IA-RealTime-CenterCall-F0
-```
+## Diagnóstico por llamada
 
-Webhook URL:
+1. Capturar el `call_id` y la hora exacta.
+2. Verificar webhook/firma, routing y tenant binding.
+3. Distinguir leg origen, leg destino de transferencia y stream media.
+4. Correlacionar eventos `call.answered`, streaming, transfer, `call.bridged` y terminación.
+5. No interpretar `call.bridged` o `call.speak.ended` como prueba de audio audible.
+6. No registrar API keys, firmas completas, teléfonos sin necesidad ni audio/transcript crudo.
 
-```text
-https://ia-realtime-centercall.julopezcardona.workers.dev/webhooks/telnyx
-```
-
-Webhook API Version:
-
-```text
-API v2
-```
-
-## Inbound
-
-Configurar un SIP subdomain identificable para F0.
-
-Baseline de codec prioritario:
-
-```text
-G711U / PCMU
-```
-
-No optimizar codecs antes de conseguir la primera llamada funcional.
-
-## Outbound Voice Profile
-
-Se ha creado un OVP para Europa y se ha asociado a la Voice API Application.
-
-El OVP forma parte de la configuración necesaria para comandos salientes/routing de Telnyx hacia destinos externos.
-
-## OpenAI Realtime
-
-El destino SIP se expresa mediante la plantilla:
-
-```text
-sip:<OPENAI_PROJECT_ID>@sip.api.openai.com;transport=tls
-```
-
-No registrar el Project ID real ni secretos en este runbook.
-
-## Arquitectura de control
-
-```text
-PSTN
-  ↓
-Número Telnyx
-  ↓
-Voice API Application
-  ↓ webhook
-Cloudflare Worker
-  ↓
-CallOrchestrator
-  ↓
-RoutingDecision
-  ↓
-OpenAI Realtime
-```
-
-Cloudflare participa en control y routing; no debe actuar como relay continuo de audio.
-
-## Diagnóstico
-
-```text
-¿Número asociado correctamente?
-  ↓
-¿Telnyx emite webhook?
-  ↓
-¿Worker recibe /webhooks/telnyx?
-  ↓
-¿CallOrchestrator produce routing válido?
-  ↓
-¿Telnyx establece destino SIP?
-  ↓
-¿OpenAI genera realtime.call.incoming?
-  ↓
-¿Worker acepta call_id?
-  ↓
-¿Audio bidireccional?
-```
-
-Registrar cualquier fallo con timestamp, identificador de llamada, etapa y respuesta del proveedor, sin incluir secretos.
+La reconstrucción completa está en [`CROSS_PLANE_CALL_DIAGNOSTICS.md`](./CROSS_PLANE_CALL_DIAGNOSTICS.md).

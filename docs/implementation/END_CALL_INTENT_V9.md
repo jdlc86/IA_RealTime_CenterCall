@@ -1,6 +1,9 @@
 # Cierre de llamada por intención semántica — v9
 
-> **Estado: VALIDADO MANUALMENTE EN E2E.** F0-T08 = PASS.
+> **Estado:** vigente para el producto OpenAI; VALIDADO MANUALMENTE EN E2E (F0-T08 = PASS)
+> **Última revisión documental:** 2026-08-29
+
+Este diseño registra la política OpenAI. No se debe imponer su lifecycle o wire al producto Gemini Fast; ambos preservan la invariante de cierre mediante owners propios.
 
 ## 1. Objetivo
 
