@@ -13,11 +13,11 @@ Los datos remotos deben verificarse al comenzar cualquier sesión. `IMPLEMENTADO
 repo      jdlc86/IA_RealTime_CenterCall
 rama      rebuild/v39-stable-baseline
 PR        #85 — OPEN / DRAFT / MERGEABLE
-HEAD      154fdcfd31af22fde7c270b04074cf6cc3898aee
+SHA canary d7435fd81915c470f74bce81eb87d8ae7bda1c1f
 fecha     2026-08-29 (verificación GitHub)
 ```
 
-Los CI de Control Plane, Gemini Control Plane, Gemini Media Edge y Benchmark del SHA están verdes. El despliegue `Gemini Fast Canary Deploy` run `33208639554` terminó correctamente.
+Los CI de Control Plane, Gemini Control Plane, Gemini Media Edge, Gemini Fast Worker y Benchmark del SHA están verdes. `Gemini Fast Canary Deploy` run `33252047260` y `Gemini Media Edge Canary Deploy` run `33252047272` terminaron correctamente.
 
 ## Estado por preocupación
 
@@ -26,8 +26,8 @@ Los CI de Control Plane, Gemini Control Plane, Gemini Media Edge y Benchmark del
 | OpenAI independiente | baseline existente | verde | sin cambios | no repetido en esta sesión |
 | Gemini Fast Worker | sí | verde | canary aislado | PASS A–G |
 | Gemini Media Edge | sí | verde | revisión canary | PASS A–G |
-| Seguridad semántica durable Gemini-native | implementada localmente | pendiente | frontera compartida aún desplegada | 4/4 eventos del baseline |
-| Corte de dependencia con Worker histórico | implementado localmente | pendiente | pendiente de deploy | — |
+| Seguridad semántica durable Gemini-native | sí | verde | canary aislado | preflight PASS; llamada no repetida |
+| Corte de dependencia con Worker histórico | sí | verde | canary aislado | wiring/HMAC PASS |
 
 ## Arquitectura vigente
 
@@ -46,7 +46,7 @@ OpenAI Realtime                     Gemini Media Edge → Gemini Live
 - Gemini tiene Worker y Media Edge propios; su canary no utiliza runtime, SDK, socket, voz ni lifecycle OpenAI.
 - No hay failover OpenAI↔Gemini a mitad de llamada.
 - Supabase, dominio empresarial y caller security se comparten sólo detrás de contratos neutrales.
-- El código Gemini posee su propio endpoint autenticado, adaptador Supabase, cola y DLQ de caller security. El Media Edge deriva esa URL del Fast Worker Gemini; los workflows Fast ya no instalan, escriben secretos ni hacen preflight contra el Worker histórico. Este corte está implementado localmente, pero aún no es CI verde ni está desplegado.
+- El código Gemini posee su propio endpoint autenticado, adaptador Supabase, cola y DLQ de caller security. El Media Edge deriva esa URL del Fast Worker Gemini; los workflows Fast ya no instalan, escriben secretos ni hacen preflight contra el Worker histórico. El corte está desplegado en el canary del SHA `d7435fd81915c470f74bce81eb87d8ae7bda1c1f`.
 - El endpoint histórico se conserva temporalmente sólo para no alterar el producto legado; no es una dependencia del runtime ni del despliegue Gemini.
 
 El kernel distingue dos clases de capacidad:
@@ -69,7 +69,7 @@ No se añade trabajo por cada chunk de audio salvo necesidad demostrada por ADR+
 
 ## Estado de seguridad Gemini
 
-La causa del fallo persistente anterior quedó corregida en el baseline desplegado. La extracción Gemini-native posterior está implementada localmente y cambia el deploy para sincronizar:
+La causa del fallo persistente anterior quedó corregida en el baseline desplegado. La extracción Gemini-native posterior quedó desplegada en canary mediante el run `33252047260` y sincroniza:
 
 - `gemini-media-edge-control-plane-token` únicamente con Cloud Run y Gemini Fast Worker;
 - `gemini-media-edge-credential-hmac-secret` entre Cloud Run y Gemini Fast Worker;
@@ -117,9 +117,11 @@ Umbrales de frecuencia: 5 llamadas/minuto, 8/5 minutos o 20/hora. Los bloqueos e
 
 ```text
 workflow          Gemini Fast Canary Deploy
-run_id            33208639554
-Cloud Run         gemini-media-edge-00201-xav
-Fast Worker       a9281c81-0574-43d4-ba18-ccb2388db7ba
+run_id            33252047260
+media canary run  33252047272
+source SHA        d7435fd81915c470f74bce81eb87d8ae7bda1c1f
+Cloud Run         gemini-media-edge-00202-coh
+Fast Worker       3100c432-69a0-44ea-a59f-fdaaa4458221
 canary traffic    0 %, accesible por tag/Fast Worker
 production        sin cambios
 ```
@@ -144,4 +146,4 @@ La seguridad probada debe conservarse sin más llamadas adversariales. Los asunt
 
 1. decidir si la política necesita decay/reset administrado de `risk_score`;
 2. verificar sin exponer valores que Secret Manager conserva habilitadas las versiones de `caller-security-hmac-secret` y `caller-security-hmac-sha256`, ya provisionadas con los bytes históricos y su huella independiente;
-3. ejecutar CI y desplegar el corte Gemini-native antes de retirar físicamente el stack OpenAI legado.
+3. validar la persistencia/idempotencia Gemini-native con una prueba sintética o controlada antes de otra llamada adversarial real.

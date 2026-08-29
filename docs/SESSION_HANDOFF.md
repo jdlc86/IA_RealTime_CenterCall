@@ -13,8 +13,8 @@ Continúa el trabajo en `jdlc86/IA_RealTime_CenterCall` como Staff/Principal Eng
 repo   jdlc86/IA_RealTime_CenterCall
 rama   rebuild/v39-stable-baseline
 PR     PR #85, mantener OPEN/DRAFT
-HEAD verificado al relevo
-       154fdcfd31af22fde7c270b04074cf6cc3898aee
+SHA canary de seguridad
+       d7435fd81915c470f74bce81eb87d8ae7bda1c1f
 ```
 
 Antes de escribir, verifica de nuevo HEAD remoto, PR, CI, deploy efectivo y estado local. No sobrescribas cambios ajenos. No hagas merge, ready-for-review, force-push, rebase destructivo ni otra rama/PR. No hagas commit, push, deploy, llamadas, IAM o configuración sin autorización explícita.
@@ -46,7 +46,7 @@ Ambos → contratos neutrales de dominio/seguridad → Supabase compartido
 
 Gemini ya dispone de Worker y Media Edge propios. No puede depender de SDK, secretos, sockets, voz, lifecycle, persistencia sideband ni coordinadores OpenAI. El stack OpenAI queda como legado independiente pendiente de retirada y no forma parte del modelo de negocio objetivo.
 
-La extracción de caller security está implementada localmente: Gemini Fast Worker posee endpoint, adaptador Supabase, cola y DLQ; Media Edge usa el origen Gemini y los workflows Fast no tocan el Worker histórico. La ruta confirma primero Queue y usa Supabase directo como fallback; nunca responde éxito por `waitUntil`. Todavía no hay commit, CI ni deploy. `caller-security-hmac-secret` y `caller-security-hmac-sha256` ya están provisionados en Secret Manager con los bytes históricos y su huella independiente; CI exige coincidencia.
+La extracción de caller security está desplegada en el canary del SHA `d7435fd81915c470f74bce81eb87d8ae7bda1c1f`: Gemini Fast Worker posee endpoint, adaptador Supabase, cola y DLQ; Media Edge usa el origen Gemini y los workflows Fast no tocan el Worker histórico. La ruta confirma primero Queue y usa Supabase directo como fallback; nunca responde éxito por `waitUntil`. `caller-security-hmac-secret` y `caller-security-hmac-sha256` están provisionados en Secret Manager con los bytes históricos y su huella independiente; CI verificó la coincidencia.
 
 Capacidades transversales: seguridad, admission/identidad, voz/lifecycle, tool authorization, human handoff, tiempo, diagnóstico y comunicaciones. WhatsApp tiene dos capabilities KV independientes: `message.whatsapp.transactional` y `message.whatsapp.realtime_support`. Las verticales —por ejemplo reservas— pertenecen al tenant/dominio y consumen las capacidades transversales sin duplicarlas.
 
@@ -65,24 +65,25 @@ Capacidades transversales: seguridad, admission/identidad, voz/lifecycle, tool a
 11. `IMPLEMENTADO ≠ CI VERDE ≠ DESPLEGADO ≠ VALIDADO E2E`. El estado CANARY se declara aparte.
 12. Toda tool requiere nombre/schema cerrado, `authority`, `effect`, `capability`, `evidence`, handler permitido y tenant/call context; una mutación añade idempotencia, confirmación e invariantes verticales.
 
-### 4. Corrección de seguridad desplegada y corte local posterior
+### 4. Corrección y extracción de seguridad desplegadas
 
 El fallo persistente era drift del token de control: Cloud Run y Fast Worker tenían el mismo token, pero la frontera de persistencia del Control Plane no. Se corrigió en:
 
 - `9eef2567ae445a7d0a74392e52fb4b9bcb05010f`
 - `154fdcfd31af22fde7c270b04074cf6cc3898aee`
 
-Ese workflow del baseline sincroniza el token con los tres puntos. El cambio local posterior elimina el tercero: sincroniza el token sólo con Cloud Run y Gemini Fast Worker, añade la clave HMAC estable de caller security y ejecuta el preflight contra el Fast Worker Gemini.
+El baseline sincronizaba el token con tres puntos. El corte desplegado elimina la frontera histórica: sincroniza el token sólo con Cloud Run y Gemini Fast Worker, añade la clave HMAC estable de caller security y ejecuta el preflight contra el Fast Worker Gemini.
 
 IAM desplegado: `github-cloud-run-deployer@iacallcenterv1.iam.gserviceaccount.com` tiene `roles/secretmanager.secretAccessor` sobre los secretos necesarios del baseline y, a nivel de recurso, sobre `caller-security-hmac-secret` y `caller-security-hmac-sha256`. Los valores no se documentan ni se exponen.
 
 ### 5. CI, deploy y E2E verificados
 
 ```text
-SHA                154fdcfd31af22fde7c270b04074cf6cc3898aee
-Fast Canary run    33208639554, SUCCESS
-Cloud Run revision gemini-media-edge-00201-xav
-Fast Worker ver.   a9281c81-0574-43d4-ba18-ccb2388db7ba
+SHA                d7435fd81915c470f74bce81eb87d8ae7bda1c1f
+Fast Canary run    33252047260, SUCCESS
+Media Canary run   33252047272, SUCCESS
+Cloud Run revision gemini-media-edge-00202-coh
+Fast Worker ver.   3100c432-69a0-44ea-a59f-fdaaa4458221
 production traffic sin cambios
 ```
 
@@ -110,10 +111,9 @@ Primero realiza sólo inspección y confirma que el SHA/CI/deploy/documentos con
 
 Si se continúa esta misión de seguridad, el orden es:
 
-1. verificar que `caller-security-hmac-secret` y la huella histórica independiente `caller-security-hmac-sha256` existen, sin exponer sus valores;
-2. terminar revisión, CI, commit/push y deploy sólo con autorización explícita;
-3. validar persistencia/idempotencia sin una llamada adversarial real;
-4. dejar para una misión separada el decay/reset administrativo y la eliminación física del código OpenAI legado.
+1. tratar `d7435fd81915c470f74bce81eb87d8ae7bda1c1f` y sus runs canary como baseline desplegado, sin exponer valores de secretos;
+2. validar persistencia/idempotencia con una prueba sintética o controlada antes de otra llamada adversarial real;
+3. dejar para una misión separada el decay/reset administrativo y la eliminación física del código OpenAI legado.
 
 Cualquier propuesta debe indicar amenaza, invariante, archivo/frontera, impacto de latencia, plan de prueba y rollback. No hagas otra llamada.
 
