@@ -44,9 +44,9 @@ Gemini Fast Worker → Gemini runtime/lifecycle → Gemini Media Edge → Gemini
 Ambos → contratos neutrales de dominio/seguridad → Supabase compartido
 ```
 
-Gemini ya dispone de Worker y Media Edge propios. No puede depender de SDK, secretos, sockets, voz, lifecycle ni coordinadores OpenAI. OpenAI continúa intacto y no ha sido reemplazado.
+Gemini ya dispone de Worker y Media Edge propios. No puede depender de SDK, secretos, sockets, voz, lifecycle, persistencia sideband ni coordinadores OpenAI. El stack OpenAI queda como legado independiente pendiente de retirada y no forma parte del modelo de negocio objetivo.
 
-La autoridad de caller security es neutral, pero hoy su endpoint de persistencia está físicamente alojado en el Control Plane existente. Gemini lo usa de forma autenticada, idempotente y sideband; esto no reutiliza el runtime OpenAI, aunque la extracción física sigue pendiente antes del aislamiento operativo total.
+La extracción de caller security está implementada localmente: Gemini Fast Worker posee endpoint, adaptador Supabase, cola y DLQ; Media Edge usa el origen Gemini y los workflows Fast no tocan el Worker histórico. La ruta confirma primero Queue y usa Supabase directo como fallback; nunca responde éxito por `waitUntil`. Todavía no hay commit, CI ni deploy. `caller-security-hmac-secret` y `caller-security-hmac-sha256` ya están provisionados en Secret Manager con los bytes históricos y su huella independiente; CI exige coincidencia.
 
 Capacidades transversales: seguridad, admission/identidad, voz/lifecycle, tool authorization, human handoff, tiempo, diagnóstico y comunicaciones. WhatsApp tiene dos capabilities KV independientes: `message.whatsapp.transactional` y `message.whatsapp.realtime_support`. Las verticales —por ejemplo reservas— pertenecen al tenant/dominio y consumen las capacidades transversales sin duplicarlas.
 
@@ -65,16 +65,16 @@ Capacidades transversales: seguridad, admission/identidad, voz/lifecycle, tool a
 11. `IMPLEMENTADO ≠ CI VERDE ≠ DESPLEGADO ≠ VALIDADO E2E`. El estado CANARY se declara aparte.
 12. Toda tool requiere nombre/schema cerrado, `authority`, `effect`, `capability`, `evidence`, handler permitido y tenant/call context; una mutación añade idempotencia, confirmación e invariantes verticales.
 
-### 4. Corrección de seguridad ya aplicada
+### 4. Corrección de seguridad desplegada y corte local posterior
 
 El fallo persistente era drift del token de control: Cloud Run y Fast Worker tenían el mismo token, pero la frontera de persistencia del Control Plane no. Se corrigió en:
 
 - `9eef2567ae445a7d0a74392e52fb4b9bcb05010f`
 - `154fdcfd31af22fde7c270b04074cf6cc3898aee`
 
-El workflow sincroniza el mismo token de control con Cloud Run, Gemini Fast Worker y Control Plane, sincroniza el HMAC Worker↔Edge y ejecuta un preflight autenticado que exige `400 INVALID_SECURITY_SIGNAL` para `{}` sin persistir un evento.
+Ese workflow del baseline sincroniza el token con los tres puntos. El cambio local posterior elimina el tercero: sincroniza el token sólo con Cloud Run y Gemini Fast Worker, añade la clave HMAC estable de caller security y ejecuta el preflight contra el Fast Worker Gemini.
 
-IAM mínimo: `github-cloud-run-deployer@iacallcenterv1.iam.gserviceaccount.com` tiene `roles/secretmanager.secretAccessor` únicamente sobre `gemini-media-edge-control-plane-token` y `gemini-media-edge-credential-hmac-secret`.
+IAM desplegado: `github-cloud-run-deployer@iacallcenterv1.iam.gserviceaccount.com` tiene `roles/secretmanager.secretAccessor` sobre los secretos necesarios del baseline y, a nivel de recurso, sobre `caller-security-hmac-secret` y `caller-security-hmac-sha256`. Los valores no se documentan ni se exponen.
 
 ### 5. CI, deploy y E2E verificados
 
@@ -108,11 +108,12 @@ El score no decae automáticamente. No repitas ataques desde el número real: po
 
 Primero realiza sólo inspección y confirma que el SHA/CI/deploy/documentos continúan vigentes. Trata el baseline de seguridad como PASS y no vuelvas a corregirlo sin una regresión demostrada.
 
-Si la siguiente misión es de seguridad, prioriza una de estas decisiones, sin implementarla hasta recibir alcance explícito:
+Si se continúa esta misión de seguridad, el orden es:
 
-1. política de decay/reset administrativo de `risk_score`;
-2. extracción de caller security neutral fuera del Worker OpenAI físico;
-3. pruebas automatizadas de regresión sin llamadas reales.
+1. verificar que `caller-security-hmac-secret` y la huella histórica independiente `caller-security-hmac-sha256` existen, sin exponer sus valores;
+2. terminar revisión, CI, commit/push y deploy sólo con autorización explícita;
+3. validar persistencia/idempotencia sin una llamada adversarial real;
+4. dejar para una misión separada el decay/reset administrativo y la eliminación física del código OpenAI legado.
 
 Cualquier propuesta debe indicar amenaza, invariante, archivo/frontera, impacto de latencia, plan de prueba y rollback. No hagas otra llamada.
 

@@ -312,9 +312,9 @@ Estas limitaciones pertenecen al control/UX de transferencia y no justifican toc
 - una evidencia acústica no se infiere de un evento de control distinto.
 - señales semánticas de seguridad autenticadas e idempotentes;
 - persistencia sideband cuando la invariante lo permita, sin transcript crudo;
-- el estado neutral de caller security se comparte mediante contrato, no reutilizando lifecycle, SDK o socket OpenAI.
+- el estado neutral de caller security se comparte en Supabase mediante contrato, no reutilizando lifecycle, SDK, socket, endpoint, cola ni secreto del Worker OpenAI.
 
-La frontera neutral de persistencia de caller security está hoy físicamente alojada en el Control Plane existente. Gemini Fast la consume mediante un endpoint autenticado/idempotente. Esto no introduce OpenAI en el hot path conversacional, pero la extracción física sigue pendiente antes de declarar aislamiento operativo total.
+Gemini Fast posee físicamente su endpoint autenticado, adaptador Supabase y cola/DLQ de caller security. El Media Edge deriva el endpoint del mismo origen del Fast Worker. La ruta confirma una entrega durable a Queue antes de responder y usa Supabase directo sólo como fallback. La identidad HMAC usa una clave estable separada de la credencial Supabase; CI la contrasta con una huella histórica independiente para que una rotación o error no reinicie la reputación. El endpoint histórico puede coexistir durante la retirada del producto legado, pero no es dependencia de runtime, CI o despliegue Gemini.
 
 La política, decisiones y backlog de seguridad se mantienen en [`../../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx`](../../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx).
 

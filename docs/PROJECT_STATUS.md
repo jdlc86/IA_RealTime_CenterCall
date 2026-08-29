@@ -26,8 +26,8 @@ Los CI de Control Plane, Gemini Control Plane, Gemini Media Edge y Benchmark del
 | OpenAI independiente | baseline existente | verde | sin cambios | no repetido en esta sesión |
 | Gemini Fast Worker | sí | verde | canary aislado | PASS A–G |
 | Gemini Media Edge | sí | verde | revisión canary | PASS A–G |
-| Seguridad semántica durable | sí | verde | frontera compartida activa | 4/4 eventos persistidos |
-| Limpieza física del Worker OpenAI | pendiente | — | Worker actual preservado | — |
+| Seguridad semántica durable Gemini-native | implementada localmente | pendiente | frontera compartida aún desplegada | 4/4 eventos del baseline |
+| Corte de dependencia con Worker histórico | implementado localmente | pendiente | pendiente de deploy | — |
 
 ## Arquitectura vigente
 
@@ -42,11 +42,12 @@ OpenAI Realtime                     Gemini Media Edge → Gemini Live
           └──────── contratos neutrales + Supabase compartido ────────┘
 ```
 
-- OpenAI continúa operativo y no ha sido sustituido por Gemini.
+- El stack OpenAI queda como legado independiente pendiente de retirada; ya no forma parte del modelo de negocio objetivo de Gemini.
 - Gemini tiene Worker y Media Edge propios; su canary no utiliza runtime, SDK, socket, voz ni lifecycle OpenAI.
 - No hay failover OpenAI↔Gemini a mitad de llamada.
 - Supabase, dominio empresarial y caller security se comparten sólo detrás de contratos neutrales.
-- Matiz transitorio: la autoridad neutral de caller security está físicamente alojada en el Control Plane existente. Gemini la consume mediante un endpoint autenticado/idempotente; no consume el runtime conversacional OpenAI. Debe extraerse físicamente antes de declarar aislamiento operativo total.
+- El código Gemini posee su propio endpoint autenticado, adaptador Supabase, cola y DLQ de caller security. El Media Edge deriva esa URL del Fast Worker Gemini; los workflows Fast ya no instalan, escriben secretos ni hacen preflight contra el Worker histórico. Este corte está implementado localmente, pero aún no es CI verde ni está desplegado.
+- El endpoint histórico se conserva temporalmente sólo para no alterar el producto legado; no es una dependencia del runtime ni del despliegue Gemini.
 
 El kernel distingue dos clases de capacidad:
 
@@ -68,14 +69,15 @@ No se añade trabajo por cada chunk de audio salvo necesidad demostrada por ADR+
 
 ## Estado de seguridad Gemini
 
-La causa del fallo persistente anterior quedó corregida. El token de control estaba sincronizado en Cloud Run y Fast Worker, pero no en la frontera de persistencia del Control Plane. El deploy ahora sincroniza:
+La causa del fallo persistente anterior quedó corregida en el baseline desplegado. La extracción Gemini-native posterior está implementada localmente y cambia el deploy para sincronizar:
 
-- `gemini-media-edge-control-plane-token` con Cloud Run, Gemini Fast Worker y `MEDIA_EDGE_CONTROL_PLANE_TOKEN` del Control Plane;
+- `gemini-media-edge-control-plane-token` únicamente con Cloud Run y Gemini Fast Worker;
 - `gemini-media-edge-credential-hmac-secret` entre Cloud Run y Gemini Fast Worker;
+- `CALLER_SECURITY_HMAC_SECRET` con el Fast Worker desde `caller-security-hmac-secret`; CI compara su SHA-256 con `caller-security-hmac-sha256`, capturado previamente de la clave histórica, para impedir un fork silencioso de identidad;
 - preflight autenticado a `/internal/fast-semantic-security-signal`, que exige `400 INVALID_SECURITY_SIGNAL` para `{}` sin persistir un evento;
 - probe HMAC del upgrade WSS.
 
-IAM mínimo aplicado a `github-cloud-run-deployer@iacallcenterv1.iam.gserviceaccount.com`: `roles/secretmanager.secretAccessor` únicamente sobre esos dos secretos.
+Secretos previos al deploy ya provisionados en Google Secret Manager: `caller-security-hmac-secret` conserva los bytes históricos y `caller-security-hmac-sha256` conserva su huella independiente. `github-cloud-run-deployer@iacallcenterv1.iam.gserviceaccount.com` tiene `roles/secretmanager.secretAccessor` a nivel de cada uno de esos dos secretos, además de los secretos del baseline. Sus valores no se documentan ni se exponen.
 
 ### E2E real A–G
 
@@ -138,7 +140,8 @@ La transferencia real quedó `TRANSFERRED`, destino `Reception`, contestada apro
 
 ## Siguiente validación
 
-La seguridad probada debe conservarse sin más llamadas adversariales. Los dos asuntos abiertos son:
+La seguridad probada debe conservarse sin más llamadas adversariales. Los asuntos abiertos son:
 
 1. decidir si la política necesita decay/reset administrado de `risk_score`;
-2. extraer físicamente caller security neutral fuera del Worker OpenAI antes de declarar aislamiento operativo total, preservando idempotencia y sin añadir latencia al camino de voz.
+2. verificar sin exponer valores que Secret Manager conserva habilitadas las versiones de `caller-security-hmac-secret` y `caller-security-hmac-sha256`, ya provisionadas con los bytes históricos y su huella independiente;
+3. ejecutar CI y desplegar el corte Gemini-native antes de retirar físicamente el stack OpenAI legado.
