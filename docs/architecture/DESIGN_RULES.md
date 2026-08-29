@@ -1,6 +1,6 @@
 # IA_RealTime_CenterCall — Design Rules
 
-> **Versión:** 3.0
+> **Versión:** 3.1
 > **Estado:** vigente y normativo
 > **Última revisión:** 2026-08-29
 > **Aplicabilidad:** reglas transversales; un mecanismo específico de provider sólo es obligatorio cuando la regla o una ADR lo indiquen.
@@ -63,6 +63,7 @@ Estas reglas son obligatorias salvo ADR posterior que las modifique explícitame
 - **RA-054 — Seguridad durable sin transcript crudo.** Las señales semánticas de seguridad se persisten de forma autenticada, idempotente y sideband cuando la invariante lo permite. No se almacenan audio, prompts, secretos, payload hostil ni transcript crudo.
 - **RA-055 — Comunicaciones externas opt-in.** Cada canal/modo se autoriza por capability de tenant. WhatsApp separa `message.whatsapp.transactional` de `message.whatsapp.realtime_support`; habilitar una no autoriza la otra.
 - **RA-056 — La autorización debe ser exigible en el sink.** El orden `kernel → executor/handler` no basta como convención. Cada sink effectful exige una prueba no fabricable ligada a la operación exacta y al contexto tenant/call; ejecuta la instantánea autorizada y falla cerrado ante ausencia, rebinding o contexto distinto.
+- **RA-057 — Capability grant explícito y tenant-bound.** Cada tool admitida declara su capability en el bootstrap autenticado. El runtime exige coincidencia exacta entre esa concesión y la policy local antes de exponer la tool o aceptar una function call. Una capability ausente, desconocida, perteneciente a otro contrato o procedente de otro tenant falla cerrada antes de cualquier side effect.
 
 ## Applicability notes del Fast Path Gemini
 

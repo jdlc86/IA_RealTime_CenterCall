@@ -45,15 +45,20 @@ function canonicalSecurityContext(value, expected) {
 
 function canonicalTools(value) {
   if (!Array.isArray(value)) throw new Error("Fast Gemini bootstrap tools must be an array");
+  const names = new Set();
   return Object.freeze(value.map((tool, index) => {
     if (!tool || typeof tool !== "object" || Array.isArray(tool)) throw new Error(`Fast Gemini bootstrap tool ${index} is invalid`);
     const name = required(tool.name, `Fast Gemini bootstrap tool ${index} name`, 128);
     if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error(`Fast Gemini bootstrap tool ${index} name is invalid`);
+    if (names.has(name)) throw new Error(`Fast Gemini bootstrap tool ${index} name is duplicated`);
+    names.add(name);
+    const toolCapability = required(tool.capability, `Fast Gemini bootstrap tool ${index} capability`, 128);
+    if (!/^[a-z0-9][a-z0-9._-]*$/.test(toolCapability)) throw new Error(`Fast Gemini bootstrap tool ${index} capability is invalid`);
     const description = required(tool.description, `Fast Gemini bootstrap tool ${index} description`, 4_000);
     if (!tool.parameters || typeof tool.parameters !== "object" || Array.isArray(tool.parameters)) {
       throw new Error(`Fast Gemini bootstrap tool ${index} parameters are invalid`);
     }
-    return Object.freeze({ name, description, parameters: structuredClone(tool.parameters) });
+    return Object.freeze({ name, capability: toolCapability, description, parameters: structuredClone(tool.parameters) });
   }));
 }
 
@@ -66,8 +71,9 @@ export function canonicalFastBootstrap(value, nowEpochMs = Date.now()) {
   const callControlId = required(value.callControlId, "Fast Gemini bootstrap callControlId", 512);
   const voiceName = value.voiceName == null ? "Kore" : required(value.voiceName, "Fast Gemini bootstrap voiceName", 128);
   const languageCode = value.languageCode == null ? "es-ES" : required(value.languageCode, "Fast Gemini bootstrap languageCode", 32);
+  if (value.version !== "gemini-fast-bootstrap.v2") throw new Error("Fast Gemini bootstrap version is invalid");
   return Object.freeze({
-    version: "gemini-fast-bootstrap.v1",
+    version: "gemini-fast-bootstrap.v2",
     provider: "GEMINI",
     credentialId: required(value.credentialId, "Fast Gemini bootstrap credentialId", 256),
     tenantId,

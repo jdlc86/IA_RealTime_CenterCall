@@ -56,7 +56,9 @@ El kernel distingue dos clases de capacidad:
 
 Toda tool cruza un contrato declarativo mínimo: nombre/schema cerrado, `authority`, `effect`, `capability`, `evidence`, handler permitido y contexto tenant/call. Las mutaciones añaden idempotencia, confirmación e invariantes de dominio. Gemini propone; el kernel autoriza; el dominio valida; el backend ejecuta.
 
-SEC-P0-04 está implementado y verificado **localmente**, todavía sin commit/CI/deploy: una decisión `ALLOW` genera un recibo opaco ligado a la function call exacta y al contexto autenticado `tenantId/callControlId`. El executor genérico y el sink especial `transfer_call` exigen ese recibo antes de cualquier handler; una autorización ausente, fabricada o reutilizada en otra llamada produce cero efectos. El handler recibe la instantánea de argumentos autorizada, no un payload mutable posterior.
+SEC-P0-04 está publicado en `codex/fix-fast-security-persistence` mediante el commit `1d514b5617a9f10691359ba6eb2493a478324baf`, todavía sin deploy/E2E: una decisión `ALLOW` genera un recibo opaco ligado a la function call exacta y al contexto autenticado `tenantId/callControlId`. El executor genérico y el sink especial `transfer_call` exigen ese recibo antes de cualquier handler; una autorización ausente, fabricada o reutilizada en otra llamada produce cero efectos. El handler recibe la instantánea de argumentos autorizada, no un payload mutable posterior.
+
+SEC-P0-05 está implementado y verificado **localmente**, todavía sin commit/CI/deploy. El bootstrap autenticado evoluciona a `gemini-fast-bootstrap.v2` y toda declaración de tool lleva una `capability` explícita. Media Edge exige que esa concesión coincida exactamente con la policy local antes de construir la sesión; capability ausente o distinta falla cerrada. El registro de bootstrap continúa ligando credencial, tenant y llamada, y el Worker rechaza un registro de capabilities perteneciente a otro tenant antes de provisionar el Media Edge. La reproducción previa produjo `effects=1` con una capability declarada ajena; después del cambio produce `effects=0`.
 
 ## Regla de latencia
 
@@ -146,7 +148,7 @@ La transferencia real quedó `TRANSFERRED`, destino `Reception`, contestada apro
 
 La seguridad probada debe conservarse sin más llamadas adversariales. Los asuntos abiertos son:
 
-1. publicar SEC-P0-04 y completar sus estados separados de CI/canary/E2E;
-2. continuar con SEC-P0-05: aislamiento tenant/capability y pruebas cross-tenant;
+1. completar CI/canary/E2E de SEC-P0-04 desde el commit publicado `1d514b5617a9f10691359ba6eb2493a478324baf`;
+2. publicar SEC-P0-05 y completar sus estados separados de CI/canary/E2E;
 3. decidir si la política necesita decay/reset administrado de `risk_score`;
 4. validar la persistencia/idempotencia Gemini-native con una prueba sintética o controlada antes de otra llamada adversarial real.

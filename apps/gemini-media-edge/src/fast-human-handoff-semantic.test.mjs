@@ -31,6 +31,7 @@ class FakeSocket {
 function transferTool() {
   return Object.freeze({
     name: "transfer_call",
+    capability: "call.transfer",
     description: "Transfer the caller to the configured human destination.",
     parameters: Object.freeze({
       type: "object",
@@ -45,7 +46,7 @@ function transferTool() {
 
 function bootstrap() {
   return Object.freeze({
-    version: "gemini-fast-bootstrap.v1",
+    version: "gemini-fast-bootstrap.v2",
     provider: "GEMINI",
     credentialId: "cred-semantic-handoff",
     tenantId: "tenant-semantic-handoff",

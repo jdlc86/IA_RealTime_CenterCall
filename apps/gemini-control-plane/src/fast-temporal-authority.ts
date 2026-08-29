@@ -28,6 +28,7 @@ type FastTemporalAuthorityDependencies = Readonly<{
 
 export const FAST_AUTHORITATIVE_DATETIME_TOOL: FastGeminiToolDeclaration = Object.freeze({
   name: "get_authoritative_datetime",
+  capability: "time.authoritative",
   description: "Obtiene del kernel la fecha y hora actuales autoritativas para el tenant. Su dominio es exclusivamente el anclaje del reloj y calendario actuales. Las consultas meteorológicas, de clima, previsión del tiempo, duración u otros sentidos de 'tiempo' están fuera de alcance: no invoques esta herramienta si la petición no depende del momento calendario actual. Decide por el significado completo del turno, no por coincidencias de palabras. Usa esta herramienta antes de afirmar la fecha/hora actual o cuando una interpretación temporal relativa dependa del momento actual. La semántica del lenguaje pertenece a Gemini, pero el reloj, la zona horaria y el calendario pertenecen al kernel. Nunca inventes ni derives por tu cuenta la fecha u hora actuales cuando esta herramienta sea necesaria.",
   parameters: Object.freeze({
     type: "object",

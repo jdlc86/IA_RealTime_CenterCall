@@ -43,6 +43,7 @@ const TEST_TOOL_POLICIES = mergeFastToolPolicies(FAST_HORIZONTAL_TOOL_POLICIES, 
 
 const RESERVATION_TOOL = Object.freeze({
   name: "restaurant_reservation_create",
+  capability: "reservation.create",
   description: "Create or continue a reservation.",
   parameters: Object.freeze({
     type: "object",
@@ -52,6 +53,7 @@ const RESERVATION_TOOL = Object.freeze({
 
 const TRANSFER_TOOL = Object.freeze({
   name: "transfer_call",
+  capability: "call.transfer",
   description: "Transfer the caller to a human.",
   parameters: Object.freeze({
     type: "object",
@@ -62,7 +64,7 @@ const TRANSFER_TOOL = Object.freeze({
 
 function bootstrap(tools = [RESERVATION_TOOL]) {
   return Object.freeze({
-    version: "gemini-fast-bootstrap.v1",
+    version: "gemini-fast-bootstrap.v2",
     provider: "GEMINI",
     credentialId: "cred-runtime",
     tenantId: "tenant-runtime",

@@ -82,6 +82,10 @@ describe("tenant KV session configuration", () => {
           "get_authoritative_datetime",
           "report_semantic_security_incident",
         ]);
+        expect(config.tools?.map((tool) => tool.capability)).toEqual([
+          "time.authoritative",
+          "security.semantic_boundary",
+        ]);
         expect(config.systemInstruction).toContain("Base estable del agente.");
         expect(config.systemInstruction).toContain("Negocio: Restaurante Centro.");
         expect(config.systemInstruction).toContain("Tu nombre de asistente es Lucía.");

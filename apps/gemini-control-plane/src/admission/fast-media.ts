@@ -1,9 +1,10 @@
-const FAST_BOOTSTRAP_VERSION = "gemini-fast-bootstrap.v1";
+const FAST_BOOTSTRAP_VERSION = "gemini-fast-bootstrap.v2";
 const FAST_PROVIDER = "GEMINI";
 const FAST_SECURITY_VERSION = 1 as const;
 
 export type FastGeminiToolDeclaration = Readonly<{
   name: string;
+  capability: string;
   description: string;
   parameters: Readonly<Record<string, unknown>>;
 }>;
@@ -132,15 +133,20 @@ function bootstrapUrlFromEdge(edgeUrl: string): string {
 function canonicalTools(value: readonly FastGeminiToolDeclaration[] | undefined): readonly FastGeminiToolDeclaration[] {
   const tools = value ?? [];
   if (!Array.isArray(tools) || tools.length > 32) throw new Error("Fast Gemini tools are invalid");
+  const names = new Set<string>();
   return Object.freeze(tools.map((tool, index) => {
     if (!tool || typeof tool !== "object" || Array.isArray(tool)) throw new Error(`Fast Gemini tool ${index} is invalid`);
     const name = required(tool.name, `Fast Gemini tool ${index} name`, 128);
     if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error(`Fast Gemini tool ${index} name is invalid`);
+    if (names.has(name)) throw new Error(`Fast Gemini tool ${index} name is duplicated`);
+    names.add(name);
+    const capability = required(tool.capability, `Fast Gemini tool ${index} capability`, 128);
+    if (!/^[a-z0-9][a-z0-9._-]*$/.test(capability)) throw new Error(`Fast Gemini tool ${index} capability is invalid`);
     const description = required(tool.description, `Fast Gemini tool ${index} description`, 4_000);
     if (!tool.parameters || typeof tool.parameters !== "object" || Array.isArray(tool.parameters)) {
       throw new Error(`Fast Gemini tool ${index} parameters are invalid`);
     }
-    return Object.freeze({ name, description, parameters: structuredClone(tool.parameters) });
+    return Object.freeze({ name, capability, description, parameters: structuredClone(tool.parameters) });
   }));
 }
 

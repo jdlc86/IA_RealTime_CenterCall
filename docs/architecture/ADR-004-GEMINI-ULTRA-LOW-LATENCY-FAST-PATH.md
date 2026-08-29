@@ -2,7 +2,7 @@
 
 > **Estado:** Aceptado — IMPLEMENTADO / operativo
 > **Fecha:** 2026-08-26
-> **Última aclaración:** 2026-08-28
+> **Última aclaración:** 2026-08-29
 > **Ámbito:** producto Gemini / realtime / media / tools / latencia / producción
 > **Supersede parcialmente:** decisiones de Fase 2/3 que obligaban a Google STT, semantic preselection, quarantine o `GeminiCallSession`/control WSS en cada turno
 > **No supersede:** ADR-003 sobre independencia OpenAI/Gemini ni la prohibición de Cloudflare en audio continuo
@@ -60,6 +60,8 @@ Por defecto, el Worker/DO no participa en:
 Una tool/effect puede requerir control/autorización externa sin convertir esa frontera en relay de audio.
 
 La autorización local se hace exigible en el sink mediante un recibo opaco, ligado a la function call exacta y al contexto autenticado tenant/call. El executor y los sinks especiales sólo consumen la instantánea de argumentos autorizada. Esta comprobación es local, no introduce RPC, inferencia ni trabajo por chunk de audio.
+
+La admisión de tools usa `gemini-fast-bootstrap.v2`: cada declaración transporta una capability explícita dentro del bootstrap autenticado y tenant-bound. El Media Edge exige coincidencia exacta con la policy local antes de crear la sesión y elimina ese metadato interno del wire enviado a Gemini. Esta validación ocurre una vez durante bootstrap/setup; no añade RPC, inferencia ni trabajo por chunk de audio.
 
 ## Owners del Fast Media Edge
 

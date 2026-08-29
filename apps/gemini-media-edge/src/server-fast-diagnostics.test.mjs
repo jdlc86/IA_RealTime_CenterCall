@@ -63,6 +63,7 @@ test("post-call diagnostic persistence is fire-and-forget and cannot hold the fa
   });
   const bootstrapRegistry = new InMemoryFastBootstrapRegistry();
   bootstrapRegistry.register({
+    version: "gemini-fast-bootstrap.v2",
     credentialId: "cred-diagnostic-nonblocking",
     tenantId: "restaurante-centro",
     callControlId: "v3:diagnostic-nonblocking",

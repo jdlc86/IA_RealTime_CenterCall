@@ -20,6 +20,7 @@ test("fast Gemini 3.1 setup is audio-native, minimal-thinking and automatic-VAD"
     systemInstruction: "Atiende el restaurante con respuestas breves y naturales.",
     tools: [{
       name: "restaurant_reservation_create",
+      capability: "reservation.create",
       description: "Create or continue a reservation.",
       parameters: {
         type: "object",
@@ -53,6 +54,7 @@ test("read-only temporal setup requires semantic authority without transcript ev
     systemInstruction: "Usa el reloj solo cuando el significado completo del turno lo requiera.",
     tools: [{
       name: "get_authoritative_datetime",
+      capability: "time.authoritative",
       description: "Current clock/calendar authority only.",
       parameters: { type: "object", properties: {} },
     }],
@@ -69,10 +71,24 @@ test("fast Gemini setup fails closed when a declared tool has no local policy", 
     systemInstruction: "Test.",
     tools: [{
       name: "unregistered_business_tool",
+      capability: "business.unregistered",
       description: "Do something.",
       parameters: { type: "object", properties: {} },
     }],
   }), /tool policy required/);
+});
+
+test("fast Gemini setup rejects a declared capability that differs from local policy", () => {
+  assert.throws(() => buildFastGemini31Setup({
+    systemInstruction: "Test.",
+    tools: [{
+      name: "restaurant_reservation_create",
+      capability: "reservation.read",
+      description: "Create or continue a reservation.",
+      parameters: { type: "object", properties: {} },
+    }],
+    toolPolicies: { restaurant_reservation_create: reservationPolicy },
+  }), /capability mismatch/);
 });
 
 test("caller PCM base64 can be forwarded to Gemini without decode/re-encode", () => {

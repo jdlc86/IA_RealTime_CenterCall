@@ -29,7 +29,7 @@ class FakeSocket {
 
 function bootstrap() {
   return Object.freeze({
-    version: "gemini-fast-bootstrap.v1",
+    version: "gemini-fast-bootstrap.v2",
     provider: "GEMINI",
     credentialId: "cred-temporal-diagnostic",
     tenantId: "tenant-temporal-diagnostic",
@@ -42,6 +42,7 @@ function bootstrap() {
     systemInstruction: "Usa el reloj autoritativo solo cuando sea semánticamente necesario para la petición del caller.",
     tools: Object.freeze([Object.freeze({
       name: "get_authoritative_datetime",
+      capability: "time.authoritative",
       description: "Get authoritative current date and time.",
       parameters: Object.freeze({ type: "object", properties: Object.freeze({}) }),
     })]),

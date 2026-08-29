@@ -73,6 +73,10 @@ describe("fast Gemini canary webhook", () => {
           "get_authoritative_datetime",
           "report_semantic_security_incident",
         ]);
+        expect(config.tools?.map((tool) => tool.capability)).toEqual([
+          "time.authoritative",
+          "security.semantic_boundary",
+        ]);
         return {
           status: "STARTED",
           call: CALL,
@@ -185,6 +189,39 @@ describe("fast Gemini canary webhook", () => {
       },
     });
     expect(response.status).toBe(403);
+  });
+
+  it("fails closed before media side effects when capabilities belong to another tenant", async () => {
+    let mediaStarted = false;
+    const env: FastGeminiCanaryEnv = {
+      ...ENV,
+      TENANT_ROUTING_KV: {
+        async get(key: string) {
+          if (key === "tenant_by_phone:+34600000001") {
+            return JSON.stringify({ tenant_id: "tenant-fast-canary", route_id: "default", enabled: true });
+          }
+          if (key === "tenant_capabilities:tenant-fast-canary") {
+            return JSON.stringify({ tenant_id: "tenant-other", "call.transfer": true });
+          }
+          return null;
+        },
+      },
+    };
+    await expect(routeFastGeminiCanaryWebhook(request(), env, {
+      startIncoming: async (_input, options): Promise<FastIncomingRuntimeResult> => {
+        await options.resolveSessionConfig("tenant-fast-canary", CALL);
+        mediaStarted = true;
+        return {
+          status: "STARTED",
+          call: CALL,
+          tenantId: "tenant-fast-canary",
+          routeId: "default",
+          credentialId: "credential-fast",
+          edgeUrl: env.GEMINI_FAST_CANARY_EDGE_URL,
+        };
+      },
+    })).rejects.toThrow("Tenant capabilities tenant mismatch");
+    expect(mediaStarted).toBe(false);
   });
 
   it("forwards Telnyx signature headers to the signed pre-call runtime", async () => {

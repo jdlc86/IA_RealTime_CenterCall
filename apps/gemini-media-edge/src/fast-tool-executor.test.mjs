@@ -14,7 +14,7 @@ function authorizationFor(call, context = executionContext) {
         capability: `test.${call.name}`,
       }),
     },
-    declaredTools: [{ name: call.name }],
+    declaredTools: [{ name: call.name, capability: `test.${call.name}` }],
   });
   return kernel.authorize(call, context);
 }

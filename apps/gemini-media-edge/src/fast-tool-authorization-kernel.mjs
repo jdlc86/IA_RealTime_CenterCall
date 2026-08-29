@@ -200,15 +200,15 @@ export function buildFastToolAuthorityContract(description, parameters, policyIn
   });
 }
 
-function declaredToolNames(value) {
+function declaredToolCapabilities(value) {
   if (!Array.isArray(value)) throw new Error("Fast declared tools are invalid");
-  const names = new Set();
+  const tools = new Map();
   for (const tool of value) {
     const name = required(tool?.name, "Fast declared tool name", 128);
-    if (names.has(name)) throw new Error(`Fast declared tool duplicated: ${name}`);
-    names.add(name);
+    if (tools.has(name)) throw new Error(`Fast declared tool duplicated: ${name}`);
+    tools.set(name, capability(tool?.capability));
   }
-  return names;
+  return tools;
 }
 
 function denied(status, toolName, policy = null) {
@@ -272,9 +272,12 @@ export function requireFastToolAuthorizationReceipt(decision, call, context = {}
 export class FastToolAuthorizationKernel {
   constructor(options = {}) {
     this.policies = canonicalPolicyMap(options.policies, "Fast authorization kernel policies");
-    this.declaredTools = declaredToolNames(options.declaredTools ?? []);
-    for (const name of this.declaredTools) {
+    this.declaredTools = declaredToolCapabilities(options.declaredTools ?? []);
+    for (const [name, grantedCapability] of this.declaredTools) {
       if (!this.policies[name]) throw new Error(`Fast tool policy required for declared tool: ${name}`);
+      if (this.policies[name].capability !== grantedCapability) {
+        throw new Error(`Fast tool capability mismatch for declared tool: ${name}`);
+      }
     }
     this.allowed = 0;
     this.blocked = 0;
@@ -334,7 +337,8 @@ export class FastToolAuthorizationKernel {
 
   snapshot() {
     return Object.freeze({
-      declaredTools: Object.freeze([...this.declaredTools].sort()),
+      declaredTools: Object.freeze([...this.declaredTools.keys()].sort()),
+      grantedCapabilities: Object.freeze([...this.declaredTools.values()].sort()),
       policyTools: Object.freeze(Object.keys(this.policies).sort()),
       allowed: this.allowed,
       blocked: this.blocked,

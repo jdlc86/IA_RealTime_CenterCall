@@ -12,7 +12,7 @@ import {
 function kernelFor(name, policy) {
   return new FastToolAuthorizationKernel({
     policies: { [name]: policy },
-    declaredTools: [{ name }],
+    declaredTools: [{ name, capability: policy.capability }],
   });
 }
 
@@ -103,7 +103,10 @@ test("future business tools register declarative policy without kernel changes",
   });
   const kernel = new FastToolAuthorizationKernel({
     policies,
-    declaredTools: [{ name: "create_reservation" }, { name: "cancel_reservation" }],
+    declaredTools: [
+      { name: "create_reservation", capability: "reservation.create" },
+      { name: "cancel_reservation", capability: "reservation.cancel" },
+    ],
   });
 
   const create = kernel.authorize({
@@ -158,8 +161,24 @@ test("authorization receipt is opaque and bound to exact call and authenticated 
 test("declared tool without local policy fails closed at session construction boundary", () => {
   assert.throws(() => new FastToolAuthorizationKernel({
     policies: FAST_HORIZONTAL_TOOL_POLICIES,
-    declaredTools: [{ name: "refund_customer" }],
+    declaredTools: [{ name: "refund_customer", capability: "customer.refund" }],
   }), /policy required/);
+});
+
+test("declared tool with absent or cross-tenant capability fails closed at construction", () => {
+  const policy = defineFastToolPolicy({
+    authority: "SEMANTIC_NECESSITY",
+    effect: "READ_CONTEXT",
+    capability: "reservation.create",
+  });
+  assert.throws(() => new FastToolAuthorizationKernel({
+    policies: { create_reservation: policy },
+    declaredTools: [{ name: "create_reservation" }],
+  }), /capability is required/);
+  assert.throws(() => new FastToolAuthorizationKernel({
+    policies: { create_reservation: policy },
+    declaredTools: [{ name: "create_reservation", capability: "tenant-b.reservation.create" }],
+  }), /capability mismatch/);
 });
 
 test("horizontal minimum policies cannot be overridden by business extensions", () => {

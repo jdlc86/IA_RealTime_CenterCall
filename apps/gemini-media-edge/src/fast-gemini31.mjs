@@ -40,6 +40,8 @@ function canonicalTool(tool, index, toolPolicies) {
   }
   const policy = toolPolicies[name];
   if (!policy) throw new Error(`Gemini tool policy required: ${name}`);
+  const grantedCapability = requiredString(tool.capability, `Gemini tool ${index} capability`, 128);
+  if (grantedCapability !== policy.capability) throw new Error(`Gemini tool capability mismatch: ${name}`);
   const contract = buildFastToolAuthorityContract(description, tool.parameters, policy);
   return Object.freeze({
     name,
