@@ -402,6 +402,51 @@ jobs:
           ' >/dev/null
           echo "Fast Worker runtime preflight: VERIFIED"
 
+      - name: Retire stale Fast canary tags after successful verification
+        id: canary_cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          CURRENT_TAG='${{ steps.image.outputs.tag }}'
+          SERVICE_JSON="$(gcloud run services describe "$DEPLOY_SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --format=json)"
+          BEFORE_ACTIVE="$(echo "$SERVICE_JSON" | jq -c '[.status.traffic[] | select((.percent // 0) > 0) | {revisionName,percent}] | sort_by(.revisionName)')"
+          STALE_TAGS="$(echo "$SERVICE_JSON" | jq -r --arg CURRENT_TAG "$CURRENT_TAG" '
+            .status.traffic[]
+            | select(.tag != null and (.tag | startswith("fast-")) and .tag != $CURRENT_TAG)
+            | .tag
+          ')"
+
+          if [ -z "$STALE_TAGS" ]; then
+            echo "removed=0" >> "$GITHUB_OUTPUT"
+            echo "No stale Fast canary tags found."
+            exit 0
+          fi
+
+          STALE_TAG_CSV="$(printf '%s\n' "$STALE_TAGS" | paste -sd, -)"
+          STALE_TAG_COUNT="$(printf '%s\n' "$STALE_TAGS" | wc -l | tr -d ' ')"
+          gcloud run services update-traffic "$DEPLOY_SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --remove-tags="$STALE_TAG_CSV" \
+            --quiet
+
+          AFTER_JSON="$(gcloud run services describe "$DEPLOY_SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --format=json)"
+          AFTER_ACTIVE="$(echo "$AFTER_JSON" | jq -c '[.status.traffic[] | select((.percent // 0) > 0) | {revisionName,percent}] | sort_by(.revisionName)')"
+          CURRENT_REVISION="$(echo "$AFTER_JSON" | jq -r --arg CURRENT_TAG "$CURRENT_TAG" '.status.traffic[] | select(.tag == $CURRENT_TAG) | .revisionName' | head -n1)"
+          REMAINING_STALE="$(echo "$AFTER_JSON" | jq -r --arg CURRENT_TAG "$CURRENT_TAG" '[.status.traffic[] | select(.tag != null and (.tag | startswith("fast-")) and .tag != $CURRENT_TAG)] | length')"
+
+          test "$AFTER_ACTIVE" = "$BEFORE_ACTIVE"
+          test "$CURRENT_REVISION" = '${{ steps.deployed.outputs.revision }}'
+          test "$REMAINING_STALE" = "0"
+          echo "removed=$STALE_TAG_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Retired ${STALE_TAG_COUNT} stale Fast canary tag(s); production traffic remains unchanged."
+
       - name: Deployment summary
         shell: bash
         run: |
@@ -422,6 +467,7 @@ jobs:
             echo "- Worker -> Media Edge bootstrap: **verified**"
             echo "- Worker -> Media Edge HMAC WSS upgrade: **verified**"
             echo "- Semantic security token parity: **verified**"
+            echo "- Stale Fast canary tags retired: **${{ steps.canary_cleanup.outputs.removed }}**"
             echo "- Control token secret selector: \`${{ steps.shared_secrets.outputs.control_selector }}\`"
             echo "- Credential HMAC secret selector: \`${{ steps.shared_secrets.outputs.credential_selector }}\`"
             echo "- Caller-security HMAC secret selector: \`${{ steps.shared_secrets.outputs.caller_security_hmac_selector }}\`"

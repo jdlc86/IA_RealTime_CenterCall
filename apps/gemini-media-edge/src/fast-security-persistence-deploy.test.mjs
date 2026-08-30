@@ -44,6 +44,22 @@ test("Fast canary proves semantic-security authentication without persisting a c
   assert.match(source, /wrangler queues create "\$queue"/);
 });
 
+test("Fast canary retires stale revision tags only after the new runtime passes every preflight", async () => {
+  const source = await workflow("gemini-fast-canary-deploy.yml");
+
+  assert.match(source, /Retire stale Fast canary tags after successful verification/);
+  assert.match(source, /startswith\("fast-"\)/);
+  assert.match(source, /--remove-tags="\$STALE_TAG_CSV"/);
+  assert.match(source, /test "\$AFTER_ACTIVE" = "\$BEFORE_ACTIVE"/);
+  assert.match(source, /test "\$CURRENT_REVISION" = '\$\{\{ steps\.deployed\.outputs\.revision \}\}'/);
+  assert.match(source, /test "\$REMAINING_STALE" = "0"/);
+  assert.ok(
+    source.indexOf("Fast Worker runtime preflight: VERIFIED")
+      < source.indexOf("Retire stale Fast canary tags after successful verification"),
+    "stale tags must remain available until the new Worker-to-Media-Edge path is verified",
+  );
+});
+
 test("Manual Fast secret sync updates only Gemini-owned runtime secrets", async () => {
   const source = await workflow("gemini-fast-worker-secret-sync.yml");
 
