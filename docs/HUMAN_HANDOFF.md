@@ -1,7 +1,7 @@
 # Human handoff — Gemini Fast
 
-> **Estado:** operativo con limitaciones conocidas
-> **Última revisión:** 2026-08-29
+> **Estado:** corrección de autoridad por turno implementada; pendiente de CI/canary/E2E
+> **Última revisión:** 2026-08-30
 > **Propietario documental:** contrato, lifecycle y limitaciones de transferencia humana Gemini Fast.
 
 Human handoff es una capacidad de control del producto de llamadas. En Gemini Fast, el modelo aporta comprensión semántica del lenguaje natural y el sistema determinista conserva la autoridad sobre tenant, configuración, capabilities, efectos telefónicos, auditoría y lifecycle terminal.
@@ -23,21 +23,22 @@ EXPLICIT_REQUEST   — el caller pide hablar con una persona
 CONFIRMED_OFFER    — Gemini interpreta que el caller acepta una oferta previa de transferencia
 ```
 
-Además aporta `caller_authority_evidence`: una cita del turno actual que fundamenta esa clasificación.
+Gemini no aporta ni puede fabricar la prueba de presencia del caller. El runtime emite internamente un recibo opaco cuando observa transcripción no vacía en el turno actual.
 
 ### Frontera exacta de garantía
 
-El kernel Fast actual **no vuelve a interpretar el significado del español**. Para esta política concreta hace dos comprobaciones deterministas:
+El kernel Fast **no vuelve a interpretar el significado del español**. Para esta política concreta hace comprobaciones deterministas separadas:
 
 1. `authorization` debe ser uno de los valores soportados;
-2. `caller_authority_evidence`, una vez canonizada, debe estar realmente contenida en el transcript snapshot capturado para ese tool call.
+2. debe existir un recibo opaco emitido por el runtime para esa propuesta desde un turno actual con input real del caller;
+3. el recibo debe pertenecer al mismo kernel, tenant y `callControlId`, y sólo puede consumirse una vez. Varias propuestas legítimas del mismo frame reciben recibos distintos.
 
-Esto garantiza **grounding textual** y evita que el modelo invente una evidencia inexistente.
+Esto garantiza presencia, frescura, aislamiento y no-replay de la evidencia de turno. No pretende demostrar mediante comparación léxica que la frase significa una transferencia: esa clasificación semántica continúa perteneciendo a Gemini. El anterior campo textual controlado por el modelo fue retirado porque bloqueaba paráfrasis legítimas y tampoco constituía una prueba semántica independiente.
 
 Importante: el estado actual de `fast-human-handoff-policy.mjs` no mantiene `offerPending` ni reconstruye de forma independiente el antecedente conversacional de `CONFIRMED_OFFER`. Por tanto:
 
 - Gemini es la autoridad semántica que clasifica `EXPLICIT_REQUEST` frente a `CONFIRMED_OFFER`;
-- el kernel valida enum + grounding;
+- el kernel valida enum + recibo runtime del turno;
 - tenant/call/capability/configuración se validan en las fronteras deterministas posteriores;
 - no debe documentarse que el kernel “entiende” la frase o prueba por sí mismo que hubo una oferta previa.
 
@@ -50,33 +51,35 @@ Si en el futuro se requiere una garantía determinista adicional sobre la existe
 En `apps/gemini-media-edge/src/fast-gemini31.mjs`, `buildFastGemini31Setup()` detecta `transfer_call` y amplía el schema con:
 
 ```text
-authorization               required
-caller_authority_evidence   required
+authorization   required
 ```
 
-La descripción final indica que la autoridad es semántica y que Gemini no debe exigir frases exactas ni keyword matching.
+La descripción final indica que la autoridad es semántica y que el kernel exige la prueba opaca del turno actual. Ningún token, transcript ni identificador interno del recibo se expone al modelo.
 
 ## Corrección de carrera de transcript
 
-La autorización asíncrona no debe leer un `callerTranscript` mutable después de haber encolado el tool call.
+La autorización asíncrona no debe leer un recibo mutable después de haber encolado el tool call.
 
 El runtime captura la evidencia en el momento de procesar el frame Gemini:
 
 ```text
 input transcription
-  → snapshot del transcript para transfer_call
+  → el runtime emite recibo opaco ligado a tenant/call
+  → snapshot del recibo para transfer_call
   → tool queda encolado
   → puede llegar turnComplete y limpiar el estado mutable
-  → executeTransferTool usa el snapshot, no el valor ya limpiado
+  → el kernel consume el snapshot una sola vez, no el valor ya limpiado
 ```
 
 Existe una regresión específica donde `inputTranscription`, `transfer_call` y `turnComplete` coexisten en el mismo mensaje/ciclo. El objetivo es impedir que una intención válida desaparezca por una carrera de lifecycle.
+
+Existe además una regresión del incidente real del 2026-08-30: una paráfrasis legítima en el antiguo `caller_authority_evidence` no puede volver a producir `TOOL_AUTHORITY_EVIDENCE_MISMATCH`. Las pruebas complementarias exigen que ausencia de turno, turno ya cerrado, recibo fabricado, cruce de kernel/llamada y replay sigan fallando antes de cualquier side effect.
 
 ## Invariantes
 
 - El número de destino procede exclusivamente de configuración de tenant y nunca se expone al modelo.
 - La capability de transferencia y `humanHandoff.enabled=true` deben estar habilitadas; de lo contrario no se ofrece la tool.
-- Un efecto no se ejecuta sólo porque Gemini lo solicite: se validan grounding, tenant, llamada, capability y configuración en sus fronteras propietarias.
+- Un efecto no se ejecuta sólo porque Gemini lo solicite: se validan recibo runtime de turno, tenant, llamada, capability y configuración en sus fronteras propietarias.
 - Cada handoff aceptado obtiene un `handoffId` estable antes de iniciar la transferencia.
 - La persistencia de auditoría Fast es asíncrona/fail-open respecto a la latencia: no debe bloquear speech ni telephony.
 - Una vez aceptado el handoff, la IA entra en lifecycle terminal y no vuelve a conversación normal.
@@ -95,14 +98,13 @@ Gemini clasifica semánticamente
         ▼
 transfer_call
   authorization
-  caller_authority_evidence
   reason
   context_summary (opcional)
         │
         ▼
 Fast Media Edge
-  - usa snapshot del transcript
-  - valida enum + grounding
+  - usa recibo opaco snapshotteado
+  - valida enum + tenant/call + single-use
         │
         ▼
 Fast Worker / transfer authorize
@@ -215,7 +217,7 @@ La transferencia fue solicitada, aceptada, iniciada y el target leg respondió. 
 
 Esta E2E valida el comportamiento de autorización/handoff observado, pero no debe sobreinterpretarse:
 
-- los diagnósticos no persisten el transcript crudo ni `caller_authority_evidence`, por diseño;
+- los diagnósticos no persisten transcript crudo ni el recibo opaco, por diseño;
 - la aceptación demuestra que la política vigente no bloqueó la autoridad y que el lifecycle llegó a transferencia;
 - una transferencia exitosa no demuestra por sí sola que el caller oyera ringback;
 - no prueba el TTS terminal de `NO_ANSWER`/fallo porque este handoff terminó en `TRANSFERRED`.
@@ -244,7 +246,7 @@ Por tanto, no documentar como garantía E2E que el mensaje fue audible sólo por
 
 ### 3. Prompt base con estados históricos
 
-`fastHumanHandoffPrompt()` todavía contiene referencias a respuestas `OFFER_REQUIRED` y `CALLER_REJECTED` procedentes de la política anterior. La política semántica Fast actual devuelve fuentes/errores diferentes (`CALLER_AUTHORITY_REQUIRED`, `CALLER_AUTHORITY_EVIDENCE_MISMATCH`, etc.).
+`fastHumanHandoffPrompt()` todavía contiene referencias a respuestas `OFFER_REQUIRED` y `CALLER_REJECTED` procedentes de la política anterior. La política semántica Fast actual devuelve fuentes/errores diferentes (`CALLER_AUTHORITY_REQUIRED`, `TOOL_CALLER_TURN_EVIDENCE_REQUIRED`, etc.).
 
 La declaración final de tool instruye correctamente a Gemini a no llamar cuando la autoridad sea ambigua, pero esta divergencia de prompt debe eliminarse en una corrección de control posterior para que exista un único contrato conceptual.
 
@@ -252,7 +254,7 @@ La declaración final de tool instruye correctamente a Gemini a no llamar cuando
 
 Separar siempre estos hitos:
 
-1. **intención/autoridad semántica** — ¿Gemini emitió `transfer_call` con enum soportado y evidencia grounded?;
+1. **intención/autoridad semántica** — ¿Gemini emitió `transfer_call` con enum soportado y el kernel consumió un recibo runtime del turno actual?;
 2. **aceptación** — ¿existe `HUMAN_HANDOFF_ACCEPTED` / `REQUESTED`?;
 3. **inicio Telnyx** — ¿se ejecutó transfer y se registró `DIALING`?;
 4. **target leg** — ¿existe target call control id / hangup cause / bridge?;

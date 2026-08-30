@@ -285,7 +285,8 @@ Lifecycle conceptual:
 
 ```text
 caller solicita/acepta handoff
-  → Gemini emite transfer_call con autoridad grounded
+  → runtime emite recibo opaco del turno
+  → Gemini emite transfer_call con autoridad semántica
   → kernel autoriza
   → anuncio de handoff
   → Telnyx transfer

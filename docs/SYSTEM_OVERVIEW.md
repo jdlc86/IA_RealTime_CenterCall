@@ -69,7 +69,7 @@ En Gemini Fast la autorización no depende sólo del orden del runtime: el kerne
 
 La concesión de capabilities también cruza una frontera autenticada y explícita: `gemini-fast-bootstrap.v2` transporta una capability por declaración de tool, ligada por el registro de bootstrap a tenant/call. Antes de abrir la sesión, Media Edge comprueba que cada concesión coincide exactamente con su policy local. Una tool sin capability o con una capability de otro contrato no se expone al modelo ni alcanza el executor.
 
-Para human handoff Fast, Gemini declara una autoridad semántica estructurada y evidencia del caller. El kernel valida que el valor de autoridad sea soportado y que la evidencia esté realmente grounded en el transcript snapshot del tool call. **El kernel no vuelve a interpretar el español mediante listas rígidas y actualmente no reconstruye por sí mismo que existiera una oferta previa para `CONFIRMED_OFFER`.**
+Para human handoff Fast, Gemini declara una autoridad semántica estructurada. La prueba de presencia del caller pertenece al runtime: el kernel exige un recibo opaco del turno actual, ligado a kernel/tenant/llamada y de un solo uso. **El kernel no vuelve a interpretar el español mediante listas rígidas y actualmente no reconstruye por sí mismo que existiera una oferta previa para `CONFIRMED_OFFER`.**
 
 La definición completa está en [`HUMAN_HANDOFF.md`](./HUMAN_HANDOFF.md).
 

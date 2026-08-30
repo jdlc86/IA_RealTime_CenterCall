@@ -133,11 +133,11 @@ Aun así, toda tool sensible debe preservar:
 
 ### Handoff humano
 
-La comprensión lingüística pertenece a Gemini. Para la política Fast actual, el kernel verifica que `authorization` use un valor soportado y que `caller_authority_evidence` esté grounded en el transcript snapshot capturado para ese tool call. No vuelve a interpretar el significado mediante listas de frases.
+La comprensión lingüística pertenece a Gemini. Para la política Fast actual, el kernel verifica que `authorization` use un valor soportado y exige un recibo opaco, de un solo uso, emitido por el runtime al observar input no vacío en el turno actual. El recibo está ligado a kernel, tenant y llamada; no contiene ni expone transcript al modelo. El kernel no vuelve a interpretar el significado mediante listas de frases.
 
 La política actual tampoco mantiene `offerPending` ni prueba por sí sola que existiera una oferta previa para `CONFIRMED_OFFER`; si esa garantía adicional se exige en el futuro, debe modelarse como estado/protocolo explícito, no como matching léxico.
 
-El transcript/evidencia se captura antes de encolar la ejecución asíncrona para evitar carreras con `turnComplete`.
+El recibo runtime se captura antes de encolar la ejecución asíncrona para evitar carreras con `turnComplete`. Su emisión y consumo son operaciones locales en memoria: no añaden inferencia, RPC, persistencia, espera ni trabajo por chunk de audio.
 
 El contrato y las limitaciones operativas de transferencia pertenecen a [`../HUMAN_HANDOFF.md`](../HUMAN_HANDOFF.md).
 

@@ -22,6 +22,14 @@ const context = Object.freeze({
   callerTranscript: "Quiero reservar mañana a las nueve para cuatro personas",
 });
 
+function callerTurnContext(kernel, base = context) {
+  return {
+    tenantId: base.tenantId,
+    callControlId: base.callControlId,
+    callerTurnReceipt: kernel.observeCallerTurn(base),
+  };
+}
+
 test("read-only semantic necessity is independent of provider transcript arrival order", () => {
   const kernel = kernelFor("get_authoritative_datetime", FAST_HORIZONTAL_TOOL_POLICIES.get_authoritative_datetime);
   const allowed = kernel.authorize({
@@ -62,7 +70,7 @@ test("only read-only semantic necessity may omit caller transcript evidence", ()
   }), /Only read-only semantic necessity/);
 });
 
-test("transfer keeps semantic caller authority without rigid phrase matching", () => {
+test("legacy model paraphrase cannot false-deny a legitimate runtime caller turn", () => {
   const kernel = kernelFor("transfer_call", FAST_HORIZONTAL_TOOL_POLICIES.transfer_call);
   const transcript = "A ver si me puedes pasar con alguien del equipo, por favor";
   const allowed = kernel.authorize({
@@ -70,9 +78,9 @@ test("transfer keeps semantic caller authority without rigid phrase matching", (
     name: "transfer_call",
     args: {
       authorization: "EXPLICIT_REQUEST",
-      caller_authority_evidence: "me puedes pasar con alguien del equipo",
+      caller_authority_evidence: "el caller solicita que se le transfiera con una persona",
     },
-  }, { tenantId: "tenant-1", callControlId: "v3:call-1", callerTranscript: transcript });
+  }, callerTurnContext(kernel, { tenantId: "tenant-1", callControlId: "v3:call-1", callerTranscript: transcript }));
   assert.equal(allowed.allowed, true);
   assert.equal(allowed.effect, "TERMINAL_CALL_ACTION");
 
@@ -81,7 +89,6 @@ test("transfer keeps semantic caller authority without rigid phrase matching", (
     name: "transfer_call",
     args: {
       authorization: "SEMANTIC_NECESSITY",
-      caller_authority_evidence: transcript,
     },
   }, { tenantId: "tenant-1", callControlId: "v3:call-1", callerTranscript: transcript });
   assert.equal(wrongSource.allowed, false);
@@ -114,9 +121,8 @@ test("future business tools register declarative policy without kernel changes",
     name: "create_reservation",
     args: {
       authorization: "CALLER_REQUEST",
-      caller_authority_evidence: "Quiero reservar mañana a las nueve",
     },
-  }, context);
+  }, callerTurnContext(kernel));
   assert.equal(create.allowed, true);
   assert.equal(create.capability, "reservation.create");
 
@@ -125,11 +131,50 @@ test("future business tools register declarative policy without kernel changes",
     name: "cancel_reservation",
     args: {
       authorization: "CALLER_REQUEST",
-      caller_authority_evidence: "Quiero reservar mañana a las nueve",
     },
   }, context);
   assert.equal(cancel.allowed, false);
   assert.equal(cancel.status, "TOOL_AUTHORITY_REQUIRED");
+});
+
+test("caller-governed effects require an opaque current-turn receipt and reject replay", () => {
+  const kernel = kernelFor("transfer_call", FAST_HORIZONTAL_TOOL_POLICIES.transfer_call);
+  const call = {
+    id: "transfer-receipt-1",
+    name: "transfer_call",
+    args: { authorization: "EXPLICIT_REQUEST" },
+  };
+  const missing = kernel.authorize(call, { tenantId: "tenant-1", callControlId: "v3:call-1" });
+  assert.equal(missing.allowed, false);
+  assert.equal(missing.status, "TOOL_CALLER_TURN_EVIDENCE_REQUIRED");
+
+  const callerTurnReceipt = kernel.observeCallerTurn(context);
+  const allowed = kernel.authorize(call, { tenantId: "tenant-1", callControlId: "v3:call-1", callerTurnReceipt });
+  assert.equal(allowed.allowed, true);
+
+  const replay = kernel.authorize({ ...call, id: "transfer-receipt-2" }, {
+    tenantId: "tenant-1",
+    callControlId: "v3:call-1",
+    callerTurnReceipt,
+  });
+  assert.equal(replay.allowed, false);
+  assert.equal(replay.status, "TOOL_CALLER_TURN_EVIDENCE_REPLAYED");
+});
+
+test("caller-turn receipts cannot be fabricated or crossed between kernels and calls", () => {
+  const kernel = kernelFor("transfer_call", FAST_HORIZONTAL_TOOL_POLICIES.transfer_call);
+  const otherKernel = kernelFor("transfer_call", FAST_HORIZONTAL_TOOL_POLICIES.transfer_call);
+  const call = { id: "transfer-boundary-1", name: "transfer_call", args: { authorization: "EXPLICIT_REQUEST" } };
+  const receipt = otherKernel.observeCallerTurn(context);
+  for (const callerTurnReceipt of [Object.freeze({}), receipt]) {
+    const denied = kernel.authorize(call, { ...context, callerTurnReceipt });
+    assert.equal(denied.allowed, false);
+    assert.equal(denied.status, "TOOL_CALLER_TURN_EVIDENCE_REQUIRED");
+  }
+  const wrongCall = kernel.observeCallerTurn(context);
+  const denied = kernel.authorize(call, { ...context, callControlId: "v3:other-call", callerTurnReceipt: wrongCall });
+  assert.equal(denied.allowed, false);
+  assert.equal(denied.status, "TOOL_CALLER_TURN_EVIDENCE_REQUIRED");
 });
 
 test("authorization receipt is opaque and bound to exact call and authenticated context", () => {

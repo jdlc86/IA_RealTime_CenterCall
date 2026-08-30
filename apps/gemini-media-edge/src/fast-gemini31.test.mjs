@@ -46,7 +46,8 @@ test("fast Gemini 3.1 setup is audio-native, minimal-thinking and automatic-VAD"
   const declaration = setup.setup.tools[0].functionDeclarations[0];
   assert.equal(declaration.behavior, "BLOCKING");
   assert.deepEqual(declaration.parametersJsonSchema.properties.authorization.enum, ["CALLER_REQUEST"]);
-  assert.ok(declaration.parametersJsonSchema.required.includes("caller_authority_evidence"));
+  assert.equal("caller_authority_evidence" in declaration.parametersJsonSchema.properties, false);
+  assert.deepEqual(declaration.parametersJsonSchema.required, ["authorization"]);
 });
 
 test("read-only temporal setup requires semantic authority without transcript evidence", () => {

@@ -102,9 +102,9 @@ La documentación propietaria es [`HUMAN_HANDOFF.md`](./HUMAN_HANDOFF.md).
 Principios de alto nivel:
 
 - Gemini interpreta lenguaje natural;
-- la política Fast valida enum de autoridad + grounding textual, no listas de “sí/vale/adelante”;
+- la política Fast valida enum de autoridad + recibo opaco runtime del turno actual, no texto repetido por el modelo ni listas de “sí/vale/adelante”;
 - la política actual no mantiene `offerPending` ni prueba por sí sola el antecedente de `CONFIRMED_OFFER`;
-- transcript/evidencia se snapshottean antes de la ejecución asíncrona del tool;
+- el recibo de turno se snapshottea antes de la ejecución asíncrona del tool y sólo puede consumirse una vez;
 - destino/capability pertenecen a configuración/backend;
 - handoff aceptado es lifecycle terminal para la IA;
 - auditoría en `public.human_handoff_events`.
