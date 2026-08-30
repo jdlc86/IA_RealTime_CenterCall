@@ -87,6 +87,71 @@ describe("fast diagnostic ingest", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it("persists only the common safe-detail allowlist and never arbitrary diagnostic content", async () => {
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const rows = JSON.parse(String(init?.body));
+      expect(rows[0].details).toEqual({
+        reason: "TELNYX_STOP",
+        capability: "call.transfer",
+        observed_ms: 37,
+        over_budget: false,
+      });
+      expect(JSON.stringify(rows)).not.toContain("caller secret words");
+      expect(JSON.stringify(rows)).not.toContain("private provider payload");
+      expect(JSON.stringify(rows)).not.toContain("private-system-prompt");
+      expect(JSON.stringify(rows)).not.toContain("super-secret-token");
+      expect(JSON.stringify(rows)).not.toContain("+34600111222");
+      return new Response(null, { status: 201 });
+    });
+    const response = await routeFastDiagnosticIngest(request({ events: [event({
+      transcript: "top-level caller secret words",
+      provider_payload: "top-level private provider payload",
+      details: {
+        reason: "TELNYX_STOP",
+        capability: "call.transfer",
+        observed_ms: 37,
+        over_budget: false,
+        transcript: "caller secret words",
+        system_prompt: "private-system-prompt",
+        authorization_token: "super-secret-token",
+        caller_phone: "+34600111222",
+        arbitrary_nested: { leak: "caller secret words" },
+      },
+    })] }), {
+      GEMINI_MEDIA_CONTROL_PLANE_TOKEN: CONTROL_TOKEN,
+      SUPABASE_URL: "https://project.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: SERVICE_ROLE,
+    }, { fetcher });
+    expect(response.status).toBe(201);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an invalid value on an allowlisted key before persistence", async () => {
+    const fetcher = vi.fn();
+    const response = await routeFastDiagnosticIngest(request({ events: [event({
+      details: { reason: { transcript: "caller secret words" } },
+    })] }), {
+      GEMINI_MEDIA_CONTROL_PLANE_TOKEN: CONTROL_TOKEN,
+      SUPABASE_URL: "https://project.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: SERVICE_ROLE,
+    }, { fetcher });
+    expect(response.status).toBe(400);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("rejects conversational text copied into a top-level technical field", async () => {
+    const fetcher = vi.fn();
+    const response = await routeFastDiagnosticIngest(request({ events: [event({
+      component: "caller transcript secret words",
+    })] }), {
+      GEMINI_MEDIA_CONTROL_PLANE_TOKEN: CONTROL_TOKEN,
+      SUPABASE_URL: "https://project.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: SERVICE_ROLE,
+    }, { fetcher });
+    expect(response.status).toBe(400);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("rejects batches that mix calls", async () => {
     const fetcher = vi.fn();
     const response = await routeFastDiagnosticIngest(request({

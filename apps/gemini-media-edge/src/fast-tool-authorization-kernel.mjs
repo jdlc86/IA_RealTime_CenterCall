@@ -19,6 +19,8 @@ const EFFECT_TYPES = new Set([
 
 const READ_ONLY_EFFECT_TYPES = new Set(["READ_CONTEXT", "READ_BUSINESS_DATA"]);
 const CALLER_AUTHORITY_DEFAULT_SOURCES = Object.freeze(["EXPLICIT_REQUEST", "CONFIRMED_OFFER"]);
+const AUTHORIZATION_RECEIPTS = new WeakMap();
+const CALLER_TURN_RECEIPTS = new WeakMap();
 
 function required(value, field, max = 512) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`);
@@ -70,7 +72,7 @@ function canonicalAllowedSources(authority, value) {
 function defaultEvidence(authority, effect) {
   if (authority === "SYSTEM_AUTHORITY") return "NONE";
   if (authority === "SEMANTIC_NECESSITY" && READ_ONLY_EFFECT_TYPES.has(effect)) return "NONE";
-  return "CALLER_TRANSCRIPT";
+  return "CALLER_TURN";
 }
 
 export function defineFastToolPolicy(input = {}) {
@@ -80,7 +82,7 @@ export function defineFastToolPolicy(input = {}) {
   if (!AUTHORITY_TYPES.has(authority)) throw new Error(`Fast tool authority ${authority} is unsupported`);
   if (!EFFECT_TYPES.has(effect)) throw new Error(`Fast tool effect ${effect} is unsupported`);
   const evidence = input.evidence ?? defaultEvidence(authority, effect);
-  if (evidence !== "NONE" && evidence !== "CALLER_TRANSCRIPT") throw new Error("Fast tool evidence policy is invalid");
+  if (evidence !== "NONE" && evidence !== "CALLER_TURN") throw new Error("Fast tool evidence policy is invalid");
   if (evidence === "NONE" && authority !== "SYSTEM_AUTHORITY") {
     if (authority !== "SEMANTIC_NECESSITY" || !READ_ONLY_EFFECT_TYPES.has(effect)) {
       throw new Error("Only read-only semantic necessity may omit caller transcript evidence");
@@ -175,22 +177,15 @@ export function buildFastToolAuthorityContract(description, parameters, policyIn
     enum: [...policy.allowedSources],
     description: authorityDescription(policy),
   });
-  if (policy.evidence === "CALLER_TRANSCRIPT") {
-    properties.caller_authority_evidence = Object.freeze({
-      type: "string",
-      description: "Cita literalmente la parte del turno actual del caller que fundamenta esta autorización. Conserva su lenguaje natural; no la reduzcas a keywords ni inventes evidencia.",
-    });
-  }
   schema.properties = properties;
   const requiredFields = Array.isArray(schema.required) ? schema.required.filter((entry) => typeof entry === "string") : [];
   schema.required = [...new Set([
     ...requiredFields,
     "authorization",
-    ...(policy.evidence === "CALLER_TRANSCRIPT" ? ["caller_authority_evidence"] : []),
   ])];
   schema.additionalProperties = false;
-  const kernelValidation = policy.evidence === "CALLER_TRANSCRIPT"
-    ? "El kernel valida la evidencia y la política y decide ALLOW/DENY"
+  const kernelValidation = policy.evidence === "CALLER_TURN"
+    ? "El kernel exige un recibo opaco del turno actual emitido por el runtime, valida la política y decide ALLOW/DENY"
     : "El kernel valida la política y decide ALLOW/DENY";
   return Object.freeze({
     description: `${description}\nKernel tool-authority contract: ${authorityDescription(policy)} ${kernelValidation}; una function call de Gemini es solo una propuesta y nunca constituye por sí sola autorización para ejecutar una herramienta con efectos.`,
@@ -199,15 +194,15 @@ export function buildFastToolAuthorityContract(description, parameters, policyIn
   });
 }
 
-function declaredToolNames(value) {
+function declaredToolCapabilities(value) {
   if (!Array.isArray(value)) throw new Error("Fast declared tools are invalid");
-  const names = new Set();
+  const tools = new Map();
   for (const tool of value) {
     const name = required(tool?.name, "Fast declared tool name", 128);
-    if (names.has(name)) throw new Error(`Fast declared tool duplicated: ${name}`);
-    names.add(name);
+    if (tools.has(name)) throw new Error(`Fast declared tool duplicated: ${name}`);
+    tools.set(name, capability(tool?.capability));
   }
-  return names;
+  return tools;
 }
 
 function denied(status, toolName, policy = null) {
@@ -223,23 +218,86 @@ function denied(status, toolName, policy = null) {
   });
 }
 
+function deepFreezeJson(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const entry of Array.isArray(value) ? value : Object.values(value)) deepFreezeJson(entry);
+  return Object.freeze(value);
+}
+
+function authorizedCallSnapshot(call) {
+  const id = required(call?.id, "Fast authorization tool call id", 256);
+  const name = required(call?.name, "Fast authorization tool name", 128);
+  const args = call?.args && typeof call.args === "object" && !Array.isArray(call.args) ? structuredClone(call.args) : {};
+  let argsJson;
+  try { argsJson = JSON.stringify(args); }
+  catch { throw new Error("Fast authorization tool arguments are not JSON serializable"); }
+  if (argsJson === undefined) throw new Error("Fast authorization tool arguments are not JSON serializable");
+  return Object.freeze({ id, name, args: deepFreezeJson(args), argsJson });
+}
+
+/**
+ * Validates the opaque receipt issued by the authorization kernel and returns
+ * the exact argument snapshot that was authorized. The private WeakMap makes a
+ * fabricated or copied decision unusable at every effectful sink.
+ */
+export function requireFastToolAuthorizationReceipt(decision, call, context = {}) {
+  const receipt = decision && typeof decision === "object" ? AUTHORIZATION_RECEIPTS.get(decision) : undefined;
+  if (!receipt || decision.allowed !== true) throw new Error("Fast tool authorization receipt is required");
+  if (call !== receipt.callRef) throw new Error("Fast tool authorization receipt does not match the function call");
+  if (required(call?.id, "Fast authorization tool call id", 256) !== receipt.id
+    || required(call?.name, "Fast authorization tool name", 128) !== receipt.name) {
+    throw new Error("Fast tool authorization receipt does not match the function call");
+  }
+  if (required(context.tenantId, "Fast authorization tenant id", 256) !== receipt.tenantId
+    || required(context.callControlId, "Fast authorization call control id", 512) !== receipt.callControlId) {
+    throw new Error("Fast tool authorization receipt does not match the call context");
+  }
+  return receipt.authorizedCall;
+}
+
 /**
  * Generic, call-scoped authorization boundary. The authenticated bootstrap owns
  * which tools are available to this tenant/call; the local policy registry owns
  * the minimum authority/effect contract and cannot be weakened by Gemini.
  * Natural-language interpretation remains with Gemini. Caller-governed effects
- * require grounded caller evidence; read-only semantic necessity does not depend
- * on provider transcription arrival order.
+ * require an opaque, single-use receipt for runtime-observed caller input;
+ * read-only semantic necessity does not depend on transcription arrival order.
  */
 export class FastToolAuthorizationKernel {
   constructor(options = {}) {
     this.policies = canonicalPolicyMap(options.policies, "Fast authorization kernel policies");
-    this.declaredTools = declaredToolNames(options.declaredTools ?? []);
-    for (const name of this.declaredTools) {
+    this.declaredTools = declaredToolCapabilities(options.declaredTools ?? []);
+    for (const [name, grantedCapability] of this.declaredTools) {
       if (!this.policies[name]) throw new Error(`Fast tool policy required for declared tool: ${name}`);
+      if (this.policies[name].capability !== grantedCapability) {
+        throw new Error(`Fast tool capability mismatch for declared tool: ${name}`);
+      }
     }
     this.allowed = 0;
     this.blocked = 0;
+    this.callerTurnsIssued = 0;
+    this.callerTurnsConsumed = 0;
+  }
+
+  /**
+   * Issues non-forgeable, call-bound proof that the trusted runtime observed
+   * caller speech in the currently open turn. The transcript never leaves the
+   * runtime through this receipt and each receipt can authorize at most one
+   * caller-governed effect.
+   */
+  observeCallerTurn(context = {}) {
+    const tenantId = required(context.tenantId, "Fast caller turn tenant id", 256);
+    const callControlId = required(context.callControlId, "Fast caller turn call control id", 512);
+    if (!canonicalEvidence(context.callerTranscript)) return null;
+    const receipt = Object.freeze({});
+    CALLER_TURN_RECEIPTS.set(receipt, {
+      kernel: this,
+      tenantId,
+      callControlId,
+      consumed: false,
+    });
+    this.callerTurnsIssued += 1;
+    return receipt;
   }
 
   authorize(call, context = {}) {
@@ -254,8 +312,8 @@ export class FastToolAuthorizationKernel {
       return denied("TOOL_POLICY_REQUIRED", toolName);
     }
 
-    required(context.tenantId, "Fast authorization tenant id", 256);
-    required(context.callControlId, "Fast authorization call control id", 512);
+    const tenantId = required(context.tenantId, "Fast authorization tenant id", 256);
+    const callControlId = required(context.callControlId, "Fast authorization call control id", 512);
     const args = call?.args && typeof call.args === "object" && !Array.isArray(call.args) ? call.args : {};
     const source = typeof args.authorization === "string" ? args.authorization.trim() : "";
     if (!policy.allowedSources.includes(source)) {
@@ -263,17 +321,26 @@ export class FastToolAuthorizationKernel {
       return denied("TOOL_AUTHORITY_REQUIRED", toolName, policy);
     }
 
-    if (policy.evidence === "CALLER_TRANSCRIPT") {
-      const transcript = canonicalEvidence(context.callerTranscript);
-      const evidence = canonicalEvidence(args.caller_authority_evidence);
-      if (!transcript || !evidence || !transcript.includes(evidence)) {
+    let callerTurn;
+    if (policy.evidence === "CALLER_TURN") {
+      callerTurn = context.callerTurnReceipt && typeof context.callerTurnReceipt === "object"
+        ? CALLER_TURN_RECEIPTS.get(context.callerTurnReceipt)
+        : undefined;
+      if (!callerTurn
+        || callerTurn.kernel !== this
+        || callerTurn.tenantId !== tenantId
+        || callerTurn.callControlId !== callControlId) {
         this.blocked += 1;
-        return denied("TOOL_AUTHORITY_EVIDENCE_MISMATCH", toolName, policy);
+        return denied("TOOL_CALLER_TURN_EVIDENCE_REQUIRED", toolName, policy);
+      }
+      if (callerTurn.consumed) {
+        this.blocked += 1;
+        return denied("TOOL_CALLER_TURN_EVIDENCE_REPLAYED", toolName, policy);
       }
     }
 
-    this.allowed += 1;
-    return Object.freeze({
+    const authorizedCall = authorizedCallSnapshot(call);
+    const decision = Object.freeze({
       allowed: true,
       status: "TOOL_AUTHORIZED",
       toolName,
@@ -282,14 +349,31 @@ export class FastToolAuthorizationKernel {
       effect: policy.effect,
       capability: policy.capability,
     });
+    AUTHORIZATION_RECEIPTS.set(decision, Object.freeze({
+      callRef: call,
+      id: authorizedCall.id,
+      name: authorizedCall.name,
+      tenantId,
+      callControlId,
+      authorizedCall,
+    }));
+    if (callerTurn) {
+      callerTurn.consumed = true;
+      this.callerTurnsConsumed += 1;
+    }
+    this.allowed += 1;
+    return decision;
   }
 
   snapshot() {
     return Object.freeze({
-      declaredTools: Object.freeze([...this.declaredTools].sort()),
+      declaredTools: Object.freeze([...this.declaredTools.keys()].sort()),
+      grantedCapabilities: Object.freeze([...this.declaredTools.values()].sort()),
       policyTools: Object.freeze(Object.keys(this.policies).sort()),
       allowed: this.allowed,
       blocked: this.blocked,
+      callerTurnsIssued: this.callerTurnsIssued,
+      callerTurnsConsumed: this.callerTurnsConsumed,
     });
   }
 }

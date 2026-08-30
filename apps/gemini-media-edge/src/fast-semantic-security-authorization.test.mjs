@@ -9,6 +9,7 @@ import {
 const TOOL_NAME = "report_semantic_security_incident";
 const TOOL = Object.freeze({
   name: TOOL_NAME,
+  capability: "security.semantic_boundary",
   description: "semantic security",
   parameters: Object.freeze({
     type: "object",

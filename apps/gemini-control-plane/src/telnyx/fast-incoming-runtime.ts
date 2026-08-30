@@ -3,6 +3,7 @@ import { issueGeminiAdmissionIdentity } from "../admission/identity-issuer";
 import { answerFastGeminiTelnyxCall, startFastGeminiTelnyxStreaming } from "./fast-call-control";
 import { parseVerifiedTelnyxIncomingCall, type VerifiedTelnyxIncomingCall } from "./incoming-call";
 import { verifyTelnyxWebhookSignature } from "./webhook-signature";
+import type { FastInboundCallerSecurityDecision, FastInboundCallerSecurityInput } from "../fast-caller-security";
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -31,6 +32,7 @@ export type FastIncomingRuntimeOptions = Readonly<{
   resolveTenantRoute?: (call: VerifiedTelnyxIncomingCall) => Promise<FastTenantRoute | null>;
   resolveTenantId?: (call: VerifiedTelnyxIncomingCall) => Promise<string | null>;
   isCanaryAllowed: (tenantId: string, call: VerifiedTelnyxIncomingCall) => boolean;
+  evaluateCallerSecurity: (input: FastInboundCallerSecurityInput) => Promise<FastInboundCallerSecurityDecision>;
   resolveSessionConfig: (tenantId: string, call: VerifiedTelnyxIncomingCall) => Promise<FastSessionConfig>;
   mediaFetcher?: FetchLike;
   telnyxFetcher?: FetchLike;
@@ -42,6 +44,7 @@ export type FastIncomingRuntimeResult =
   | Readonly<{ status: "IGNORED_EVENT" }>
   | Readonly<{ status: "TENANT_NOT_FOUND"; call: VerifiedTelnyxIncomingCall }>
   | Readonly<{ status: "CANARY_NOT_ALLOWED"; call: VerifiedTelnyxIncomingCall; tenantId: string }>
+  | Readonly<{ status: "CALLER_SECURITY_BLOCKED"; call: VerifiedTelnyxIncomingCall; tenantId: string; reason: string }>
   | Readonly<{ status: "STARTED"; call: VerifiedTelnyxIncomingCall; tenantId: string; routeId: string; credentialId: string; edgeUrl: string }>;
 
 function positive(value: number, field: string): number {
@@ -126,6 +129,21 @@ export async function startSignedFastGeminiIncomingCall(
     return Object.freeze({ status: "CANARY_NOT_ALLOWED", call, tenantId });
   }
 
+  const callerPhone = e164(call.callerNumber, "Telnyx caller number") as string;
+  const callerSecurity = await options.evaluateCallerSecurity({
+    eventKey: call.eventId,
+    tenantId,
+    callerPhone,
+  });
+  if (callerSecurity.decision !== "ALLOW") {
+    return Object.freeze({
+      status: "CALLER_SECURITY_BLOCKED",
+      call,
+      tenantId,
+      reason: required(callerSecurity.reason, "Fast caller security reason", 128),
+    });
+  }
+
   const ids = await issueGeminiAdmissionIdentity({
     tenantId,
     telnyxEventId: call.eventId,
@@ -142,7 +160,7 @@ export async function startSignedFastGeminiIncomingCall(
     tenantId,
     routeId,
     callControlId: call.callControlId,
-    callerPhoneE164: e164(call.callerNumber, "Telnyx caller number", true),
+    callerPhoneE164: callerPhone,
     calledPhoneE164: e164(call.calledNumber, "Telnyx called number") as string,
     provider: "TELNYX" as const,
     createdAtEpochMs: call.occurredAtEpochMs,

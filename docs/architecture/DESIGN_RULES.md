@@ -1,6 +1,6 @@
 # IA_RealTime_CenterCall — Design Rules
 
-> **Versión:** 3.0
+> **Versión:** 3.2
 > **Estado:** vigente y normativo
 > **Última revisión:** 2026-08-29
 > **Aplicabilidad:** reglas transversales; un mecanismo específico de provider sólo es obligatorio cuando la regla o una ADR lo indiquen.
@@ -52,8 +52,8 @@ Estas reglas son obligatorias salvo ADR posterior que las modifique explícitame
 - **RA-043 — No falsificar roles para obtener paridad.** Una orden del sistema/asistente o continuación post-tool no se inyecta como caller input sólo porque otro provider tuviera una primitiva diferente.
 - **RA-044 — Evidencia de transcript/lifecycle debe existir realmente.** Un adapter/runtime no inventa completion ni promueve evidencia parcial a definitiva. Si eventos coexisten o llegan con ordering distinto, el owner los correlaciona explícitamente.
 - **RA-045 — Capabilities describen semántica validada.** Que el vendor anuncie una feature o un unit test pase no autoriza a declarar comportamiento E2E que no se ha observado.
-- **RA-046 — Autoridad semántica grounded para efectos conversacionales.** Cuando el modelo decide una intención abierta que habilita un efecto sensible, el kernel puede exigir evidencia del turno; esa comprobación valida grounding/estado, no vuelve a interpretar el lenguaje mediante una lista de frases.
-- **RA-047 — Capturar evidencia antes de encolar efectos asíncronos.** Si un tool depende del turno actual, la evidencia/transcript relevante se snapshottea antes de que `turnComplete`, cleanup u otro lifecycle pueda mutar o borrar el estado. La ejecución posterior usa ese snapshot.
+- **RA-046 — Autoridad semántica con evidencia runtime para efectos conversacionales.** Cuando el modelo decide una intención abierta que habilita un efecto sensible, el kernel exige evidencia emitida por el runtime del turno actual. Un texto o identificador aportado por el modelo no es una credencial. La comprobación valida presencia/estado, no vuelve a interpretar el lenguaje mediante una lista de frases.
+- **RA-047 — Capturar y consumir evidencia antes de encolar efectos asíncronos.** Si un tool depende del turno actual, cada propuesta recibe un recibo opaco propio ligado a kernel/tenant/llamada antes de que `turnComplete`, cleanup u otro lifecycle pueda borrar el estado. La ejecución posterior consume ese recibo una sola vez; ausencia, fabricación, cruce o replay fallan cerrados. Varias propuestas de un mismo frame no comparten recibo.
 - **RA-048 — Routing etiquetado es tráfico real.** En despliegues donde un Worker apunta directamente a una URL etiquetada de Cloud Run, `0%` de tráfico general del servicio no implica que esa revisión no atienda llamadas. La ruta efectiva se determina por el binding/URL usado por el caller path.
 - **RA-049 — Evidencia de control no demuestra experiencia acústica.** `call.bridged`, `call.speak.ended`, un target leg creado o un HTTP 2xx no demuestran por sí solos que el caller oyera ringback/TTS. Los problemas acústicos requieren evidencia acústica/E2E proporcional.
 - **RA-050 — Fallos de observabilidad/deploy gate no se convierten automáticamente en fallos del hot path.** Debe identificarse qué capa falló antes de modificar audio, VAD, codecs o runtime estable.
@@ -62,6 +62,9 @@ Estas reglas son obligatorias salvo ADR posterior que las modifique explícitame
 - **RA-053 — Contrato mínimo de toda tool.** Toda tool declara nombre y schema cerrado, `authority`, `effect`, `capability`, `evidence`, handler permitido y contexto confiable de tenant/call. Las mutaciones añaden idempotencia, confirmación e invariantes de dominio. El modelo propone; el kernel autoriza; el dominio valida; el backend ejecuta.
 - **RA-054 — Seguridad durable sin transcript crudo.** Las señales semánticas de seguridad se persisten de forma autenticada, idempotente y sideband cuando la invariante lo permite. No se almacenan audio, prompts, secretos, payload hostil ni transcript crudo.
 - **RA-055 — Comunicaciones externas opt-in.** Cada canal/modo se autoriza por capability de tenant. WhatsApp separa `message.whatsapp.transactional` de `message.whatsapp.realtime_support`; habilitar una no autoriza la otra.
+- **RA-056 — La autorización debe ser exigible en el sink.** El orden `kernel → executor/handler` no basta como convención. Cada sink effectful exige una prueba no fabricable ligada a la operación exacta y al contexto tenant/call; ejecuta la instantánea autorizada y falla cerrado ante ausencia, rebinding o contexto distinto.
+- **RA-057 — Capability grant explícito y tenant-bound.** Cada tool admitida declara su capability en el bootstrap autenticado. El runtime exige coincidencia exacta entre esa concesión y la policy local antes de exponer la tool o aceptar una function call. Una capability ausente, desconocida, perteneciente a otro contrato o procedente de otro tenant falla cerrada antes de cualquier side effect.
+- **RA-058 — Allowlist en todo sink de diagnóstico general.** El backend que persiste telemetría reconstruye el evento desde un schema cerrado y conserva únicamente metadatos técnicos escalares, bounded y explícitamente permitidos. Campos desconocidos se descartan; tipos inválidos en campos permitidos fallan cerrados. Transcript, audio, prompts, secretos, teléfonos y payloads arbitrarios no cruzan el sink aunque un productor autenticado los envíe por error. Las auditorías operativas especializadas con PII necesaria, como `human_handoff_events`, son contratos distintos con acceso y documentación propios.
 
 ## Applicability notes del Fast Path Gemini
 

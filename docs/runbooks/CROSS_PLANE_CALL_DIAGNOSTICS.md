@@ -11,13 +11,19 @@ La persistencia de diagnóstico no debe gobernar la llamada: una caída del sink
 
 ## Guardrails de almacenamiento verificados
 
-Al revisar este runbook en 2026-08-28, `public.call_diagnostic_events` mantiene:
+Al revisar este runbook en 2026-08-29, `public.call_diagnostic_events` mantiene:
 
 - RLS habilitado;
 - privilegios de tabla para `service_role`: `SELECT` e `INSERT` únicamente;
 - cron `purge-redacted-call-diagnostics-7d` cada hora, eliminando filas con `created_at < now() - interval '7 days'`.
 
 Estos guardrails son parte del diseño de diagnóstico mínimo/redactado. No deben eliminarse o debilitarse sin una decisión explícita y verificación equivalente.
+
+### Frontera Gemini de persistencia segura
+
+El endpoint autenticado `/internal/diagnostics-ingest` del Gemini Fast Worker es la última frontera antes de Supabase. No confía en que el productor haya redactado correctamente: reconstruye el evento desde campos top-level cerrados y proyecta `details` a una allowlist común de códigos, métricas y booleanos bounded. Las claves desconocidas se descartan y un tipo inválido en una clave permitida devuelve `400 INVALID_DIAGNOSTICS` sin llamar a Supabase.
+
+Por tanto, `transcript`, `system_prompt`, tokens, teléfonos, payloads de provider y objetos anidados no deben poder entrar en `public.call_diagnostic_events`, incluso si se añaden accidentalmente al batch autenticado del Media Edge. Este filtro es Gemini-native y se ejecuta en el Worker durante el flush sideband posterior; no importa el redactor OpenAI ni añade trabajo al forwarding de audio.
 
 ## 1. Empieza por identificar la llamada, no por buscar un stage esperado
 
@@ -162,6 +168,8 @@ El lifecycle/auditoría durable de handoff está en:
 ```text
 public.human_handoff_events
 ```
+
+`human_handoff_events` es un contrato operacional especializado, no el diagnóstico general. Puede conservar teléfonos de caller/destino cuando son necesarios para ejecutar, reconciliar o auditar la transferencia; esos campos deben mantenerse restringidos y enmascararse en consultas y resúmenes ordinarios. Esta excepción no autoriza teléfonos dentro de `call_diagnostic_events.details`.
 
 Ejemplo:
 

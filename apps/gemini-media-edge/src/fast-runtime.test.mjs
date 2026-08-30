@@ -43,6 +43,7 @@ const TEST_TOOL_POLICIES = mergeFastToolPolicies(FAST_HORIZONTAL_TOOL_POLICIES, 
 
 const RESERVATION_TOOL = Object.freeze({
   name: "restaurant_reservation_create",
+  capability: "reservation.create",
   description: "Create or continue a reservation.",
   parameters: Object.freeze({
     type: "object",
@@ -52,6 +53,7 @@ const RESERVATION_TOOL = Object.freeze({
 
 const TRANSFER_TOOL = Object.freeze({
   name: "transfer_call",
+  capability: "call.transfer",
   description: "Transfer the caller to a human.",
   parameters: Object.freeze({
     type: "object",
@@ -62,7 +64,7 @@ const TRANSFER_TOOL = Object.freeze({
 
 function bootstrap(tools = [RESERVATION_TOOL]) {
   return Object.freeze({
-    version: "gemini-fast-bootstrap.v1",
+    version: "gemini-fast-bootstrap.v2",
     provider: "GEMINI",
     credentialId: "cred-runtime",
     tenantId: "tenant-runtime",
@@ -190,7 +192,6 @@ test("fast runtime authorizes then executes a business tool and continues same L
       args: {
         party_size: 2,
         authorization: "CALLER_REQUEST",
-        caller_authority_evidence: "Quiero reservar para dos personas",
       },
     }] },
   });
@@ -213,7 +214,7 @@ test("fast runtime authorizes then executes a business tool and continues same L
   session.close("test-complete");
 });
 
-test("fast runtime blocks an ungrounded business tool before any side effect", async () => {
+test("fast runtime blocks a caller-governed business tool without current-turn runtime evidence", async () => {
   const telnyx = new FakeSocket();
   telnyx.readyState = 1;
   let gemini;
@@ -231,7 +232,6 @@ test("fast runtime blocks an ungrounded business tool before any side effect", a
   )).start();
   gemini.open();
   gemini.message({ setupComplete: {} });
-  gemini.message({ serverContent: { inputTranscription: { text: "Solo quería saber dónde estáis" } } });
   gemini.message({
     toolCall: { functionCalls: [{
       id: "tool-fast-blocked",
@@ -239,7 +239,6 @@ test("fast runtime blocks an ungrounded business tool before any side effect", a
       args: {
         party_size: 2,
         authorization: "CALLER_REQUEST",
-        caller_authority_evidence: "Quiero reservar para dos personas",
       },
     }] },
   });
@@ -249,10 +248,85 @@ test("fast runtime blocks an ungrounded business tool before any side effect", a
   assert.equal(effects, 0);
   const response = gemini.sent.find((item) => item.toolResponse)?.toolResponse.functionResponses[0].response.result;
   assert.equal(response.tool_authorized, false);
-  assert.equal(response.status, "TOOL_AUTHORITY_EVIDENCE_MISMATCH");
+  assert.equal(response.status, "TOOL_CALLER_TURN_EVIDENCE_REQUIRED");
   const blocked = diagnostics.find((item) => item.stage === "TOOL_AUTHORIZATION_BLOCKED");
   assert.equal(blocked.kind, "restaurant_reservation_create");
   assert.equal(blocked.capability, "reservation.create");
+  assert.equal(session.snapshot().toolAuthorization.blocked, 1);
+  assert.equal(gemini.closed, null);
+  session.close("test-complete");
+});
+
+test("fast runtime gives distinct single-use receipts to caller-governed tools in one frame", async () => {
+  const telnyx = new FakeSocket();
+  telnyx.readyState = 1;
+  let gemini;
+  const executed = [];
+  const session = new FastGeminiRealtimeSession(sessionOptions(
+    telnyx,
+    () => { gemini = new FakeSocket(); return gemini; },
+    {
+      toolHandlers: {
+        restaurant_reservation_create: async (call) => {
+          executed.push(call.id);
+          return { status: "OK" };
+        },
+      },
+    },
+  )).start();
+  gemini.open();
+  gemini.message({ setupComplete: {} });
+  gemini.message({
+    serverContent: { inputTranscription: { text: "Quiero hacer dos reservas" } },
+    toolCall: { functionCalls: [
+      { id: "tool-fast-multi-1", name: "restaurant_reservation_create", args: { party_size: 2, authorization: "CALLER_REQUEST" } },
+      { id: "tool-fast-multi-2", name: "restaurant_reservation_create", args: { party_size: 4, authorization: "CALLER_REQUEST" } },
+    ] },
+  });
+  await settle();
+  await settle();
+  await settle();
+
+  assert.deepEqual(executed, ["tool-fast-multi-1", "tool-fast-multi-2"]);
+  assert.equal(session.snapshot().toolAuthorization.allowed, 2);
+  assert.equal(session.snapshot().toolAuthorization.callerTurnsConsumed, 2);
+  session.close("test-complete");
+});
+
+test("fast runtime blocks transfer before its special effect sink when prior-turn evidence is stale", async () => {
+  const telnyx = new FakeSocket();
+  telnyx.readyState = 1;
+  let gemini;
+  let transferAuthorizations = 0;
+  const session = new FastGeminiRealtimeSession(sessionOptions(
+    telnyx,
+    () => { gemini = new FakeSocket(); return gemini; },
+    {
+      bootstrap: bootstrap([TRANSFER_TOOL]),
+      authorizeTransfer: async () => { transferAuthorizations += 1; return { ok: true }; },
+      startTransfer: async () => { throw new Error("transfer start must be unreachable"); },
+    },
+  )).start();
+
+  gemini.open();
+  gemini.message({ setupComplete: {} });
+  gemini.message({ serverContent: { inputTranscription: { text: "Quiero conocer vuestro horario" } } });
+  gemini.message({ serverContent: { turnComplete: true } });
+  gemini.message({
+    toolCall: { functionCalls: [{
+      id: "transfer-fast-blocked",
+      name: "transfer_call",
+      args: {
+        authorization: "EXPLICIT_REQUEST",
+      },
+    }] },
+  });
+  await settle();
+  await settle();
+
+  assert.equal(transferAuthorizations, 0);
+  const response = gemini.sent.find((item) => item.toolResponse)?.toolResponse.functionResponses[0].response.result;
+  assert.equal(response.status, "TOOL_CALLER_TURN_EVIDENCE_REQUIRED");
   assert.equal(session.snapshot().toolAuthorization.blocked, 1);
   assert.equal(gemini.closed, null);
   session.close("test-complete");
@@ -298,7 +372,6 @@ test("fast runtime carries existing call audit context from generic authorizatio
         reason: "USER_REQUESTED_HUMAN",
         context_summary: "El caller pide hablar con recepción.",
         authorization: "EXPLICIT_REQUEST",
-        caller_authority_evidence: "Quiero hablar con una persona de recepción",
       },
     }] },
   });

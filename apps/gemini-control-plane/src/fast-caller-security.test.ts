@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  evaluateFastInboundCallerSecurity,
   fastCallerKey,
   persistFastCallerSecuritySignal,
   recordFastCallerSecuritySignalDurably,
@@ -47,6 +48,39 @@ describe("Gemini-native caller security persistence", () => {
       callerKey: await fastCallerKey(baseEnv, input.tenantId, input.callerPhone),
     }, fetcher);
     expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("evaluates signed inbound admission through the locked-down RPC without clear phone data", async () => {
+    const fetcher = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(url)).toBe("https://project.supabase.co/rest/v1/rpc/evaluate_inbound_call_security_v2");
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toBe(`Bearer ${baseEnv.SUPABASE_SERVICE_ROLE_KEY}`);
+      expect(headers.get("apikey")).toBe(baseEnv.SUPABASE_SERVICE_ROLE_KEY);
+      const body = JSON.parse(String(init?.body));
+      expect(body).toEqual({
+        p_event_key: "evt-fast-001",
+        p_tenant_id: "tenant-a",
+        p_caller_key: "d2724986bb32ddda62ba9fc8a0a989f99cc0616586a58dd6511c72317c0b8310",
+      });
+      expect(JSON.stringify(body)).not.toContain("+34600000000");
+      return Response.json([{ decision: "ALLOW", reason: "OK" }]);
+    });
+
+    await expect(evaluateFastInboundCallerSecurity(baseEnv, {
+      eventKey: "evt-fast-001",
+      tenantId: "tenant-a",
+      callerPhone: "+34600000000",
+    }, fetcher)).resolves.toEqual({ decision: "ALLOW", reason: "OK" });
+  });
+
+  it("fails closed on malformed or unsuccessful admission responses", async () => {
+    const request = { eventKey: "evt-fast-001", tenantId: "tenant-a", callerPhone: "+34600000000" };
+    await expect(evaluateFastInboundCallerSecurity(baseEnv, request, async () => Response.json([])))
+      .rejects.toThrow("empty payload");
+    await expect(evaluateFastInboundCallerSecurity(baseEnv, request, async () => Response.json([{ decision: "MAYBE" }])))
+      .rejects.toThrow("invalid payload");
+    await expect(evaluateFastInboundCallerSecurity(baseEnv, request, async () => new Response("unavailable", { status: 503 })))
+      .rejects.toThrow("HTTP 503");
   });
 
   it("falls back to its Gemini-owned queue without phone or transcript", async () => {

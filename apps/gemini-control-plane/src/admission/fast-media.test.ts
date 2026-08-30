@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildFastGeminiMediaAdmission, provisionFastGeminiMediaAdmission } from "./fast-media";
+import { buildFastGeminiMediaAdmission, provisionFastGeminiMediaAdmission, type FastGeminiToolDeclaration } from "./fast-media";
 
 function decodeBase64url(value: string): Uint8Array {
   const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((value.length + 3) % 4);
@@ -75,6 +75,7 @@ it("builds the exact media credential and security-bound fast bootstrap for one 
     calledPhoneE164: "+34910000001",
   });
   expect(admission.bootstrap.tools).toEqual([]);
+  expect(admission.bootstrap.version).toBe("gemini-fast-bootstrap.v2");
   expect(admission.bootstrap.voiceName).toBe("Kore");
   expect(admission.bootstrap.languageCode).toBe("es-ES");
 
@@ -93,6 +94,40 @@ it("builds the exact media credential and security-bound fast bootstrap for one 
     targetLegs: "both",
     notAfterEpochMs,
   });
+});
+
+it("binds every admitted tool to an explicit capability and rejects a missing grant", async () => {
+  const notAfterEpochMs = Date.now() + 60_000;
+  const base = {
+    tenantId: "tenant-fast",
+    callControlId: "v3:fast-call",
+    credentialId: "cred-fast-capability",
+    notAfterEpochMs,
+    edgeUrl: "wss://fast-example.a.run.app/telnyx/gemini",
+    securityContext: securityContext(notAfterEpochMs),
+    systemInstruction: "Responde brevemente.",
+    credentialSecret: SECRET,
+  };
+  const admission = await buildFastGeminiMediaAdmission({
+    ...base,
+    tools: [{
+      name: "get_authoritative_datetime",
+      capability: "time.authoritative",
+      description: "Current time.",
+      parameters: { type: "object", properties: {} },
+    }],
+  });
+  expect(admission.bootstrap.tools[0].capability).toBe("time.authoritative");
+
+  await expect(buildFastGeminiMediaAdmission({
+    ...base,
+    credentialId: "cred-fast-missing-capability",
+    tools: [{
+      name: "get_authoritative_datetime",
+      description: "Current time.",
+      parameters: { type: "object", properties: {} },
+    } as unknown as FastGeminiToolDeclaration],
+  })).rejects.toThrow("capability is required");
 });
 
 it("accepts multiline system instructions while still rejecting NUL", async () => {

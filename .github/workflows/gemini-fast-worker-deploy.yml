@@ -110,6 +110,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          SECRET_LIST="$(npx wrangler secret list --config wrangler.fast.runtime.jsonc)"
+          node -e '
+            const rows = JSON.parse(process.argv[1]);
+            const names = new Set(rows.map((row) => row?.name));
+            for (const required of ["CALLER_SECURITY_HMAC_SECRET", "SUPABASE_SERVICE_ROLE_KEY"]) {
+              if (!names.has(required)) { console.error(`MISSING:${required}`); process.exitCode = 1; }
+              else console.log(`PRESENT:${required}`);
+            }
+          ' "$SECRET_LIST"
           npx wrangler deploy --config wrangler.fast.runtime.jsonc 2>&1 | tee /tmp/gemini-fast-worker-deploy.log
           grep -q 'TENANT_ROUTING_KV' /tmp/gemini-fast-worker-deploy.log
 

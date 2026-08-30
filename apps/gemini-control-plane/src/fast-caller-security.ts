@@ -20,6 +20,17 @@ export type FastCallerSecurityDelivery = Readonly<{
   delivery: "DIRECT" | "QUEUED";
 }>;
 
+export type FastInboundCallerSecurityInput = Readonly<{
+  eventKey: string;
+  tenantId: string;
+  callerPhone: string;
+}>;
+
+export type FastInboundCallerSecurityDecision = Readonly<{
+  decision: "ALLOW" | "BLOCK";
+  reason: string;
+}>;
+
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 function required(value: unknown, field: string, max = 16_384): string {
@@ -64,6 +75,48 @@ export async function fastCallerKey(env: FastCallerSecurityEnv, tenantId: string
   );
   const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${tenantId}|${callerPhone}`));
   return Array.from(new Uint8Array(signature), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export async function evaluateFastInboundCallerSecurity(
+  env: FastCallerSecurityEnv,
+  input: FastInboundCallerSecurityInput,
+  fetcher: FetchLike = fetch,
+): Promise<FastInboundCallerSecurityDecision> {
+  const baseUrl = canonicalSupabaseUrl(env.SUPABASE_URL);
+  const serviceRoleKey = required(env.SUPABASE_SERVICE_ROLE_KEY, "SUPABASE_SERVICE_ROLE_KEY");
+  const eventKey = required(input.eventKey, "Fast inbound security event key", 200);
+  const tenantId = required(input.tenantId, "Fast inbound security tenant id", 256);
+  const callerKey = await fastCallerKey(env, tenantId, required(input.callerPhone, "Fast inbound caller phone", 16));
+  const response = await fetcher(`${baseUrl}/rest/v1/rpc/evaluate_inbound_call_security_v2`, {
+    method: "POST",
+    headers: {
+      apikey: serviceRoleKey,
+      authorization: `Bearer ${serviceRoleKey}`,
+      "content-type": "application/json",
+      accept: "application/json",
+    },
+    body: JSON.stringify({
+      p_event_key: eventKey,
+      p_tenant_id: tenantId,
+      p_caller_key: callerKey,
+    }),
+    // Admission is pre-call only. Bound the single security RTT so an upstream
+    // outage fails closed without extending the realtime audio hot path.
+    signal: AbortSignal.timeout(2_000),
+  });
+  if (!response.ok) throw new Error(`evaluate_inbound_call_security_v2 failed with HTTP ${response.status}`);
+  const payload: unknown = await response.json();
+  if (!Array.isArray(payload) || payload.length === 0) {
+    throw new Error("evaluate_inbound_call_security_v2 returned empty payload");
+  }
+  if (payload.length !== 1 || !payload[0] || typeof payload[0] !== "object" || Array.isArray(payload[0])) {
+    throw new Error("evaluate_inbound_call_security_v2 returned invalid payload");
+  }
+  const row = payload[0] as Record<string, unknown>;
+  if ((row.decision !== "ALLOW" && row.decision !== "BLOCK") || typeof row.reason !== "string" || !row.reason.trim()) {
+    throw new Error("evaluate_inbound_call_security_v2 returned invalid payload");
+  }
+  return Object.freeze({ decision: row.decision, reason: required(row.reason, "Fast inbound security reason", 128) });
 }
 
 export async function persistFastCallerSecuritySignal(

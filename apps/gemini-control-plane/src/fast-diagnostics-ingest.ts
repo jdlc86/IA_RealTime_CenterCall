@@ -1,3 +1,5 @@
+import { canonicalFastDiagnosticDetails } from "./fast-diagnostic-safety";
+
 type FastDiagnosticEvent = Readonly<{
   event_id: string;
   occurred_at: string;
@@ -45,9 +47,15 @@ function required(value: unknown, field: string, max = 8_192): string {
   return normalized;
 }
 
-function nullableString(value: unknown, field: string, max = 512): string | null {
+function requiredPattern(value: unknown, field: string, max: number, pattern: RegExp): string {
+  const normalized = required(value, field, max);
+  if (!pattern.test(normalized)) throw new Error(`${field} is invalid`);
+  return normalized;
+}
+
+function nullablePattern(value: unknown, field: string, max: number, pattern: RegExp): string | null {
   if (value === null || value === undefined) return null;
-  return required(value, field, max);
+  return requiredPattern(value, field, max, pattern);
 }
 
 function nullableInteger(value: unknown, field: string): number | null {
@@ -95,27 +103,27 @@ function canonicalEvent(value: unknown): FastDiagnosticEvent {
   const occurredAt = required(input.occurred_at, "diagnostic occurred_at", 64);
   if (!Number.isFinite(Date.parse(occurredAt))) throw new Error("diagnostic occurred_at is invalid");
   return Object.freeze({
-    event_id: required(input.event_id, "diagnostic event_id", 512),
+    event_id: requiredPattern(input.event_id, "diagnostic event_id", 512, /^\S+$/),
     occurred_at: occurredAt,
-    call_id: required(input.call_id, "diagnostic call_id", 512),
-    call_control_id: required(input.call_control_id, "diagnostic call_control_id", 512),
-    tenant_id: required(input.tenant_id, "diagnostic tenant_id", 512),
+    call_id: requiredPattern(input.call_id, "diagnostic call_id", 512, /^\S+$/),
+    call_control_id: requiredPattern(input.call_control_id, "diagnostic call_control_id", 512, /^\S+$/),
+    tenant_id: requiredPattern(input.tenant_id, "diagnostic tenant_id", 512, /^\S+$/),
     plane,
-    component: required(input.component, "diagnostic component", 128),
-    stage: required(input.stage, "diagnostic stage", 128),
+    component: requiredPattern(input.component, "diagnostic component", 128, /^[A-Za-z0-9_.:-]+$/),
+    stage: requiredPattern(input.stage, "diagnostic stage", 128, /^[A-Z0-9_]+$/),
     severity,
-    error_code: nullableString(input.error_code, "diagnostic error_code", 128),
+    error_code: nullablePattern(input.error_code, "diagnostic error_code", 128, /^[A-Z0-9_]+$/),
     sequence: nullableInteger(input.sequence, "diagnostic sequence"),
-    causal_parent_event_id: nullableString(input.causal_parent_event_id, "diagnostic causal_parent_event_id", 512),
-    response_id: nullableString(input.response_id, "diagnostic response_id", 512),
-    item_id: nullableString(input.item_id, "diagnostic item_id", 512),
-    stream_id: nullableString(input.stream_id, "diagnostic stream_id", 512),
+    causal_parent_event_id: nullablePattern(input.causal_parent_event_id, "diagnostic causal_parent_event_id", 512, /^\S+$/),
+    response_id: nullablePattern(input.response_id, "diagnostic response_id", 512, /^\S+$/),
+    item_id: nullablePattern(input.item_id, "diagnostic item_id", 512, /^\S+$/),
+    stream_id: nullablePattern(input.stream_id, "diagnostic stream_id", 512, /^\S+$/),
     elapsed_ms: nullableInteger(input.elapsed_ms, "diagnostic elapsed_ms"),
     duration_ms: nullableInteger(input.duration_ms, "diagnostic duration_ms"),
     audio_duration_ms: nullableInteger(input.audio_duration_ms, "diagnostic audio_duration_ms"),
     chunk_count: nullableInteger(input.chunk_count, "diagnostic chunk_count"),
     sample_count: nullableInteger(input.sample_count, "diagnostic sample_count"),
-    details: Object.freeze({ ...(details as Record<string, unknown>) }),
+    details: canonicalFastDiagnosticDetails(details),
   });
 }
 

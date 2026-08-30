@@ -6,12 +6,13 @@ import {
   buildFastToolAuthorityContract,
   defineFastToolPolicy,
   mergeFastToolPolicies,
+  requireFastToolAuthorizationReceipt,
 } from "./fast-tool-authorization-kernel.mjs";
 
 function kernelFor(name, policy) {
   return new FastToolAuthorizationKernel({
     policies: { [name]: policy },
-    declaredTools: [{ name }],
+    declaredTools: [{ name, capability: policy.capability }],
   });
 }
 
@@ -20,6 +21,14 @@ const context = Object.freeze({
   callControlId: "v3:call-1",
   callerTranscript: "Quiero reservar mañana a las nueve para cuatro personas",
 });
+
+function callerTurnContext(kernel, base = context) {
+  return {
+    tenantId: base.tenantId,
+    callControlId: base.callControlId,
+    callerTurnReceipt: kernel.observeCallerTurn(base),
+  };
+}
 
 test("read-only semantic necessity is independent of provider transcript arrival order", () => {
   const kernel = kernelFor("get_authoritative_datetime", FAST_HORIZONTAL_TOOL_POLICIES.get_authoritative_datetime);
@@ -61,7 +70,7 @@ test("only read-only semantic necessity may omit caller transcript evidence", ()
   }), /Only read-only semantic necessity/);
 });
 
-test("transfer keeps semantic caller authority without rigid phrase matching", () => {
+test("legacy model paraphrase cannot false-deny a legitimate runtime caller turn", () => {
   const kernel = kernelFor("transfer_call", FAST_HORIZONTAL_TOOL_POLICIES.transfer_call);
   const transcript = "A ver si me puedes pasar con alguien del equipo, por favor";
   const allowed = kernel.authorize({
@@ -69,9 +78,9 @@ test("transfer keeps semantic caller authority without rigid phrase matching", (
     name: "transfer_call",
     args: {
       authorization: "EXPLICIT_REQUEST",
-      caller_authority_evidence: "me puedes pasar con alguien del equipo",
+      caller_authority_evidence: "el caller solicita que se le transfiera con una persona",
     },
-  }, { tenantId: "tenant-1", callControlId: "v3:call-1", callerTranscript: transcript });
+  }, callerTurnContext(kernel, { tenantId: "tenant-1", callControlId: "v3:call-1", callerTranscript: transcript }));
   assert.equal(allowed.allowed, true);
   assert.equal(allowed.effect, "TERMINAL_CALL_ACTION");
 
@@ -80,7 +89,6 @@ test("transfer keeps semantic caller authority without rigid phrase matching", (
     name: "transfer_call",
     args: {
       authorization: "SEMANTIC_NECESSITY",
-      caller_authority_evidence: transcript,
     },
   }, { tenantId: "tenant-1", callControlId: "v3:call-1", callerTranscript: transcript });
   assert.equal(wrongSource.allowed, false);
@@ -102,35 +110,120 @@ test("future business tools register declarative policy without kernel changes",
   });
   const kernel = new FastToolAuthorizationKernel({
     policies,
-    declaredTools: [{ name: "create_reservation" }, { name: "cancel_reservation" }],
+    declaredTools: [
+      { name: "create_reservation", capability: "reservation.create" },
+      { name: "cancel_reservation", capability: "reservation.cancel" },
+    ],
   });
 
   const create = kernel.authorize({
+    id: "create-1",
     name: "create_reservation",
     args: {
       authorization: "CALLER_REQUEST",
-      caller_authority_evidence: "Quiero reservar mañana a las nueve",
     },
-  }, context);
+  }, callerTurnContext(kernel));
   assert.equal(create.allowed, true);
   assert.equal(create.capability, "reservation.create");
 
   const cancel = kernel.authorize({
+    id: "cancel-1",
     name: "cancel_reservation",
     args: {
       authorization: "CALLER_REQUEST",
-      caller_authority_evidence: "Quiero reservar mañana a las nueve",
     },
   }, context);
   assert.equal(cancel.allowed, false);
   assert.equal(cancel.status, "TOOL_AUTHORITY_REQUIRED");
 });
 
+test("caller-governed effects require an opaque current-turn receipt and reject replay", () => {
+  const kernel = kernelFor("transfer_call", FAST_HORIZONTAL_TOOL_POLICIES.transfer_call);
+  const call = {
+    id: "transfer-receipt-1",
+    name: "transfer_call",
+    args: { authorization: "EXPLICIT_REQUEST" },
+  };
+  const missing = kernel.authorize(call, { tenantId: "tenant-1", callControlId: "v3:call-1" });
+  assert.equal(missing.allowed, false);
+  assert.equal(missing.status, "TOOL_CALLER_TURN_EVIDENCE_REQUIRED");
+
+  const callerTurnReceipt = kernel.observeCallerTurn(context);
+  const allowed = kernel.authorize(call, { tenantId: "tenant-1", callControlId: "v3:call-1", callerTurnReceipt });
+  assert.equal(allowed.allowed, true);
+
+  const replay = kernel.authorize({ ...call, id: "transfer-receipt-2" }, {
+    tenantId: "tenant-1",
+    callControlId: "v3:call-1",
+    callerTurnReceipt,
+  });
+  assert.equal(replay.allowed, false);
+  assert.equal(replay.status, "TOOL_CALLER_TURN_EVIDENCE_REPLAYED");
+});
+
+test("caller-turn receipts cannot be fabricated or crossed between kernels and calls", () => {
+  const kernel = kernelFor("transfer_call", FAST_HORIZONTAL_TOOL_POLICIES.transfer_call);
+  const otherKernel = kernelFor("transfer_call", FAST_HORIZONTAL_TOOL_POLICIES.transfer_call);
+  const call = { id: "transfer-boundary-1", name: "transfer_call", args: { authorization: "EXPLICIT_REQUEST" } };
+  const receipt = otherKernel.observeCallerTurn(context);
+  for (const callerTurnReceipt of [Object.freeze({}), receipt]) {
+    const denied = kernel.authorize(call, { ...context, callerTurnReceipt });
+    assert.equal(denied.allowed, false);
+    assert.equal(denied.status, "TOOL_CALLER_TURN_EVIDENCE_REQUIRED");
+  }
+  const wrongCall = kernel.observeCallerTurn(context);
+  const denied = kernel.authorize(call, { ...context, callControlId: "v3:other-call", callerTurnReceipt: wrongCall });
+  assert.equal(denied.allowed, false);
+  assert.equal(denied.status, "TOOL_CALLER_TURN_EVIDENCE_REQUIRED");
+});
+
+test("authorization receipt is opaque and bound to exact call and authenticated context", () => {
+  const kernel = kernelFor("get_authoritative_datetime", FAST_HORIZONTAL_TOOL_POLICIES.get_authoritative_datetime);
+  const call = {
+    id: "clock-bound-1",
+    name: "get_authoritative_datetime",
+    args: { authorization: "SEMANTIC_NECESSITY" },
+  };
+  const decision = kernel.authorize(call, context);
+  const authorizedCall = requireFastToolAuthorizationReceipt(decision, call, context);
+  assert.equal(authorizedCall.id, call.id);
+  assert.deepEqual(authorizedCall.args, call.args);
+  assert.equal(Object.isFrozen(authorizedCall.args), true);
+  assert.throws(
+    () => requireFastToolAuthorizationReceipt({ ...decision }, call, context),
+    /authorization receipt is required/,
+  );
+  assert.throws(
+    () => requireFastToolAuthorizationReceipt(decision, structuredClone(call), context),
+    /does not match the function call/,
+  );
+  assert.throws(
+    () => requireFastToolAuthorizationReceipt(decision, call, { ...context, callControlId: "v3:other" }),
+    /does not match the call context/,
+  );
+});
+
 test("declared tool without local policy fails closed at session construction boundary", () => {
   assert.throws(() => new FastToolAuthorizationKernel({
     policies: FAST_HORIZONTAL_TOOL_POLICIES,
-    declaredTools: [{ name: "refund_customer" }],
+    declaredTools: [{ name: "refund_customer", capability: "customer.refund" }],
   }), /policy required/);
+});
+
+test("declared tool with absent or cross-tenant capability fails closed at construction", () => {
+  const policy = defineFastToolPolicy({
+    authority: "SEMANTIC_NECESSITY",
+    effect: "READ_CONTEXT",
+    capability: "reservation.create",
+  });
+  assert.throws(() => new FastToolAuthorizationKernel({
+    policies: { create_reservation: policy },
+    declaredTools: [{ name: "create_reservation" }],
+  }), /capability is required/);
+  assert.throws(() => new FastToolAuthorizationKernel({
+    policies: { create_reservation: policy },
+    declaredTools: [{ name: "create_reservation", capability: "tenant-b.reservation.create" }],
+  }), /capability mismatch/);
 });
 
 test("horizontal minimum policies cannot be overridden by business extensions", () => {

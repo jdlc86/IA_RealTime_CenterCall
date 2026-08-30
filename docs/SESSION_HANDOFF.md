@@ -1,6 +1,6 @@
 # Prompt de relevo — IA_RealTime_CenterCall
 
-> Última revisión: 2026-08-29
+> Última revisión: 2026-08-30
 > Decisiones: [`ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md`](./architecture/ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md) y [`ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md`](./architecture/ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md)
 
 ## INICIO DEL PROMPT
@@ -14,7 +14,7 @@ repo   jdlc86/IA_RealTime_CenterCall
 rama   rebuild/v39-stable-baseline
 PR     PR #85, mantener OPEN/DRAFT
 SHA canary de seguridad
-       d7435fd81915c470f74bce81eb87d8ae7bda1c1f
+       021d134625758cc9228284fecc4f49599a419182
 ```
 
 Antes de escribir, verifica de nuevo HEAD remoto, PR, CI, deploy efectivo y estado local. No sobrescribas cambios ajenos. No hagas merge, ready-for-review, force-push, rebase destructivo ni otra rama/PR. No hagas commit, push, deploy, llamadas, IAM o configuración sin autorización explícita.
@@ -46,7 +46,7 @@ Ambos → contratos neutrales de dominio/seguridad → Supabase compartido
 
 Gemini ya dispone de Worker y Media Edge propios. No puede depender de SDK, secretos, sockets, voz, lifecycle, persistencia sideband ni coordinadores OpenAI. El stack OpenAI queda como legado independiente pendiente de retirada y no forma parte del modelo de negocio objetivo.
 
-La extracción de caller security está desplegada en el canary del SHA `d7435fd81915c470f74bce81eb87d8ae7bda1c1f`: Gemini Fast Worker posee endpoint, adaptador Supabase, cola y DLQ; Media Edge usa el origen Gemini y los workflows Fast no tocan el Worker histórico. La ruta confirma primero Queue y usa Supabase directo como fallback; nunca responde éxito por `waitUntil`. `caller-security-hmac-secret` y `caller-security-hmac-sha256` están provisionados en Secret Manager con los bytes históricos y su huella independiente; CI verificó la coincidencia.
+La extracción de caller security y SEC-P0-06 están desplegados en el canary del SHA `021d134625758cc9228284fecc4f49599a419182`: Gemini Fast Worker posee endpoint, adaptador Supabase, cola y DLQ; Media Edge usa el origen Gemini y los workflows Fast no tocan el Worker histórico. La ruta confirma primero Queue y usa Supabase directo como fallback; nunca responde éxito por `waitUntil`. `caller-security-hmac-secret` y `caller-security-hmac-sha256` están provisionados en Secret Manager con los bytes históricos y su huella independiente; CI verificó la coincidencia.
 
 Capacidades transversales: seguridad, admission/identidad, voz/lifecycle, tool authorization, human handoff, tiempo, diagnóstico y comunicaciones. WhatsApp tiene dos capabilities KV independientes: `message.whatsapp.transactional` y `message.whatsapp.realtime_support`. Las verticales —por ejemplo reservas— pertenecen al tenant/dominio y consumen las capacidades transversales sin duplicarlas.
 
@@ -79,11 +79,10 @@ IAM desplegado: `github-cloud-run-deployer@iacallcenterv1.iam.gserviceaccount.co
 ### 5. CI, deploy y E2E verificados
 
 ```text
-SHA                d7435fd81915c470f74bce81eb87d8ae7bda1c1f
-Fast Canary run    33252047260, SUCCESS
-Media Canary run   33252047272, SUCCESS
-Cloud Run revision gemini-media-edge-00202-coh
-Fast Worker ver.   3100c432-69a0-44ea-a59f-fdaaa4458221
+SHA                021d134625758cc9228284fecc4f49599a419182
+Fast Canary run    33264338263, SUCCESS
+Cloud Run revision gemini-media-edge-00206-pid
+Fast Worker ver.   a62e7fac-598d-4944-8ccb-78971284c326
 production traffic sin cambios
 ```
 
@@ -103,7 +102,11 @@ blocked_until=null
 permanent_block=false
 ```
 
-El score no decae automáticamente. No repitas ataques desde el número real: podrías activar limitación y contaminar posteriores E2E funcionales.
+SEC-P1-02 está publicado en `db210c54b939eee49a2a0159cfa1d528c62b839c`, con `Control Plane CI` run `33277134222` en `SUCCESS`, y aplicado en Supabase como migración `20260829215407`. El score decae un punto por cada 24 horas completas sin evidencia nueva; el reset continúa Postgres-admin-only y conserva historial before/after. La verificación productiva sintética terminó con `ROLLBACK` y cero filas residuales. No repitas ataques desde el número real.
+
+La admisión caller-security Gemini-native está publicada en `62d8f25acd1ccf84dc2e37b5e462593d6a295bdd` mediante la PR borrador `#95`. CI y el deploy independiente del Worker pasaron; `Gemini Fast Canary Deploy` run `33300576501` desplegó la revisión sin tráfico `gemini-media-edge-00207-reg` y apuntó el Worker al tag `fast-62d8f25acd1c`. La frontera está en `startSignedFastGeminiIncomingCall`, después de firma/tenant/canary y antes de identities, credencial, bootstrap, `answer` o `streaming_start`. Reutiliza el HMAC histórico y `evaluate_inbound_call_security_v2`; caller ausente, secreto/RPC inválido y cualquier resultado distinto de `ALLOW` fallan cerrados. La sonda sintética comprobó `ALLOW`, idempotencia y `BLOCK` como `service_role`, terminó con `ROLLBACK` y cero filas residuales. El siguiente gate es una única llamada real controlada, sin ataques repetidos.
+
+La corrección del falso bloqueo de transferencia está implementada en `76eba318f17e65b9353d0883a3a37f69ae3ffb38`. Sustituye `caller_authority_evidence`, texto aportado por Gemini y comparado literalmente, por recibos opacos emitidos por el runtime para cada propuesta desde el turno actual. Los recibos están ligados a kernel/tenant/llamada, son single-use y no pueden fabricarse, cruzarse ni reutilizarse; el turno anterior no autoriza. La semántica sigue en Gemini mediante el enum cerrado y la autorización final de capability/config/tenant permanece en los sinks. No hay salto remoto ni trabajo por chunk. Suite Media Edge `243/243`, documentación y cuatro workflows CI/deploy verdes. `Gemini Fast Canary Deploy` run `33302316492` desplegó `gemini-media-edge-00208-riz` desde `5d6a3c9f39a61090ac951bb1b54552f6be174d63`, con producción intacta, Worker sincronizado y health/token/bootstrap/HMAC verificados. Falta una única E2E real de transferencia.
 
 ### 6. Primera misión
 
@@ -111,9 +114,10 @@ Primero realiza sólo inspección y confirma que el SHA/CI/deploy/documentos con
 
 Si se continúa esta misión de seguridad, el orden es:
 
-1. tratar `d7435fd81915c470f74bce81eb87d8ae7bda1c1f` y sus runs canary como baseline desplegado, sin exponer valores de secretos;
-2. validar persistencia/idempotencia con una prueba sintética o controlada antes de otra llamada adversarial real;
-3. dejar para una misión separada el decay/reset administrativo y la eliminación física del código OpenAI legado.
+1. tratar `021d134625758cc9228284fecc4f49599a419182` y el run `33264338263` como baseline desplegado del runtime P06;
+2. tratar `db210c54b939eee49a2a0159cfa1d528c62b839c`, CI `33277134222` y migración Supabase `20260829215407` como baseline aplicado de SEC-P1-02;
+3. observar decay/reset sólo con métricas técnicas o identidades sintéticas; nunca ataques reales;
+4. revisar y publicar por separado el candidato local de caller-security en admission Gemini; la eliminación física del código OpenAI legado continúa como misión independiente.
 
 Cualquier propuesta debe indicar amenaza, invariante, archivo/frontera, impacto de latencia, plan de prueba y rollback. No hagas otra llamada.
 

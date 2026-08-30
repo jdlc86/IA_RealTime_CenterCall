@@ -31,6 +31,7 @@ class FakeSocket {
 function transferTool() {
   return Object.freeze({
     name: "transfer_call",
+    capability: "call.transfer",
     description: "Transfer the caller to the configured human destination.",
     parameters: Object.freeze({
       type: "object",
@@ -45,7 +46,7 @@ function transferTool() {
 
 function bootstrap() {
   return Object.freeze({
-    version: "gemini-fast-bootstrap.v1",
+    version: "gemini-fast-bootstrap.v2",
     provider: "GEMINI",
     credentialId: "cred-semantic-handoff",
     tenantId: "tenant-semantic-handoff",
@@ -75,41 +76,32 @@ test("transfer tool uses the same generic authority contract without phrase list
   const declaration = setup.setup.tools[0].functionDeclarations[0];
   assert.deepEqual(declaration.parametersJsonSchema.properties.authorization.enum, ["EXPLICIT_REQUEST", "CONFIRMED_OFFER"]);
   assert.equal(declaration.parametersJsonSchema.required.includes("authorization"), true);
-  assert.equal(declaration.parametersJsonSchema.required.includes("caller_authority_evidence"), true);
-  assert.match(declaration.description, /kernel valida la evidencia/i);
-  assert.match(declaration.parametersJsonSchema.properties.caller_authority_evidence.description, /lenguaje natural/i);
+  assert.equal("caller_authority_evidence" in declaration.parametersJsonSchema.properties, false);
+  assert.match(declaration.description, /recibo opaco del turno actual/i);
 });
 
-test("handoff policy accepts free natural wording when Gemini grounds its semantic decision", () => {
-  const transcript = "A ver, si no te importa, me gustaría que me comunicaras con alguien del equipo que pueda ayudarme.";
+test("handoff policy accepts a supported semantic source after generic kernel authorization", () => {
   const decision = authorizeFastHumanHandoff(initialFastHandoffAuthorizationState(), {
     authorization: "EXPLICIT_REQUEST",
-    callerAuthorityEvidence: "me gustaría que me comunicaras con alguien del equipo que pueda ayudarme",
-    callerTranscript: transcript,
   });
   assert.equal(decision.allowed, true);
   assert.equal(decision.source, "EXPLICIT_REQUEST");
 });
 
-test("handoff policy accepts natural confirmation without enumerating affirmative phrases", () => {
-  const transcript = "Venga, hagámoslo; me viene bien que me pases con ellos ahora.";
+test("handoff policy accepts confirmed offer without enumerating affirmative phrases", () => {
   const decision = authorizeFastHumanHandoff(initialFastHandoffAuthorizationState(), {
     authorization: "CONFIRMED_OFFER",
-    callerAuthorityEvidence: "Venga, hagámoslo; me viene bien que me pases con ellos ahora",
-    callerTranscript: transcript,
   });
   assert.equal(decision.allowed, true);
   assert.equal(decision.source, "CONFIRMED_OFFER");
 });
 
-test("handoff policy fails closed when semantic authority is not grounded in the captured caller turn", () => {
+test("handoff policy fails closed for an unsupported semantic authority source", () => {
   const decision = authorizeFastHumanHandoff(initialFastHandoffAuthorizationState(), {
-    authorization: "EXPLICIT_REQUEST",
-    callerAuthorityEvidence: "pásame con recepción",
-    callerTranscript: "Quería consultar el horario de mañana.",
+    authorization: "SEMANTIC_NECESSITY",
   });
   assert.equal(decision.allowed, false);
-  assert.equal(decision.source, "CALLER_AUTHORITY_EVIDENCE_MISMATCH");
+  assert.equal(decision.source, "CALLER_AUTHORITY_REQUIRED");
 });
 
 test("fast runtime snapshots caller transcript before same-frame turnComplete can clear mutable state", async () => {
@@ -157,7 +149,7 @@ test("fast runtime snapshots caller transcript before same-frame turnComplete ca
           reason: "USER_REQUESTED_HUMAN",
           context_summary: "El caller quiere continuar con una persona.",
           authorization: "EXPLICIT_REQUEST",
-          caller_authority_evidence: "si puedes, pásame con una persona del equipo",
+          caller_authority_evidence: "el caller solicita ser transferido con una persona",
         },
       }],
     },

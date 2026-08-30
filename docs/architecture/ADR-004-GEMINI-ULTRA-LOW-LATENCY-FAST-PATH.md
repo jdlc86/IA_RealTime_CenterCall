@@ -2,7 +2,7 @@
 
 > **Estado:** Aceptado — IMPLEMENTADO / operativo
 > **Fecha:** 2026-08-26
-> **Última aclaración:** 2026-08-28
+> **Última aclaración:** 2026-08-29
 > **Ámbito:** producto Gemini / realtime / media / tools / latencia / producción
 > **Supersede parcialmente:** decisiones de Fase 2/3 que obligaban a Google STT, semantic preselection, quarantine o `GeminiCallSession`/control WSS en cada turno
 > **No supersede:** ADR-003 sobre independencia OpenAI/Gemini ni la prohibición de Cloudflare en audio continuo
@@ -58,6 +58,10 @@ Por defecto, el Worker/DO no participa en:
 - respuesta oral normal.
 
 Una tool/effect puede requerir control/autorización externa sin convertir esa frontera en relay de audio.
+
+La autorización local se hace exigible en el sink mediante un recibo opaco, ligado a la function call exacta y al contexto autenticado tenant/call. El executor y los sinks especiales sólo consumen la instantánea de argumentos autorizada. Esta comprobación es local, no introduce RPC, inferencia ni trabajo por chunk de audio.
+
+La admisión de tools usa `gemini-fast-bootstrap.v2`: cada declaración transporta una capability explícita dentro del bootstrap autenticado y tenant-bound. El Media Edge exige coincidencia exacta con la policy local antes de crear la sesión y elimina ese metadato interno del wire enviado a Gemini. Esta validación ocurre una vez durante bootstrap/setup; no añade RPC, inferencia ni trabajo por chunk de audio.
 
 ## Owners del Fast Media Edge
 
@@ -129,11 +133,11 @@ Aun así, toda tool sensible debe preservar:
 
 ### Handoff humano
 
-La comprensión lingüística pertenece a Gemini. Para la política Fast actual, el kernel verifica que `authorization` use un valor soportado y que `caller_authority_evidence` esté grounded en el transcript snapshot capturado para ese tool call. No vuelve a interpretar el significado mediante listas de frases.
+La comprensión lingüística pertenece a Gemini. Para la política Fast actual, el kernel verifica que `authorization` use un valor soportado y exige un recibo opaco, de un solo uso, emitido por el runtime al observar input no vacío en el turno actual. El recibo está ligado a kernel, tenant y llamada; no contiene ni expone transcript al modelo. El kernel no vuelve a interpretar el significado mediante listas de frases.
 
 La política actual tampoco mantiene `offerPending` ni prueba por sí sola que existiera una oferta previa para `CONFIRMED_OFFER`; si esa garantía adicional se exige en el futuro, debe modelarse como estado/protocolo explícito, no como matching léxico.
 
-El transcript/evidencia se captura antes de encolar la ejecución asíncrona para evitar carreras con `turnComplete`.
+El recibo runtime se captura antes de encolar la ejecución asíncrona para evitar carreras con `turnComplete`. Su emisión y consumo son operaciones locales en memoria: no añaden inferencia, RPC, persistencia, espera ni trabajo por chunk de audio.
 
 El contrato y las limitaciones operativas de transferencia pertenecen a [`../HUMAN_HANDOFF.md`](../HUMAN_HANDOFF.md).
 

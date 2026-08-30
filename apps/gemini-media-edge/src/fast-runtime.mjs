@@ -11,7 +11,7 @@ import {
   telnyxInboundMediaToGemini,
 } from "./fast-audio-bridge.mjs";
 import { FastGeminiToolExecutor } from "./fast-tool-executor.mjs";
-import { FastToolAuthorizationKernel } from "./fast-tool-authorization-kernel.mjs";
+import { FastToolAuthorizationKernel, requireFastToolAuthorizationReceipt } from "./fast-tool-authorization-kernel.mjs";
 import { authorizeFastHumanHandoff, initialFastHandoffAuthorizationState } from "./fast-human-handoff-policy.mjs";
 
 const OPEN = 1;
@@ -171,7 +171,9 @@ export class FastGeminiRealtimeSession {
           throw new Error("Gemini sent content before setupComplete");
         }
 
-        if (frame.inputTranscript) this.callerTranscript = appendTranscript(this.callerTranscript, frame.inputTranscript);
+        if (frame.inputTranscript) {
+          this.callerTranscript = appendTranscript(this.callerTranscript, frame.inputTranscript);
+        }
         if (frame.sessionResumptionToken) this.lastResumptionToken = frame.sessionResumptionToken;
         if (frame.goAwayTimeLeftMs !== null) this.#emit("GEMINI_GO_AWAY", { timeLeftMs: frame.goAwayTimeLeftMs });
 
@@ -194,7 +196,14 @@ export class FastGeminiRealtimeSession {
           }
         }
 
-        for (const toolCall of frame.toolCalls) this.#enqueueToolCall(toolCall, this.callerTranscript);
+        for (const toolCall of frame.toolCalls) {
+          const callerTurnReceipt = this.toolAuthorization.observeCallerTurn({
+            tenantId: this.bootstrap.tenantId,
+            callControlId: this.bootstrap.callControlId,
+            callerTranscript: this.callerTranscript,
+          });
+          this.#enqueueToolCall(toolCall, callerTurnReceipt);
+        }
         if (frame.turnComplete) {
           this.#emit("GEMINI_TURN_COMPLETE");
           if (this.pendingHandoff && !this.pendingHandoff.starting) {
@@ -251,12 +260,14 @@ export class FastGeminiRealtimeSession {
     if (queued.length) this.#emit("PRESETUP_CALLER_AUDIO_FLUSHED", { chunks: queued.length });
   }
 
-  async #executeTransferTool(toolCall, callerTranscriptSnapshot) {
+  async #executeTransferTool(toolCall, authorization) {
+    const authorizedCall = requireFastToolAuthorizationReceipt(authorization, toolCall, {
+      tenantId: this.bootstrap.tenantId,
+      callControlId: this.bootstrap.callControlId,
+    });
     if (this.pendingHandoff || this.terminalHandoff) return Object.freeze({ ok: false, status: "HUMAN_HANDOFF_ALREADY_ACTIVE" });
     const decision = authorizeFastHumanHandoff(this.handoffAuthorization, {
-      authorization: toolCall.args?.authorization,
-      callerAuthorityEvidence: toolCall.args?.caller_authority_evidence,
-      callerTranscript: callerTranscriptSnapshot,
+      authorization: authorizedCall.args?.authorization,
     });
     this.handoffAuthorization = decision.state;
     if (!decision.allowed) {
@@ -264,8 +275,8 @@ export class FastGeminiRealtimeSession {
       return Object.freeze({ ok: false, status: decision.source });
     }
     if (!this.authorizeTransfer || !this.startTransfer) throw new Error("Fast Gemini transfer control is unavailable");
-    const reason = typeof toolCall.args?.reason === "string" ? toolCall.args.reason.slice(0, 160) : "HUMAN_ASSISTANCE_REQUIRED";
-    const contextSummary = typeof toolCall.args?.context_summary === "string" ? toolCall.args.context_summary.slice(0, 500) : undefined;
+    const reason = typeof authorizedCall.args?.reason === "string" ? authorizedCall.args.reason.slice(0, 160) : "HUMAN_ASSISTANCE_REQUIRED";
+    const contextSummary = typeof authorizedCall.args?.context_summary === "string" ? authorizedCall.args.context_summary.slice(0, 500) : undefined;
     const callerPhoneE164 = this.bootstrap.securityContext.callerPhoneE164;
     const authorized = await this.authorizeTransfer(Object.freeze({
       tenantId: this.bootstrap.tenantId,
@@ -299,8 +310,8 @@ export class FastGeminiRealtimeSession {
     });
   }
 
-  #enqueueToolCall(toolCall, callerTranscriptSnapshot = this.callerTranscript) {
-    const transcriptSnapshot = callerTranscriptSnapshot;
+  #enqueueToolCall(toolCall, callerTurnReceiptSnapshot = null) {
+    const callerTurnReceipt = callerTurnReceiptSnapshot;
     this.toolChain = this.toolChain.then(async () => {
       if (this.closed) return;
       const startedNs = process.hrtime.bigint();
@@ -308,7 +319,7 @@ export class FastGeminiRealtimeSession {
         const authorization = this.toolAuthorization.authorize(toolCall, {
           tenantId: this.bootstrap.tenantId,
           callControlId: this.bootstrap.callControlId,
-          callerTranscript: transcriptSnapshot,
+          callerTurnReceipt,
         });
         let result;
         if (!authorization.allowed) {
@@ -328,8 +339,8 @@ export class FastGeminiRealtimeSession {
             capability: authorization.capability,
           });
           result = toolCall.name === "transfer_call"
-            ? await this.#executeTransferTool(toolCall, transcriptSnapshot)
-            : await this.toolExecutor.execute(toolCall, {
+            ? await this.#executeTransferTool(toolCall, authorization)
+            : await this.toolExecutor.execute(toolCall, authorization, {
                 tenantId: this.bootstrap.tenantId,
                 callControlId: this.bootstrap.callControlId,
                 callerPhoneE164: this.bootstrap.securityContext.callerPhoneE164,

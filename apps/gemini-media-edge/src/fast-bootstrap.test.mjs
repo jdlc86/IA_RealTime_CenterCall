@@ -16,6 +16,7 @@ const securityContext = Object.freeze({
   notAfterEpochMs: NOW + 60_000,
 });
 const base = Object.freeze({
+  version: "gemini-fast-bootstrap.v2",
   credentialId: "cred-fast-1",
   tenantId: "tenant-fast",
   callControlId: "v3:fast-call",
@@ -24,6 +25,7 @@ const base = Object.freeze({
   systemInstruction: "Atiende con respuestas breves y naturales.",
   tools: [{
     name: "restaurant_reservation_create",
+    capability: "reservation.create",
     description: "Create or continue a reservation.",
     parameters: { type: "object", properties: {} },
   }],
@@ -74,6 +76,15 @@ test("fast bootstrap rejects identity rebinding, security mismatch and expiry", 
   const registry = new InMemoryFastBootstrapRegistry();
   registry.register(base, NOW);
   assert.throws(() => registry.register({ ...base, tenantId: "other" }, NOW), /different content|identity mismatch/);
+  assert.throws(() => registry.consumeForClaims({ ...claims(), tenantId: "tenant-other" }, NOW), /identity mismatch/);
   assert.throws(() => registry.consumeForClaims({ ...claims(), routeId: "sales" }, NOW), /identity mismatch/);
   assert.throws(() => canonicalFastBootstrap({ ...base, notAfterEpochMs: NOW }, NOW), /expired/);
+});
+
+test("fast bootstrap requires explicit bounded capability grants on every declared tool", () => {
+  assert.throws(() => canonicalFastBootstrap({
+    ...base,
+    tools: [{ name: "restaurant_reservation_create", description: "Create.", parameters: { type: "object" } }],
+  }, NOW), /capability is required/);
+  assert.throws(() => canonicalFastBootstrap({ ...base, version: "gemini-fast-bootstrap.v1" }, NOW), /version is invalid/);
 });

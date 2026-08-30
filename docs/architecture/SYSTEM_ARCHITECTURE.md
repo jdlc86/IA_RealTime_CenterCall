@@ -273,6 +273,8 @@ public.caller_security_events
 
 La persistencia de diagnósticos/handoff Fast se diseña para no bloquear el audio hot path.
 
+El sink Gemini de `call_diagnostic_events` reconstruye los eventos desde un schema cerrado y aplica una allowlist de metadatos técnicos antes de usar la credencial privilegiada de Supabase. La redacción del productor es defensa en profundidad, no la única barrera. La auditoría especializada `human_handoff_events` mantiene un contrato separado para los datos operativos estrictamente necesarios de la transferencia.
+
 `callback_required=true` expresa una necesidad registrada; no demuestra que exista un ejecutor automático de callbacks.
 
 ## 10. Handoff humano y telefonía
@@ -283,7 +285,8 @@ Lifecycle conceptual:
 
 ```text
 caller solicita/acepta handoff
-  → Gemini emite transfer_call con autoridad grounded
+  → runtime emite recibo opaco del turno
+  → Gemini emite transfer_call con autoridad semántica
   → kernel autoriza
   → anuncio de handoff
   → Telnyx transfer
@@ -339,6 +342,7 @@ Principios:
 - persistencia remota preferentemente fuera del tramo crítico;
 - no audio ni secretos en diagnóstico por defecto;
 - no guardar transcript crudo salvo decisión explícita y necesidad demostrada;
+- aplicar una allowlist en el sink persistente, sin confiar únicamente en la redacción del productor;
 - usar timestamps/IDs/causalidad para reconstruir carreras, no `sleep` como herramienta de ordering.
 
 ## 13. Desarrollo y despliegue

@@ -78,6 +78,7 @@ test("standalone fast server admits real Telnyx connected then start and starts 
   const context = securityContext({ now, callControlId: "v3:fast-server", sessionId: "cs_fast-server" });
   const bootstrapRegistry = new InMemoryFastBootstrapRegistry();
   bootstrapRegistry.register({
+    version: "gemini-fast-bootstrap.v2",
     credentialId: "cred-server-fast",
     tenantId: "tenant-fast",
     callControlId: "v3:fast-server",
@@ -185,6 +186,7 @@ test("fast server rejects media before authenticated Telnyx start", async () => 
   const context = securityContext({ now, callControlId: "v3:fast-server-reject", sessionId: "cs_fast-server-reject" });
   const bootstrapRegistry = new InMemoryFastBootstrapRegistry();
   bootstrapRegistry.register({
+    version: "gemini-fast-bootstrap.v2",
     credentialId: "cred-server-fast-reject",
     tenantId: "tenant-fast",
     callControlId: "v3:fast-server-reject",

@@ -28,6 +28,7 @@ export type FastHumanHandoffConfig = Readonly<{
 
 export const FAST_TRANSFER_TOOL: FastGeminiToolDeclaration = Object.freeze({
   name: "transfer_call",
+  capability: "call.transfer",
   description: "Solicita un handoff terminal a una persona. Úsala solo cuando el caller haya pedido explícitamente hablar con una persona o haya aceptado explícitamente una oferta de transferencia. El destino lo decide el kernel; nunca pidas ni inventes un número de teléfono.",
   parameters: Object.freeze({
     type: "object",

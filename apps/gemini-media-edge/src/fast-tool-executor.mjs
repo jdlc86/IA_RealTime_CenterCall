@@ -1,3 +1,5 @@
+import { requireFastToolAuthorizationReceipt } from "./fast-tool-authorization-kernel.mjs";
+
 const DEFAULT_MAX_ARGUMENT_BYTES = 32 * 1024;
 const DEFAULT_MAX_RESULT_BYTES = 64 * 1024;
 const DEFAULT_MAX_CALLS = 128;
@@ -53,14 +55,18 @@ export class FastGeminiToolExecutor {
     this.inFlight = new Map();
   }
 
-  async execute(call, context = {}) {
+  async execute(call, authorization, context = {}) {
     if (!call || typeof call !== "object" || Array.isArray(call)) throw new Error("Fast Gemini function call is invalid");
-    const id = requiredString(call.id, "Fast Gemini function call id");
-    const name = requiredString(call.name, "Fast Gemini function call name", 128);
+    const authorizedCall = requireFastToolAuthorizationReceipt(authorization, call, context);
+    const id = requiredString(authorizedCall.id, "Fast Gemini function call id");
+    const name = requiredString(authorizedCall.name, "Fast Gemini function call name", 128);
     const handler = this.handlers.get(name);
     if (!handler) throw new Error(`Fast Gemini tool is not allowed: ${name}`);
-    const args = call.args && typeof call.args === "object" && !Array.isArray(call.args) ? structuredClone(call.args) : {};
-    const argsJson = jsonBytes(args, "Fast Gemini tool arguments", this.maxArgumentBytes).encoded;
+    const args = authorizedCall.args;
+    const argsJson = authorizedCall.argsJson;
+    if (Buffer.byteLength(argsJson, "utf8") > this.maxArgumentBytes) {
+      throw new Error("Fast Gemini tool arguments exceed configured limit");
+    }
     const identity = `${name}\n${argsJson}`;
 
     const completed = this.completed.get(id);
