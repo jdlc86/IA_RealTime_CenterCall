@@ -11,6 +11,9 @@ const ENV: FastGeminiCanaryEnv = {
   GEMINI_MEDIA_CONTROL_PLANE_TOKEN: "0123456789abcdef0123456789abcdef",
   GEMINI_FAST_CANARY_EDGE_URL: "wss://fast-canary.example/telnyx/gemini",
   GEMINI_FAST_CANARY_SYSTEM_INSTRUCTION: "Habla en español de forma breve y natural.",
+  SUPABASE_URL: "https://project.supabase.co",
+  SUPABASE_SERVICE_ROLE_KEY: "service-role-secret-for-tests-only",
+  CALLER_SECURITY_HMAC_SECRET: "shared-caller-identity-secret",
   TENANT_ROUTING_KV: {
     async get(key: string) {
       if (key === "tenant_by_phone:+34600000001") {
@@ -48,6 +51,7 @@ describe("fast Gemini canary webhook", () => {
     const callStart = Date.parse("2026-08-26T13:14:01.000Z");
     const response = await routeFastGeminiCanaryWebhook(request(), ENV, {
       now: () => callStart,
+      callerSecurityFetcher: async () => Response.json([{ decision: "ALLOW", reason: "OK" }]),
       startIncoming: async (_input, options): Promise<FastIncomingRuntimeResult> => {
         expect(options.edgeUrl).toBe("wss://fast-canary.example/telnyx/gemini");
         expect(options.admissionTtlMs).toBe(60_000);
@@ -55,6 +59,11 @@ describe("fast Gemini canary webhook", () => {
         expect(options.nowEpochMs).toBe(callStart);
         expect(await options.resolveTenantRoute!(CALL)).toEqual({ tenantId: "tenant-fast-canary", routeId: "default" });
         expect(options.isCanaryAllowed("tenant-fast-canary", CALL)).toBe(true);
+        await expect(options.evaluateCallerSecurity({
+          eventKey: CALL.eventId,
+          tenantId: "tenant-fast-canary",
+          callerPhone: CALL.callerNumber!,
+        })).resolves.toEqual({ decision: "ALLOW", reason: "OK" });
         const otherNumber = { ...CALL, calledNumber: "+34600000999" };
         expect(await options.resolveTenantRoute!(otherNumber)).toBeNull();
         const config = await options.resolveSessionConfig("tenant-fast-canary", CALL);
@@ -191,6 +200,23 @@ describe("fast Gemini canary webhook", () => {
     expect(response.status).toBe(403);
   });
 
+  it("fails closed when inbound caller-security configuration is unavailable", async () => {
+    const env: FastGeminiCanaryEnv = {
+      ...ENV,
+      SUPABASE_SERVICE_ROLE_KEY: undefined,
+    };
+    await expect(routeFastGeminiCanaryWebhook(request(), env, {
+      startIncoming: async (_input, options): Promise<FastIncomingRuntimeResult> => {
+        await options.evaluateCallerSecurity({
+          eventKey: CALL.eventId,
+          tenantId: "tenant-fast-canary",
+          callerPhone: CALL.callerNumber!,
+        });
+        throw new Error("must not continue");
+      },
+    })).rejects.toThrow("SUPABASE_SERVICE_ROLE_KEY is required");
+  });
+
   it("fails closed before media side effects when capabilities belong to another tenant", async () => {
     let mediaStarted = false;
     const env: FastGeminiCanaryEnv = {
@@ -237,11 +263,12 @@ describe("fast Gemini canary webhook", () => {
   });
 
   it("maps non-initiation and closed-gate outcomes without leaking call identity", async () => {
-    for (const status of ["IGNORED_EVENT", "TENANT_NOT_FOUND", "CANARY_NOT_ALLOWED"] as const) {
+    for (const status of ["IGNORED_EVENT", "TENANT_NOT_FOUND", "CANARY_NOT_ALLOWED", "CALLER_SECURITY_BLOCKED"] as const) {
       const response = await routeFastGeminiCanaryWebhook(request(), ENV, {
         startIncoming: async (): Promise<FastIncomingRuntimeResult> => {
           if (status === "IGNORED_EVENT") return { status };
           if (status === "TENANT_NOT_FOUND") return { status, call: CALL };
+          if (status === "CALLER_SECURITY_BLOCKED") return { status, call: CALL, tenantId: "tenant-fast-canary", reason: "CALL_RATE_1M" };
           return { status, call: CALL, tenantId: "tenant-fast-canary" };
         },
       });

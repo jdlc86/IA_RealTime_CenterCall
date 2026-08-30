@@ -18,6 +18,9 @@ import {
   FAST_SEMANTIC_SECURITY_TOOL,
   fastSemanticSecurityInstruction,
 } from "../fast-semantic-security-boundary";
+import { evaluateFastInboundCallerSecurity, type FastCallerSecurityEnv } from "../fast-caller-security";
+
+type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 type TenantRoutingKv = Readonly<{
   get(key: string): Promise<string | null>;
@@ -47,7 +50,7 @@ export type FastGeminiCanaryEnv = Readonly<{
   TENANT_ROUTING_KV: TenantRoutingKv;
   SUPABASE_URL?: string;
   SUPABASE_SERVICE_ROLE_KEY?: string;
-}>;
+}> & FastCallerSecurityEnv;
 
 type StartIncoming = (
   input: Readonly<{ rawBody: string; signatureBase64: string | null; timestamp: string | null }>,
@@ -58,6 +61,7 @@ type RouteDependencies = Readonly<{
   startIncoming?: StartIncoming;
   now?: () => number;
   handoffAudit?: FastHumanHandoffAuditDependencies;
+  callerSecurityFetcher?: FetchLike;
 }>;
 
 function required(value: unknown, field: string, max = 64_000): string {
@@ -255,6 +259,11 @@ export async function routeFastGeminiCanaryWebhook(request: Request, env: FastGe
     edgeUrl: env.GEMINI_FAST_CANARY_EDGE_URL,
     resolveTenantRoute: (call) => resolveTenantRouteFromKv(env.TENANT_ROUTING_KV, call.calledNumber),
     isCanaryAllowed: () => true,
+    evaluateCallerSecurity: (input) => evaluateFastInboundCallerSecurity(
+      env,
+      input,
+      dependencies.callerSecurityFetcher,
+    ),
     resolveSessionConfig: (tenantId) => resolveTenantSessionConfig(
       env.TENANT_ROUTING_KV,
       tenantId,
@@ -267,7 +276,8 @@ export async function routeFastGeminiCanaryWebhook(request: Request, env: FastGe
     case "SIGNATURE_REJECTED": return Response.json({ ok: false, status: result.status }, { status: 401 });
     case "IGNORED_EVENT": return new Response(null, { status: 204 });
     case "TENANT_NOT_FOUND":
-    case "CANARY_NOT_ALLOWED": return Response.json({ ok: false, status: result.status }, { status: 403 });
+    case "CANARY_NOT_ALLOWED":
+    case "CALLER_SECURITY_BLOCKED": return Response.json({ ok: false, status: result.status }, { status: 403 });
     case "STARTED": return Response.json({ ok: true, status: result.status }, { status: 202 });
   }
 }

@@ -34,6 +34,7 @@ function baseOptions(overrides: Record<string, unknown> = {}) {
     edgeUrl: "wss://fast-canary.example/telnyx/gemini",
     resolveTenantId: async () => "tenant-fast",
     isCanaryAllowed: () => true,
+    evaluateCallerSecurity: async () => ({ decision: "ALLOW" as const, reason: "OK" }),
     resolveSessionConfig: async () => ({
       systemInstruction: "Responde breve y naturalmente.",
       tools: [],
@@ -163,6 +164,53 @@ describe("fast incoming Gemini runtime", () => {
       rawBody: incomingBody(), signatureBase64: "sig", timestamp: "1",
     }, baseOptions({ isCanaryAllowed: () => false, telnyxFetcher: fetcher, mediaFetcher: fetcher }));
     expect(canary.status).toBe("CANARY_NOT_ALLOWED");
+    expect(effects).toBe(0);
+  });
+
+  it("blocks before identity, config, media or Telnyx effects when caller security denies admission", async () => {
+    let configReads = 0;
+    let effects = 0;
+    const result = await startSignedFastGeminiIncomingCall({
+      rawBody: incomingBody(), signatureBase64: "sig", timestamp: "1",
+    }, baseOptions({
+      evaluateCallerSecurity: async (input: unknown) => {
+        expect(input).toEqual({
+          eventKey: "evt-fast-001",
+          tenantId: "tenant-fast",
+          callerPhone: "+34000000001",
+        });
+        return { decision: "BLOCK" as const, reason: "CALL_RATE_1M" };
+      },
+      resolveSessionConfig: async () => { configReads += 1; throw new Error("must not run"); },
+      telnyxFetcher: async () => { effects += 1; return Response.json({ data: { result: "ok" } }); },
+      mediaFetcher: async () => { effects += 1; return Response.json({ ok: true }); },
+    }));
+    expect(result.status).toBe("CALLER_SECURITY_BLOCKED");
+    expect(configReads).toBe(0);
+    expect(effects).toBe(0);
+  });
+
+  it("fails closed before all effects when admission is unavailable or caller identity is absent", async () => {
+    let evaluations = 0;
+    let effects = 0;
+    const effect = async () => { effects += 1; return Response.json({ data: { result: "ok" } }); };
+    await expect(startSignedFastGeminiIncomingCall({
+      rawBody: incomingBody(), signatureBase64: "sig", timestamp: "1",
+    }, baseOptions({
+      evaluateCallerSecurity: async () => { evaluations += 1; throw new Error("security unavailable"); },
+      telnyxFetcher: effect,
+      mediaFetcher: effect,
+    }))).rejects.toThrow("security unavailable");
+
+    const withoutCaller = incomingBody().replace('"from":"+34000000001",', "");
+    await expect(startSignedFastGeminiIncomingCall({
+      rawBody: withoutCaller, signatureBase64: "sig", timestamp: "1",
+    }, baseOptions({
+      evaluateCallerSecurity: async () => { evaluations += 1; return { decision: "ALLOW" as const, reason: "OK" }; },
+      telnyxFetcher: effect,
+      mediaFetcher: effect,
+    }))).rejects.toThrow("Telnyx caller number is required");
+    expect(evaluations).toBe(1);
     expect(effects).toBe(0);
   });
 

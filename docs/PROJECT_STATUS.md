@@ -1,6 +1,6 @@
 # IA_RealTime_CenterCall — estado operativo
 
-> Snapshot: 2026-08-29
+> Snapshot: 2026-08-30
 > Para continuar: [`SESSION_HANDOFF.md`](./SESSION_HANDOFF.md)
 > Decisiones vigentes: [`ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md`](./architecture/ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md) y [`ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md`](./architecture/ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md)
 > Seguridad viva: [`IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx`](../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx)
@@ -27,6 +27,7 @@ Los CI de Control Plane, Gemini Control Plane, Gemini Media Edge, Gemini Fast Wo
 | Gemini Fast Worker | sí | verde | canary aislado | PASS A–G |
 | Gemini Media Edge | sí | verde | revisión canary | PASS A–G |
 | Seguridad semántica durable Gemini-native | sí | verde | canary aislado | preflight PASS; llamada no repetida |
+| Caller-security en admission Gemini | candidato local | pendiente | no desplegado | no ejecutar llamada |
 | Corte de dependencia con Worker histórico | sí | verde | canary aislado | wiring/HMAC PASS |
 
 ## Arquitectura vigente
@@ -63,6 +64,8 @@ SEC-P0-05 está publicado en `a95a9311b4f9c68d1ad1894c1273b6ccf181a462` y desple
 SEC-P0-06 está publicado en `021d134625758cc9228284fecc4f49599a419182` y desplegado mediante `Gemini Fast Canary Deploy` run `33264338263`. El endpoint Gemini `/internal/diagnostics-ingest` reconstruye cada evento desde un schema cerrado y aplica una allowlist común de detalles escalares justo antes del sink Supabase. Campos desconocidos —incluidos transcript, prompt, token, teléfono y payloads anidados— se descartan; un valor inválido en una clave permitida falla cerrado antes de persistir. La sonda post-deploy `p06-synthetic-1788032648-ee74fd87` confirmó `201/PERSISTED` para el evento válido, `400/INVALID_DIAGNOSTICS` para el inválido, tres campos seguros exactos y cero marcas prohibidas o filas inválidas. No se importa el redactor OpenAI ni se modifica el runtime de audio.
 
 SEC-P1-02 está publicado en `db210c54b939eee49a2a0159cfa1d528c62b839c`; `Control Plane CI` run `33277134222` finalizó `SUCCESS` y la migración productiva `caller_security_risk_lifecycle` quedó registrada en Supabase como versión `20260829215407`. Añade decay perezoso de un punto por cada 24 horas completas sin nueva evidencia de riesgo dentro de las RPC existentes, sin viajes de red adicionales. No reduce automáticamente strikes, historial de rate limit ni bloqueos temporales/permanentes. El reset es idempotente, auditable, exige motivo cerrado y actor con hash SHA-256, y queda revocado incluso para `service_role`: sólo un administrador Postgres puede ejecutarlo. La prueba productiva sintética confirmó decay `5→2`, conservación de strikes/rate-limit/bloqueo temporal, reset idempotente y ACL; terminó con `ROLLBACK` y cero filas residuales. No hubo redeploy del runtime de voz porque este bloque sólo modifica PostgreSQL.
+
+El siguiente bloque, caller-security en admission Gemini, está implementado sólo como candidato local y no está publicado ni desplegado. El Worker Fast consulta una vez `evaluate_inbound_call_security_v2` con `eventId`, `tenantId` y el HMAC histórico del caller después de autenticar/resolver la llamada y antes de emitir cualquier identity, credencial o efecto Telnyx/Media Edge. `BLOCK`, caller ausente, secreto ausente, error/timeout Supabase o payload inválido fallan cerrados. El límite de 2 s afecta únicamente al establecimiento pre-call; codec, WebSocket, audio, barge-in y post-tool no cambian. La configuración productiva actual contiene los nombres `CALLER_SECURITY_HMAC_SECRET` y `SUPABASE_SERVICE_ROLE_KEY`; los workflows quedan preparados para bloquear el deploy si faltan, sin leer ni registrar sus valores.
 
 ## Regla de latencia
 

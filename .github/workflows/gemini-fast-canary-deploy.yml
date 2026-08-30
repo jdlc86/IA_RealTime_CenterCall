@@ -20,6 +20,8 @@ on:
       - "apps/gemini-control-plane/wrangler.fast.jsonc"
       - "apps/gemini-control-plane/src/telnyx/fast-canary-route.ts"
       - "apps/gemini-control-plane/src/telnyx/fast-canary-route.test.ts"
+      - "apps/gemini-control-plane/src/telnyx/fast-incoming-runtime.ts"
+      - "apps/gemini-control-plane/src/telnyx/fast-incoming-runtime.test.ts"
       - ".github/workflows/gemini-fast-canary-deploy.yml"
   workflow_dispatch:
 
@@ -279,6 +281,15 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN"; test -n "$CLOUDFLARE_ACCOUNT_ID"; test -n "$FAST_EDGE_URL"
+          SECRET_LIST="$(npx wrangler secret list --name "$FAST_WORKER_NAME" --config wrangler.fast.jsonc)"
+          node -e '
+            const rows = JSON.parse(process.argv[1]);
+            const names = new Set(rows.map((row) => row?.name));
+            for (const required of ["CALLER_SECURITY_HMAC_SECRET", "SUPABASE_SERVICE_ROLE_KEY"]) {
+              if (!names.has(required)) { console.error(`MISSING:${required}`); process.exitCode = 1; }
+              else console.log(`PRESENT:${required}`);
+            }
+          ' "$SECRET_LIST"
           npx wrangler deploy --config wrangler.fast.jsonc --var "GEMINI_FAST_CANARY_EDGE_URL:${FAST_EDGE_URL}" --var "GEMINI_FAST_PREFLIGHT_NONCE:"
           if ! npx wrangler deployments list --config wrangler.fast.jsonc; then
             echo "::warning::Cloudflare deployment listing failed after a successful Worker deploy; continuing to health/preflight verification."

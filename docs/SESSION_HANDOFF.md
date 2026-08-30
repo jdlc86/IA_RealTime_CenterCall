@@ -104,6 +104,8 @@ permanent_block=false
 
 SEC-P1-02 está publicado en `db210c54b939eee49a2a0159cfa1d528c62b839c`, con `Control Plane CI` run `33277134222` en `SUCCESS`, y aplicado en Supabase como migración `20260829215407`. El score decae un punto por cada 24 horas completas sin evidencia nueva; el reset continúa Postgres-admin-only y conserva historial before/after. La verificación productiva sintética terminó con `ROLLBACK` y cero filas residuales. No repitas ataques desde el número real.
 
+La admisión caller-security Gemini-native está implementada únicamente como candidato local, todavía sin commit, push ni despliegue. La frontera está en `startSignedFastGeminiIncomingCall`, después de firma/tenant/canary y antes de identities, credencial, bootstrap, `answer` o `streaming_start`. Reutiliza el HMAC histórico y `evaluate_inbound_call_security_v2`; caller ausente, secreto/RPC inválido y cualquier resultado distinto de `ALLOW` fallan cerrados. La suite local pasa, pero este bloque no debe marcarse como CI, canary o E2E hasta completar esos gates. No hagas llamada real antes del despliegue y de una sonda sintética controlada.
+
 ### 6. Primera misión
 
 Primero realiza sólo inspección y confirma que el SHA/CI/deploy/documentos continúan vigentes. Trata el baseline de seguridad como PASS y no vuelvas a corregirlo sin una regresión demostrada.
@@ -113,7 +115,7 @@ Si se continúa esta misión de seguridad, el orden es:
 1. tratar `021d134625758cc9228284fecc4f49599a419182` y el run `33264338263` como baseline desplegado del runtime P06;
 2. tratar `db210c54b939eee49a2a0159cfa1d528c62b839c`, CI `33277134222` y migración Supabase `20260829215407` como baseline aplicado de SEC-P1-02;
 3. observar decay/reset sólo con métricas técnicas o identidades sintéticas; nunca ataques reales;
-4. dejar para otra misión la cobertura de caller-security en admission Gemini y la eliminación física del código OpenAI legado.
+4. revisar y publicar por separado el candidato local de caller-security en admission Gemini; la eliminación física del código OpenAI legado continúa como misión independiente.
 
 Cualquier propuesta debe indicar amenaza, invariante, archivo/frontera, impacto de latencia, plan de prueba y rollback. No hagas otra llamada.
 
