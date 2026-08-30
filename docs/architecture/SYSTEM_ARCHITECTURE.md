@@ -108,14 +108,16 @@ Responsabilidades por llamada:
 
 El Media Edge **no** decide tenant, números privados de transferencia ni permisos empresariales.
 
-## 4. `0%` de tráfico general de Cloud Run no desactiva Gemini Fast
+## 4. Una única revisión Fast para tag y producción general
 
-El workflow Fast despliega el Media Edge con una revisión etiquetada y `--no-traffic`:
+El workflow Fast comienza de forma segura con una revisión etiquetada y
+`--no-traffic`. Después de readiness, sincronización del Worker y preflight
+bootstrap/HMAC/WSS, esa misma revisión recibe el 100% del tráfico general:
 
 ```text
 gemini-media-edge revision
   tag = fast-<sha>
-  general service traffic = 0%
+  general service traffic = 100%
 ```
 
 Después el Worker recibe:
@@ -124,15 +126,18 @@ Después el Worker recibe:
 GEMINI_FAST_CANARY_EDGE_URL=wss://<tagged-revision>/telnyx/gemini
 ```
 
-Las llamadas Fast usan **esa URL etiquetada directamente**. Por tanto:
+Las llamadas Fast siguen usando **esa URL etiquetada directamente**, mientras que
+la URL general sirve la misma imagen Fast. Ya no existe una revisión genérica de
+2 GiB mantenida como producción paralela.
 
 ```text
-Cloud Run general traffic 0%
-!=
-Gemini Fast route inactive
+general URL ─┐
+             ├──► exact Fast revision
+tagged URL ──┘
 ```
 
-Al diagnosticar una llamada, verificar el binding del Worker y la revisión etiquetada; no inferir el Media Edge efectivo únicamente desde `.status.traffic[].percent` del servicio.
+Al diagnosticar una llamada, verificar tanto el binding del Worker como que el tag
+y el 100% de tráfico general apunten al mismo SHA Fast.
 
 ## 5. Media plane
 

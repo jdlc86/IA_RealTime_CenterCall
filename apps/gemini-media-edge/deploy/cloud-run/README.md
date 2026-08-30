@@ -1,8 +1,9 @@
-# Cloud Run canary runbook
+# Gemini Fast Cloud Run production runbook
 
-This directory provisions and deploys the first real `gemini-media-edge` canary.
-The topology is intentionally one warm instance because credential, bootstrap and
-active-session ownership are still in memory.
+Cloud Run runs a single warm `gemini-media-edge-fast` revision. The same verified
+revision owns the default production URL and retains its `fast-<sha>` tag for the
+Fast Worker. Credential, bootstrap and active-session ownership remain in memory,
+so horizontal scaling is still forbidden.
 
 ## 1. Prerequisites
 
@@ -36,26 +37,13 @@ Worker, and deploys Cloud Run with those same selectors. Its authenticated
 security preflight and the existing HMAC upgrade probe fail closed if a secret
 rotates during deployment, before changing the canary edge binding.
 
-## 2. Build and deploy an immutable revision
+## 2. Build, verify and promote an immutable Fast revision
 
-```powershell
-./apps/gemini-media-edge/deploy/cloud-run/deploy.ps1 `
-  -ProjectId YOUR_PROJECT_ID `
-  -GeminiApiKeySecretVersion 1 `
-  -CredentialSecretVersion 1 `
-  -ControlTokenSecretVersion 1
-```
-
-The script builds with Cloud Build, resolves the Artifact Registry digest, deploys
-that immutable digest, pins numeric Secret Manager versions, uses a dedicated
-service identity, and then binds the exact generated `wss://.../telnyx/gemini`
-URL. Cloud Run is public because Telnyx must reach the WebSocket; media admission
-still requires a per-call signed bearer and every internal endpoint retains its
-application-layer bearer check.
-
-The initial VAD values are the deterministic values already exercised by the edge
-synthetic E2E. Treat them as canary calibration values and tune only from captured
-non-PII timing/evidence.
+Run the `Gemini Fast Canary Deploy` workflow. It builds an immutable Fast image,
+deploys it initially with `--no-traffic`, verifies provider readiness, synchronizes
+the Fast Worker, proves bootstrap/HMAC/WSS, retires stale tags, and only then moves
+100% of general Cloud Run traffic to that exact revision. The old 2 GiB deployment
+path and its workflow are retired and must not be recreated.
 
 ## 3. Cloud Run security preflight
 
@@ -66,25 +54,18 @@ Set-Location apps/gemini-media-edge
 npm run test:e2e:cloud-run -- wss://SERVICE.run.app/telnyx/gemini
 ```
 
-This proves health and verifies that bootstrap, media ingress and control sideband
-all reject unauthenticated access. It does not consume a credential or start
-Gemini/Telnyx traffic.
+This proves that the default URL serves `gemini-media-edge-fast`, validates the
+real provider readiness measurements, and verifies that bootstrap, diagnostics
+and media ingress reject unauthenticated access. It does not consume a credential
+or start Telnyx traffic.
 
 ## 4. Production single-tenant E2E
 
-Deploy the Worker code while `GEMINI_REALTIME_ENABLED` is absent. Then configure
-the production Worker with these bindings, keeping the enable flag for last:
-
-- `GEMINI_CANARY_TENANT_ID`: the exact test tenant.
-- `GEMINI_MEDIA_EDGE_URL`: the printed Cloud Run WebSocket URL.
-- `MEDIA_EDGE_CREDENTIAL_HMAC_SECRET`: same value/version as Cloud Run.
-- `MEDIA_EDGE_CONTROL_PLANE_TOKEN`: same value/version as Cloud Run.
-- `GEMINI_REALTIME_ENABLED=true`: set only after the other four bindings exist.
-
-Select `GEMINI` for that tenant in its existing tenant configuration or operational
-KV override. A real inbound call must then show this ordered trace:
+The Gemini Fast Worker remains the call-entry authority and points
+`GEMINI_FAST_CANARY_EDGE_URL` at the preserved tag of the same production
+revision. A real inbound call must show this ordered trace:
 
 `tenant -> immutable GEMINI -> caller security -> credential -> bootstrap -> CallSession -> sideband ready -> streaming_start`
 
-Any failure rejects the call without an OpenAI fallback. Remove or set
-`GEMINI_REALTIME_ENABLED=false` to stop new Gemini admissions immediately.
+Any failure rejects the call without an OpenAI fallback. Do not reintroduce the
+retired generic Media Edge workflow as a fallback.

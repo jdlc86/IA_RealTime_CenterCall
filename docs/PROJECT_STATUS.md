@@ -12,12 +12,15 @@ Los datos remotos deben verificarse al comenzar cualquier sesión. `IMPLEMENTADO
 ```text
 repo      jdlc86/IA_RealTime_CenterCall
 rama      rebuild/v39-stable-baseline
-PR        #85 — OPEN / DRAFT / MERGEABLE
-SHA canary 021d134625758cc9228284fecc4f49599a419182
-fecha     2026-08-29 (verificación GitHub)
+PR        #95 — MERGED
+SHA base  aab1a38bbb0fb14f930cbe53af297eea5d542317
+fecha     2026-08-30 (verificación GitHub/Cloud Run)
 ```
 
-Los CI de Control Plane, Gemini Control Plane, Gemini Media Edge, Gemini Fast Worker y Benchmark del SHA están verdes. `Gemini Fast Canary Deploy` run `33252047260` y `Gemini Media Edge Canary Deploy` run `33252047272` terminaron correctamente.
+Los CI de Control Plane, Gemini Control Plane, Gemini Media Edge, Gemini Fast
+Worker y Benchmark del SHA están verdes. El deploy genérico de 2 GiB queda
+retirado; `Gemini Fast Canary Deploy` es la única autoridad de despliegue para
+este servicio y promueve la revisión Fast verificada a producción general.
 
 ## Estado por preocupación
 

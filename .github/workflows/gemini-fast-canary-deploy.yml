@@ -10,6 +10,8 @@ on:
       - "apps/gemini-media-edge/src/startup-fast.mjs"
       - "apps/gemini-media-edge/Dockerfile.fast"
       - "apps/gemini-media-edge/deploy/cloud-run/cloudbuild-fast.yaml"
+      - "apps/gemini-media-edge/scripts/verify-cloud-run.mjs"
+      - "apps/gemini-media-edge/package.json"
       - "apps/gemini-control-plane/src/fast-preflight.ts"
       - "apps/gemini-control-plane/src/fast-preflight.test.ts"
       - "apps/gemini-control-plane/src/fast-caller-security.ts"
@@ -447,16 +449,49 @@ jobs:
           echo "removed=$STALE_TAG_COUNT" >> "$GITHUB_OUTPUT"
           echo "Retired ${STALE_TAG_COUNT} stale Fast canary tag(s); production traffic remains unchanged."
 
+      - name: Promote verified Fast revision to general production traffic
+        id: production
+        shell: bash
+        run: |
+          set -euo pipefail
+          REVISION='${{ steps.deployed.outputs.revision }}'
+          CURRENT_TAG='${{ steps.image.outputs.tag }}'
+          gcloud run services update-traffic "$DEPLOY_SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --to-revisions="${REVISION}=100" \
+            --quiet
+
+          SERVICE_JSON="$(gcloud run services describe "$DEPLOY_SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --format=json)"
+          ACTIVE="$(echo "$SERVICE_JSON" | jq -c '[.status.traffic[] | select((.percent // 0) > 0) | {revisionName,percent}]')"
+          TAG_REVISION="$(echo "$SERVICE_JSON" | jq -r --arg CURRENT_TAG "$CURRENT_TAG" '.status.traffic[] | select(.tag == $CURRENT_TAG) | .revisionName' | head -n1)"
+          SERVICE_URL="$(echo "$SERVICE_JSON" | jq -r '.status.url')"
+
+          test "$ACTIVE" = "[{\"revisionName\":\"${REVISION}\",\"percent\":100}]"
+          test "$TAG_REVISION" = "$REVISION"
+          test -n "$SERVICE_URL"; test "$SERVICE_URL" != "null"
+          echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
+          echo "edge_url=wss://${SERVICE_URL#https://}/telnyx/gemini" >> "$GITHUB_OUTPUT"
+          echo "Verified Fast revision ${REVISION} now owns 100% of general production traffic."
+
+      - name: Verify default production URL serves only Gemini Fast
+        working-directory: apps/gemini-media-edge
+        shell: bash
+        run: npm run test:e2e:cloud-run -- '${{ steps.production.outputs.edge_url }}'
+
       - name: Deployment summary
         shell: bash
         run: |
           {
-            echo "### Gemini 3.1 ultra-low-latency fast canary"
+            echo "### Gemini 3.1 ultra-low-latency Fast production"
             echo "- Source SHA: \`${GITHUB_SHA}\`"
             echo "- Cloud Build: \`${{ steps.image.outputs.build_id }}\`"
             echo "- Cloud Run service: \`${DEPLOY_SERVICE}\`"
-            echo "- Production traffic: **unchanged**"
-            echo "- Canary traffic: **0%**, reachable only through revision tag"
+            echo "- Production traffic: **100% on the verified Fast revision**"
+            echo "- Fast revision tag: **preserved for explicit Worker routing**"
             echo "- Revision: \`${{ steps.deployed.outputs.revision }}\`"
             echo "- Image: \`${{ steps.deployed.outputs.image }}\`"
             echo "- Model: \`gemini-3.1-flash-live-preview\`"
@@ -468,6 +503,7 @@ jobs:
             echo "- Worker -> Media Edge HMAC WSS upgrade: **verified**"
             echo "- Semantic security token parity: **verified**"
             echo "- Stale Fast canary tags retired: **${{ steps.canary_cleanup.outputs.removed }}**"
+            echo "- Default production URL: \`${{ steps.production.outputs.service_url }}\`"
             echo "- Control token secret selector: \`${{ steps.shared_secrets.outputs.control_selector }}\`"
             echo "- Credential HMAC secret selector: \`${{ steps.shared_secrets.outputs.credential_selector }}\`"
             echo "- Caller-security HMAC secret selector: \`${{ steps.shared_secrets.outputs.caller_security_hmac_selector }}\`"

@@ -60,6 +60,26 @@ test("Fast canary retires stale revision tags only after the new runtime passes 
   );
 });
 
+test("Fast deploy promotes only the verified revision and proves the default production URL", async () => {
+  const source = await workflow("gemini-fast-canary-deploy.yml");
+
+  assert.match(source, /Promote verified Fast revision to general production traffic/);
+  assert.match(source, /--to-revisions="\$\{REVISION\}=100"/);
+  assert.match(source, /test "\$TAG_REVISION" = "\$REVISION"/);
+  assert.match(source, /Verify default production URL serves only Gemini Fast/);
+  assert.match(source, /npm run test:e2e:cloud-run -- '\$\{\{ steps\.production\.outputs\.edge_url \}\}'/);
+  assert.ok(
+    source.indexOf("Fast Worker runtime preflight: VERIFIED")
+      < source.indexOf("Promote verified Fast revision to general production traffic"),
+    "general traffic must move only after the tagged Fast runtime passes every preflight",
+  );
+  assert.ok(
+    source.indexOf("Retire stale Fast canary tags after successful verification")
+      < source.indexOf("Promote verified Fast revision to general production traffic"),
+    "stale tagged revisions must be retired before the new Fast revision becomes general production",
+  );
+});
+
 test("Manual Fast secret sync updates only Gemini-owned runtime secrets", async () => {
   const source = await workflow("gemini-fast-worker-secret-sync.yml");
 
