@@ -14,12 +14,7 @@ function edgeUrls(raw) {
   origin.pathname = "/";
   origin.search = "";
   origin.hash = "";
-  const control = new URL(origin);
-  control.protocol = "wss:";
-  control.pathname = "/internal/control";
-  control.searchParams.set("tenant_id", "cloud-run-preflight");
-  control.searchParams.set("call_control_id", "cloud-run-preflight");
-  return { edge, origin, control };
+  return { edge, origin };
 }
 
 async function expectUnauthorizedWebSocket(url, label) {
@@ -54,29 +49,28 @@ async function resolveReadiness(healthUrl) {
     let health = null;
     try { health = await response.json(); } catch {}
     if (response.ok) return { response, health };
-    const status = typeof health?.semanticDecision?.status === "string" ? health.semanticDecision.status : null;
-    if (response.status === 503 && status === "pending" && attempt < 19) {
+    if (response.status === 503 && attempt < 19) {
       await delay(1_000);
       continue;
     }
-    const category = typeof health?.semanticDecision?.failureCategory === "string"
-      ? health.semanticDecision.failureCategory
-      : status
-        ? status.toUpperCase()
-        : "UNAVAILABLE";
-    throw new Error(`Cloud Run health check failed with HTTP ${response.status}; semanticDecision=${category}`);
+    throw new Error(`Fast Cloud Run readiness failed with HTTP ${response.status}`);
   }
   throw new Error("Cloud Run readiness did not resolve");
 }
 
-const { edge, origin, control } = edgeUrls(process.argv[2] ?? process.env.GEMINI_MEDIA_EDGE_URL);
+const { edge, origin } = edgeUrls(process.argv[2] ?? process.env.GEMINI_MEDIA_EDGE_URL);
 const healthUrl = new URL("/ready", origin);
 const { response: healthResponse, health } = await resolveReadiness(healthUrl);
-if (health?.ok !== true || health?.service !== "gemini-media-edge") {
-  throw new Error("Cloud Run health response does not identify gemini-media-edge");
+if (health?.ok !== true || health?.service !== "gemini-media-edge-fast") {
+  throw new Error("Default Cloud Run URL does not identify gemini-media-edge-fast");
 }
-if (health?.semanticDecision?.liveProviderContract !== "ready") {
-  throw new Error("Cloud Run readiness did not prove the real Gemini Live function-call contract");
+if (health?.model !== "gemini-3.1-flash-live-preview") {
+  throw new Error("Default Cloud Run URL is not serving the expected Gemini Live model");
+}
+for (const field of ["setupMs", "firstAudioMs"]) {
+  if (!Number.isInteger(health?.providerReadiness?.[field]) || health.providerReadiness[field] < 0) {
+    throw new Error(`Fast Cloud Run readiness is missing providerReadiness.${field}`);
+  }
 }
 
 const bootstrapResponse = await fetch(new URL("/internal/bootstrap", origin), {
@@ -89,17 +83,22 @@ if (bootstrapResponse.status !== 401) {
 }
 
 await expectUnauthorizedWebSocket(edge, "media ingress");
-await expectUnauthorizedWebSocket(control, "control sideband");
+
+const diagnosticsResponse = await fetch(new URL("/internal/diagnostics?call_control_id=cloud-run-preflight", origin));
+if (diagnosticsResponse.status !== 401) {
+  throw new Error(`Diagnostics endpoint admitted unauthenticated HTTP ${diagnosticsResponse.status}`);
+}
 
 console.log(JSON.stringify({
   ok: true,
   service: health.service,
   healthStatus: healthResponse.status,
-  semanticDecisionStatus: health.semanticDecision?.status ?? null,
-  liveProviderContract: health.semanticDecision?.liveProviderContract ?? null,
+  model: health.model,
+  providerSetupMs: health.providerReadiness.setupMs,
+  providerFirstAudioMs: health.providerReadiness.firstAudioMs,
   bootstrapUnauthenticatedStatus: bootstrapResponse.status,
   mediaIngressUnauthenticatedStatus: 401,
-  controlSidebandUnauthenticatedStatus: 401,
+  diagnosticsUnauthenticatedStatus: diagnosticsResponse.status,
   activeSessions: health.activeSessions,
-  controlSessions: health.controlSessions,
+  registeredBootstraps: health.registeredBootstraps,
 }));

@@ -79,7 +79,7 @@ Reglas:
 - no copiar secretos/configuración remota al repositorio;
 - validar health después del deploy.
 
-### 3.2 Fast Media Edge canary/tagged revision
+### 3.2 Fast Media Edge: canary verified, then production
 
 `Gemini Fast Canary Deploy`:
 
@@ -91,29 +91,33 @@ Reglas:
 6. verifica readiness del tag;
 7. actualiza el Fast Worker con la URL WSS etiquetada;
 8. verifica health del Worker;
-9. ejecuta un preflight bootstrap/HMAC/WSS.
+9. ejecuta un preflight bootstrap/HMAC/WSS;
+10. elimina tags Fast obsoletos;
+11. promueve la revisión verificada al 100% del tráfico general;
+12. verifica que la URL general identifica `gemini-media-edge-fast`.
 
 ### 3.3 Tag ≠ tráfico general
 
 ```text
 Cloud Run service
-  stable revision        100% general traffic
-  fast-<sha> revision      0% general traffic
+  fast-<sha> revision    100% general traffic
 
 Gemini Fast Worker
   GEMINI_FAST_CANARY_EDGE_URL
        └──► wss://fast-<sha>---.../telnyx/gemini
 ```
 
-La ruta Fast usa directamente la URL etiquetada. Por tanto:
+La URL general y la URL etiquetada resuelven la misma revisión Fast. El tag se
+conserva para que el Worker mantenga routing explícito y verificable.
 
 ```text
-fast revision = 0% general traffic
-NO significa
-fast revision = 0 llamadas
+default Cloud Run URL ─┐
+                      ├──► misma revisión Fast verificada
+Fast Worker tag URL ──┘
 ```
 
-No promover una revisión al tráfico general únicamente para “hacerla productiva” si el diseño vigente usa routing explícito por tag desde el Worker.
+El workflow legado `Gemini Media Edge Canary Deploy` fue retirado: no debe volver
+a desplegar una revisión genérica de 2 GiB sobre este servicio.
 
 ## 4. Verificación Gemini Fast
 

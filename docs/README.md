@@ -37,11 +37,15 @@ Telnyx media                Gemini 3.1 Flash Live
 
 El Worker está deliberadamente fuera del transporte continuo de audio.
 
-### Importante: `0%` de tráfico general de Cloud Run
+### Importante: una sola revisión Fast
 
-El despliegue Fast crea una revisión de Cloud Run con `--no-traffic` y una URL etiquetada. **Eso no significa que la ruta Gemini esté inactiva.** El Fast Worker recibe la URL WSS etiquetada en `GEMINI_FAST_CANARY_EDGE_URL` y dirige las llamadas admitidas directamente a esa revisión.
+El despliegue Fast crea primero una revisión con `--no-traffic`, la verifica y
+después la promueve al 100% del tráfico general. El Fast Worker conserva routing
+explícito mediante la URL etiquetada en `GEMINI_FAST_CANARY_EDGE_URL`, pero ambas
+URLs resuelven la misma revisión Fast.
 
-Para saber qué revisión usa una llamada hay que comprobar el binding del Fast Worker, no sólo el reparto general de tráfico de Cloud Run.
+Para saber qué revisión usa una llamada hay que comprobar que el binding del Fast
+Worker, el tag y el tráfico general señalen el mismo SHA.
 
 ## OpenAI y Gemini
 
