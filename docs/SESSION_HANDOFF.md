@@ -1,6 +1,6 @@
 # Prompt de relevo — IA_RealTime_CenterCall
 
-> Última revisión: 2026-08-29
+> Última revisión: 2026-08-30
 > Decisiones: [`ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md`](./architecture/ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md) y [`ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md`](./architecture/ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md)
 
 ## INICIO DEL PROMPT
@@ -105,6 +105,8 @@ permanent_block=false
 SEC-P1-02 está publicado en `db210c54b939eee49a2a0159cfa1d528c62b839c`, con `Control Plane CI` run `33277134222` en `SUCCESS`, y aplicado en Supabase como migración `20260829215407`. El score decae un punto por cada 24 horas completas sin evidencia nueva; el reset continúa Postgres-admin-only y conserva historial before/after. La verificación productiva sintética terminó con `ROLLBACK` y cero filas residuales. No repitas ataques desde el número real.
 
 La admisión caller-security Gemini-native está publicada en `62d8f25acd1ccf84dc2e37b5e462593d6a295bdd` mediante la PR borrador `#95`. CI y el deploy independiente del Worker pasaron; `Gemini Fast Canary Deploy` run `33300576501` desplegó la revisión sin tráfico `gemini-media-edge-00207-reg` y apuntó el Worker al tag `fast-62d8f25acd1c`. La frontera está en `startSignedFastGeminiIncomingCall`, después de firma/tenant/canary y antes de identities, credencial, bootstrap, `answer` o `streaming_start`. Reutiliza el HMAC histórico y `evaluate_inbound_call_security_v2`; caller ausente, secreto/RPC inválido y cualquier resultado distinto de `ALLOW` fallan cerrados. La sonda sintética comprobó `ALLOW`, idempotencia y `BLOCK` como `service_role`, terminó con `ROLLBACK` y cero filas residuales. El siguiente gate es una única llamada real controlada, sin ataques repetidos.
+
+La corrección del falso bloqueo de transferencia está implementada en `76eba318f17e65b9353d0883a3a37f69ae3ffb38`. Sustituye `caller_authority_evidence`, texto aportado por Gemini y comparado literalmente, por recibos opacos emitidos por el runtime para cada propuesta desde el turno actual. Los recibos están ligados a kernel/tenant/llamada, son single-use y no pueden fabricarse, cruzarse ni reutilizarse; el turno anterior no autoriza. La semántica sigue en Gemini mediante el enum cerrado y la autorización final de capability/config/tenant permanece en los sinks. No hay salto remoto ni trabajo por chunk. Suite Media Edge `243/243` y documentación local verdes; antes de otra llamada exige CI y nuevo canary verdes.
 
 ### 6. Primera misión
 

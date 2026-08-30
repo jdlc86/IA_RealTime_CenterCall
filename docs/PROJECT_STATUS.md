@@ -28,6 +28,7 @@ Los CI de Control Plane, Gemini Control Plane, Gemini Media Edge, Gemini Fast Wo
 | Gemini Media Edge | sí | verde | revisión canary | PASS A–G |
 | Seguridad semántica durable Gemini-native | sí | verde | canary aislado | preflight PASS; llamada no repetida |
 | Caller-security en admission Gemini | `62d8f25` | CI verde | canary aislado | sonda sintética PASS; llamada pendiente |
+| Autoridad de tool ligada al turno runtime | `76eba31` | local verde | pendiente nuevo canary | E2E pendiente |
 | Corte de dependencia con Worker histórico | sí | verde | canary aislado | wiring/HMAC PASS |
 
 ## Arquitectura vigente
@@ -70,6 +71,8 @@ Caller-security en admission Gemini está publicado en `62d8f25acd1ccf84dc2e37b5
 El Worker Fast consulta una vez `evaluate_inbound_call_security_v2` con `eventId`, `tenantId` y el HMAC histórico del caller después de autenticar/resolver la llamada y antes de emitir cualquier identity, credencial o efecto Telnyx/Media Edge. `BLOCK`, caller ausente, secreto ausente, error/timeout Supabase o payload inválido fallan cerrados. El límite de 2 s afecta únicamente al establecimiento pre-call; codec, WebSocket, audio, barge-in y post-tool no cambian. Los dos workflows de despliegue y el sync manual exigen nombres exactos para `CALLER_SECURITY_HMAC_SECRET` y `SUPABASE_SERVICE_ROLE_KEY`, sin leer ni registrar sus valores.
 
 La sonda Supabase ejecutada como `service_role` con identidad exclusivamente sintética comprobó `ALLOW/OK`, reintento `ALLOW/DUPLICATE_EVENT` sin incrementar el contador y `BLOCK/CALL_RATE_1M` en el quinto evento. Terminó con `ROLLBACK`, `assertion_failures=0`, `residual_state_rows=0` y `residual_event_rows=0`. Los preflights del workflow verificaron además health, token semántico y bootstrap/HMAC Worker→Media Edge. La llamada real controlada continúa pendiente y no debe mezclar ataques repetidos.
+
+La corrección de autoridad por turno está implementada en `76eba318f17e65b9353d0883a3a37f69ae3ffb38`. El incidente real `v3:PmWI3aKneTW47lPrNOOZ3vvzxgnsB78832-hA1jTqdboPLkPTZqlbA` fue bloqueado antes de Fast Worker por `TOOL_AUTHORITY_EVIDENCE_MISMATCH`: el contrato anterior exigía que Gemini repitiera literalmente parte del transcript. Esa cadena controlada por el modelo fue retirada como credencial. Ahora cada propuesta caller-governed recibe un recibo opaco local, ligado a kernel/tenant/llamada y de un solo uso; ausencia, turno cerrado, fabricación, cruce y replay fallan antes del efecto. Varias tools legítimas del mismo frame reciben recibos distintos. La suite Media Edge pasa `243/243` y `docs:check` pasa; CI, canary y E2E real continúan pendientes. No se añadió inferencia, RPC, persistencia, espera ni trabajo por chunk de audio.
 
 ## Regla de latencia
 
