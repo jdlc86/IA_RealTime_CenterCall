@@ -59,7 +59,6 @@ test("fast bootstrap contains immutable security context needed by the media run
   assert.equal(value.voiceName, "Kore");
   assert.equal(value.languageCode, "es-ES");
   assert.equal(JSON.stringify(value).includes("controlCapability"), false);
-  assert.equal(JSON.stringify(value).includes("OpenAI"), false);
 });
 
 test("fast bootstrap registry is retry-idempotent and one-shot on media consume", () => {

@@ -27,7 +27,5 @@ jobs:
       - run: npm install --ignore-scripts
       - run: npm run check
       - run: npm test
-      - name: Build legacy compatibility image
-        run: docker build -t gemini-media-edge:test .
       - name: Build Gemini fast-path candidate image
         run: docker build -f Dockerfile.fast -t gemini-media-edge-fast:test .

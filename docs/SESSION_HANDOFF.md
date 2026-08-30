@@ -1,136 +1,66 @@
-# Prompt de relevo — IA_RealTime_CenterCall
-
-> Última revisión: 2026-08-30
-> Decisiones: [`ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md`](./architecture/ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md) y [`ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md`](./architecture/ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md)
+# Relevo operativo
 
 ## INICIO DEL PROMPT
 
-Continúa el trabajo en `jdlc86/IA_RealTime_CenterCall` como Staff/Principal Engineer de voz realtime y seguridad.
+Trabajas en `jdlc86/IA_RealTime_CenterCall`, rama estable
+`rebuild/v39-stable-baseline`.
 
-### Arranque obligatorio
+### 1. Verificación inicial
 
-```text
-repo   jdlc86/IA_RealTime_CenterCall
-rama   rebuild/v39-stable-baseline
-PR     PR #85, mantener OPEN/DRAFT
-SHA canary de seguridad
-       021d134625758cc9228284fecc4f49599a419182
-```
+Antes de afirmar estado actual, verifica:
 
-Antes de escribir, verifica de nuevo HEAD remoto, PR, CI, deploy efectivo y estado local. No sobrescribas cambios ajenos. No hagas merge, ready-for-review, force-push, rebase destructivo ni otra rama/PR. No hagas commit, push, deploy, llamadas, IAM o configuración sin autorización explícita.
+- HEAD remoto, PR y checks;
+- versión efectiva del Gemini Fast Worker;
+- URL/tag/revisión efectiva de Cloud Run;
+- migraciones/evidencia Supabase cuando aplique.
 
-Lee en este orden:
+No hagas llamadas reales, despliegues o cambios de infraestructura sin autorización.
 
-1. `docs/README.md`
-2. `docs/PROJECT_STATUS.md`
-3. `docs/SYSTEM_OVERVIEW.md`
-4. `docs/architecture/ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md`
-5. `docs/architecture/ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md`
-6. `docs/architecture/DESIGN_RULES.md`
-7. `Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx` si la misión afecta seguridad
-8. el runbook o contrato funcional exacto del problema.
-
-Los planes de fase, diseños D1/D3/D5 y handoffs fechados fueron retirados del árbol vigente. Git los conserva como historial, pero no sustituyen estas fuentes canónicas.
-
-### 2. Arquitectura obligatoria
-
-Hay dos productos, no un runtime híbrido:
+### 2. Arquitectura vigente
 
 ```text
-OpenAI Worker → OpenAI runtime/lifecycle → OpenAI Realtime
-
-Gemini Fast Worker → Gemini runtime/lifecycle → Gemini Media Edge → Gemini Live
-
-Ambos → contratos neutrales de dominio/seguridad → Supabase compartido
+Telnyx → Gemini Fast Worker → Fast Media Edge ↔ Gemini Live
 ```
 
-Gemini ya dispone de Worker y Media Edge propios. No puede depender de SDK, secretos, sockets, voz, lifecycle, persistencia sideband ni coordinadores OpenAI. El stack OpenAI queda como legado independiente pendiente de retirada y no forma parte del modelo de negocio objetivo.
-
-La extracción de caller security y SEC-P0-06 están desplegados en el canary del SHA `021d134625758cc9228284fecc4f49599a419182`: Gemini Fast Worker posee endpoint, adaptador Supabase, cola y DLQ; Media Edge usa el origen Gemini y los workflows Fast no tocan el Worker histórico. La ruta confirma primero Queue y usa Supabase directo como fallback; nunca responde éxito por `waitUntil`. `caller-security-hmac-secret` y `caller-security-hmac-sha256` están provisionados en Secret Manager con los bytes históricos y su huella independiente; CI verificó la coincidencia.
-
-Capacidades transversales: seguridad, admission/identidad, voz/lifecycle, tool authorization, human handoff, tiempo, diagnóstico y comunicaciones. WhatsApp tiene dos capabilities KV independientes: `message.whatsapp.transactional` y `message.whatsapp.realtime_support`. Las verticales —por ejemplo reservas— pertenecen al tenant/dominio y consumen las capacidades transversales sin duplicarlas.
+Cloudflare nunca relaya audio continuo. Sólo existen
+`apps/gemini-control-plane` y `apps/gemini-media-edge` como productos
+ejecutables. El historial retirado no es fallback ni dependencia.
 
 ### 3. Reglas arquitectónicas que no puedes violar
 
-1. Prohibido añadir latencia evitable. Ningún salto síncrono, inferencia, RPC, persistencia, sleep, buffer o transformación entra en el camino crítico sin baseline, presupuesto y p50/p95/p99.
-2. No añadir trabajo por chunk de audio salvo ADR+benchmark imprescindible.
-3. Seguridad/diagnóstico sideband o asíncronos cuando la invariante lo permita.
-4. One state owner per concern; ordering por identidad/sequence/ACK, nunca por timers.
-5. El modelo interpreta/proporciona una categoría; kernel, ToolGateway, backend y DB autorizan efectos.
-6. Cero tools o audio no autorizados; cualquier quarantine exigida por una ruta concreta debe ser bounded y fail-closed, pero no se añade al Fast Path por defecto.
-7. No persistir transcript crudo, audio, prompts, secretos ni payload hostil.
-8. Idempotencia de transporte separada de idempotencia empresarial.
-9. Rejected context no terminal exige fresh Gemini session; session resumption no limpia confianza.
-10. No failover OpenAI↔Gemini a mitad de llamada.
-11. `IMPLEMENTADO ≠ CI VERDE ≠ DESPLEGADO ≠ VALIDADO E2E`. El estado CANARY se declara aparte.
-12. Toda tool requiere nombre/schema cerrado, `authority`, `effect`, `capability`, `evidence`, handler permitido y tenant/call context; una mutación añade idempotencia, confirmación e invariantes verticales.
+- No añadir latencia al hot path.
+- No añadir trabajo por chunk sin ADR y benchmark.
+- No escalar horizontalmente mientras credential/bootstrap/sesión sean in-memory.
+- El modelo propone; kernel, dominio y backend autorizan/ejecutan.
+- Toda tool exige policy local y recibo opaco antes del efecto.
+- No persistir prompt, secreto, audio o transcript bruto.
+- No crear un segundo workflow de despliegue.
+- `IMPLEMENTADO ≠ CI VERDE ≠ DESPLEGADO ≠ VALIDADO E2E`.
 
-### 4. Corrección y extracción de seguridad desplegadas
+### 4. Autoridad de despliegue
 
-El fallo persistente era drift del token de control: Cloud Run y Fast Worker tenían el mismo token, pero la frontera de persistencia del Control Plane no. Se corrigió en:
+El único workflow integral es `Gemini Fast Canary Deploy`. Construye y verifica
+la revisión Fast, sincroniza el Worker, ejecuta preflights, retira tags antiguos y
+promociona la revisión exacta.
 
-- `9eef2567ae445a7d0a74392e52fb4b9bcb05010f`
-- `154fdcfd31af22fde7c270b04074cf6cc3898aee`
+### 5. Validación local
 
-El baseline sincronizaba el token con tres puntos. El corte desplegado elimina la frontera histórica: sincroniza el token sólo con Cloud Run y Gemini Fast Worker, añade la clave HMAC estable de caller security y ejecuta el preflight contra el Fast Worker Gemini.
+```bash
+cd apps/gemini-control-plane
+npm install
+npm run docs:check
+npm run check
 
-IAM desplegado: `github-cloud-run-deployer@iacallcenterv1.iam.gserviceaccount.com` tiene `roles/secretmanager.secretAccessor` sobre los secretos necesarios del baseline y, a nivel de recurso, sobre `caller-security-hmac-secret` y `caller-security-hmac-sha256`. Los valores no se documentan ni se exponen.
-
-### 5. CI, deploy y E2E verificados
-
-```text
-SHA                021d134625758cc9228284fecc4f49599a419182
-Fast Canary run    33264338263, SUCCESS
-Cloud Run revision gemini-media-edge-00206-pid
-Fast Worker ver.   a62e7fac-598d-4944-8ccb-78971284c326
-production traffic sin cambios
+cd ../gemini-media-edge
+npm ci
+npm run check
+npm test
 ```
-
-Llamada A–G:
-
-`v3:uHjdAfDtH2KmuPKzJ2cKyGY_nbIQankHLScOdnq2oN4TNewNo5xxpg`
-
-Resultado técnico PASS: conversación, pregunta educativa, dos prompt exfiltration, role escalation, tool manipulation, hora autoritativa y transferencia humana contestada. Cuatro eventos persistidos con `risk_delta=1`, `raw_transcript_stored=false`, latencias 40–135 ms y ningún `TOOL_EXECUTION_FAILED`. Transferencia `TRANSFERRED`, `failure_reason=null`, cierre `HUMAN_HANDOFF_TERMINAL`.
-
-Estado final del llamante:
-
-```text
-risk_score=21
-security_strikes=3
-rate_limit_blocks=0
-blocked_until=null
-permanent_block=false
-```
-
-SEC-P1-02 está publicado en `db210c54b939eee49a2a0159cfa1d528c62b839c`, con `Control Plane CI` run `33277134222` en `SUCCESS`, y aplicado en Supabase como migración `20260829215407`. El score decae un punto por cada 24 horas completas sin evidencia nueva; el reset continúa Postgres-admin-only y conserva historial before/after. La verificación productiva sintética terminó con `ROLLBACK` y cero filas residuales. No repitas ataques desde el número real.
-
-La admisión caller-security Gemini-native está publicada en `62d8f25acd1ccf84dc2e37b5e462593d6a295bdd` mediante la PR borrador `#95`. CI y el deploy independiente del Worker pasaron; `Gemini Fast Canary Deploy` run `33300576501` desplegó la revisión sin tráfico `gemini-media-edge-00207-reg` y apuntó el Worker al tag `fast-62d8f25acd1c`. La frontera está en `startSignedFastGeminiIncomingCall`, después de firma/tenant/canary y antes de identities, credencial, bootstrap, `answer` o `streaming_start`. Reutiliza el HMAC histórico y `evaluate_inbound_call_security_v2`; caller ausente, secreto/RPC inválido y cualquier resultado distinto de `ALLOW` fallan cerrados. La sonda sintética comprobó `ALLOW`, idempotencia y `BLOCK` como `service_role`, terminó con `ROLLBACK` y cero filas residuales. El siguiente gate es una única llamada real controlada, sin ataques repetidos.
-
-La corrección del falso bloqueo de transferencia está implementada en `76eba318f17e65b9353d0883a3a37f69ae3ffb38`. Sustituye `caller_authority_evidence`, texto aportado por Gemini y comparado literalmente, por recibos opacos emitidos por el runtime para cada propuesta desde el turno actual. Los recibos están ligados a kernel/tenant/llamada, son single-use y no pueden fabricarse, cruzarse ni reutilizarse; el turno anterior no autoriza. La semántica sigue en Gemini mediante el enum cerrado y la autorización final de capability/config/tenant permanece en los sinks. No hay salto remoto ni trabajo por chunk. Suite Media Edge `243/243`, documentación y cuatro workflows CI/deploy verdes. `Gemini Fast Canary Deploy` run `33302316492` desplegó `gemini-media-edge-00208-riz` desde `5d6a3c9f39a61090ac951bb1b54552f6be174d63`, con producción intacta, Worker sincronizado y health/token/bootstrap/HMAC verificados. Falta una única E2E real de transferencia.
 
 ### 6. Primera misión
 
-Primero realiza sólo inspección y confirma que el SHA/CI/deploy/documentos continúan vigentes. Trata el baseline de seguridad como PASS y no vuelvas a corregirlo sin una regresión demostrada.
-
-Si se continúa esta misión de seguridad, el orden es:
-
-1. tratar `021d134625758cc9228284fecc4f49599a419182` y el run `33264338263` como baseline desplegado del runtime P06;
-2. tratar `db210c54b939eee49a2a0159cfa1d528c62b839c`, CI `33277134222` y migración Supabase `20260829215407` como baseline aplicado de SEC-P1-02;
-3. observar decay/reset sólo con métricas técnicas o identidades sintéticas; nunca ataques reales;
-4. revisar y publicar por separado el candidato local de caller-security en admission Gemini; la eliminación física del código OpenAI legado continúa como misión independiente.
-
-Cualquier propuesta debe indicar amenaza, invariante, archivo/frontera, impacto de latencia, plan de prueba y rollback. No hagas otra llamada.
-
-### 7. Validación mínima antes de cerrar
-
-Desde `apps/control-plane`:
-
-```bash
-npm run docs:check
-npm test
-npm run check
-```
-
-Para una misión limitada a documentación, `npm run docs:check` y `git diff --check` son obligatorios; las suites completas se ejecutan si cambia código o si el riesgo de la misión lo requiere.
+Lee `docs/PROJECT_STATUS.md`, la guía viva de seguridad y el código alcanzable
+desde los dos entrypoints Fast. Continúa desde el backlog de seguridad o la
+vertical solicitada sin restaurar código retirado.
 
 ## FIN DEL PROMPT

@@ -5,10 +5,11 @@
   "type": "module",
   "packageManager": "npm@10.9.2",
   "scripts": {
+    "docs:check": "node ../../scripts/check-documentation.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "check:fast-deploy": "wrangler deploy --dry-run --config wrangler.fast.jsonc",
-    "check": "npm run typecheck && npm test && npm run check:fast-deploy",
+    "check": "npm run docs:check && npm run typecheck && npm test && npm run check:fast-deploy",
     "deploy:fast": "wrangler deploy --config wrangler.fast.jsonc"
   },
   "devDependencies": {
