@@ -138,7 +138,7 @@ workflow          Gemini Fast Canary Deploy
 run_id            33302316492
 source SHA        5d6a3c9f39a61090ac951bb1b54552f6be174d63
 Cloud Run         gemini-media-edge-00208-riz
-Fast Worker       162705c6-5890-4aa6-89bf-c1a77c7e9733
+Fast Worker       binding etiquetado preservado (`keep_vars=true`)
 canary traffic    0 %, accesible por tag/Fast Worker
 production        sin cambios
 ```
