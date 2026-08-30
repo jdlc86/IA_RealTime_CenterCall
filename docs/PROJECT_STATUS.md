@@ -28,7 +28,7 @@ Los CI de Control Plane, Gemini Control Plane, Gemini Media Edge, Gemini Fast Wo
 | Gemini Media Edge | sí | verde | revisión canary | PASS A–G |
 | Seguridad semántica durable Gemini-native | sí | verde | canary aislado | preflight PASS; llamada no repetida |
 | Caller-security en admission Gemini | `62d8f25` | CI verde | canary aislado | sonda sintética PASS; llamada pendiente |
-| Autoridad de tool ligada al turno runtime | `76eba31` | local verde | pendiente nuevo canary | E2E pendiente |
+| Autoridad de tool ligada al turno runtime | `76eba31` | CI verde | canary aislado | E2E pendiente |
 | Corte de dependencia con Worker histórico | sí | verde | canary aislado | wiring/HMAC PASS |
 
 ## Arquitectura vigente
@@ -72,7 +72,7 @@ El Worker Fast consulta una vez `evaluate_inbound_call_security_v2` con `eventId
 
 La sonda Supabase ejecutada como `service_role` con identidad exclusivamente sintética comprobó `ALLOW/OK`, reintento `ALLOW/DUPLICATE_EVENT` sin incrementar el contador y `BLOCK/CALL_RATE_1M` en el quinto evento. Terminó con `ROLLBACK`, `assertion_failures=0`, `residual_state_rows=0` y `residual_event_rows=0`. Los preflights del workflow verificaron además health, token semántico y bootstrap/HMAC Worker→Media Edge. La llamada real controlada continúa pendiente y no debe mezclar ataques repetidos.
 
-La corrección de autoridad por turno está implementada en `76eba318f17e65b9353d0883a3a37f69ae3ffb38`. El incidente real `v3:PmWI3aKneTW47lPrNOOZ3vvzxgnsB78832-hA1jTqdboPLkPTZqlbA` fue bloqueado antes de Fast Worker por `TOOL_AUTHORITY_EVIDENCE_MISMATCH`: el contrato anterior exigía que Gemini repitiera literalmente parte del transcript. Esa cadena controlada por el modelo fue retirada como credencial. Ahora cada propuesta caller-governed recibe un recibo opaco local, ligado a kernel/tenant/llamada y de un solo uso; ausencia, turno cerrado, fabricación, cruce y replay fallan antes del efecto. Varias tools legítimas del mismo frame reciben recibos distintos. La suite Media Edge pasa `243/243` y `docs:check` pasa; CI, canary y E2E real continúan pendientes. No se añadió inferencia, RPC, persistencia, espera ni trabajo por chunk de audio.
+La corrección de autoridad por turno está implementada en `76eba318f17e65b9353d0883a3a37f69ae3ffb38`. El incidente real `v3:PmWI3aKneTW47lPrNOOZ3vvzxgnsB78832-hA1jTqdboPLkPTZqlbA` fue bloqueado antes de Fast Worker por `TOOL_AUTHORITY_EVIDENCE_MISMATCH`: el contrato anterior exigía que Gemini repitiera literalmente parte del transcript. Esa cadena controlada por el modelo fue retirada como credencial. Ahora cada propuesta caller-governed recibe un recibo opaco local, ligado a kernel/tenant/llamada y de un solo uso; ausencia, turno cerrado, fabricación, cruce y replay fallan antes del efecto. Varias tools legítimas del mismo frame reciben recibos distintos. La suite Media Edge pasa `243/243`, `docs:check` pasa y los cuatro workflows del SHA `5d6a3c9f39a61090ac951bb1b54552f6be174d63` terminaron en `SUCCESS`. `Gemini Fast Canary Deploy` run `33302316492` desplegó `gemini-media-edge-00208-riz`, imagen `sha256:60205aeaaa9c308f8a4b2aaa28670f9568def818b5f3362c96e596beaf4625a0`, con tráfico productivo intacto, Worker sincronizado y preflights completos. Sólo falta E2E real. No se añadió inferencia, RPC, persistencia, espera ni trabajo por chunk de audio.
 
 ## Regla de latencia
 
@@ -135,10 +135,10 @@ Umbrales de frecuencia: 5 llamadas/minuto, 8/5 minutos o 20/hora. Los bloqueos e
 
 ```text
 workflow          Gemini Fast Canary Deploy
-run_id            33264338263
-source SHA        021d134625758cc9228284fecc4f49599a419182
-Cloud Run         gemini-media-edge-00206-pid
-Fast Worker       a62e7fac-598d-4944-8ccb-78971284c326
+run_id            33302316492
+source SHA        5d6a3c9f39a61090ac951bb1b54552f6be174d63
+Cloud Run         gemini-media-edge-00208-riz
+Fast Worker       162705c6-5890-4aa6-89bf-c1a77c7e9733
 canary traffic    0 %, accesible por tag/Fast Worker
 production        sin cambios
 ```
