@@ -27,7 +27,7 @@ Los CI de Control Plane, Gemini Control Plane, Gemini Media Edge, Gemini Fast Wo
 | Gemini Fast Worker | sí | verde | canary aislado | PASS A–G |
 | Gemini Media Edge | sí | verde | revisión canary | PASS A–G |
 | Seguridad semántica durable Gemini-native | sí | verde | canary aislado | preflight PASS; llamada no repetida |
-| Caller-security en admission Gemini | candidato local | pendiente | no desplegado | no ejecutar llamada |
+| Caller-security en admission Gemini | `62d8f25` | CI verde | canary aislado | sonda sintética PASS; llamada pendiente |
 | Corte de dependencia con Worker histórico | sí | verde | canary aislado | wiring/HMAC PASS |
 
 ## Arquitectura vigente
@@ -65,7 +65,11 @@ SEC-P0-06 está publicado en `021d134625758cc9228284fecc4f49599a419182` y desple
 
 SEC-P1-02 está publicado en `db210c54b939eee49a2a0159cfa1d528c62b839c`; `Control Plane CI` run `33277134222` finalizó `SUCCESS` y la migración productiva `caller_security_risk_lifecycle` quedó registrada en Supabase como versión `20260829215407`. Añade decay perezoso de un punto por cada 24 horas completas sin nueva evidencia de riesgo dentro de las RPC existentes, sin viajes de red adicionales. No reduce automáticamente strikes, historial de rate limit ni bloqueos temporales/permanentes. El reset es idempotente, auditable, exige motivo cerrado y actor con hash SHA-256, y queda revocado incluso para `service_role`: sólo un administrador Postgres puede ejecutarlo. La prueba productiva sintética confirmó decay `5→2`, conservación de strikes/rate-limit/bloqueo temporal, reset idempotente y ACL; terminó con `ROLLBACK` y cero filas residuales. No hubo redeploy del runtime de voz porque este bloque sólo modifica PostgreSQL.
 
-El siguiente bloque, caller-security en admission Gemini, está implementado sólo como candidato local y no está publicado ni desplegado. El Worker Fast consulta una vez `evaluate_inbound_call_security_v2` con `eventId`, `tenantId` y el HMAC histórico del caller después de autenticar/resolver la llamada y antes de emitir cualquier identity, credencial o efecto Telnyx/Media Edge. `BLOCK`, caller ausente, secreto ausente, error/timeout Supabase o payload inválido fallan cerrados. El límite de 2 s afecta únicamente al establecimiento pre-call; codec, WebSocket, audio, barge-in y post-tool no cambian. La configuración productiva actual contiene los nombres `CALLER_SECURITY_HMAC_SECRET` y `SUPABASE_SERVICE_ROLE_KEY`; los workflows quedan preparados para bloquear el deploy si faltan, sin leer ni registrar sus valores.
+Caller-security en admission Gemini está publicado en `62d8f25acd1ccf84dc2e37b5e462593d6a295bdd` mediante la PR borrador `#95`. `Gemini Control Plane CI` run `33300524069`, `Gemini Media Edge CI` run `33300524062`, `Control Plane CI` run `33300524075` y `Gemini Fast Worker Deploy` run `33300524089` terminaron en `SUCCESS`. `Gemini Fast Canary Deploy` run `33300576501` desplegó la revisión sin tráfico `gemini-media-edge-00207-reg`, imagen inmutable `sha256:a737f308eb8e1d061eb8a5b13677f518eac16c36510c08f45197f30c7b00a024`, y apuntó el Worker al tag `fast-62d8f25acd1c` sin cambiar tráfico productivo.
+
+El Worker Fast consulta una vez `evaluate_inbound_call_security_v2` con `eventId`, `tenantId` y el HMAC histórico del caller después de autenticar/resolver la llamada y antes de emitir cualquier identity, credencial o efecto Telnyx/Media Edge. `BLOCK`, caller ausente, secreto ausente, error/timeout Supabase o payload inválido fallan cerrados. El límite de 2 s afecta únicamente al establecimiento pre-call; codec, WebSocket, audio, barge-in y post-tool no cambian. Los dos workflows de despliegue y el sync manual exigen nombres exactos para `CALLER_SECURITY_HMAC_SECRET` y `SUPABASE_SERVICE_ROLE_KEY`, sin leer ni registrar sus valores.
+
+La sonda Supabase ejecutada como `service_role` con identidad exclusivamente sintética comprobó `ALLOW/OK`, reintento `ALLOW/DUPLICATE_EVENT` sin incrementar el contador y `BLOCK/CALL_RATE_1M` en el quinto evento. Terminó con `ROLLBACK`, `assertion_failures=0`, `residual_state_rows=0` y `residual_event_rows=0`. Los preflights del workflow verificaron además health, token semántico y bootstrap/HMAC Worker→Media Edge. La llamada real controlada continúa pendiente y no debe mezclar ataques repetidos.
 
 ## Regla de latencia
 
