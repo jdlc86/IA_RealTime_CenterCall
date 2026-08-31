@@ -1,0 +1,22 @@
+{
+  "name": "@ia-realtime-centercall/gemini-control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@10.9.2",
+  "scripts": {
+    "docs:check": "node ../../scripts/check-documentation.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "check:fast-deploy": "wrangler deploy --dry-run --config wrangler.fast.jsonc",
+    "check": "npm run docs:check && npm run typecheck && npm test && npm run check:fast-deploy",
+    "deploy:fast": "wrangler deploy --config wrangler.fast.jsonc"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.0.0",
+    "@cloudflare/workers-types": "^5.20260821.1",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.0.0"
+  }
+}

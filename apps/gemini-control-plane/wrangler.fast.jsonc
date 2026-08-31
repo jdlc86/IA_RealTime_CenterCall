@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ia-realtime-centercall-gemini-fast",
+  "main": "src/index-fast.ts",
+  "compatibility_date": "2026-08-26",
+  "workers_dev": true,
+  "preview_urls": true,
+  "keep_vars": true,
+  "vars": {
+    "SUPABASE_URL": "https://vutekfkbtvfogouwcfvc.supabase.co"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "TENANT_ROUTING_KV"
+    }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "GEMINI_CALLER_SECURITY_SIGNALS", "queue": "ia-realtime-centercall-gemini-fast-security-signals" }
+    ],
+    "consumers": [
+      {
+        "queue": "ia-realtime-centercall-gemini-fast-security-signals",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 10,
+        "dead_letter_queue": "ia-realtime-centercall-gemini-fast-security-signals-dlq"
+      }
+    ]
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

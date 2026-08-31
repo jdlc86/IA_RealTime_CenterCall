@@ -1,0 +1,143 @@
+name: Gemini Fast Live Preflight
+
+on:
+  push:
+    branches:
+      - rebuild/v39-stable-baseline
+    paths:
+      - ".github/workflows/gemini-fast-live-preflight.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gemini-fast-live-preflight
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Prove live Worker to Media Edge chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FAST_WORKER_ORIGIN: https://ia-realtime-centercall-gemini-fast.julopezcardona.workers.dev
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Worker dependencies
+        working-directory: apps/gemini-control-plane
+        run: npm install --no-audit --no-fund
+
+      - name: Verify Worker health
+        shell: bash
+        run: |
+          set -euo pipefail
+          BODY="$(curl --fail --silent --show-error --max-time 10 "${FAST_WORKER_ORIGIN}/health")"
+          echo "$BODY" | jq -e '.ok == true and .service == "gemini-control-plane-fast"' >/dev/null
+
+      - name: Prove runtime configuration bootstrap and HMAC upgrade
+        working-directory: apps/gemini-control-plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+
+          PREFLIGHT_TOKEN="$(openssl rand -hex 32)"
+          echo "::add-mask::$PREFLIGHT_TOKEN"
+          printf '%s' "$PREFLIGHT_TOKEN" | npx wrangler secret put GEMINI_FAST_PREFLIGHT_TOKEN --config wrangler.fast.jsonc
+
+          STATUS=""
+          BODY=""
+          for attempt in $(seq 1 20); do
+            TMP="$(mktemp)"
+            STATUS="$(curl --silent --show-error --max-time 15 \
+              --output "$TMP" \
+              --write-out '%{http_code}' \
+              --request POST \
+              --header "Authorization: Bearer ${PREFLIGHT_TOKEN}" \
+              "${FAST_WORKER_ORIGIN}/internal/preflight" || true)"
+            BODY="$(cat "$TMP")"
+            rm -f "$TMP"
+
+            if [ "$STATUS" = "200" ]; then
+              break
+            fi
+            if [ "$STATUS" != "401" ] && [ "$STATUS" != "503" ]; then
+              echo "Fast preflight failed with HTTP ${STATUS}" >&2
+              printf '%s' "$BODY" | jq -c '{ok,status}' >&2 2>/dev/null || true
+              exit 1
+            fi
+            sleep 2
+          done
+
+          if [ "$STATUS" != "200" ]; then
+            echo "Fast preflight token did not propagate before timeout; last HTTP ${STATUS}" >&2
+            printf '%s' "$BODY" | jq -c '{ok,status}' >&2 2>/dev/null || true
+            exit 1
+          fi
+
+          printf '%s' "$BODY" | jq -e '
+            .ok == true and
+            .status == "READY" and
+            .checks.telnyxApiKey == "PRESENT" and
+            .checks.telnyxPublicKey == "PRESENT_VALID" and
+            .checks.admissionIdentitySecret == "PRESENT" and
+            .checks.mediaCredentialHmac == "VERIFIED" and
+            .checks.mediaControlToken == "VERIFIED" and
+            .checks.canaryEdge == "VERIFIED" and
+            .checks.canaryCalledNumber == "PRESENT" and
+            .checks.canaryTenant == "PRESENT" and
+            .checks.systemInstruction == "PRESENT" and
+            .checks.tools == "EMPTY" and
+            .checks.bootstrap == "VERIFIED" and
+            .checks.websocketUpgrade == "VERIFIED"
+          ' >/dev/null
+
+          echo "Fast live runtime preflight: VERIFIED"
+
+      - name: Verify unsigned Telnyx webhook is rejected before call control
+        shell: bash
+        run: |
+          set -euo pipefail
+          TMP="$(mktemp)"
+          STATUS="$(curl --silent --show-error --max-time 10 \
+            --output "$TMP" \
+            --write-out '%{http_code}' \
+            --request POST \
+            --header 'content-type: application/json' \
+            --data '{"data":{"event_type":"call.initiated","id":"preflight-invalid-signature"}}' \
+            "${FAST_WORKER_ORIGIN}/webhooks/telnyx/fast-canary" || true)"
+          BODY="$(cat "$TMP")"
+          rm -f "$TMP"
+          test "$STATUS" = "401"
+          printf '%s' "$BODY" | jq -e '.ok == false and .status == "SIGNATURE_REJECTED"' >/dev/null
+          echo "Telnyx webhook signature gate: VERIFIED"
+
+      - name: Preflight summary
+        shell: bash
+        run: |
+          {
+            echo "### Gemini Fast live preflight"
+            echo "- Worker health: **verified**"
+            echo "- Telnyx API key: **present**"
+            echo "- Telnyx public key: **present and valid Ed25519 material**"
+            echo "- Admission identity secret: **present**"
+            echo "- Media control token Worker -> Edge: **verified**"
+            echo "- Media HMAC Worker -> Edge WSS upgrade: **verified**"
+            echo "- Canary edge binding: **verified**"
+            echo "- Canary number / tenant / system instruction: **present**"
+            echo "- First-call tools: **empty**"
+            echo "- Unsigned Telnyx webhook rejection: **verified**"
+            echo "- No Telnyx call was created by this preflight."
+          } >> "$GITHUB_STEP_SUMMARY"

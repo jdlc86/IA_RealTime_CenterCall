@@ -1,5 +1,8 @@
 # Reservation contact default policy
 
+> **Estado:** política vigente
+> **Última revisión documental:** 2026-08-29
+
 For telephone CREATE reservations, a trustworthy E.164 `caller_phone` propagated from the verified Telnyx webhook is the default `reservation_phone`.
 
 - Do not ask the caller to repeat that number.

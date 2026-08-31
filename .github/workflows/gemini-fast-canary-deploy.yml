@@ -1,0 +1,512 @@
+name: Gemini Fast Canary Deploy
+
+on:
+  push:
+    branches:
+      - rebuild/v39-stable-baseline
+    paths:
+      - "apps/gemini-media-edge/src/fast-*.mjs"
+      - "apps/gemini-media-edge/src/server-fast.mjs"
+      - "apps/gemini-media-edge/src/startup-fast.mjs"
+      - "apps/gemini-media-edge/Dockerfile.fast"
+      - "apps/gemini-media-edge/deploy/cloud-run/cloudbuild-fast.yaml"
+      - "apps/gemini-media-edge/scripts/verify-cloud-run.mjs"
+      - "apps/gemini-media-edge/package.json"
+      - "apps/gemini-control-plane/src/fast-preflight.ts"
+      - "apps/gemini-control-plane/src/fast-preflight.test.ts"
+      - "apps/gemini-control-plane/src/fast-caller-security.ts"
+      - "apps/gemini-control-plane/src/fast-caller-security.test.ts"
+      - "apps/gemini-control-plane/src/fast-semantic-security-signal.ts"
+      - "apps/gemini-control-plane/src/fast-semantic-security-signal.test.ts"
+      - "apps/gemini-control-plane/src/index-fast.ts"
+      - "apps/gemini-control-plane/wrangler.fast.jsonc"
+      - "apps/gemini-control-plane/src/telnyx/fast-canary-route.ts"
+      - "apps/gemini-control-plane/src/telnyx/fast-canary-route.test.ts"
+      - "apps/gemini-control-plane/src/telnyx/fast-incoming-runtime.ts"
+      - "apps/gemini-control-plane/src/telnyx/fast-incoming-runtime.test.ts"
+      - ".github/workflows/gemini-fast-canary-deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: gemini-fast-canary
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT_ID: iacallcenterv1
+  GCP_REGION: europe-west9
+  GCP_WIF_PROVIDER: projects/1012718461242/locations/global/workloadIdentityPools/github-actions/providers/ia-realtime-centercall
+  GCP_DEPLOYER_SERVICE_ACCOUNT: github-cloud-run-deployer@iacallcenterv1.iam.gserviceaccount.com
+  GEMINI_API_KEY_SECRET_VERSION: "1"
+  CREDENTIAL_SECRET_VERSION: "latest"
+  CONTROL_TOKEN_SECRET_VERSION: "latest"
+  CALLER_SECURITY_HMAC_SECRET_VERSION: "latest"
+  CALLER_SECURITY_HMAC_SECRET_NAME: caller-security-hmac-secret
+  CALLER_SECURITY_HMAC_FINGERPRINT_SECRET_NAME: caller-security-hmac-sha256
+  FAST_WORKER_NAME: ia-realtime-centercall-gemini-fast
+  FAST_WORKER_ORIGIN: https://ia-realtime-centercall-gemini-fast.julopezcardona.workers.dev
+  DEPLOY_SERVICE: gemini-media-edge
+  ARTIFACT_REPOSITORY: ia-realtime-centercall
+  FAST_PROVIDER_SETUP_BUDGET_MS: "5000"
+  FAST_PROVIDER_FIRST_AUDIO_BUDGET_MS: "8000"
+
+jobs:
+  deploy:
+    name: Deploy zero-traffic Gemini 3.1 fast canary
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/gemini-media-edge/package-lock.json
+
+      - name: Install and validate fast runtime
+        working-directory: apps/gemini-media-edge
+        run: |
+          npm ci
+          npm run check
+          npm test
+          docker build -f Dockerfile.fast -t gemini-media-edge-fast:test .
+
+      - name: Authenticate to Google Cloud with GitHub OIDC
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Install Worker deployment dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --prefix apps/gemini-control-plane --no-audit --no-fund
+
+      - name: Ensure Gemini-owned caller-security queues exist
+        working-directory: apps/gemini-control-plane
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for queue in \
+            ia-realtime-centercall-gemini-fast-security-signals \
+            ia-realtime-centercall-gemini-fast-security-signals-dlq; do
+            if ! npx wrangler queues info "$queue" >/dev/null 2>&1; then
+              npx wrangler queues create "$queue" >/dev/null
+            fi
+          done
+
+      - name: Synchronize shared Fast secrets
+        id: shared_secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+
+          CONTROL_TOKEN="$(gcloud secrets versions access "$CONTROL_TOKEN_SECRET_VERSION" \
+            --project "$GCP_PROJECT_ID" \
+            --secret gemini-media-edge-control-plane-token)"
+          CREDENTIAL_SECRET="$(gcloud secrets versions access "$CREDENTIAL_SECRET_VERSION" \
+            --project "$GCP_PROJECT_ID" \
+            --secret gemini-media-edge-credential-hmac-secret)"
+          CALLER_SECURITY_HMAC_SECRET="$(gcloud secrets versions access "$CALLER_SECURITY_HMAC_SECRET_VERSION" \
+            --project "$GCP_PROJECT_ID" \
+            --secret "$CALLER_SECURITY_HMAC_SECRET_NAME")"
+          EXPECTED_CALLER_SECURITY_HMAC_SHA256="$(gcloud secrets versions access latest \
+            --project "$GCP_PROJECT_ID" \
+            --secret "$CALLER_SECURITY_HMAC_FINGERPRINT_SECRET_NAME")"
+          test "$(printf '%s' "$CONTROL_TOKEN" | wc -c)" -ge 32
+          test "$(printf '%s' "$CREDENTIAL_SECRET" | wc -c)" -ge 32
+          test "$(printf '%s' "$CALLER_SECURITY_HMAC_SECRET" | wc -c)" -ge 32
+          [[ "$EXPECTED_CALLER_SECURITY_HMAC_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          ACTUAL_CALLER_SECURITY_HMAC_SHA256="$(printf '%s' "$CALLER_SECURITY_HMAC_SECRET" | sha256sum | awk '{print $1}')"
+          test "$ACTUAL_CALLER_SECURITY_HMAC_SHA256" = "$EXPECTED_CALLER_SECURITY_HMAC_SHA256"
+          echo "::add-mask::$CONTROL_TOKEN"
+          echo "::add-mask::$CREDENTIAL_SECRET"
+          echo "::add-mask::$CALLER_SECURITY_HMAC_SECRET"
+          printf '%s' "$CONTROL_TOKEN" | (
+            cd apps/gemini-control-plane
+            npx wrangler secret put GEMINI_MEDIA_CONTROL_PLANE_TOKEN \
+              --name "$FAST_WORKER_NAME" --config wrangler.fast.jsonc >/dev/null
+          )
+          printf '%s' "$CREDENTIAL_SECRET" | (
+            cd apps/gemini-control-plane
+            npx wrangler secret put GEMINI_MEDIA_CREDENTIAL_HMAC_SECRET \
+              --name "$FAST_WORKER_NAME" --config wrangler.fast.jsonc >/dev/null
+          )
+          printf '%s' "$CALLER_SECURITY_HMAC_SECRET" | (
+            cd apps/gemini-control-plane
+            npx wrangler secret put CALLER_SECURITY_HMAC_SECRET \
+              --name "$FAST_WORKER_NAME" --config wrangler.fast.jsonc >/dev/null
+          )
+
+          echo "control_selector=$CONTROL_TOKEN_SECRET_VERSION" >> "$GITHUB_OUTPUT"
+          echo "credential_selector=$CREDENTIAL_SECRET_VERSION" >> "$GITHUB_OUTPUT"
+          echo "caller_security_hmac_selector=$CALLER_SECURITY_HMAC_SECRET_VERSION" >> "$GITHUB_OUTPUT"
+          unset CONTROL_TOKEN CREDENTIAL_SECRET CALLER_SECURITY_HMAC_SECRET EXPECTED_CALLER_SECURITY_HMAC_SHA256 ACTUAL_CALLER_SECURITY_HMAC_SHA256
+          echo "Fast shared secrets synchronized"
+
+      - name: Build immutable fast image
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${GITHUB_SHA:0:12}"
+          IMAGE_TAG="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REPOSITORY}/gemini-media-edge-fast:fast-${SHORT_SHA}"
+          BUILD_ID="$(gcloud builds submit apps/gemini-media-edge \
+            --config apps/gemini-media-edge/deploy/cloud-run/cloudbuild-fast.yaml \
+            --substitutions "_IMAGE=${IMAGE_TAG}" \
+            --region "$GCP_REGION" \
+            --project "$GCP_PROJECT_ID" \
+            --async \
+            --suppress-logs \
+            --format='value(id)')"
+          test -n "$BUILD_ID"
+          DEADLINE=$((SECONDS + 1200))
+          while true; do
+            STATUS="$(gcloud builds describe "$BUILD_ID" --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --format='value(status)')"
+            case "$STATUS" in
+              SUCCESS) break ;;
+              QUEUED|PENDING|WORKING) ;;
+              FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED) echo "Fast Cloud Build ${BUILD_ID} ended with ${STATUS}" >&2; exit 1 ;;
+              *) echo "Unexpected Fast Cloud Build status: ${STATUS}" >&2; exit 1 ;;
+            esac
+            if (( SECONDS >= DEADLINE )); then echo "Timed out waiting for Fast Cloud Build ${BUILD_ID}" >&2; exit 1; fi
+            sleep 5
+          done
+          DIGEST="$(gcloud artifacts docker images describe "$IMAGE_TAG" --project "$GCP_PROJECT_ID" --format='value(image_summary.digest)')"
+          test "$DIGEST" != ""
+          IMMUTABLE_IMAGE="${IMAGE_TAG%:*}@${DIGEST}"
+          echo "immutable_image=$IMMUTABLE_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "tag=fast-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Snapshot production traffic
+        id: before
+        shell: bash
+        run: |
+          set -euo pipefail
+          SERVICE_JSON="$(gcloud run services describe "$DEPLOY_SERVICE" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format=json)"
+          ACTIVE="$(echo "$SERVICE_JSON" | jq -c '[.status.traffic[] | select((.percent // 0) > 0) | {revisionName,percent}] | sort_by(.revisionName)')"
+          test "$ACTIVE" != "[]"
+          echo "active=$ACTIVE" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy fast revision with zero production traffic
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run deploy "$DEPLOY_SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --image "${{ steps.image.outputs.immutable_image }}" \
+            --service-account "gemini-media-edge@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
+            --execution-environment gen2 \
+            --port 8080 \
+            --cpu 1 \
+            --memory 512Mi \
+            --concurrency 25 \
+            --min-instances 1 \
+            --max-instances 1 \
+            --timeout 3600 \
+            --set-env-vars "MEDIA_EDGE_SINGLE_INSTANCE=true,GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview,GEMINI_LIVE_VOICE=Kore" \
+            --set-secrets "GEMINI_API_KEY=gemini-media-edge-gemini-api-key:${GEMINI_API_KEY_SECRET_VERSION},MEDIA_EDGE_CREDENTIAL_HMAC_SECRET=gemini-media-edge-credential-hmac-secret:${{ steps.shared_secrets.outputs.credential_selector }},MEDIA_EDGE_CONTROL_PLANE_TOKEN=gemini-media-edge-control-plane-token:${{ steps.shared_secrets.outputs.control_selector }}" \
+            --no-traffic \
+            --tag "${{ steps.image.outputs.tag }}" \
+            --quiet
+
+      - name: Resolve tagged fast revision and prove production traffic unchanged
+        id: deployed
+        shell: bash
+        run: |
+          set -euo pipefail
+          SERVICE_JSON="$(gcloud run services describe "$DEPLOY_SERVICE" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format=json)"
+          AFTER_ACTIVE="$(echo "$SERVICE_JSON" | jq -c '[.status.traffic[] | select((.percent // 0) > 0) | {revisionName,percent}] | sort_by(.revisionName)')"
+          test "$AFTER_ACTIVE" = '${{ steps.before.outputs.active }}'
+          TAG='${{ steps.image.outputs.tag }}'
+          REVISION="$(echo "$SERVICE_JSON" | jq -r --arg TAG "$TAG" '.status.traffic[] | select(.tag == $TAG) | .revisionName' | head -n1)"
+          TAG_URL="$(echo "$SERVICE_JSON" | jq -r --arg TAG "$TAG" '.status.traffic[] | select(.tag == $TAG) | .url' | head -n1)"
+          test -n "$REVISION"; test -n "$TAG_URL"; test "$REVISION" != "null"; test "$TAG_URL" != "null"
+          IMAGE="$(gcloud run revisions describe "$REVISION" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(spec.containers[0].image)')"
+          test "$IMAGE" = '${{ steps.image.outputs.immutable_image }}'
+          echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
+          echo "tag_url=$TAG_URL" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "edge_url=wss://${TAG_URL#https://}/telnyx/gemini" >> "$GITHUB_OUTPUT"
+
+      - name: Verify startup provider gate and tagged readiness
+        id: readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          READY_URL="${{ steps.deployed.outputs.tag_url }}/ready"
+          BODY=""
+          for attempt in $(seq 1 30); do
+            if BODY="$(curl --fail --silent --show-error --max-time 5 "$READY_URL")"; then break; fi
+            sleep 2
+          done
+          test -n "$BODY"
+          echo "$BODY" | jq -e '.ok == true and .service == "gemini-media-edge-fast" and .model == "gemini-3.1-flash-live-preview" and .activeSessions == 0' >/dev/null
+          SETUP_MS="$(echo "$BODY" | jq -r '.providerReadiness.setupMs')"
+          FIRST_AUDIO_MS="$(echo "$BODY" | jq -r '.providerReadiness.firstAudioMs')"
+          [[ "$SETUP_MS" =~ ^[0-9]+$ ]]; [[ "$FIRST_AUDIO_MS" =~ ^[0-9]+$ ]]
+          (( SETUP_MS < FAST_PROVIDER_SETUP_BUDGET_MS )); (( FIRST_AUDIO_MS < FAST_PROVIDER_FIRST_AUDIO_BUDGET_MS ))
+          echo "setup_ms=$SETUP_MS" >> "$GITHUB_OUTPUT"
+          echo "first_audio_ms=$FIRST_AUDIO_MS" >> "$GITHUB_OUTPUT"
+
+      - name: Point Gemini fast Worker at tagged canary
+        working-directory: apps/gemini-control-plane
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          FAST_EDGE_URL: ${{ steps.deployed.outputs.edge_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"; test -n "$CLOUDFLARE_ACCOUNT_ID"; test -n "$FAST_EDGE_URL"
+          SECRET_LIST="$(npx wrangler secret list --name "$FAST_WORKER_NAME" --config wrangler.fast.jsonc)"
+          node -e '
+            const rows = JSON.parse(process.argv[1]);
+            const names = new Set(rows.map((row) => row?.name));
+            for (const required of ["CALLER_SECURITY_HMAC_SECRET", "SUPABASE_SERVICE_ROLE_KEY"]) {
+              if (!names.has(required)) { console.error(`MISSING:${required}`); process.exitCode = 1; }
+              else console.log(`PRESENT:${required}`);
+            }
+          ' "$SECRET_LIST"
+          npx wrangler deploy --config wrangler.fast.jsonc --var "GEMINI_FAST_CANARY_EDGE_URL:${FAST_EDGE_URL}" --var "GEMINI_FAST_PREFLIGHT_NONCE:"
+          if ! npx wrangler deployments list --config wrangler.fast.jsonc; then
+            echo "::warning::Cloudflare deployment listing failed after a successful Worker deploy; continuing to health/preflight verification."
+          fi
+
+      - name: Verify Gemini fast Worker health after edge sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          BODY="$(curl --fail --silent --show-error --max-time 10 https://ia-realtime-centercall-gemini-fast.julopezcardona.workers.dev/health)"
+          echo "$BODY" | jq -e '.ok == true and .service == "gemini-control-plane-fast"' >/dev/null
+
+      - name: Verify Gemini semantic-security token parity without persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTROL_TOKEN="$(gcloud secrets versions access '${{ steps.shared_secrets.outputs.control_selector }}' \
+            --project "$GCP_PROJECT_ID" \
+            --secret gemini-media-edge-control-plane-token)"
+          test "$(printf '%s' "$CONTROL_TOKEN" | wc -c)" -ge 32
+          echo "::add-mask::$CONTROL_TOKEN"
+
+          RESPONSE=""
+          STATUS=""
+          BODY=""
+          for attempt in $(seq 1 30); do
+            RESPONSE="$(curl --silent --show-error --max-time 10 \
+              --request POST \
+              --header "Authorization: Bearer ${CONTROL_TOKEN}" \
+              --header 'Content-Type: application/json' \
+              --data '{}' \
+              --write-out $'\n%{http_code}' \
+              "${FAST_WORKER_ORIGIN}/internal/fast-semantic-security-signal")"
+            STATUS="${RESPONSE##*$'\n'}"
+            BODY="${RESPONSE%$'\n'*}"
+            if [ "$STATUS" = "400" ] && echo "$BODY" | jq -e '.status == "INVALID_SECURITY_SIGNAL"' >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -lt 30 ]; then sleep 2; fi
+          done
+          test "$STATUS" = "400"
+          echo "$BODY" | jq -e '.ok == false and .status == "INVALID_SECURITY_SIGNAL"' >/dev/null
+          unset CONTROL_TOKEN BODY RESPONSE
+          echo "Fast semantic-security authentication preflight: VERIFIED"
+
+      - name: Prove Worker to Media Edge bootstrap and HMAC
+        working-directory: apps/gemini-control-plane
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          FAST_WORKER_ORIGIN: https://ia-realtime-centercall-gemini-fast.julopezcardona.workers.dev
+          FAST_EDGE_URL: ${{ steps.deployed.outputs.edge_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREFLIGHT_NONCE="$(openssl rand -hex 32)"
+          echo "::add-mask::$PREFLIGHT_NONCE"
+
+          cleanup() {
+            npx wrangler deploy --config wrangler.fast.jsonc \
+              --var "GEMINI_FAST_CANARY_EDGE_URL:${FAST_EDGE_URL}" \
+              --var "GEMINI_FAST_PREFLIGHT_NONCE:" >/dev/null || true
+          }
+          trap cleanup EXIT
+
+          npx wrangler deploy --config wrangler.fast.jsonc \
+            --var "GEMINI_FAST_CANARY_EDGE_URL:${FAST_EDGE_URL}" \
+            --var "GEMINI_FAST_PREFLIGHT_NONCE:${PREFLIGHT_NONCE}"
+
+          BODY=""
+          STATUS=""
+          for attempt in $(seq 1 10); do
+            RESPONSE="$(curl --silent --show-error --max-time 15 \
+              --request POST \
+              --header "Authorization: Bearer ${PREFLIGHT_NONCE}" \
+              --write-out $'\n%{http_code}' \
+              "${FAST_WORKER_ORIGIN}/internal/preflight")"
+            STATUS="${RESPONSE##*$'\n'}"
+            BODY="${RESPONSE%$'\n'*}"
+            if [ "$STATUS" = "200" ]; then break; fi
+            if { [ "$STATUS" = "401" ] || [ "$STATUS" = "503" ]; } && [ "$attempt" -lt 10 ]; then
+              echo "Fast preflight nonce rollout pending (HTTP ${STATUS}); retry ${attempt}/10"
+              sleep 2
+              continue
+            fi
+            SAFE_STATUS="$(printf '%s' "$BODY" | jq -r '.status // "UNKNOWN"' 2>/dev/null || printf 'UNKNOWN')"
+            echo "Fast Worker runtime preflight failed: ${SAFE_STATUS} (HTTP ${STATUS})" >&2
+            if [ "$STATUS" = "409" ]; then
+              SCOPE="$(printf '%s' "$BODY" | jq -r '.connectionScope // "UNKNOWN"' 2>/dev/null || printf 'UNKNOWN')"
+              case "$SCOPE" in DEDICATED|SHARED|UNKNOWN) ;; *) SCOPE=UNKNOWN ;; esac
+              echo "Telnyx canary connection scope: ${SCOPE}" >&2
+            fi
+            exit 1
+          done
+          test "$STATUS" = "200"
+          echo "$BODY" | jq -e '
+            .ok == true and
+            .status == "READY" and
+            .checks.telnyxApiKey == "PRESENT" and
+            .checks.telnyxPublicKey == "PRESENT_VALID" and
+            .checks.tenantRouting == "KV_RUNTIME_ONLY" and
+            .checks.admissionIdentitySecret == "PRESENT" and
+            .checks.mediaCredentialHmac == "VERIFIED" and
+            .checks.mediaControlToken == "VERIFIED" and
+            .checks.canaryEdge == "VERIFIED" and
+            .checks.systemInstruction == "PRESENT" and
+            .checks.tools == "EMPTY" and
+            .checks.bootstrap == "VERIFIED" and
+            .checks.websocketUpgrade == "VERIFIED"
+          ' >/dev/null
+          echo "Fast Worker runtime preflight: VERIFIED"
+
+      - name: Retire stale Fast canary tags after successful verification
+        id: canary_cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          CURRENT_TAG='${{ steps.image.outputs.tag }}'
+          SERVICE_JSON="$(gcloud run services describe "$DEPLOY_SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --format=json)"
+          BEFORE_ACTIVE="$(echo "$SERVICE_JSON" | jq -c '[.status.traffic[] | select((.percent // 0) > 0) | {revisionName,percent}] | sort_by(.revisionName)')"
+          STALE_TAGS="$(echo "$SERVICE_JSON" | jq -r --arg CURRENT_TAG "$CURRENT_TAG" '
+            .status.traffic[]
+            | select(.tag != null and (.tag | startswith("fast-")) and .tag != $CURRENT_TAG)
+            | .tag
+          ')"
+
+          if [ -z "$STALE_TAGS" ]; then
+            echo "removed=0" >> "$GITHUB_OUTPUT"
+            echo "No stale Fast canary tags found."
+            exit 0
+          fi
+
+          STALE_TAG_CSV="$(printf '%s\n' "$STALE_TAGS" | paste -sd, -)"
+          STALE_TAG_COUNT="$(printf '%s\n' "$STALE_TAGS" | wc -l | tr -d ' ')"
+          gcloud run services update-traffic "$DEPLOY_SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --remove-tags="$STALE_TAG_CSV" \
+            --quiet
+
+          AFTER_JSON="$(gcloud run services describe "$DEPLOY_SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --format=json)"
+          AFTER_ACTIVE="$(echo "$AFTER_JSON" | jq -c '[.status.traffic[] | select((.percent // 0) > 0) | {revisionName,percent}] | sort_by(.revisionName)')"
+          CURRENT_REVISION="$(echo "$AFTER_JSON" | jq -r --arg CURRENT_TAG "$CURRENT_TAG" '.status.traffic[] | select(.tag == $CURRENT_TAG) | .revisionName' | head -n1)"
+          REMAINING_STALE="$(echo "$AFTER_JSON" | jq -r --arg CURRENT_TAG "$CURRENT_TAG" '[.status.traffic[] | select(.tag != null and (.tag | startswith("fast-")) and .tag != $CURRENT_TAG)] | length')"
+
+          test "$AFTER_ACTIVE" = "$BEFORE_ACTIVE"
+          test "$CURRENT_REVISION" = '${{ steps.deployed.outputs.revision }}'
+          test "$REMAINING_STALE" = "0"
+          echo "removed=$STALE_TAG_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Retired ${STALE_TAG_COUNT} stale Fast canary tag(s); production traffic remains unchanged."
+
+      - name: Promote verified Fast revision to general production traffic
+        id: production
+        shell: bash
+        run: |
+          set -euo pipefail
+          REVISION='${{ steps.deployed.outputs.revision }}'
+          CURRENT_TAG='${{ steps.image.outputs.tag }}'
+          gcloud run services update-traffic "$DEPLOY_SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --to-revisions="${REVISION}=100" \
+            --quiet
+
+          SERVICE_JSON="$(gcloud run services describe "$DEPLOY_SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --format=json)"
+          ACTIVE="$(echo "$SERVICE_JSON" | jq -c '[.status.traffic[] | select((.percent // 0) > 0) | {revisionName,percent}]')"
+          TAG_REVISION="$(echo "$SERVICE_JSON" | jq -r --arg CURRENT_TAG "$CURRENT_TAG" '.status.traffic[] | select(.tag == $CURRENT_TAG) | .revisionName' | head -n1)"
+          SERVICE_URL="$(echo "$SERVICE_JSON" | jq -r '.status.url')"
+
+          test "$ACTIVE" = "[{\"revisionName\":\"${REVISION}\",\"percent\":100}]"
+          test "$TAG_REVISION" = "$REVISION"
+          test -n "$SERVICE_URL"; test "$SERVICE_URL" != "null"
+          echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
+          echo "edge_url=wss://${SERVICE_URL#https://}/telnyx/gemini" >> "$GITHUB_OUTPUT"
+          echo "Verified Fast revision ${REVISION} now owns 100% of general production traffic."
+
+      - name: Verify default production URL serves only Gemini Fast
+        working-directory: apps/gemini-media-edge
+        shell: bash
+        run: npm run test:e2e:cloud-run -- '${{ steps.production.outputs.edge_url }}'
+
+      - name: Deployment summary
+        shell: bash
+        run: |
+          {
+            echo "### Gemini 3.1 ultra-low-latency Fast production"
+            echo "- Source SHA: \`${GITHUB_SHA}\`"
+            echo "- Cloud Build: \`${{ steps.image.outputs.build_id }}\`"
+            echo "- Cloud Run service: \`${DEPLOY_SERVICE}\`"
+            echo "- Production traffic: **100% on the verified Fast revision**"
+            echo "- Fast revision tag: **preserved for explicit Worker routing**"
+            echo "- Revision: \`${{ steps.deployed.outputs.revision }}\`"
+            echo "- Image: \`${{ steps.deployed.outputs.image }}\`"
+            echo "- Model: \`gemini-3.1-flash-live-preview\`"
+            echo "- Provider setup: \`${{ steps.readiness.outputs.setup_ms }} ms\`"
+            echo "- Provider first native audio: \`${{ steps.readiness.outputs.first_audio_ms }} ms\`"
+            echo "- Startup gate: real Gemini Live setup + native audio + turnComplete"
+            echo "- Worker edge binding: **synced**"
+            echo "- Worker -> Media Edge bootstrap: **verified**"
+            echo "- Worker -> Media Edge HMAC WSS upgrade: **verified**"
+            echo "- Semantic security token parity: **verified**"
+            echo "- Stale Fast canary tags retired: **${{ steps.canary_cleanup.outputs.removed }}**"
+            echo "- Default production URL: \`${{ steps.production.outputs.service_url }}\`"
+            echo "- Control token secret selector: \`${{ steps.shared_secrets.outputs.control_selector }}\`"
+            echo "- Credential HMAC secret selector: \`${{ steps.shared_secrets.outputs.credential_selector }}\`"
+            echo "- Caller-security HMAC secret selector: \`${{ steps.shared_secrets.outputs.caller_security_hmac_selector }}\`"
+            echo "- Tagged URL: \`${{ steps.deployed.outputs.tag_url }}\`"
+            echo "- WSS: \`${{ steps.deployed.outputs.edge_url }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,14 @@
+{
+  "name": "@ia-realtime-centercall/gemini-media-edge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "24.x" },
+  "scripts": {
+    "start": "node src/startup-fast.mjs",
+    "test": "node --test src/*.test.mjs",
+    "test:e2e:cloud-run": "node scripts/verify-cloud-run.mjs",
+    "check": "node --check src/startup-fast.mjs && node --check src/server-fast.mjs && node --check src/fast-runtime.mjs && node --check src/fast-gemini31.mjs && node --check src/fast-tool-authorization-kernel.mjs && node --check src/fast-tool-executor.mjs && node --check src/fast-semantic-security-termination-policy.mjs"
+  },
+  "dependencies": { "ws": "8.21.3" }
+}
