@@ -32,7 +32,7 @@ export function createFastTransferControlClient(options = {}) {
   const sourceFetch = typeof options.fetcher === "function" ? options.fetcher : fetch;
   // Keep native fetch as a bare-call dependency. Receiver-sensitive runtimes can
   // reject fetch when invoked as an object method (the same protection used by
-  // the proven OpenAI/Telnyx handoff adapter).
+  // the validated Telnyx handoff adapter).
   const fetcher = (...args) => sourceFetch(...args);
 
   async function post(pathname, body, fallbackStatus) {

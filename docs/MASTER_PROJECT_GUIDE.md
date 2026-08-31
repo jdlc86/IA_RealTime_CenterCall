@@ -1,146 +1,73 @@
-# IA_RealTime_CenterCall — Master Project Guide
+# IA_RealTime_CenterCall — guía maestra
 
-> **Ruta estable de compatibilidad. No renombrar ni eliminar.**
-> **Última revisión:** 2026-08-29
-> **Carácter:** índice/visión; **no es fuente de verdad del despliegue actual**.
+## Propósito
 
-Este archivo orienta hacia la documentación propietaria. No debe duplicar la arquitectura, el estado operativo ni un diario de commits.
+Construir una plataforma multi-tenant de agentes telefónicos Gemini con kernel
+transversal seguro y verticales configurables por tenant.
 
-## Continuar el trabajo
+Estado actual: [`PROJECT_STATUS.md`](./PROJECT_STATUS.md).
+Relevo: [`SESSION_HANDOFF.md`](./SESSION_HANDOFF.md).
+Mantenimiento: [`DOCUMENTATION_MAINTENANCE.md`](./DOCUMENTATION_MAINTENANCE.md).
 
-Leer en este orden:
-
-1. [`README.md`](./README.md) — mapa documental actual/histórico.
-2. [`PROJECT_STATUS.md`](./PROJECT_STATUS.md) — realidad operativa, limitaciones y siguiente validación.
-3. [`SESSION_HANDOFF.md`](./SESSION_HANDOFF.md) — prompt para continuar otra sesión.
-4. [`SYSTEM_OVERVIEW.md`](./SYSTEM_OVERVIEW.md) — resumen de productos y fronteras actuales.
-5. [`architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md) — topología estable actual.
-6. [`architecture/ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md`](./architecture/ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md) cuando el trabajo afecte Gemini.
-7. [`architecture/DESIGN_RULES.md`](./architecture/DESIGN_RULES.md) — restricciones no negociables.
-8. [`../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx`](../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx) cuando el trabajo afecte seguridad.
-9. [`DOCUMENTATION_MAINTENANCE.md`](./DOCUMENTATION_MAINTENANCE.md) — reglas de fuente de verdad documental.
-10. El runbook, código y tests exactos del componente que vaya a modificarse.
-
-Antes de escribir/deployar, comprobar rama, HEAD remoto, PR #85, CI del SHA y los sistemas remotos que sean relevantes.
-
-## Coordenadas estables
+## Producto
 
 ```text
-repo       jdlc86/IA_RealTime_CenterCall
-rama       rebuild/v39-stable-baseline
-PR         #85 (base main; verificar estado remoto)
-Supabase   vutekfkbtvfogouwcfvc
+Telnyx → Gemini Fast Worker → Fast Media Edge ↔ Gemini Live
 ```
 
-No existe un único `entrypoint` o `Worker` que represente a todo el proyecto.
+El Fast Worker posee señalización, tenant routing, admission, seguridad,
+capabilities, tools y control. El Media Edge posee el hot path de audio. Supabase
+posee la verdad durable.
 
-### Producto OpenAI
+## Kernel transversal
 
-```text
-apps/control-plane
-apps/media-edge
-Worker histórico/principal: ia-realtime-centercall
+- identidad y admission Telnyx;
+- caller-security y reputación;
+- lifecycle de voz y barge-in;
+- autorización de tools;
+- transferencia humana;
+- autoridad temporal;
+- diagnóstico y privacidad;
+- comunicaciones externas.
+
+WhatsApp se separa en `message.whatsapp.transactional` y
+`message.whatsapp.realtime_support`; ambas capacidades son opt-in por tenant.
+
+## Verticales
+
+Reservas, disponibilidad, horarios, mesas, citas y demás reglas empresariales
+son módulos de dominio. Consumen capacidades transversales, pero no duplican ni
+debilitan sus controles.
+
+## Contrato obligatorio
+
+Toda tool tiene schema cerrado, authority, effect, capability, evidence, handler
+permitido y contexto tenant/call. Las mutaciones añaden confirmación,
+idempotencia y constraints de dominio. Gemini interpreta y propone; el kernel
+autoriza; el dominio valida; el backend ejecuta.
+
+## Reglas operativas
+
+- Sin audio continuo por Cloudflare.
+- Sin RTT, inferencia o persistencia por chunk.
+- Sin fallback silencioso.
+- Sin secretos, prompts, audio o transcript bruto en diagnóstico.
+- Sin escalado horizontal mientras el estado call-scoped siga in-memory.
+- Un único workflow integral: `Gemini Fast Canary Deploy`.
+- `IMPLEMENTADO ≠ CI VERDE ≠ DESPLEGADO ≠ VALIDADO E2E`.
+
+## Desarrollo
+
+```bash
+cd apps/gemini-control-plane
+npm install
+npm run check
+
+cd ../gemini-media-edge
+npm ci
+npm run check
+npm test
 ```
 
-### Producto Gemini
-
-```text
-apps/gemini-control-plane
-apps/gemini-media-edge
-Worker Fast: ia-realtime-centercall-gemini-fast
-Media Edge Fast: Cloud Run revision etiquetada, seleccionada por binding del Worker
-```
-
-La separación está definida por ADR-003 y el Fast Path Gemini por ADR-004.
-
-## Principio operativo
-
-```text
-evidencia
-→ identificar producto/capa/owner correcto
-→ cambio mínimo
-→ pruebas aplicables
-→ CI del SHA
-→ deploy exacto
-→ verificar routing/binding efectivo
-→ E2E cuando el comportamiento es telefónico/acústico
-```
-
-No confundir código existente con código conectado al runtime actual.
-
-## Arquitectura en una vista
-
-```text
-                        GitHub / CI
-                            │
-            ┌───────────────┴────────────────┐
-            │                                │
-            ▼                                ▼
-      Producto OpenAI                  Producto Gemini Fast
-      Control Plane                    Fast Worker
-            │                                │ control/admission
-            ▼                                ▼
-      OpenAI Realtime         Telnyx media ↔ Fast Media Edge ↔ Gemini Live
-
-                     └──────── dominio/persistencia neutral ────────┘
-                                      │
-                                   Supabase
-```
-
-Cloudflare queda fuera del audio continuo.
-
-## Historial y compatibilidad
-
-Los diseños intermedios, snapshots y guías de fases cerradas se consultan en Git y no se mantienen en el árbol vigente. Los ADR aceptados sí permanecen: ADR-002 explica el origen del Media Edge, ADR-003 fija la independencia de productos y ADR-004 gobierna el Fast Path actual.
-
-La existencia de módulos Gemini híbridos en código no demuestra participación en `fast-runtime`.
-
-## Transferencia humana
-
-La documentación propietaria es [`HUMAN_HANDOFF.md`](./HUMAN_HANDOFF.md).
-
-Principios de alto nivel:
-
-- Gemini interpreta lenguaje natural;
-- la política Fast valida enum de autoridad + recibo opaco runtime del turno actual, no texto repetido por el modelo ni listas de “sí/vale/adelante”;
-- la política actual no mantiene `offerPending` ni prueba por sí sola el antecedente de `CONFIRMED_OFFER`;
-- el recibo de turno se snapshottea antes de la ejecución asíncrona del tool y sólo puede consumirse una vez;
-- destino/capability pertenecen a configuración/backend;
-- handoff aceptado es lifecycle terminal para la IA;
-- auditoría en `public.human_handoff_events`.
-
-Las limitaciones vivas de transferencia no se duplican aquí; consultar `HUMAN_HANDOFF.md` y `PROJECT_STATUS.md`.
-
-## Diagnóstico
-
-Fuentes principales:
-
-```text
-public.call_diagnostic_events
-public.human_handoff_events
-```
-
-Una investigación debe separar control, media y experiencia acústica. El procedimiento exacto vive en [`runbooks/CROSS_PLANE_CALL_DIAGNOSTICS.md`](./runbooks/CROSS_PLANE_CALL_DIAGNOSTICS.md).
-
-## Recuperación
-
-Existe un snapshot histórico pre-Gemini para comparación de regresiones:
-
-```text
-stable/pre-gemini-2026-08-19
-```
-
-No hacer rollback ciego. Primero demostrar qué capa/regresión necesita contención y restaurar el componente/binding correspondiente.
-
-## Regla de cierre
-
-Si una sesión cambia:
-
-- arquitectura → ADR/System Architecture/Design Rules;
-- estado operativo → `PROJECT_STATUS.md`;
-- próxima misión → `SESSION_HANDOFF.md`;
-- procedimiento → runbook;
-- handoff → `HUMAN_HANDOFF.md`;
-- navegación/autoridad → `README.md`.
-
-No copiar el mismo estado en todos ellos.
+Git conserva el historial retirado. No se restauran productos o prototipos
+anteriores como atajo para implementar una capability nueva.

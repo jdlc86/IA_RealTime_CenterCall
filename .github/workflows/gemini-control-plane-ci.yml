@@ -6,10 +6,16 @@ on:
       - rebuild/v39-stable-baseline
     paths:
       - "apps/gemini-control-plane/**"
+      - "docs/**"
+      - "scripts/check-documentation.mjs"
+      - "Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx"
       - ".github/workflows/gemini-control-plane-ci.yml"
   pull_request:
     paths:
       - "apps/gemini-control-plane/**"
+      - "docs/**"
+      - "scripts/check-documentation.mjs"
+      - "Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx"
       - ".github/workflows/gemini-control-plane-ci.yml"
 
 permissions:

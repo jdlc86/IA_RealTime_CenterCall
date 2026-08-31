@@ -1,33 +1,31 @@
-# Runbook — Cloudflare Workers
+# Runbook de Cloudflare
 
-> **Estado:** vigente
-> **Última revisión:** 2026-08-29
-
-## Productos
+## Worker vigente
 
 ```text
-OpenAI Worker       apps/control-plane
-Gemini Fast Worker  apps/gemini-control-plane
+name    ia-realtime-centercall-gemini-fast
+config  apps/gemini-control-plane/wrangler.fast.jsonc
+entry   apps/gemini-control-plane/src/index-fast.ts
 ```
 
-Son productos independientes. Ambos pueden usar contratos neutrales y Supabase, pero no comparten sockets, audio, lifecycle ni estado efímero de llamada.
+Responsabilidades: webhook Telnyx, routing tenant, admission, caller-security,
+credenciales, bootstrap, tools/control, transferencia y diagnóstico sideband.
 
-## Reglas operativas
+Cloudflare no transporta audio continuo.
 
-- GitHub y un SHA publicado son la fuente de verdad.
-- No editar código desde el dashboard salvo diagnóstico excepcional; cualquier cambio remoto debe reconciliarse.
-- Verificar nombre del Worker, versión efectiva, bindings, KV, secrets y rutas del producto afectado.
-- El Fast Worker debe apuntar mediante `GEMINI_FAST_CANARY_EDGE_URL` a la revisión etiquetada del Media Edge prevista.
-- No inferir que Gemini está inactivo porque Cloud Run muestre `0%` de tráfico general.
-- No mostrar valores de secrets en comandos, logs o documentación.
+## Despliegue
 
-## Workflows vigentes Gemini Fast
+El Worker se despliega dentro de `Gemini Fast Canary Deploy`. No existe un
+workflow autónomo de deploy del Worker porque podría competir con la revisión
+Cloud Run verificada.
 
-- `Gemini Control Plane CI`
-- `Gemini Fast Worker Deploy`
-- `Gemini Fast Canary Deploy`
-- `Gemini Fast Live Preflight`
-- `Gemini Fast Runtime Preflight`
-- `Gemini Fast Worker Secret Sync` sólo para sincronización explícitamente autorizada.
+`Gemini Fast Worker Secret Sync` es manual y se limita a sincronización
+operativa de secretos; no sustituye el despliegue integral.
 
-Antes de un deploy, consultar [`Deployment.md`](./Deployment.md) y verificar que el workflow hará checkout del SHA exacto.
+## Verificación
+
+- `/health` devuelve `gemini-control-plane-fast`;
+- secrets requeridos existen por nombre, sin imprimir valores;
+- KV de routing está enlazado;
+- Queue/DLQ de caller-security existen;
+- binding de Media Edge apunta al tag del SHA desplegado.

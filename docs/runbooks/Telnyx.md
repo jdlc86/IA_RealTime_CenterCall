@@ -1,36 +1,23 @@
-# Runbook — Telnyx
+# Runbook de Telnyx
 
-> **Estado:** vigente
-> **Última revisión:** 2026-08-29
+## Ruta vigente
 
-## Alcance
+Telnyx entrega el webhook firmado al Gemini Fast Worker. El Worker resuelve el
+tenant, evalúa admission y caller-security, registra bootstrap y ordena
+`streaming_start` hacia la URL WSS etiquetada del Fast Media Edge.
 
-Telnyx es el carrier actual de ambos productos realtime. El routing confiable del número llamado determina tenant y producto antes de iniciar conversación específica del negocio.
+El audio continuo fluye directamente entre Telnyx y Cloud Run.
 
-## Separación de rutas
+## Comprobaciones
 
-### OpenAI
+- firma y timestamp del webhook;
+- `call_control_id` y número llamado;
+- routing tenant en KV;
+- caller normalizado desde contexto confiable;
+- binding `GEMINI_FAST_CANARY_EDGE_URL`;
+- formato Telnyx `L16/16000`, mono;
+- credencial HMAC y frame `start` coincidentes;
+- eventos de transferencia y target leg.
 
-Telnyx usa la ruta de señalización/media propia del producto OpenAI descrita por su runtime.
-
-### Gemini Fast
-
-```text
-Telnyx webhook firmado
-  → Gemini Fast Worker
-  → credencial/bootstrap acotado
-  → Telnyx media WSS ↔ Fast Media Edge ↔ Gemini Live
-```
-
-Para transferencia humana, el destino procede exclusivamente de la configuración privada del tenant. El modelo nunca proporciona un teléfono arbitrario.
-
-## Diagnóstico por llamada
-
-1. Capturar el `call_id` y la hora exacta.
-2. Verificar webhook/firma, routing y tenant binding.
-3. Distinguir leg origen, leg destino de transferencia y stream media.
-4. Correlacionar eventos `call.answered`, streaming, transfer, `call.bridged` y terminación.
-5. No interpretar `call.bridged` o `call.speak.ended` como prueba de audio audible.
-6. No registrar API keys, firmas completas, teléfonos sin necesidad ni audio/transcript crudo.
-
-La reconstrucción completa está en [`CROSS_PLANE_CALL_DIAGNOSTICS.md`](./CROSS_PLANE_CALL_DIAGNOSTICS.md).
+No cambiar codecs, VAD o resampling para corregir un fallo de señalización sin
+evidencia causal.

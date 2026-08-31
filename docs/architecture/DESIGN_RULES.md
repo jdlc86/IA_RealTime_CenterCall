@@ -5,7 +5,7 @@
 > **Última revisión:** 2026-08-29
 > **Aplicabilidad:** reglas transversales; un mecanismo específico de provider sólo es obligatorio cuando la regla o una ADR lo indiquen.
 
-Estas reglas son obligatorias salvo ADR posterior que las modifique explícitamente. **No se debe convertir una implementación histórica de OpenAI o de la arquitectura Gemini previa al Fast Path en una regla universal por accidente.**
+Estas reglas son obligatorias salvo ADR posterior que las modifique explícitamente. **No se debe convertir una implementación histórica o previa al Fast Path en una regla universal por accidente.**
 
 - **RA-001** — El dominio no importa SDKs externos.
 - **RA-002** — Toda integración externa tiene contrato/provider/adaptador o una frontera explícita equivalente dentro del runtime que la posee.
@@ -29,8 +29,8 @@ Estas reglas son obligatorias salvo ADR posterior que las modifique explícitame
 - **RA-020** — Todo deploy de producción parte de un SHA publicado y de los gates aplicables. Deben verificarse versión efectiva, bindings/routing y E2E cuando el cambio lo requiera.
 - **RA-021 — One state owner per concern.** Cada estado mutable, permiso o transición importante tiene una sola autoridad. Un port expone una capacidad; no crea un segundo owner.
 - **RA-022 — Capability first.** Los efectos se expresan como capacidades de producto (`checkAvailability`, `createReservation`, `transferCall`, etc.); las capas de dominio no invocan wire formats/SDKs arbitrarios.
-- **RA-023 — Provider details at the edge/runtime owner.** OpenAI, Gemini, Telnyx, Supabase y Cloudflare se traducen en las fronteras que los poseen; no contaminan el dominio neutral.
-- **RA-024 — Sin estado privado entre generaciones o productos.** Ninguna capa alcanza internals de otra mediante casts, prototipos, flags heredados o estado compartido accidental. OpenAI y Gemini no comparten estado efímero de llamada.
+- **RA-023 — Provider details at the edge/runtime owner.** Gemini, Telnyx, Supabase y Cloudflare se traducen en las fronteras que los poseen; no contaminan el dominio neutral.
+- **RA-024 — Sin estado privado entre generaciones o componentes.** Ninguna capa alcanza internals de otra mediante casts, prototipos, flags heredados o estado compartido accidental.
 - **RA-025 — Ordering por evidencia, no por tiempo.** Carreras de voz, tools y lifecycle se resuelven con identidad, ownership, sequence/eventos y estado explícito. No se añaden `sleep`, delays ni ventanas heurísticas para tapar desorden.
 - **RA-026 — La intención conversacional pertenece al modelo.** No se enumeran todas las frases posibles del usuario para simular comprensión. Los matchers léxicos sólo son apropiados para protocolos cerrados y acotados, no para lenguaje natural abierto.
 - **RA-027 — Determinismo sólo en invariantes.** Permisos, validación, idempotencia, tenant binding, confirmación empresarial, concurrencia, seguridad y lifecycle son deterministas. Interpretación abierta y formulación natural siguen siendo model-owned dentro de esos límites.
@@ -42,11 +42,11 @@ Estas reglas son obligatorias salvo ADR posterior que las modifique explícitame
 - **RA-033 — Seguridad por intención y fronteras.** Prompt extraction, manipulación de tools e intentos abusivos se gobiernan por políticas/autoridades; no exclusivamente por listas de palabras. No se exponen prompts privados, secretos o wire interno.
 - **RA-034 — Diagnóstico mínimo y redactado.** Se conserva sólo trazabilidad técnica necesaria, bounded y con retención apropiada. No se persisten audio, secretos ni datos personales/transcripts crudos sin necesidad explícita.
 - **RA-035 — Una fuente documental por decisión.** Arquitectura estable vive aquí/ADR; estado operativo en `PROJECT_STATUS.md`; relevo en `SESSION_HANDOFF.md`; procedimientos en runbooks. Los documentos históricos deben marcarse como tales y no duplicar una segunda “verdad actual”.
-- **RA-036 — Provider realtime seleccionado por tenant y fijado por llamada.** Una llamada no cambia silenciosamente OpenAI↔Gemini. Cualquier failover cross-provider requiere ADR que preserve contexto, ownership, tools y audio pendiente.
-- **RA-037 — Aislamiento estricto entre productos realtime.** OpenAI y Gemini no comparten sockets, buffers, wire events ni estado privado. El dominio neutral no contiene ramas para compensar semántica específica de un provider; cada producto puede tener su propio runtime y lifecycle.
+- **RA-036 — Runtime fijado por llamada.** Una llamada no cambia silenciosamente de revisión, modelo o media endpoint. Cualquier failover requiere ADR que preserve contexto, ownership, tools y audio pendiente.
+- **RA-037 — Aislamiento estricto de componentes.** Worker, Media Edge y provider no comparten internals, buffers ni estado privado fuera de contratos explícitos.
 - **RA-038 — Paridad de invariantes, no paridad de wire.** Cuando ambos productos ofrecen una misma capacidad, deben preservar sus invariantes de producto/seguridad, pero no necesitan implementar idéntico lifecycle, STT, VAD, response IDs ni transporte.
 - **RA-039 — Identidad suficiente para causalidad.** Cada runtime debe conservar/generar identidades estables suficientes para correlación, idempotencia y diagnóstico; el dominio no depende de identificadores propietarios concretos si no son necesarios.
-- **RA-040 — Media plane por provider es explícito.** OpenAI puede conservar SIP/direct media; Gemini puede usar Media Edge. Ninguna diferencia justifica introducir audio continuo en Cloudflare.
+- **RA-040 — Media plane explícito.** Gemini usa Fast Media Edge; ninguna necesidad de control justifica introducir audio continuo en Cloudflare.
 - **RA-041 — Activación de provider por gates.** Registrar/codificar un provider no equivale a habilitar llamadas. Contratos, media, seguridad, deployment y E2E se prueban antes de activación. **Para Gemini Fast este gate histórico ya fue cruzado; no debe leerse como “Gemini sigue deshabilitado”.**
 - **RA-042 — Setup Live y propiedad de sesión siguen el contrato real del provider.** En Gemini Live el setup inicial se compone antes de tráfico y se espera `setupComplete`; no se finge mutación dinámica mediante un segundo setup incompatible.
 - **RA-043 — No falsificar roles para obtener paridad.** Una orden del sistema/asistente o continuación post-tool no se inyecta como caller input sólo porque otro provider tuviera una primitiva diferente.

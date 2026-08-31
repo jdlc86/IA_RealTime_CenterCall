@@ -42,8 +42,9 @@ rotates during deployment, before changing the canary edge binding.
 Run the `Gemini Fast Canary Deploy` workflow. It builds an immutable Fast image,
 deploys it initially with `--no-traffic`, verifies provider readiness, synchronizes
 the Fast Worker, proves bootstrap/HMAC/WSS, retires stale tags, and only then moves
-100% of general Cloud Run traffic to that exact revision. The old 2 GiB deployment
-path and its workflow are retired and must not be recreated.
+100% of general Cloud Run traffic to esa revisión exacta. No existe un script
+alternativo de deploy: el antiguo despliegue genérico de 2 GiB y el script
+manual Fast fueron retirados para evitar autoridades competidoras.
 
 ## 3. Cloud Run security preflight
 
@@ -67,5 +68,5 @@ revision. A real inbound call must show this ordered trace:
 
 `tenant -> immutable GEMINI -> caller security -> credential -> bootstrap -> CallSession -> sideband ready -> streaming_start`
 
-Any failure rejects the call without an OpenAI fallback. Do not reintroduce the
-retired generic Media Edge workflow as a fallback.
+Any failure rejects the call without a fallback. Do not reintroduce the retired
+generic Media Edge workflow.

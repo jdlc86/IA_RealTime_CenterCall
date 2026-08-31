@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 
 const projectRoot = new URL("../../../", import.meta.url);
 
@@ -92,18 +92,10 @@ test("Manual Fast secret sync updates only Gemini-owned runtime secrets", async 
   assert.doesNotMatch(source, /CONTROL_WORKER_NAME|MEDIA_EDGE_CONTROL_PLANE_TOKEN/);
 });
 
-test("Primary Fast Worker deploy requires exact caller-security secret bindings", async () => {
-  const source = await workflow("gemini-fast-worker-deploy.yml");
-
-  assert.match(source, /wrangler secret list --config wrangler\.fast\.runtime\.jsonc/);
-  assert.match(source, /"CALLER_SECURITY_HMAC_SECRET", "SUPABASE_SERVICE_ROLE_KEY"/);
-  assert.match(source, /new Set\(rows\.map\(\(row\) => row\?\.name\)\)/);
-  assert.match(source, /names\.has\(required\)/);
-  assert.ok(
-    source.indexOf("wrangler secret list --config wrangler.fast.runtime.jsonc")
-      < source.indexOf("wrangler deploy --config wrangler.fast.runtime.jsonc"),
-    "required secret names must be checked exactly before deployment",
-  );
+test("The integrated canary is the only automatic Fast deployment authority", async () => {
+  const names = await readdir(new URL(".github/workflows/", projectRoot));
+  assert.ok(names.includes("gemini-fast-canary-deploy.yml"));
+  assert.ok(!names.includes("gemini-fast-worker-deploy.yml"));
 });
 
 test("Fast startup derives semantic security from the Gemini diagnostic origin", async () => {

@@ -3,7 +3,7 @@
 > **Estado:** vigente
 > **Última revisión:** 2026-08-29
 
-`public.call_diagnostic_events` es la fuente operacional persistida para reconstruir eventos técnicos de una llamada. **OpenAI y Gemini no necesariamente producen los mismos stages ni el mismo lifecycle**, por lo que este runbook separa consultas neutrales de filtros específicos.
+`public.call_diagnostic_events` es la fuente operacional persistida para reconstruir eventos técnicos de una llamada Gemini Fast. Este runbook separa evidencia neutral de filtros específicos por componente.
 
 No debe contener audio, base64 media, secretos, tokens, API keys, prompts completos ni transcripts crudos por defecto.
 
@@ -23,7 +23,7 @@ Estos guardrails son parte del diseño de diagnóstico mínimo/redactado. No deb
 
 El endpoint autenticado `/internal/diagnostics-ingest` del Gemini Fast Worker es la última frontera antes de Supabase. No confía en que el productor haya redactado correctamente: reconstruye el evento desde campos top-level cerrados y proyecta `details` a una allowlist común de códigos, métricas y booleanos bounded. Las claves desconocidas se descartan y un tipo inválido en una clave permitida devuelve `400 INVALID_DIAGNOSTICS` sin llamar a Supabase.
 
-Por tanto, `transcript`, `system_prompt`, tokens, teléfonos, payloads de provider y objetos anidados no deben poder entrar en `public.call_diagnostic_events`, incluso si se añaden accidentalmente al batch autenticado del Media Edge. Este filtro es Gemini-native y se ejecuta en el Worker durante el flush sideband posterior; no importa el redactor OpenAI ni añade trabajo al forwarding de audio.
+Por tanto, `transcript`, `system_prompt`, tokens, teléfonos, payloads de provider y objetos anidados no deben poder entrar en `public.call_diagnostic_events`, incluso si se añaden accidentalmente al batch autenticado del Media Edge. El filtro se ejecuta en el Worker durante el flush sideband posterior y no añade trabajo al forwarding de audio.
 
 ## 1. Empieza por identificar la llamada, no por buscar un stage esperado
 

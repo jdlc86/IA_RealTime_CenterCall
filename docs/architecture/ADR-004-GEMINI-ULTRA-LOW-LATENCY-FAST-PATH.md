@@ -5,11 +5,11 @@
 > **Última aclaración:** 2026-08-29
 > **Ámbito:** producto Gemini / realtime / media / tools / latencia / producción
 > **Supersede parcialmente:** decisiones de Fase 2/3 que obligaban a Google STT, semantic preselection, quarantine o `GeminiCallSession`/control WSS en cada turno
-> **No supersede:** ADR-003 sobre independencia OpenAI/Gemini ni la prohibición de Cloudflare en audio continuo
+> **Decisión única vigente:** sustituye los prototipos realtime anteriores y mantiene la prohibición de audio continuo en Cloudflare
 
 ## Contexto
 
-El runtime Gemini histórico acumuló mecanismos creados para convivir con una arquitectura OpenAI-first: Google Speech autoritativo por turno, semantic preselection, governed TTS, provider rotation, sideband, quarantine y múltiples owners de playback/turn state.
+El runtime Gemini histórico acumuló Google Speech autoritativo por turno, semantic preselection, governed TTS, provider rotation, sideband, quarantine y múltiples owners de playback/turn state.
 
 Aunque esos mecanismos podían ser correctos de forma aislada, añadían hops, esperas y estados que no son inherentes al modelo audio→audio Gemini Live.
 
@@ -181,7 +181,7 @@ No volver a interpretar esta sección como “Gemini no puede recibir tráfico h
 
 - menos hops y menor latencia;
 - ownership realtime más claro;
-- Gemini evoluciona sin arrastrar lifecycle OpenAI;
+- Gemini evoluciona sin arrastrar lifecycles retirados;
 - problemas de control pueden corregirse sin tocar audio estable;
 - arquitectura medible y desplegable por revisión inmutable/tag.
 
@@ -194,7 +194,6 @@ No volver a interpretar esta sección como “Gemini no puede recibir tráfico h
 
 ## Relación con otros documentos
 
-- [`ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md`](./ADR-003-INDEPENDENT-OPENAI-GEMINI-RUNTIMES.md) — separación estructural de productos.
 - [`SYSTEM_ARCHITECTURE.md`](./SYSTEM_ARCHITECTURE.md) — topología completa actual.
 - [`DESIGN_RULES.md`](./DESIGN_RULES.md) — invariantes transversales.
 - [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md) — estado operativo y siguiente validación.
