@@ -87,3 +87,32 @@ test("Fast security client bounds a hung sideband request", async () => {
   assert.deepEqual(result, { ok: false, status: "SECURITY_SIGNAL_UNAVAILABLE" });
   assert.ok(Date.now() - started < 1_000);
 });
+
+test("Fast security client requests terminal action with a bounded idempotent envelope", async () => {
+  let captured = null;
+  const client = createFastSecurityControlClient({
+    baseUrl: "https://worker.example",
+    controlToken: "0123456789abcdef0123456789abcdef",
+    fetcher: async (input, init) => {
+      captured = { url: String(input), init };
+      return Response.json({ ok: true, status: "SECURITY_CALL_TERMINATED" }, { status: 202 });
+    },
+  });
+  const result = await client.terminateSemanticAttack({
+    tenantId: "tenant-a",
+    callControlId: "call-a",
+    callerPhoneE164: "+34600000000",
+    calledPhoneE164: "+34910000001",
+    toolCallId: "tool-terminal",
+    category: "TOOL_MANIPULATION",
+  });
+  assert.equal(result.status, "SECURITY_CALL_TERMINATED");
+  assert.equal(captured.url, "https://worker.example/internal/call-security/terminate");
+  const body = JSON.parse(captured.init.body);
+  assert.deepEqual(Object.keys(body).sort(), [
+    "callControlId", "calledPhoneE164", "callerPhoneE164", "category", "eventKey", "tenantId",
+  ]);
+  assert.match(body.eventKey, /^gemini-fast-semsec-terminal-v1:[a-f0-9]{64}$/);
+  assert.equal(captured.init.body.includes("tool-terminal"), false);
+  assert.equal(captured.init.body.includes("transcript"), false);
+});

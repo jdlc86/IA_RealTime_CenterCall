@@ -101,5 +101,6 @@ test("The integrated canary is the only automatic Fast deployment authority", as
 test("Fast startup derives semantic security from the Gemini diagnostic origin", async () => {
   const source = await readFile(new URL("apps/gemini-media-edge/src/startup-fast.mjs", projectRoot), "utf8");
   assert.match(source, /process\.env\.FAST_SECURITY_CONTROL_URL \|\| new URL\(diagnosticSinkUrl\)\.origin/);
+  assert.match(source, /terminateSemanticAttack:\s*securityControl\.terminateSemanticAttack/);
   assert.doesNotMatch(source, /ia-realtime-centercall\.julopezcardona\.workers\.dev/);
 });

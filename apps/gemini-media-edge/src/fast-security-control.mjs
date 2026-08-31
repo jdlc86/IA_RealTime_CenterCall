@@ -73,5 +73,44 @@ export function createFastSecurityControlClient(options = {}) {
         return Object.freeze({ ok: false, status: "SECURITY_SIGNAL_UNAVAILABLE" });
       }
     },
+    async terminateSemanticAttack(input) {
+      try {
+        const tenantId = required(input?.tenantId, "semantic security tenantId", 256);
+        const callControlId = required(input?.callControlId, "semantic security callControlId", 512);
+        const calledPhoneE164 = required(input?.calledPhoneE164, "semantic security calledPhoneE164", 16);
+        const callerPhoneE164 = input?.callerPhoneE164 == null
+          ? null
+          : required(input.callerPhoneE164, "semantic security callerPhoneE164", 16);
+        const toolCallId = required(input?.toolCallId, "semantic security toolCallId", 256);
+        const category = required(input?.category, "semantic security category", 64);
+        const eventDigest = await sha256Hex(`gemini-fast-semantic-security-terminal-v1|${tenantId}|${callControlId}|${toolCallId}|${category}`);
+        const response = await fetcher(new URL("/internal/call-security/terminate", baseUrl), {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${controlToken}`,
+            "content-type": "application/json",
+            accept: "application/json",
+          },
+          body: JSON.stringify({
+            tenantId,
+            callControlId,
+            callerPhoneE164,
+            calledPhoneE164,
+            category,
+            eventKey: `gemini-fast-semsec-terminal-v1:${eventDigest}`,
+          }),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        let payload = null;
+        try {
+          const parsed = await response.json();
+          payload = record(parsed);
+        } catch {}
+        if (payload) return Object.freeze({ ...payload, httpStatus: response.status });
+        return Object.freeze({ ok: false, status: "SECURITY_TERMINATION_UNAVAILABLE", httpStatus: response.status });
+      } catch {
+        return Object.freeze({ ok: false, status: "SECURITY_TERMINATION_UNAVAILABLE" });
+      }
+    },
   });
 }

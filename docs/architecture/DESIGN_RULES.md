@@ -1,8 +1,8 @@
 # IA_RealTime_CenterCall — Design Rules
 
-> **Versión:** 3.2
+> **Versión:** 3.3
 > **Estado:** vigente y normativo
-> **Última revisión:** 2026-08-29
+> **Última revisión:** 2026-08-31
 > **Aplicabilidad:** reglas transversales; un mecanismo específico de provider sólo es obligatorio cuando la regla o una ADR lo indiquen.
 
 Estas reglas son obligatorias salvo ADR posterior que las modifique explícitamente. **No se debe convertir una implementación histórica o previa al Fast Path en una regla universal por accidente.**
@@ -65,6 +65,7 @@ Estas reglas son obligatorias salvo ADR posterior que las modifique explícitame
 - **RA-056 — La autorización debe ser exigible en el sink.** El orden `kernel → executor/handler` no basta como convención. Cada sink effectful exige una prueba no fabricable ligada a la operación exacta y al contexto tenant/call; ejecuta la instantánea autorizada y falla cerrado ante ausencia, rebinding o contexto distinto.
 - **RA-057 — Capability grant explícito y tenant-bound.** Cada tool admitida declara su capability en el bootstrap autenticado. El runtime exige coincidencia exacta entre esa concesión y la policy local antes de exponer la tool o aceptar una function call. Una capability ausente, desconocida, perteneciente a otro contrato o procedente de otro tenant falla cerrada antes de cualquier side effect.
 - **RA-058 — Allowlist en todo sink de diagnóstico general.** El backend que persiste telemetría reconstruye el evento desde un schema cerrado y conserva únicamente metadatos técnicos escalares, bounded y explícitamente permitidos. Campos desconocidos se descartan; tipos inválidos en campos permitidos fallan cerrados. Transcript, audio, prompts, secretos, teléfonos y payloads arbitrarios no cruzan el sink aunque un productor autenticado los envíe por error. Las auditorías operativas especializadas con PII necesaria, como `human_handoff_events`, son contratos distintos con acceso y documentación propios.
+- **RA-059 — Cierre semántico por evidencia acumulada y autoridad terminal única.** Una única propuesta semántica del modelo nunca termina una llamada. El kernel sólo puede declarar alta confianza tras observaciones autorizadas, distintas, acotadas e idempotentes; replay no incrementa evidencia. La decisión se mantiene local y O(1), sin RPC en llamadas normales. La despedida precede al efecto terminal y el Fast Worker conserva la autoridad exclusiva para solicitar el hangup a Telnyx. La indisponibilidad de reputación no bloquea el efecto de seguridad, y la indisponibilidad del control terminal no puede dejar la sesión muda: debe degradar de forma explícita y observable. No se persiste transcript bruto.
 
 ## Applicability notes del Fast Path Gemini
 

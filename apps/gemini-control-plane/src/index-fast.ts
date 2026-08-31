@@ -10,9 +10,13 @@ import {
 import { routeFastSemanticSecuritySignal, type FastSemanticSecuritySignalEnv } from "./fast-semantic-security-signal";
 import { routeFastGeminiCanaryWebhook } from "./telnyx/fast-canary-route";
 import { routeFastTransferAuthorize, routeFastTransferStart } from "./telnyx/fast-human-handoff";
+import {
+  routeFastSemanticSecurityTermination,
+  type FastSemanticSecurityTerminationEnv,
+} from "./telnyx/fast-semantic-security-termination";
 
 type FastWorkerEnv = FastGeminiPreflightEnv & FastDiagnosticIngestEnv & FastTemporalAuthorityEnv
-  & FastCallerSecurityEnv & FastSemanticSecuritySignalEnv;
+  & FastCallerSecurityEnv & FastSemanticSecuritySignalEnv & FastSemanticSecurityTerminationEnv;
 
 async function consumeCallerSecuritySignals(
   batch: MessageBatch<QueuedFastCallerSecuritySignal>,
@@ -56,6 +60,11 @@ export default {
     if (url.pathname === "/internal/diagnostics-ingest") return routeFastDiagnosticIngest(request, env);
     if (url.pathname === "/internal/fast-semantic-security-signal") {
       return routeFastSemanticSecuritySignal(request, env);
+    }
+    if (url.pathname === "/internal/call-security/terminate") {
+      return routeFastSemanticSecurityTermination(request, env, {
+        waitUntil: (promise) => ctx.waitUntil(promise),
+      });
     }
     if (url.pathname === "/internal/authoritative-datetime") return routeFastAuthoritativeDateTime(request, env);
     if (url.pathname === "/internal/call-transfer/authorize") return routeFastTransferAuthorize(request, env, handoffAudit);

@@ -30,6 +30,8 @@ describe("Fast semantic security boundary", () => {
     expect(instruction).toContain("significado completo y el contexto del turno");
     expect(instruction).toContain("No decidas por keywords, frases rígidas o coincidencias léxicas");
     expect(instruction).toContain("no es por sí misma un incidente");
-    expect(instruction).toContain("No te autoriza a bloquear permanentemente");
+    expect(instruction).toContain("No bloquees permanentemente al caller");
+    expect(instruction).toContain("si el kernel alcanza alta confianza");
+    expect(instruction).toContain("el resultado ordenará la despedida segura");
   });
 });

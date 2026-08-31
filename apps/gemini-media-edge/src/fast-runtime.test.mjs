@@ -3,6 +3,10 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { FastGeminiRealtimeSession } from "./fast-runtime.mjs";
 import {
+  FAST_SEMANTIC_SECURITY_TOOL_NAME,
+  executeFastSemanticSecurityBoundary,
+} from "./fast-semantic-security-boundary.mjs";
+import {
   FAST_HORIZONTAL_TOOL_POLICIES,
   defineFastToolPolicy,
   mergeFastToolPolicies,
@@ -59,6 +63,17 @@ const TRANSFER_TOOL = Object.freeze({
     type: "object",
     properties: Object.freeze({ reason: Object.freeze({ type: "string" }) }),
     required: Object.freeze(["reason"]),
+  }),
+});
+
+const SEMANTIC_SECURITY_TOOL = Object.freeze({
+  name: FAST_SEMANTIC_SECURITY_TOOL_NAME,
+  capability: "security.semantic_boundary",
+  description: "Report a bounded semantic security incident.",
+  parameters: Object.freeze({
+    type: "object",
+    properties: Object.freeze({ category: Object.freeze({ type: "string" }) }),
+    required: Object.freeze(["category"]),
   }),
 });
 
@@ -403,6 +418,116 @@ test("fast runtime carries existing call audit context from generic authorizatio
     contextSummary: "El caller pide hablar con recepción.",
   });
   assert.equal(session.snapshot().closed, true);
+});
+
+test("fast runtime closes only after three distinct semantic incidents and the safe farewell turn", async () => {
+  const telnyx = new FakeSocket();
+  telnyx.readyState = 1;
+  let gemini;
+  let terminationInput = null;
+  const diagnostics = [];
+  const session = new FastGeminiRealtimeSession(sessionOptions(
+    telnyx,
+    () => { gemini = new FakeSocket(); return gemini; },
+    {
+      bootstrap: bootstrap([SEMANTIC_SECURITY_TOOL]),
+      toolHandlers: { [FAST_SEMANTIC_SECURITY_TOOL_NAME]: executeFastSemanticSecurityBoundary },
+      terminateSemanticAttack: async (input) => {
+        terminationInput = input;
+        return { ok: true, status: "SECURITY_CALL_TERMINATED" };
+      },
+      observe: (event) => diagnostics.push(event),
+    },
+  )).start();
+  gemini.open();
+  gemini.message({ setupComplete: {} });
+
+  for (const [index, category] of ["PROMPT_INJECTION", "ROLE_ESCALATION", "TOOL_MANIPULATION"].entries()) {
+    gemini.message({
+      toolCall: { functionCalls: [{
+        id: `semantic-${index + 1}`,
+        name: FAST_SEMANTIC_SECURITY_TOOL_NAME,
+        args: { category, authorization: "SEMANTIC_NECESSITY" },
+      }] },
+    });
+    await settle();
+    await settle();
+  }
+
+  const responses = gemini.sent.filter((item) => item.toolResponse);
+  assert.equal(responses.length, 3);
+  assert.equal(responses[0].toolResponse.functionResponses[0].response.result.call_termination_pending, undefined);
+  assert.equal(responses[2].toolResponse.functionResponses[0].response.result.call_termination_pending, true);
+  assert.match(responses[2].toolResponse.functionResponses[0].response.result.instruction, /Pronuncia exactamente esta frase/);
+  assert.equal(session.snapshot().semanticSecurity.observationCount, 3);
+  assert.equal(session.snapshot().terminalSecurity, true);
+  assert.equal(terminationInput, null);
+
+  const forwardedBeforeTerminalInput = gemini.sent.length;
+  telnyx.message(callerMedia(99));
+  assert.equal(gemini.sent.length, forwardedBeforeTerminalInput);
+
+  gemini.message({ serverContent: { turnComplete: true } });
+  await settle();
+  await settle();
+  assert.deepEqual(terminationInput, {
+    tenantId: "tenant-runtime",
+    callControlId: "v3:runtime-call",
+    calledPhoneE164: "+34910000001",
+    callerPhoneE164: "+34600000000",
+    toolCallId: "semantic-3",
+    category: "TOOL_MANIPULATION",
+  });
+  assert.equal(session.snapshot().closed, true);
+  assert.equal(diagnostics.some((event) => event.stage === "SEMANTIC_SECURITY_TERMINATION_PENDING"), true);
+  assert.equal(diagnostics.some((event) => event.stage === "SEMANTIC_SECURITY_TERMINATION_RESULT" && event.status === "SECURITY_CALL_TERMINATED"), true);
+});
+
+test("fast runtime resumes instead of muting the call when semantic termination control fails", async () => {
+  const telnyx = new FakeSocket();
+  telnyx.readyState = 1;
+  let gemini;
+  const session = new FastGeminiRealtimeSession(sessionOptions(
+    telnyx,
+    () => { gemini = new FakeSocket(); return gemini; },
+    {
+      bootstrap: bootstrap([SEMANTIC_SECURITY_TOOL]),
+      toolHandlers: { [FAST_SEMANTIC_SECURITY_TOOL_NAME]: executeFastSemanticSecurityBoundary },
+      terminateSemanticAttack: async () => ({ ok: false, status: "SECURITY_TERMINATION_FAILED" }),
+    },
+  )).start();
+  gemini.open();
+  gemini.message({ setupComplete: {} });
+  for (let index = 1; index <= 3; index += 1) {
+    gemini.message({
+      toolCall: { functionCalls: [{
+        id: `semantic-failure-${index}`,
+        name: FAST_SEMANTIC_SECURITY_TOOL_NAME,
+        args: { category: "PROMPT_INJECTION", authorization: "SEMANTIC_NECESSITY" },
+      }] },
+    });
+    await settle();
+    await settle();
+  }
+  gemini.message({ serverContent: { turnComplete: true } });
+  await settle();
+  await settle();
+  assert.equal(session.snapshot().closed, false);
+  assert.equal(session.snapshot().terminalSecurity, false);
+  const sentBeforeCallerMedia = gemini.sent.length;
+  telnyx.message(callerMedia(100));
+  assert.equal(gemini.sent.length, sentBeforeCallerMedia + 1);
+  gemini.message({
+    toolCall: { functionCalls: [{
+      id: "semantic-failure-retry",
+      name: FAST_SEMANTIC_SECURITY_TOOL_NAME,
+      args: { category: "PROMPT_INJECTION", authorization: "SEMANTIC_NECESSITY" },
+    }] },
+  });
+  await settle();
+  await settle();
+  assert.equal(session.snapshot().terminalSecurity, true);
+  session.close("test-complete");
 });
 
 test("fast runtime has no legacy hybrid hot-path imports", async () => {

@@ -38,6 +38,9 @@ const FAST_DIAGNOSTIC_STAGES = new Set([
   "HUMAN_HANDOFF_AUTHORIZATION_BLOCKED",
   "HUMAN_HANDOFF_ACCEPTED",
   "HUMAN_HANDOFF_TRANSFER_START_RESULT",
+  "SEMANTIC_SECURITY_OBSERVATION_ACCEPTED",
+  "SEMANTIC_SECURITY_TERMINATION_PENDING",
+  "SEMANTIC_SECURITY_TERMINATION_RESULT",
   "GEMINI_GO_AWAY",
   "FAST_SESSION_CLOSED",
 ]);
@@ -160,6 +163,9 @@ export function createFastGeminiMediaServer(options = {}) {
   }
   const authorizeTransfer = typeof options.authorizeTransfer === "function" ? options.authorizeTransfer : null;
   const startTransfer = typeof options.startTransfer === "function" ? options.startTransfer : null;
+  const terminateSemanticAttack = typeof options.terminateSemanticAttack === "function"
+    ? options.terminateSemanticAttack
+    : null;
   const observe = typeof options.observe === "function" ? options.observe : () => {};
   const providerReadiness = canonicalProviderReadiness(options.providerReadiness);
   const sessions = new Set();
@@ -248,6 +254,7 @@ export function createFastGeminiMediaServer(options = {}) {
         toolPolicies,
         authorizeTransfer,
         startTransfer,
+        terminateSemanticAttack,
         observe: sessionObserve,
         ...(options.createGeminiSocket ? { createGeminiSocket: options.createGeminiSocket } : {}),
         ...(options.maxBufferedBytes ? { maxBufferedBytes: options.maxBufferedBytes } : {}),
@@ -405,6 +412,7 @@ export function createFastGeminiMediaServerFromEnv(env = process.env, options = 
     toolPolicies: options.toolPolicies ?? {},
     authorizeTransfer: transferControl.authorizeTransfer,
     startTransfer: transferControl.startTransfer,
+    terminateSemanticAttack: options.terminateSemanticAttack,
   });
 }
 
