@@ -1,7 +1,7 @@
 # IA_RealTime_CenterCall — estado operativo
 
 > Snapshot documental: 2026-08-31
-> Base remota auditada: `rebuild/v39-stable-baseline` @ `9a9e2d0723dfd5acced8f9fb3eb1cf2c4148e7e7`
+> Base remota auditada: `rebuild/v39-stable-baseline` @ `3126c9c65f5042ae7e3c902deda3a68a0969bbc9`
 > Seguridad viva: [guía de seguridad](../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx)
 
 Los datos remotos deben volver a verificarse antes de operar producción.
@@ -17,7 +17,7 @@ Los datos remotos deben volver a verificarse antes de operar producción.
 | Diagnóstico con allowlist | sí | verde | desplegado | sonda post-deploy PASS |
 | Reputación/decay Supabase | sí | verde | migración aplicada | prueba transaccional PASS |
 | Limpieza de legado | sí | verde | no aplica | no aplica |
-| Cierre semántico de alta confianza | en esta rama local | pendiente | no desplegado | no ejecutado |
+| Cierre semántico de alta confianza | sí | verde | desplegado por run `33413902191` | pendiente de llamada real |
 
 ## Arquitectura vigente
 
@@ -44,8 +44,8 @@ Controles vigentes:
 - cola/DLQ para señales de reputación;
 - minimización de datos y ausencia de transcript bruto.
 
-En la rama local de trabajo se añade una política de cierre semántico de alta
-confianza aún no desplegada: exige tres function calls autorizadas y distintas
+Está desplegada una política de cierre semántico de alta confianza que exige
+tres function calls autorizadas y distintas
 en la misma llamada, ignora replay por `toolCallId`, ordena una despedida segura
 y sólo después solicita al Fast Worker el hangup Telnyx. La decisión local es
 O(1), acotada y sin RPC; el único RPC nuevo ocurre en la ruta excepcional de
@@ -55,7 +55,7 @@ muda. La reputación de alta confianza se registra sideband sin transcript bruto
 Backlog abierto:
 
 1. almacenamiento compartido y atómico antes de escalar horizontalmente;
-2. desplegar y validar E2E la política de cierre semántico de alta confianza;
+2. validar E2E la política de cierre semántico de alta confianza;
 3. suite de regresión de seguridad consolidada;
 4. retención y borrado de datos de seguridad;
 5. completar verticales mediante contratos Gemini-native.
@@ -74,10 +74,8 @@ Seguridad y auditoría son sideband cuando la invariante lo permite.
 
 ## Siguiente validación
 
-Para completar el bloque local de cierre semántico:
+Para completar el bloque desplegado de cierre semántico:
 
-1. revisar y fusionar el cambio tras CI de ambos componentes;
-2. lanzar `Gemini Fast Canary Deploy` únicamente si se desea actualizar producción;
-3. verificar Worker, revisión efectiva y diagnósticos terminales;
-4. realizar una llamada E2E controlada sólo con autorización expresa;
-5. comprobar tres incidentes distintos, despedida, hangup, señal HIGH e inexistencia de transcript bruto.
+1. realizar una llamada E2E controlada sólo con autorización expresa;
+2. comprobar tres incidentes distintos, despedida, hangup, señal HIGH e inexistencia de transcript bruto;
+3. revisar diagnósticos terminales y confirmar que no existe silencio ante fallo del control remoto.
