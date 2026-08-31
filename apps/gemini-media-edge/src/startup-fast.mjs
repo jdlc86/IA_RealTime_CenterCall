@@ -47,6 +47,7 @@ const runtime = createFastGeminiMediaServerFromEnv(process.env, {
   toolHandlers: Object.freeze({
     [FAST_SEMANTIC_SECURITY_TOOL_NAME]: semanticSecurityHandler,
   }),
+  terminateSemanticAttack: securityControl.terminateSemanticAttack,
 });
 runtime.server.listen(port, "0.0.0.0", () => {
   console.log(JSON.stringify({

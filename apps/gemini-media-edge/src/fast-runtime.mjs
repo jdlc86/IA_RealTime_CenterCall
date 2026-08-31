@@ -13,6 +13,8 @@ import {
 import { FastGeminiToolExecutor } from "./fast-tool-executor.mjs";
 import { FastToolAuthorizationKernel, requireFastToolAuthorizationReceipt } from "./fast-tool-authorization-kernel.mjs";
 import { authorizeFastHumanHandoff, initialFastHandoffAuthorizationState } from "./fast-human-handoff-policy.mjs";
+import { FAST_SEMANTIC_SECURITY_TOOL_NAME } from "./fast-semantic-security-boundary.mjs";
+import { FastSemanticSecurityTerminationPolicy } from "./fast-semantic-security-termination-policy.mjs";
 
 const OPEN = 1;
 const CONNECTING = 0;
@@ -108,6 +110,10 @@ export class FastGeminiRealtimeSession {
       : new FastGeminiToolExecutor({ handlers: options.toolHandlers });
     this.authorizeTransfer = typeof options.authorizeTransfer === "function" ? options.authorizeTransfer : null;
     this.startTransfer = typeof options.startTransfer === "function" ? options.startTransfer : null;
+    this.terminateSemanticAttack = typeof options.terminateSemanticAttack === "function" ? options.terminateSemanticAttack : null;
+    this.semanticSecurityTermination = options.semanticSecurityTermination instanceof FastSemanticSecurityTerminationPolicy
+      ? options.semanticSecurityTermination
+      : new FastSemanticSecurityTerminationPolicy();
     this.resampler = new FastPcm24To16Resampler();
     this.gemini = null;
     this.setupComplete = false;
@@ -122,6 +128,8 @@ export class FastGeminiRealtimeSession {
     this.handoffAuthorization = initialFastHandoffAuthorizationState();
     this.pendingHandoff = null;
     this.terminalHandoff = false;
+    this.pendingSecurityTermination = null;
+    this.terminalSecurity = false;
   }
 
   start() {
@@ -177,7 +185,7 @@ export class FastGeminiRealtimeSession {
         if (frame.sessionResumptionToken) this.lastResumptionToken = frame.sessionResumptionToken;
         if (frame.goAwayTimeLeftMs !== null) this.#emit("GEMINI_GO_AWAY", { timeLeftMs: frame.goAwayTimeLeftMs });
 
-        if (frame.interrupted && !this.terminalHandoff) {
+        if (frame.interrupted && !this.terminalHandoff && !this.terminalSecurity) {
           safeSend(this.telnyx, telnyxClearPlaybackMessage(), "Telnyx", this.maxBufferedBytes);
           this.resampler.reset();
           this.#emit("BARGE_IN_CLEAR_SENT");
@@ -206,7 +214,10 @@ export class FastGeminiRealtimeSession {
         }
         if (frame.turnComplete) {
           this.#emit("GEMINI_TURN_COMPLETE");
-          if (this.pendingHandoff && !this.pendingHandoff.starting) {
+          if (this.pendingSecurityTermination && !this.pendingSecurityTermination.starting) {
+            this.pendingSecurityTermination.starting = true;
+            void this.#startPendingSecurityTermination();
+          } else if (this.pendingHandoff && !this.pendingHandoff.starting) {
             this.pendingHandoff.starting = true;
             void this.#startPendingHandoff();
           } else if (!this.pendingHandoff) {
@@ -232,7 +243,7 @@ export class FastGeminiRealtimeSession {
         const message = parseJson(raw, "Telnyx media");
         if (message.event === "connected" || message.event === "mark") return;
         if (message.event === "stop") return this.close("TELNYX_STOP");
-        if (this.terminalHandoff) return; // Point of no return: caller audio no longer re-enters AI.
+        if (this.terminalHandoff || this.terminalSecurity) return; // Point of no return: caller audio no longer re-enters AI.
         const bridged = telnyxInboundMediaToGemini(message);
         if (!bridged) return;
         this.lastCallerMediaAtNs = process.hrtime.bigint();
@@ -313,7 +324,7 @@ export class FastGeminiRealtimeSession {
   #enqueueToolCall(toolCall, callerTurnReceiptSnapshot = null) {
     const callerTurnReceipt = callerTurnReceiptSnapshot;
     this.toolChain = this.toolChain.then(async () => {
-      if (this.closed) return;
+      if (this.closed || this.terminalHandoff || this.terminalSecurity) return;
       const startedNs = process.hrtime.bigint();
       try {
         const authorization = this.toolAuthorization.authorize(toolCall, {
@@ -345,6 +356,49 @@ export class FastGeminiRealtimeSession {
                 callControlId: this.bootstrap.callControlId,
                 callerPhoneE164: this.bootstrap.securityContext.callerPhoneE164,
               });
+          if (
+            toolCall.name === FAST_SEMANTIC_SECURITY_TOOL_NAME
+            && result?.ok === true
+            && result?.status === "SEMANTIC_SECURITY_INCIDENT_RECORDED"
+          ) {
+            const decision = this.semanticSecurityTermination.observe({
+              toolCallId: toolCall.id,
+              category: result.category,
+            });
+            this.#emit("SEMANTIC_SECURITY_OBSERVATION_ACCEPTED", {
+              category: decision.category,
+              observationCount: decision.observationCount,
+              highConfidence: decision.highConfidence,
+            });
+            if (decision.terminate && !this.pendingHandoff && !this.terminalHandoff) {
+              if (!this.terminateSemanticAttack) {
+                this.semanticSecurityTermination.releaseTerminationAttempt();
+                this.#emit("SEMANTIC_SECURITY_TERMINATION_RESULT", {
+                  category: decision.category,
+                  observationCount: decision.observationCount,
+                  status: "SECURITY_TERMINATION_UNAVAILABLE",
+                });
+              } else {
+                this.terminalSecurity = true;
+                this.preSetupMedia.length = 0;
+                this.pendingSecurityTermination = {
+                  toolCallId: toolCall.id,
+                  category: decision.category,
+                  observationCount: decision.observationCount,
+                  starting: false,
+                };
+                result = Object.freeze({
+                  ...result,
+                  call_termination_pending: true,
+                  instruction: "Pronuncia exactamente esta frase y nada más: Por seguridad, voy a finalizar esta llamada. Puedes volver a llamar cuando necesites ayuda legítima con el servicio.",
+                });
+                this.#emit("SEMANTIC_SECURITY_TERMINATION_PENDING", {
+                  category: decision.category,
+                  observationCount: decision.observationCount,
+                });
+              }
+            }
+          }
         }
         if (this.closed) return;
         safeSend(this.gemini, buildFastFunctionResponse(toolCall, result), "Gemini", this.maxBufferedBytes);
@@ -382,6 +436,43 @@ export class FastGeminiRealtimeSession {
     }
   }
 
+  async #startPendingSecurityTermination() {
+    const pending = this.pendingSecurityTermination;
+    if (!pending || this.closed) return;
+    try {
+      const result = await this.terminateSemanticAttack(Object.freeze({
+        tenantId: this.bootstrap.tenantId,
+        callControlId: this.bootstrap.callControlId,
+        calledPhoneE164: this.bootstrap.securityContext.calledPhoneE164,
+        callerPhoneE164: this.bootstrap.securityContext.callerPhoneE164,
+        toolCallId: pending.toolCallId,
+        category: pending.category,
+      }));
+      this.#emit("SEMANTIC_SECURITY_TERMINATION_RESULT", {
+        category: pending.category,
+        observationCount: pending.observationCount,
+        status: result?.status ?? "UNKNOWN",
+      });
+      if (result?.ok === true && result.status === "SECURITY_CALL_TERMINATED") {
+        this.close("SEMANTIC_SECURITY_TERMINAL");
+        return;
+      }
+      this.pendingSecurityTermination = null;
+      this.terminalSecurity = false;
+      this.semanticSecurityTermination.releaseTerminationAttempt();
+    } catch (error) {
+      this.#emit("SEMANTIC_SECURITY_TERMINATION_RESULT", {
+        category: pending.category,
+        observationCount: pending.observationCount,
+        status: "SECURITY_TERMINATION_UNAVAILABLE",
+        errorCategory: error instanceof Error ? error.name : "Error",
+      });
+      this.pendingSecurityTermination = null;
+      this.terminalSecurity = false;
+      this.semanticSecurityTermination.releaseTerminationAttempt();
+    }
+  }
+
   #emit(stage, details = {}) {
     try {
       this.observe(Object.freeze({
@@ -403,6 +494,9 @@ export class FastGeminiRealtimeSession {
       toolAuthorization: this.toolAuthorization.snapshot(),
       terminalHandoff: this.terminalHandoff,
       handoffPending: Boolean(this.pendingHandoff),
+      terminalSecurity: this.terminalSecurity,
+      securityTerminationPending: Boolean(this.pendingSecurityTermination),
+      semanticSecurity: this.semanticSecurityTermination.snapshot(),
     });
   }
 
