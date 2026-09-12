@@ -72,6 +72,27 @@ test("governed speech failure stores its safe category without exception text", 
   assert.equal(serialized.includes("private runtime failure text"), false);
 });
 
+test("semantic terminal playback diagnostics retain only bounded lifecycle evidence", () => {
+  const journal = new InMemoryDiagnosticJournal({ ttlMs: 60_000 });
+  const event = journal.record({
+    tenantId: "restaurante-centro",
+    callControlId: "v3:test",
+    stage: "SEMANTIC_SECURITY_PLAYBACK_DRAIN_FAILED",
+    category: "TOOL_MANIPULATION",
+    observationCount: 3,
+    status: "SECURITY_TERMINATION_UNAVAILABLE",
+    failureCategory: "TELNYX_MARK_SEND_FAILED",
+    transcript: "private caller content",
+  }, 2_075_000);
+  assert.deepEqual(event.details, {
+    failure_category: "TELNYX_MARK_SEND_FAILED",
+    status: "SECURITY_TERMINATION_UNAVAILABLE",
+    category: "TOOL_MANIPULATION",
+    observation_count: 3,
+  });
+  assert.equal(JSON.stringify(event).includes("private caller content"), false);
+});
+
 test("semantic preselection uses backward-compatible safe details without adding a new top-level field", () => {
   const journal = new InMemoryDiagnosticJournal({ ttlMs: 60_000 });
   const event = journal.record({

@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { WebSocket } from "ws";
 import { InMemoryFastBootstrapRegistry } from "./fast-bootstrap.mjs";
-import { createFastGeminiMediaServer } from "./server-fast.mjs";
+import { createFastGeminiMediaServer, safeFastDiagnostic } from "./server-fast.mjs";
+
+test("server admits terminal playback evidence but rejects per-frame telemetry", () => {
+  assert.equal(safeFastDiagnostic({ stage: "SEMANTIC_SECURITY_PLAYBACK_DRAIN_REQUESTED" })?.stage, "SEMANTIC_SECURITY_PLAYBACK_DRAIN_REQUESTED");
+  assert.equal(safeFastDiagnostic({ stage: "SEMANTIC_SECURITY_PLAYBACK_DRAINED" })?.stage, "SEMANTIC_SECURITY_PLAYBACK_DRAINED");
+  assert.equal(safeFastDiagnostic({ stage: "SEMANTIC_SECURITY_PLAYBACK_DRAIN_TIMEOUT" })?.stage, "SEMANTIC_SECURITY_PLAYBACK_DRAIN_TIMEOUT");
+  assert.equal(safeFastDiagnostic({ stage: "SEMANTIC_SECURITY_PLAYBACK_DRAIN_FAILED" })?.stage, "SEMANTIC_SECURITY_PLAYBACK_DRAIN_FAILED");
+  assert.equal(safeFastDiagnostic({ stage: "SEMANTIC_SECURITY_FAREWELL_TIMEOUT" })?.stage, "SEMANTIC_SECURITY_FAREWELL_TIMEOUT");
+  assert.equal(safeFastDiagnostic({ stage: "GEMINI_FRAME_PROCESSED" }), null);
+});
 
 class FakeGeminiSocket {
   constructor() {

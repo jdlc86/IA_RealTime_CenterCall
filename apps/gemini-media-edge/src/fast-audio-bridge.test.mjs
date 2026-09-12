@@ -6,6 +6,7 @@ import {
   geminiAudioToTelnyxMedia,
   telnyxClearPlaybackMessage,
   telnyxInboundMediaToGemini,
+  telnyxPlaybackMarkMessage,
 } from "./fast-audio-bridge.mjs";
 
 function pcmSine(sampleRate, samples, frequency = 440) {
@@ -57,6 +58,13 @@ test("resampler stays continuous across Gemini chunk boundaries", () => {
 
 test("barge-in clear is a single Telnyx protocol message", () => {
   assert.deepEqual(telnyxClearPlaybackMessage(), { event: "clear" });
+});
+
+test("playback drain mark uses the Telnyx correlated mark contract", () => {
+  assert.deepEqual(telnyxPlaybackMarkMessage("ia-security-terminal:tool-1"), {
+    event: "mark",
+    mark: { name: "ia-security-terminal:tool-1" },
+  });
 });
 
 test("local caller fast-path overhead stays far below realtime budget", () => {
