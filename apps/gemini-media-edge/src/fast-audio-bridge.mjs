@@ -99,3 +99,10 @@ export function geminiAudioToTelnyxMedia(audioPart, resampler) {
 export function telnyxClearPlaybackMessage() {
   return Object.freeze({ event: "clear" });
 }
+
+export function telnyxPlaybackMarkMessage(name) {
+  return Object.freeze({
+    event: "mark",
+    mark: Object.freeze({ name: required(name, "Telnyx playback mark name", 256) }),
+  });
+}

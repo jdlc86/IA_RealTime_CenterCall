@@ -40,6 +40,11 @@ const FAST_DIAGNOSTIC_STAGES = new Set([
   "HUMAN_HANDOFF_TRANSFER_START_RESULT",
   "SEMANTIC_SECURITY_OBSERVATION_ACCEPTED",
   "SEMANTIC_SECURITY_TERMINATION_PENDING",
+  "SEMANTIC_SECURITY_PLAYBACK_DRAIN_REQUESTED",
+  "SEMANTIC_SECURITY_PLAYBACK_DRAINED",
+  "SEMANTIC_SECURITY_PLAYBACK_DRAIN_TIMEOUT",
+  "SEMANTIC_SECURITY_PLAYBACK_DRAIN_FAILED",
+  "SEMANTIC_SECURITY_FAREWELL_TIMEOUT",
   "SEMANTIC_SECURITY_TERMINATION_RESULT",
   "GEMINI_GO_AWAY",
   "FAST_SESSION_CLOSED",
@@ -128,7 +133,7 @@ function parseTelnyxHandshakeMessage(raw) {
   catch { throw new Error("Telnyx handshake JSON is invalid"); }
 }
 
-function safeFastDiagnostic(event) {
+export function safeFastDiagnostic(event) {
   if (!event || typeof event !== "object" || typeof event.stage !== "string") return null;
   if (FAST_DIAGNOSTIC_STAGES.has(event.stage)) return event;
   return null;

@@ -55,6 +55,7 @@ function defaultPlane(component) {
 function safeDetails(input) {
   const details = {};
   const toolAuthorizationStage = input.stage === "TOOL_AUTHORIZATION_ALLOWED" || input.stage === "TOOL_AUTHORIZATION_BLOCKED";
+  const semanticSecurityStage = input.stage.startsWith("SEMANTIC_SECURITY_");
   const codeFields = [
     ["phase", input.phase],
     ["reason", input.reason],
@@ -66,6 +67,8 @@ function safeDetails(input) {
     ["type", input.type],
     ["providerErrorCode", input.providerErrorCode],
     ["failureCategory", input.failureCategory],
+    ["status", semanticSecurityStage ? input.status : undefined],
+    ["category", semanticSecurityStage ? input.category : undefined],
   ];
   for (const [key, value] of codeFields) {
     const safe = safeDetailCode(value);
@@ -88,6 +91,7 @@ function safeDetails(input) {
     ["post_tool_model_generations", input.postToolModelGenerations],
     ["post_tool_discarded_model_output", input.postToolDiscardedModelOutput],
     ["playback_authorities", input.playbackAuthorities],
+    ["observation_count", semanticSecurityStage ? input.observationCount : undefined],
   ];
   for (const [key, value] of numericFields) {
     const safe = boundedNumber(value);

@@ -19,6 +19,7 @@ class FakeSocket {
     this.listeners = new Map();
     this.sent = [];
     this.closed = null;
+    this.failEvent = null;
   }
   on(type, listener) {
     const list = this.listeners.get(type) ?? [];
@@ -30,7 +31,11 @@ class FakeSocket {
     for (const listener of this.listeners.get(type) ?? []) listener(value);
   }
   open() { this.readyState = 1; this.emit("open"); }
-  send(value) { this.sent.push(typeof value === "string" ? JSON.parse(value) : value); }
+  send(value) {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    if (parsed?.event === this.failEvent) throw new Error(`simulated ${this.failEvent} send failure`);
+    this.sent.push(parsed);
+  }
   close(code, reason) { this.readyState = 3; this.closed = { code, reason }; }
   message(value) { this.emit("message", JSON.stringify(value)); }
 }
@@ -467,7 +472,24 @@ test("fast runtime closes only after three distinct semantic incidents and the s
   telnyx.message(callerMedia(99));
   assert.equal(gemini.sent.length, forwardedBeforeTerminalInput);
 
-  gemini.message({ serverContent: { turnComplete: true } });
+  gemini.message({
+    serverContent: {
+      modelTurn: { parts: [geminiAudioPart()] },
+      turnComplete: true,
+    },
+  });
+  await settle();
+  await settle();
+  assert.equal(terminationInput, null);
+  const terminalMediaIndex = telnyx.sent.findIndex((message) => message.event === "media");
+  const terminalMarkIndex = telnyx.sent.findIndex((message) => message.event === "mark");
+  assert.ok(terminalMediaIndex >= 0, "safe farewell audio must be queued");
+  assert.ok(terminalMarkIndex > terminalMediaIndex, "drain mark must follow safe farewell audio");
+  const terminalMark = telnyx.sent[terminalMarkIndex];
+  telnyx.message({ event: "mark", mark: { name: "unrelated-mark" } });
+  await settle();
+  assert.equal(terminationInput, null);
+  telnyx.message(terminalMark);
   await settle();
   await settle();
   assert.deepEqual(terminationInput, {
@@ -480,6 +502,8 @@ test("fast runtime closes only after three distinct semantic incidents and the s
   });
   assert.equal(session.snapshot().closed, true);
   assert.equal(diagnostics.some((event) => event.stage === "SEMANTIC_SECURITY_TERMINATION_PENDING"), true);
+  assert.equal(diagnostics.some((event) => event.stage === "SEMANTIC_SECURITY_PLAYBACK_DRAIN_REQUESTED"), true);
+  assert.equal(diagnostics.some((event) => event.stage === "SEMANTIC_SECURITY_PLAYBACK_DRAINED"), true);
   assert.equal(diagnostics.some((event) => event.stage === "SEMANTIC_SECURITY_TERMINATION_RESULT" && event.status === "SECURITY_CALL_TERMINATED"), true);
 });
 
@@ -487,13 +511,20 @@ test("fast runtime resumes instead of muting the call when semantic termination 
   const telnyx = new FakeSocket();
   telnyx.readyState = 1;
   let gemini;
+  let terminationAttempts = 0;
+  const diagnostics = [];
   const session = new FastGeminiRealtimeSession(sessionOptions(
     telnyx,
     () => { gemini = new FakeSocket(); return gemini; },
     {
       bootstrap: bootstrap([SEMANTIC_SECURITY_TOOL]),
       toolHandlers: { [FAST_SEMANTIC_SECURITY_TOOL_NAME]: executeFastSemanticSecurityBoundary },
-      terminateSemanticAttack: async () => ({ ok: false, status: "SECURITY_TERMINATION_FAILED" }),
+      terminateSemanticAttack: async () => {
+        terminationAttempts += 1;
+        return { ok: false, status: "SECURITY_TERMINATION_FAILED" };
+      },
+      securityPlaybackDrainTimeoutMs: 20,
+      observe: (event) => diagnostics.push(event),
     },
   )).start();
   gemini.open();
@@ -509,9 +540,12 @@ test("fast runtime resumes instead of muting the call when semantic termination 
     await settle();
     await settle();
   }
-  gemini.message({ serverContent: { turnComplete: true } });
-  await settle();
-  await settle();
+  gemini.message({ serverContent: { modelTurn: { parts: [geminiAudioPart()] }, turnComplete: true } });
+  const firstMark = telnyx.sent.find((message) => message.event === "mark");
+  assert.ok(firstMark);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(diagnostics.some((event) => event.stage === "SEMANTIC_SECURITY_PLAYBACK_DRAIN_TIMEOUT"), true);
+  assert.equal(terminationAttempts, 1);
   assert.equal(session.snapshot().closed, false);
   assert.equal(session.snapshot().terminalSecurity, false);
   const sentBeforeCallerMedia = gemini.sent.length;
@@ -527,6 +561,179 @@ test("fast runtime resumes instead of muting the call when semantic termination 
   await settle();
   await settle();
   assert.equal(session.snapshot().terminalSecurity, true);
+  gemini.message({ serverContent: { modelTurn: { parts: [geminiAudioPart()] }, turnComplete: true } });
+  const marks = telnyx.sent.filter((message) => message.event === "mark");
+  assert.equal(marks.length, 2);
+  assert.notEqual(marks[0].mark.name, marks[1].mark.name);
+  telnyx.message(firstMark);
+  await settle();
+  assert.equal(terminationAttempts, 1, "a stale mark must not drain a later terminal attempt");
+  telnyx.message(marks[1]);
+  await settle();
+  await settle();
+  assert.equal(terminationAttempts, 2);
+  assert.equal(session.snapshot().terminalSecurity, false);
+  session.close("test-complete");
+});
+
+test("fast runtime still invokes authoritative hangup when the drain mark cannot be queued", async () => {
+  const telnyx = new FakeSocket();
+  telnyx.readyState = 1;
+  let gemini;
+  let terminationAttempts = 0;
+  const diagnostics = [];
+  const session = new FastGeminiRealtimeSession(sessionOptions(
+    telnyx,
+    () => { gemini = new FakeSocket(); return gemini; },
+    {
+      bootstrap: bootstrap([SEMANTIC_SECURITY_TOOL]),
+      toolHandlers: { [FAST_SEMANTIC_SECURITY_TOOL_NAME]: executeFastSemanticSecurityBoundary },
+      terminateSemanticAttack: async () => {
+        terminationAttempts += 1;
+        return { ok: true, status: "SECURITY_CALL_TERMINATED" };
+      },
+      observe: (event) => diagnostics.push(event),
+    },
+  )).start();
+  gemini.open();
+  gemini.message({ setupComplete: {} });
+  for (let index = 1; index <= 3; index += 1) {
+    gemini.message({
+      toolCall: { functionCalls: [{
+        id: `semantic-backpressure-${index}`,
+        name: FAST_SEMANTIC_SECURITY_TOOL_NAME,
+        args: { category: "TOOL_MANIPULATION", authorization: "SEMANTIC_NECESSITY" },
+      }] },
+    });
+    await settle();
+    await settle();
+  }
+  telnyx.failEvent = "mark";
+  gemini.message({ serverContent: { modelTurn: { parts: [geminiAudioPart()] }, turnComplete: true } });
+  await settle();
+  await settle();
+  assert.equal(terminationAttempts, 1);
+  assert.equal(session.snapshot().closed, true);
+  assert.equal(diagnostics.some((event) => event.stage === "SEMANTIC_SECURITY_PLAYBACK_DRAIN_FAILED" && event.failureCategory === "TELNYX_MARK_SEND_FAILED"), true);
+});
+
+test("fast runtime resumes when Gemini completes the terminal turn without audible farewell", async () => {
+  const telnyx = new FakeSocket();
+  telnyx.readyState = 1;
+  let gemini;
+  let terminationAttempts = 0;
+  const diagnostics = [];
+  const session = new FastGeminiRealtimeSession(sessionOptions(
+    telnyx,
+    () => { gemini = new FakeSocket(); return gemini; },
+    {
+      bootstrap: bootstrap([SEMANTIC_SECURITY_TOOL]),
+      toolHandlers: { [FAST_SEMANTIC_SECURITY_TOOL_NAME]: executeFastSemanticSecurityBoundary },
+      terminateSemanticAttack: async () => { terminationAttempts += 1; return { ok: true, status: "SECURITY_CALL_TERMINATED" }; },
+      observe: (event) => diagnostics.push(event),
+    },
+  )).start();
+  gemini.open();
+  gemini.message({ setupComplete: {} });
+  for (let index = 1; index <= 3; index += 1) {
+    gemini.message({ toolCall: { functionCalls: [{
+      id: `semantic-no-audio-${index}`,
+      name: FAST_SEMANTIC_SECURITY_TOOL_NAME,
+      args: { category: "PROMPT_INJECTION", authorization: "SEMANTIC_NECESSITY" },
+    }] } });
+    await settle();
+    await settle();
+  }
+  gemini.message({ serverContent: { turnComplete: true } });
+  await settle();
+  assert.equal(terminationAttempts, 0);
+  assert.equal(telnyx.sent.some((message) => message.event === "mark"), false);
+  assert.equal(session.snapshot().terminalSecurity, false);
+  assert.equal(diagnostics.some((event) => event.stage === "SEMANTIC_SECURITY_PLAYBACK_DRAIN_FAILED" && event.failureCategory === "FAREWELL_AUDIO_MISSING"), true);
+  session.close("test-complete");
+});
+
+test("fast runtime releases terminal mute when Gemini never completes the farewell", async () => {
+  const telnyx = new FakeSocket();
+  telnyx.readyState = 1;
+  let gemini;
+  const diagnostics = [];
+  const session = new FastGeminiRealtimeSession(sessionOptions(
+    telnyx,
+    () => { gemini = new FakeSocket(); return gemini; },
+    {
+      bootstrap: bootstrap([SEMANTIC_SECURITY_TOOL]),
+      toolHandlers: { [FAST_SEMANTIC_SECURITY_TOOL_NAME]: executeFastSemanticSecurityBoundary },
+      terminateSemanticAttack: async () => { throw new Error("must be unreachable without farewell evidence"); },
+      securityFarewellTimeoutMs: 5,
+      observe: (event) => diagnostics.push(event),
+    },
+  )).start();
+  gemini.open();
+  gemini.message({ setupComplete: {} });
+  for (let index = 1; index <= 3; index += 1) {
+    gemini.message({ toolCall: { functionCalls: [{
+      id: `semantic-no-completion-${index}`,
+      name: FAST_SEMANTIC_SECURITY_TOOL_NAME,
+      args: { category: "ROLE_ESCALATION", authorization: "SEMANTIC_NECESSITY" },
+    }] } });
+    await settle();
+    await settle();
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(session.snapshot().terminalSecurity, false);
+  assert.equal(diagnostics.some((event) => event.stage === "SEMANTIC_SECURITY_FAREWELL_TIMEOUT"), true);
+  const before = gemini.sent.length;
+  telnyx.message(callerMedia(200));
+  assert.equal(gemini.sent.length, before + 1);
+  session.close("test-complete");
+});
+
+test("fast runtime invokes authoritative hangup when Gemini fails during terminal farewell", async () => {
+  const telnyx = new FakeSocket();
+  telnyx.readyState = 1;
+  let gemini;
+  let terminationAttempts = 0;
+  const session = new FastGeminiRealtimeSession(sessionOptions(
+    telnyx,
+    () => { gemini = new FakeSocket(); return gemini; },
+    {
+      bootstrap: bootstrap([SEMANTIC_SECURITY_TOOL]),
+      toolHandlers: { [FAST_SEMANTIC_SECURITY_TOOL_NAME]: executeFastSemanticSecurityBoundary },
+      terminateSemanticAttack: async () => { terminationAttempts += 1; return { ok: true, status: "SECURITY_CALL_TERMINATED" }; },
+    },
+  )).start();
+  gemini.open();
+  gemini.message({ setupComplete: {} });
+  for (let index = 1; index <= 3; index += 1) {
+    gemini.message({ toolCall: { functionCalls: [{
+      id: `semantic-gemini-failure-${index}`,
+      name: FAST_SEMANTIC_SECURITY_TOOL_NAME,
+      args: { category: "TOOL_MANIPULATION", authorization: "SEMANTIC_NECESSITY" },
+    }] } });
+    await settle();
+    await settle();
+  }
+  gemini.emit("error", new Error("provider unavailable"));
+  await settle();
+  await settle();
+  assert.equal(terminationAttempts, 1);
+  assert.equal(session.snapshot().closed, true);
+});
+
+test("fast runtime ignores malformed unrelated Telnyx marks on ordinary calls", () => {
+  const telnyx = new FakeSocket();
+  telnyx.readyState = 1;
+  let gemini;
+  const session = new FastGeminiRealtimeSession(sessionOptions(
+    telnyx,
+    () => { gemini = new FakeSocket(); return gemini; },
+    { toolHandlers: { restaurant_reservation_create: async () => ({ status: "OK" }) } },
+  )).start();
+  gemini.open();
+  gemini.message({ setupComplete: {} });
+  telnyx.message({ event: "mark" });
+  assert.equal(session.snapshot().closed, false);
   session.close("test-complete");
 });
 

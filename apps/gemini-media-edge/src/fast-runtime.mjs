@@ -9,6 +9,7 @@ import {
   geminiAudioToTelnyxMedia,
   telnyxClearPlaybackMessage,
   telnyxInboundMediaToGemini,
+  telnyxPlaybackMarkMessage,
 } from "./fast-audio-bridge.mjs";
 import { FastGeminiToolExecutor } from "./fast-tool-executor.mjs";
 import { FastToolAuthorizationKernel, requireFastToolAuthorizationReceipt } from "./fast-tool-authorization-kernel.mjs";
@@ -21,6 +22,8 @@ const CONNECTING = 0;
 const GEMINI_ENDPOINT = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 const DEFAULT_MAX_BUFFERED_BYTES = 1_048_576;
 const DEFAULT_MAX_PRESETUP_CHUNKS = 128;
+const SECURITY_PLAYBACK_DRAIN_TIMEOUT_MS = 15_000;
+const SECURITY_FAREWELL_TIMEOUT_MS = 30_000;
 
 function required(value, field, max = 64_000) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required`);
@@ -99,7 +102,20 @@ export class FastGeminiRealtimeSession {
     this.observe = typeof options.observe === "function" ? options.observe : () => {};
     this.maxBufferedBytes = Number.isSafeInteger(options.maxBufferedBytes) ? options.maxBufferedBytes : DEFAULT_MAX_BUFFERED_BYTES;
     this.maxPreSetupChunks = Number.isSafeInteger(options.maxPreSetupChunks) ? options.maxPreSetupChunks : DEFAULT_MAX_PRESETUP_CHUNKS;
-    if (this.maxBufferedBytes < 65_536 || this.maxPreSetupChunks < 1) throw new Error("Fast Gemini runtime limits are invalid");
+    this.securityPlaybackDrainTimeoutMs = Number.isSafeInteger(options.securityPlaybackDrainTimeoutMs)
+      ? options.securityPlaybackDrainTimeoutMs
+      : SECURITY_PLAYBACK_DRAIN_TIMEOUT_MS;
+    this.securityFarewellTimeoutMs = Number.isSafeInteger(options.securityFarewellTimeoutMs)
+      ? options.securityFarewellTimeoutMs
+      : SECURITY_FAREWELL_TIMEOUT_MS;
+    if (
+      this.maxBufferedBytes < 65_536
+      || this.maxPreSetupChunks < 1
+      || this.securityPlaybackDrainTimeoutMs < 1
+      || this.securityPlaybackDrainTimeoutMs > 60_000
+      || this.securityFarewellTimeoutMs < 1
+      || this.securityFarewellTimeoutMs > 60_000
+    ) throw new Error("Fast Gemini runtime limits are invalid");
     this.toolPolicies = options.toolPolicies ?? {};
     this.toolAuthorization = new FastToolAuthorizationKernel({
       policies: this.toolPolicies,
@@ -130,6 +146,7 @@ export class FastGeminiRealtimeSession {
     this.terminalHandoff = false;
     this.pendingSecurityTermination = null;
     this.terminalSecurity = false;
+    this.securityPlaybackMarkSequence = 0;
   }
 
   start() {
@@ -195,6 +212,9 @@ export class FastGeminiRealtimeSession {
           const media = geminiAudioToTelnyxMedia(audioPart, this.resampler);
           if (!media) continue;
           safeSend(this.telnyx, media, "Telnyx", this.maxBufferedBytes);
+          if (this.pendingSecurityTermination && !this.pendingSecurityTermination.starting) {
+            this.pendingSecurityTermination.farewellAudioQueued = true;
+          }
           this.lastGeminiAudioAtNs = process.hrtime.bigint();
           if (!this.firstGeminiAudioObserved) {
             this.firstGeminiAudioObserved = true;
@@ -214,9 +234,17 @@ export class FastGeminiRealtimeSession {
         }
         if (frame.turnComplete) {
           this.#emit("GEMINI_TURN_COMPLETE");
-          if (this.pendingSecurityTermination && !this.pendingSecurityTermination.starting) {
-            this.pendingSecurityTermination.starting = true;
-            void this.#startPendingSecurityTermination();
+          if (this.pendingSecurityTermination) {
+            if (!this.pendingSecurityTermination.farewellAudioQueued) {
+              this.#emit("SEMANTIC_SECURITY_PLAYBACK_DRAIN_FAILED", {
+                category: this.pendingSecurityTermination.category,
+                observationCount: this.pendingSecurityTermination.observationCount,
+                failureCategory: "FAREWELL_AUDIO_MISSING",
+              });
+              this.#releasePendingSecurityTermination("SECURITY_FAREWELL_AUDIO_MISSING");
+            } else if (!this.pendingSecurityTermination.playbackMark) {
+              this.#requestPendingSecurityTerminationDrain();
+            }
           } else if (this.pendingHandoff && !this.pendingHandoff.starting) {
             this.pendingHandoff.starting = true;
             void this.#startPendingHandoff();
@@ -226,12 +254,12 @@ export class FastGeminiRealtimeSession {
         }
         this.#emit("GEMINI_FRAME_PROCESSED", { localProcessingMicros: latencyMicros(startedNs), audioParts: frame.audio.length, toolCalls: frame.toolCalls.length });
       } catch (error) {
-        this.close("GEMINI_FRAME_REJECTED", error);
+        this.#handleGeminiFailure("GEMINI_FRAME_REJECTED", error);
       }
     });
-    gemini.on("error", (error) => this.close("GEMINI_SOCKET_ERROR", error));
+    gemini.on("error", (error) => this.#handleGeminiFailure("GEMINI_SOCKET_ERROR", error));
     gemini.on("close", (code) => {
-      if (!this.closed) this.close("GEMINI_SOCKET_CLOSED", new Error(`Gemini close ${Number(code)}`));
+      if (!this.closed) this.#handleGeminiFailure("GEMINI_SOCKET_CLOSED", new Error(`Gemini close ${Number(code)}`));
     });
   }
 
@@ -241,7 +269,20 @@ export class FastGeminiRealtimeSession {
       const startedNs = process.hrtime.bigint();
       try {
         const message = parseJson(raw, "Telnyx media");
-        if (message.event === "connected" || message.event === "mark") return;
+        if (message.event === "connected") return;
+        if (message.event === "mark") {
+          const pending = this.pendingSecurityTermination;
+          if (!pending?.playbackMark || pending.starting) return;
+          const returnedMark = typeof message?.mark?.name === "string" ? message.mark.name.trim() : "";
+          if (returnedMark && returnedMark.length <= 256 && pending.playbackMark === returnedMark) {
+            this.#emit("SEMANTIC_SECURITY_PLAYBACK_DRAINED", {
+              category: pending.category,
+              observationCount: pending.observationCount,
+            });
+            this.#beginPendingSecurityTermination(pending);
+          }
+          return;
+        }
         if (message.event === "stop") return this.close("TELNYX_STOP");
         if (this.terminalHandoff || this.terminalSecurity) return; // Point of no return: caller audio no longer re-enters AI.
         const bridged = telnyxInboundMediaToGemini(message);
@@ -258,8 +299,23 @@ export class FastGeminiRealtimeSession {
         this.close("TELNYX_FRAME_REJECTED", error);
       }
     });
-    this.telnyx.on("error", (error) => this.close("TELNYX_SOCKET_ERROR", error));
+    this.telnyx.on("error", (error) => {
+      if (this.pendingSecurityTermination) {
+        this.#emit("SEMANTIC_SECURITY_PLAYBACK_DRAIN_FAILED", { failureCategory: "TELNYX_SOCKET_ERROR" });
+        this.#beginPendingSecurityTermination(this.pendingSecurityTermination);
+        return;
+      }
+      this.close("TELNYX_SOCKET_ERROR", error);
+    });
     this.telnyx.on("close", (code) => {
+      if (this.pendingSecurityTermination) {
+        this.#emit("SEMANTIC_SECURITY_PLAYBACK_DRAIN_FAILED", {
+          failureCategory: "TELNYX_SOCKET_CLOSED",
+          closeCode: Number(code),
+        });
+        this.#beginPendingSecurityTermination(this.pendingSecurityTermination);
+        return;
+      }
       if (!this.closed) this.close("TELNYX_SOCKET_CLOSED", new Error(`Telnyx close ${Number(code)}`));
     });
   }
@@ -386,7 +442,12 @@ export class FastGeminiRealtimeSession {
                   category: decision.category,
                   observationCount: decision.observationCount,
                   starting: false,
+                  farewellAudioQueued: false,
+                  playbackMark: null,
+                  playbackDrainTimer: null,
+                  farewellTimer: null,
                 };
+                this.#armPendingSecurityFarewellDeadline(this.pendingSecurityTermination);
                 result = Object.freeze({
                   ...result,
                   call_termination_pending: true,
@@ -436,6 +497,98 @@ export class FastGeminiRealtimeSession {
     }
   }
 
+  #handleGeminiFailure(reason, error) {
+    const pending = this.pendingSecurityTermination;
+    if (!pending) {
+      this.close(reason, error);
+      return;
+    }
+    this.#emit("SEMANTIC_SECURITY_PLAYBACK_DRAIN_FAILED", {
+      category: pending.category,
+      observationCount: pending.observationCount,
+      failureCategory: reason,
+    });
+    this.#beginPendingSecurityTermination(pending);
+  }
+
+  #armPendingSecurityFarewellDeadline(pending) {
+    pending.farewellTimer = setTimeout(() => {
+      if (this.closed || this.pendingSecurityTermination !== pending || pending.starting || pending.playbackMark) return;
+      this.#emit("SEMANTIC_SECURITY_FAREWELL_TIMEOUT", {
+        category: pending.category,
+        observationCount: pending.observationCount,
+      });
+      this.#releasePendingSecurityTermination("SECURITY_FAREWELL_TIMEOUT");
+    }, this.securityFarewellTimeoutMs);
+    pending.farewellTimer.unref?.();
+  }
+
+  #requestPendingSecurityTerminationDrain() {
+    const pending = this.pendingSecurityTermination;
+    if (!pending || pending.starting || pending.playbackMark || this.closed) return;
+    this.securityPlaybackMarkSequence += 1;
+    pending.playbackMark = `ia-security-terminal:${this.securityPlaybackMarkSequence}`;
+    try {
+      safeSend(
+        this.telnyx,
+        telnyxPlaybackMarkMessage(pending.playbackMark),
+        "Telnyx",
+        this.maxBufferedBytes,
+      );
+    } catch {
+      this.#emit("SEMANTIC_SECURITY_PLAYBACK_DRAIN_FAILED", {
+        category: pending.category,
+        observationCount: pending.observationCount,
+        failureCategory: "TELNYX_MARK_SEND_FAILED",
+      });
+      this.#beginPendingSecurityTermination(pending);
+      return;
+    }
+    this.#emit("SEMANTIC_SECURITY_PLAYBACK_DRAIN_REQUESTED", {
+      category: pending.category,
+      observationCount: pending.observationCount,
+    });
+    pending.playbackDrainTimer = setTimeout(() => {
+      if (this.closed || this.pendingSecurityTermination !== pending || pending.starting) return;
+      this.#emit("SEMANTIC_SECURITY_PLAYBACK_DRAIN_TIMEOUT", {
+        category: pending.category,
+        observationCount: pending.observationCount,
+      });
+      this.#beginPendingSecurityTermination(pending);
+    }, this.securityPlaybackDrainTimeoutMs);
+    pending.playbackDrainTimer.unref?.();
+  }
+
+  #beginPendingSecurityTermination(pending) {
+    if (this.closed || this.pendingSecurityTermination !== pending || pending.starting) return;
+    pending.starting = true;
+    if (pending.playbackDrainTimer) {
+      clearTimeout(pending.playbackDrainTimer);
+      pending.playbackDrainTimer = null;
+    }
+    if (pending.farewellTimer) {
+      clearTimeout(pending.farewellTimer);
+      pending.farewellTimer = null;
+    }
+    void this.#startPendingSecurityTermination();
+  }
+
+  #releasePendingSecurityTermination(status, details = {}) {
+    const pending = this.pendingSecurityTermination;
+    if (!pending) return;
+    if (pending.playbackDrainTimer) clearTimeout(pending.playbackDrainTimer);
+    if (pending.farewellTimer) clearTimeout(pending.farewellTimer);
+    this.#emit("SEMANTIC_SECURITY_TERMINATION_RESULT", {
+      category: pending.category,
+      observationCount: pending.observationCount,
+      status,
+      ...details,
+    });
+    this.pendingSecurityTermination = null;
+    this.terminalSecurity = false;
+    this.semanticSecurityTermination.releaseTerminationAttempt();
+  }
+
   async #startPendingSecurityTermination() {
     const pending = this.pendingSecurityTermination;
     if (!pending || this.closed) return;
@@ -448,28 +601,22 @@ export class FastGeminiRealtimeSession {
         toolCallId: pending.toolCallId,
         category: pending.category,
       }));
-      this.#emit("SEMANTIC_SECURITY_TERMINATION_RESULT", {
-        category: pending.category,
-        observationCount: pending.observationCount,
-        status: result?.status ?? "UNKNOWN",
-      });
       if (result?.ok === true && result.status === "SECURITY_CALL_TERMINATED") {
+        this.#emit("SEMANTIC_SECURITY_TERMINATION_RESULT", {
+          category: pending.category,
+          observationCount: pending.observationCount,
+          status: result.status,
+        });
         this.close("SEMANTIC_SECURITY_TERMINAL");
         return;
       }
-      this.pendingSecurityTermination = null;
-      this.terminalSecurity = false;
-      this.semanticSecurityTermination.releaseTerminationAttempt();
+      this.#releasePendingSecurityTermination(result?.status ?? "SECURITY_TERMINATION_UNAVAILABLE");
+      if (this.telnyx?.readyState !== OPEN) this.close("TELNYX_SOCKET_CLOSED");
     } catch (error) {
-      this.#emit("SEMANTIC_SECURITY_TERMINATION_RESULT", {
-        category: pending.category,
-        observationCount: pending.observationCount,
-        status: "SECURITY_TERMINATION_UNAVAILABLE",
+      this.#releasePendingSecurityTermination("SECURITY_TERMINATION_UNAVAILABLE", {
         errorCategory: error instanceof Error ? error.name : "Error",
       });
-      this.pendingSecurityTermination = null;
-      this.terminalSecurity = false;
-      this.semanticSecurityTermination.releaseTerminationAttempt();
+      if (this.telnyx?.readyState !== OPEN) this.close("TELNYX_SOCKET_CLOSED");
     }
   }
 
@@ -503,6 +650,14 @@ export class FastGeminiRealtimeSession {
   close(reason = "CLOSED", error = null) {
     if (this.closed) return;
     this.closed = true;
+    if (this.pendingSecurityTermination?.playbackDrainTimer) {
+      clearTimeout(this.pendingSecurityTermination.playbackDrainTimer);
+      this.pendingSecurityTermination.playbackDrainTimer = null;
+    }
+    if (this.pendingSecurityTermination?.farewellTimer) {
+      clearTimeout(this.pendingSecurityTermination.farewellTimer);
+      this.pendingSecurityTermination.farewellTimer = null;
+    }
     this.preSetupMedia.length = 0;
     this.resampler.reset();
     this.#emit("FAST_SESSION_CLOSED", {
