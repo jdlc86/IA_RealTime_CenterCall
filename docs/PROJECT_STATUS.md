@@ -1,7 +1,7 @@
 # IA_RealTime_CenterCall — estado operativo
 
-> Snapshot documental: 2026-08-31
-> Base remota auditada: `rebuild/v39-stable-baseline` @ `3126c9c65f5042ae7e3c902deda3a68a0969bbc9`
+> Snapshot documental: 2026-09-12
+> Base remota auditada: `rebuild/v39-stable-baseline` @ `6b7d7a43e95aaf1b3fd1d3ea2261ea6a0ea544b2`
 > Seguridad viva: [guía de seguridad](../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx)
 
 Los datos remotos deben volver a verificarse antes de operar producción.
@@ -17,7 +17,8 @@ Los datos remotos deben volver a verificarse antes de operar producción.
 | Diagnóstico con allowlist | sí | verde | desplegado | sonda post-deploy PASS |
 | Reputación/decay Supabase | sí | verde | migración aplicada | prueba transaccional PASS |
 | Limpieza de legado | sí | verde | no aplica | no aplica |
-| Cierre semántico de alta confianza | sí | verde | desplegado por run `33413902191` | pendiente de llamada real |
+| Cierre semántico de alta confianza | sí | verde | desplegado por run `34690179596` | pendiente de llamada real |
+| Gate consolidado de regresión de seguridad | sí, local | 152/152 pruebas específicas y baterías completas locales PASS | no desplegado | activar mediante PR y validar CI |
 
 ## Arquitectura vigente
 
@@ -47,16 +48,24 @@ Controles vigentes:
 Está desplegada una política de cierre semántico de alta confianza que exige
 tres function calls autorizadas y distintas
 en la misma llamada, ignora replay por `toolCallId`, ordena una despedida segura
-y sólo después solicita al Fast Worker el hangup Telnyx. La decisión local es
+y espera la marca de reproducción Telnyx exacta antes de solicitar al Fast Worker
+el hangup. La decisión local es
 O(1), acotada y sin RPC; el único RPC nuevo ocurre en la ruta excepcional de
 ataque. Si ese control terminal falla, la sesión reanuda audio en vez de quedar
 muda. La reputación de alta confianza se registra sideband sin transcript bruto.
+
+`SEC-P1-03` dispone localmente de un runner común y del workflow
+`Gemini Security Regression Gate`. Agrupa pruebas de Media Edge y Control Plane,
+exige ambas suites mediante un resultado final único y usa instalaciones cerradas
+por lockfile. El Control Plane conserva `--legacy-peer-deps` para evitar el fallo
+interno reproducido de npm `Cannot read properties of null (reading 'edgesOut')`.
+Este cambio sólo afecta a pruebas y CI; no entra en el runtime ni en el hot path.
 
 Backlog abierto:
 
 1. almacenamiento compartido y atómico antes de escalar horizontalmente;
 2. validar E2E la política de cierre semántico de alta confianza;
-3. suite de regresión de seguridad consolidada;
+3. publicar mediante PR la suite de regresión consolidada y demostrar el gate CI;
 4. retención y borrado de datos de seguridad;
 5. completar verticales mediante contratos Gemini-native.
 
@@ -74,8 +83,13 @@ Seguridad y auditoría son sideband cuando la invariante lo permite.
 
 ## Siguiente validación
 
-Para completar el bloque desplegado de cierre semántico:
+Para cerrar el trabajo actual y después completar el bloque desplegado de cierre
+semántico:
 
-1. realizar una llamada E2E controlada sólo con autorización expresa;
-2. comprobar tres incidentes distintos, despedida, hangup, señal HIGH e inexistencia de transcript bruto;
-3. revisar diagnósticos terminales y confirmar que no existe silencio ante fallo del control remoto.
+1. revisar el diff local de `SEC-P1-03`, crear PR sólo con autorización y obtener
+   `Gemini Security Regression Gate` verde;
+2. realizar una llamada E2E controlada sólo con autorización expresa;
+3. comprobar tres incidentes distintos, despedida completa, hangup posterior,
+   señal HIGH e inexistencia de transcript bruto;
+4. revisar diagnósticos terminales y confirmar que no existe silencio ante fallo
+   del control remoto.

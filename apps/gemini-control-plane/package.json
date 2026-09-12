@@ -8,6 +8,7 @@
     "docs:check": "node ../../scripts/check-documentation.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:security": "node ../../scripts/run-security-regression.mjs --scope control-plane",
     "check:fast-deploy": "wrangler deploy --dry-run --config wrangler.fast.jsonc",
     "check": "npm run docs:check && npm run typecheck && npm test && npm run check:fast-deploy",
     "deploy:fast": "wrangler deploy --config wrangler.fast.jsonc"

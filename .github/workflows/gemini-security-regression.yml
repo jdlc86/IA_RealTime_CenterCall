@@ -1,0 +1,69 @@
+name: Gemini Security Regression Gate
+
+on:
+  push:
+    branches: [rebuild/v39-stable-baseline]
+    paths:
+      - "apps/gemini-media-edge/**"
+      - "apps/gemini-control-plane/**"
+      - "supabase/migrations/*caller_security*.sql"
+      - "scripts/run-security-regression.mjs"
+      - "Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx"
+      - ".github/workflows/gemini-security-regression.yml"
+  pull_request:
+    paths:
+      - "apps/gemini-media-edge/**"
+      - "apps/gemini-control-plane/**"
+      - "supabase/migrations/*caller_security*.sql"
+      - "scripts/run-security-regression.mjs"
+      - "Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx"
+      - ".github/workflows/gemini-security-regression.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  media-edge-security:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/gemini-media-edge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: apps/gemini-media-edge/.node-version
+          cache: npm
+          cache-dependency-path: apps/gemini-media-edge/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run check
+      - run: npm run test:security
+
+  control-plane-security:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/gemini-control-plane
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/gemini-control-plane/package-lock.json
+      - run: npm ci --legacy-peer-deps --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm run test:security
+
+  security-regression:
+    if: always()
+    needs: [media-edge-security, control-plane-security]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require both security suites
+        env:
+          MEDIA_EDGE_RESULT: ${{ needs.media-edge-security.result }}
+          CONTROL_PLANE_RESULT: ${{ needs.control-plane-security.result }}
+        run: |
+          test "$MEDIA_EDGE_RESULT" = "success"
+          test "$CONTROL_PLANE_RESULT" = "success"
