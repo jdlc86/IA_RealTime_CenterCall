@@ -1,0 +1,72 @@
+# Límite horizontal de funciones PostgreSQL
+
+> Estado: `SEC-P1-05` implementado localmente y pendiente de despliegue
+> Última revisión: 2026-09-13
+
+## Propósito
+
+Este control aplica a cualquier capacidad que añada funciones PostgreSQL al
+esquema expuesto. No contiene reglas de reservas, clínica, WhatsApp ni otro
+negocio. Las verticales declaran sus funciones y consumen la política común.
+
+## Componentes
+
+`Security/database-function-boundaries.json` es la fuente única de perfiles y
+funciones administradas. La migración de activación retira a `PUBLIC`, `anon` y
+`authenticated` el permiso de ejecución que PostgreSQL concede por defecto a
+funciones futuras creadas por `postgres`. La revocación es global para el rol
+creador porque una revocación limitada por esquema no anula el grant global de
+`PUBLIC`. El manifiesto y el gate administran las funciones del esquema `public`.
+
+El validador `scripts/check-database-function-boundaries.mjs` conserva una lista
+cerrada de nombres heredados y administra toda función pública que no pertenezca
+a esa base, incluso si una migración nueva usa una fecha anterior por error. Cada
+función administrada debe:
+
+- indicar el esquema `public` de forma explícita;
+- declarar `search_path=''` en su cabecera;
+- registrar una firma, un perfil y la capacidad propietaria;
+- usar `SECURITY INVOKER`, salvo perfil privilegiado justificado;
+- conceder `EXECUTE` exactamente a los roles de su perfil;
+- revocar antes todos los roles administrados para que `CREATE OR REPLACE` no
+  conserve permisos heredados;
+- documentar el modelo de autorización si acepta un rol cliente.
+
+## Perfiles
+
+| Perfil | Ejecución directa | Modo permitido | Uso |
+|---|---|---|---|
+| `internal_server` | `service_role` | invoker | backend y adaptadores server-side |
+| `privileged_server` | `service_role` | definer | operación privilegiada justificada |
+| `public_rpc` | `authenticated` | invoker | API cliente con autorización explícita |
+| `trigger` | ninguna | invoker | ejecución exclusiva por trigger |
+| `admin` | ninguna | definer | mantenimiento por propietario de base |
+
+## Adopción del legado
+
+Las funciones creadas antes de la migración de activación figuran sólo como una
+lista cerrada de nombres y no se vuelven a analizar en cada PR. Se adoptan
+mediante cambios independientes por capacidad,
+después de recuperar sus definiciones reproducibles y verificar consumidores.
+Esta separación evita que el control transversal dependa de una vertical y evita
+fallos al reconstruir una base nueva.
+
+## Pruebas sin repetición
+
+El workflow transversal ejecuta una sola prueba sin instalar dependencias. Los
+workflows de Media Edge y Control Plane conservan la propiedad de sus suites
+completas. El runner de seguridad focalizado queda disponible para diagnóstico
+local, pero CI no repite esas suites.
+
+## Verificación posterior al despliegue
+
+1. consultar `pg_default_acl` y confirmar la revocación para las funciones nuevas;
+2. ejecutar los advisors de seguridad;
+3. comprobar que no cambió el ACL efectivo de funciones ya existentes;
+4. no realizar una llamada real, porque la migración no toca el runtime de voz.
+
+## Recuperación
+
+La reversión debe usar una migración posterior que restaure los privilegios por
+defecto. No se modifica una migración aplicada. Las entradas del manifiesto se
+mantienen mientras existan sus funciones para que CI detecte cualquier deriva.

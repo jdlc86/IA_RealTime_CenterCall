@@ -35,6 +35,8 @@ ejecutables. El historial retirado no es fallback ni dependencia.
 - Toda tool exige policy local y recibo opaco antes del efecto.
 - No persistir prompt, secreto, audio o transcript bruto.
 - Toda retención y purga se ejecuta por lotes en Supabase, fuera del hot path.
+- Toda función PostgreSQL nueva se registra en el manifiesto horizontal, fija
+  `search_path=''` y recibe sólo los roles de su perfil.
 - No crear un segundo workflow de despliegue.
 - `IMPLEMENTADO ≠ CI VERDE ≠ DESPLEGADO ≠ VALIDADO E2E`.
 
@@ -56,6 +58,9 @@ cd ../gemini-media-edge
 npm ci
 npm run check
 npm test
+
+cd ../..
+node --test scripts/check-database-function-boundaries.test.mjs
 ```
 
 ### 6. Primera misión
