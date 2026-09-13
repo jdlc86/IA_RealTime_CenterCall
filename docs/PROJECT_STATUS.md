@@ -1,7 +1,7 @@
 # IA_RealTime_CenterCall — estado operativo
 
 > Snapshot documental: 2026-09-13
-> Base remota auditada: `rebuild/v39-stable-baseline` @ `d0e48b716d250c666e4873633809fe4699f98a28`
+> Base remota auditada: `rebuild/v39-stable-baseline` @ `8ca13cb415bc3596134f6245697b5ccaf5b0cf9e`
 > Seguridad viva: [guía de seguridad](../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx)
 
 Los datos remotos deben volver a verificarse antes de operar producción.
@@ -20,6 +20,7 @@ Los datos remotos deben volver a verificarse antes de operar producción.
 | Cierre semántico de alta confianza | sí | verde | desplegado | llamada real: cierre y drain confirmados |
 | Gate consolidado de regresión de seguridad | sí | verde tras PR `#101` | no aplica | ampliado localmente a 157/157 pruebas específicas PASS |
 | Retención y borrado `SEC-P1-04` | sí | PR `#102`; contrato 6/6 y validación PostgreSQL 17 PASS; CI previo verde | migraciones `20260913082816` y `20260913091400` aplicadas; cron activo | no aplica al flujo de llamada |
+| Límite horizontal de funciones PostgreSQL `SEC-P1-05` | sí, local | contrato incremental 3/3 PASS | pendiente | no aplica al flujo de llamada |
 
 ## Arquitectura vigente
 
@@ -55,12 +56,11 @@ O(1), acotada y sin RPC; el único RPC nuevo ocurre en la ruta excepcional de
 ataque. Si ese control terminal falla, la sesión reanuda audio en vez de quedar
 muda. La reputación de alta confianza se registra sideband sin transcript bruto.
 
-`SEC-P1-03` dispone de un runner común y del workflow
-`Gemini Security Regression Gate`. Agrupa pruebas de Media Edge y Control Plane,
-exige ambas suites mediante un resultado final único y usa instalaciones cerradas
-por lockfile. El Control Plane conserva `--legacy-peer-deps` para evitar el fallo
-interno reproducido de npm `Cannot read properties of null (reading 'edgesOut')`.
-Este cambio sólo afecta a pruebas y CI; no entra en el runtime ni en el hot path.
+`SEC-P1-03` dispone de un runner común para diagnósticos locales focalizados.
+Las suites completas pertenecen a los workflows de Media Edge y Control Plane.
+El workflow `Gemini Security Regression Gate` no vuelve a ejecutarlas: valida
+una sola vez los contratos transversales que no pertenecen a un ejecutable. Esta
+separación evita instalaciones y pruebas duplicadas sin reducir la cobertura.
 
 `SEC-P1-04` está desplegado mediante una función privada de Supabase y un cron
 diario. Conserva diagnósticos 7 días, intentos 7 días, señales
@@ -73,11 +73,22 @@ La corrección `20260913091400` impide borrar estados con historial de strikes o
 bloqueos por rate limit y establece el timeout antes del statement programado.
 Los índices de una instalación nueva se construyen de forma concurrente.
 
+`SEC-P1-05` define un límite horizontal para cualquier función PostgreSQL nueva,
+sin depender de tenant o vertical. La base revoca globalmente por defecto
+`EXECUTE` a `PUBLIC`, `anon` y `authenticated` para funciones creadas por
+`postgres`. Un manifiesto común clasifica cada función
+posterior como `admin`, `internal_server`, `privileged_server`, `public_rpc` o
+`trigger`; el gate exige esquema explícito, `search_path=''`, propietario de
+capacidad y concesiones exactas. Las funciones anteriores a la activación no se
+revalidan en cada PR y se adoptarán por bloques independientes. No se modifica
+ninguna función de reservas en este bloque horizontal.
+
 Backlog abierto:
 
-1. almacenamiento compartido y atómico antes de escalar horizontalmente;
-2. verificar la primera ejecución programada de `SEC-P1-04` y sus contadores;
-3. completar verticales mediante contratos Gemini-native.
+1. verificar la primera ejecución programada de `SEC-P1-04` y sus contadores;
+2. revisar, desplegar y verificar los privilegios por defecto de `SEC-P1-05`;
+3. almacenamiento compartido y atómico antes de escalar horizontalmente;
+4. completar verticales mediante contratos Gemini-native.
 
 ## Coste y escalado
 
@@ -99,3 +110,10 @@ Para cerrar la validación operativa de `SEC-P1-04`:
 2. verificar `total_deleted <= max_rows` y ausencia de identidad en la auditoría;
 3. revisar los contadores de bloqueos permanentes y callbacks pendientes;
 4. volver a ejecutar los advisors sin realizar llamada.
+
+Para cerrar `SEC-P1-05`:
+
+1. ejecutar una vez el contrato horizontal y los workflows propietarios afectados;
+2. aplicar la migración por el canal administrativo de Supabase;
+3. verificar `pg_default_acl` para `postgres` en `public`;
+4. confirmar que una función nueva exige registro y permisos explícitos en CI.

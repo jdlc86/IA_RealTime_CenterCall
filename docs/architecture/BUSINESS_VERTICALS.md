@@ -254,6 +254,11 @@ No se fuerza una tabla genérica única de `bookings` si ello degrada reglas, co
 
 Todas las entidades persistentes multi-tenant deben incluir o derivar de forma confiable `tenant_id`, con aislamiento en aplicación y defensa adicional mediante controles de base de datos/RLS cuando proceda.
 
+La política de funciones PostgreSQL es horizontal. Cada función nueva, aunque
+pertenezca a una vertical, se registra en el manifiesto común y recibe un perfil
+de ejecución. El manifiesto identifica la capacidad propietaria, pero no traslada
+la lógica de reservas o citas al Core.
+
 ## 10. Tenant de prueba F4
 
 Se utiliza el tenant sintético:
