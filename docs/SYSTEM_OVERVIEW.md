@@ -40,4 +40,5 @@ retirados del árbol. No son fallbacks. Su contenido permanece en el historial G
 - Toda tool tiene schema, authority, effect, capability, evidence y contexto.
 - Las acciones con efectos exigen recibo opaco, idempotencia y pruebas negativas.
 - La telemetría nunca guarda prompt, secreto, audio o transcript bruto.
+- La retención y el borrado se ejecutan por lotes en Supabase, nunca en el hot path.
 - El estado call-scoped en memoria obliga a `max-instances=1` hasta migración atómica.

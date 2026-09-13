@@ -15,6 +15,7 @@
 8. [`../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx`](../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx) — seguridad viva.
 9. [`DOCUMENTATION_MAINTENANCE.md`](./DOCUMENTATION_MAINTENANCE.md) — mantenimiento documental.
 10. [`MASTER_PROJECT_GUIDE.md`](./MASTER_PROJECT_GUIDE.md) — visión funcional.
+11. [`runbooks/SECURITY_DATA_RETENTION.md`](./runbooks/SECURITY_DATA_RETENTION.md) — plazos, purga y revisión de datos de seguridad.
 
 ## Arquitectura en una frase
 
