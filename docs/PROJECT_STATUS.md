@@ -19,7 +19,7 @@ Los datos remotos deben volver a verificarse antes de operar producción.
 | Limpieza de legado | sí | verde | no aplica | no aplica |
 | Cierre semántico de alta confianza | sí | verde | desplegado | llamada real: cierre y drain confirmados |
 | Gate consolidado de regresión de seguridad | sí | verde tras PR `#101` | no aplica | ampliado localmente a 157/157 pruebas específicas PASS |
-| Retención y borrado `SEC-P1-04` | sí | PR `#102` con CI verde; contrato 5/5, PostgreSQL 17 y baterías 184/184 PASS | migración `20260913082816` aplicada; cron activo | no aplica al flujo de llamada |
+| Retención y borrado `SEC-P1-04` | sí | PR `#102`; contrato 6/6 y validación PostgreSQL 17 PASS; CI previo verde | migraciones `20260913082816` y `20260913091400` aplicadas; cron activo | no aplica al flujo de llamada |
 
 ## Arquitectura vigente
 
@@ -69,6 +69,9 @@ ordinarias 30 días, señales HIGH/CRITICAL 90 días y auditorías administrativ
 bloqueos permanentes y callbacks pendientes requieren revisión y nunca se borran
 automáticamente. El trabajo usa lotes de 1.000 filas, máximo 10.000 por ejecución
 y auditoría agregada sin identidad. No modifica Worker, Media Edge ni hot path.
+La corrección `20260913091400` impide borrar estados con historial de strikes o
+bloqueos por rate limit y establece el timeout antes del statement programado.
+Los índices de una instalación nueva se construyen de forma concurrente.
 
 Backlog abierto:
 
