@@ -19,7 +19,7 @@ Los datos remotos deben volver a verificarse antes de operar producción.
 | Limpieza de legado | sí | verde | no aplica | no aplica |
 | Cierre semántico de alta confianza | sí | verde | desplegado | llamada real: cierre y drain confirmados |
 | Gate consolidado de regresión de seguridad | sí | verde tras PR `#101` | no aplica | ampliado localmente a 157/157 pruebas específicas PASS |
-| Retención y borrado `SEC-P1-04` | sí, local | contrato 5/5, PostgreSQL 17 y baterías 184/184 PASS; CI pendiente | migración no aplicada | no aplica al flujo de llamada |
+| Retención y borrado `SEC-P1-04` | sí | PR `#102` con CI verde; contrato 5/5, PostgreSQL 17 y baterías 184/184 PASS | migración `20260913082816` aplicada; cron activo | no aplica al flujo de llamada |
 
 ## Arquitectura vigente
 
@@ -62,8 +62,8 @@ por lockfile. El Control Plane conserva `--legacy-peer-deps` para evitar el fall
 interno reproducido de npm `Cannot read properties of null (reading 'edgesOut')`.
 Este cambio sólo afecta a pruebas y CI; no entra en el runtime ni en el hot path.
 
-`SEC-P1-04` está implementado localmente mediante una función privada de Supabase
-y un cron diario. Conserva diagnósticos 7 días, intentos 7 días, señales
+`SEC-P1-04` está desplegado mediante una función privada de Supabase y un cron
+diario. Conserva diagnósticos 7 días, intentos 7 días, señales
 ordinarias 30 días, señales HIGH/CRITICAL 90 días y auditorías administrativas
 365 días. Elimina estado inactivo sólo con riesgo cero y sin bloqueos. Los
 bloqueos permanentes y callbacks pendientes requieren revisión y nunca se borran
@@ -73,7 +73,7 @@ y auditoría agregada sin identidad. No modifica Worker, Media Edge ni hot path.
 Backlog abierto:
 
 1. almacenamiento compartido y atómico antes de escalar horizontalmente;
-2. publicar, aplicar y verificar `SEC-P1-04` mediante PR, CI y migración Supabase;
+2. verificar la primera ejecución programada de `SEC-P1-04` y sus contadores;
 3. completar verticales mediante contratos Gemini-native.
 
 ## Coste y escalado
@@ -90,11 +90,9 @@ Seguridad y auditoría son sideband cuando la invariante lo permite.
 
 ## Siguiente validación
 
-Para publicar `SEC-P1-04`:
+Para cerrar la validación operativa de `SEC-P1-04`:
 
-1. ejecutar baterías completas y revisar el diff local;
-2. crear commit, push y PR sólo con autorización;
-3. obtener `Gemini Security Regression Gate` verde;
-4. aplicar la migración por el canal administrativo de Supabase sólo con
-   autorización expresa;
-5. comprobar permisos, cron, primera ejecución y advisors sin realizar llamada.
+1. comprobar la primera ejecución del cron después de las 03:17 UTC;
+2. verificar `total_deleted <= max_rows` y ausencia de identidad en la auditoría;
+3. revisar los contadores de bloqueos permanentes y callbacks pendientes;
+4. volver a ejecutar los advisors sin realizar llamada.
