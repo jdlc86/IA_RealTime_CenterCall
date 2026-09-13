@@ -1,6 +1,6 @@
 # Retención y borrado de datos de seguridad
 
-> Estado: desplegado en producción mediante `SEC-P1-04`; primera ejecución programada pendiente
+> Estado: desplegado en producción mediante `SEC-P1-04`; corrección de seguridad aplicada; primera ejecución programada pendiente
 > Última revisión: 2026-09-13
 
 ## Propósito
@@ -37,6 +37,9 @@ revisada; no se amplían plazos mediante configuración informal.
 La migración `20260913082816_security_retention_and_deletion.sql` instala
 `private.run_security_retention_v1` y el cron
 `purge-gemini-security-retention-v1` para las 03:17 UTC de cada día.
+La migración posterior `20260913091400_fix_security_retention_safety.sql`
+preserva estados con contadores históricos, limita el statement completo del
+cron y mantiene el mismo contrato de permisos.
 
 Cada ejecución:
 
@@ -108,12 +111,15 @@ Worker y Media Edge no debe utilizarse para inferir el estado de la base.
 
 ## Estado productivo
 
-La migración quedó registrada en Supabase con la versión `20260913082816`. La
-verificación posterior confirmó una función privada, una tabla privada de
-auditoría, un único cron consolidado y la retirada del cron histórico. Los roles
-`anon`, `authenticated` y `service_role` no tienen uso del esquema ni permiso de
-ejecución sobre la función. La primera purga ordinaria se ejecutará por cron; no
-se forzó una purga manual durante el despliegue.
+Las migraciones quedaron registradas en Supabase con las versiones
+`20260913082816` y `20260913091400`. La verificación posterior confirmó una
+función privada, una tabla privada de auditoría, un único cron consolidado y la
+retirada del cron histórico. Los roles `anon`, `authenticated` y `service_role`
+no tienen uso del esquema ni permiso de ejecución sobre la función. La función
+conserva cualquier estado con `security_strikes` o `rate_limit_blocks` distinto
+de cero. El comando programado establece `statement_timeout=30s` antes de
+invocar la función. La primera purga ordinaria se ejecutará por cron; no se
+forzó una purga manual durante el despliegue.
 
 ## Recuperación
 
