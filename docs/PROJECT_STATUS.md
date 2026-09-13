@@ -20,7 +20,7 @@ Los datos remotos deben volver a verificarse antes de operar producción.
 | Cierre semántico de alta confianza | sí | verde | desplegado | llamada real: cierre y drain confirmados |
 | Gate consolidado de regresión de seguridad | sí | verde tras PR `#101` | no aplica | ampliado localmente a 157/157 pruebas específicas PASS |
 | Retención y borrado `SEC-P1-04` | sí | PR `#102`; contrato 6/6 y validación PostgreSQL 17 PASS; CI previo verde | migraciones `20260913082816` y `20260913091400` aplicadas; cron activo | no aplica al flujo de llamada |
-| Límite horizontal de funciones PostgreSQL `SEC-P1-05` | sí, local | contrato incremental 3/3 PASS | pendiente | no aplica al flujo de llamada |
+| Límite horizontal de funciones PostgreSQL `SEC-P1-05` | sí | contrato 3/3, PostgreSQL 17 y CI PASS; PR `#103`/`#104` | migraciones `20260913193440` y `20260913193454` aplicadas; ACL verificado | no aplica al flujo de llamada |
 
 ## Arquitectura vigente
 
@@ -74,9 +74,10 @@ bloqueos por rate limit y establece el timeout antes del statement programado.
 Los índices de una instalación nueva se construyen de forma concurrente.
 
 `SEC-P1-05` define un límite horizontal para cualquier función PostgreSQL nueva,
-sin depender de tenant o vertical. La base revoca globalmente por defecto
-`EXECUTE` a `PUBLIC`, `anon` y `authenticated` para funciones creadas por
-`postgres`. Un manifiesto común clasifica cada función
+sin depender de tenant o vertical. La base revoca globalmente `EXECUTE` a
+`PUBLIC` y elimina además los grants de esquema de Supabase para `anon`,
+`authenticated` y `service_role` en funciones futuras creadas por `postgres`.
+Un manifiesto común clasifica cada función
 posterior como `admin`, `internal_server`, `privileged_server`, `public_rpc` o
 `trigger`; el gate exige esquema explícito, `search_path=''`, propietario de
 capacidad y concesiones exactas. Las funciones anteriores a la activación no se
@@ -86,9 +87,8 @@ ninguna función de reservas en este bloque horizontal.
 Backlog abierto:
 
 1. verificar la primera ejecución programada de `SEC-P1-04` y sus contadores;
-2. revisar, desplegar y verificar los privilegios por defecto de `SEC-P1-05`;
-3. almacenamiento compartido y atómico antes de escalar horizontalmente;
-4. completar verticales mediante contratos Gemini-native.
+2. almacenamiento compartido y atómico antes de escalar horizontalmente;
+3. completar verticales mediante contratos Gemini-native.
 
 ## Coste y escalado
 
@@ -111,9 +111,9 @@ Para cerrar la validación operativa de `SEC-P1-04`:
 3. revisar los contadores de bloqueos permanentes y callbacks pendientes;
 4. volver a ejecutar los advisors sin realizar llamada.
 
-Para cerrar `SEC-P1-05`:
+`SEC-P1-05` quedó cerrado con esta evidencia:
 
-1. ejecutar una vez el contrato horizontal y los workflows propietarios afectados;
-2. aplicar la migración por el canal administrativo de Supabase;
-3. verificar `pg_default_acl` para `postgres` en `public`;
-4. confirmar que una función nueva exige registro y permisos explícitos en CI.
+1. contrato horizontal 3/3 y workflows propietarios afectados en verde;
+2. migraciones aplicadas por el canal administrativo de Supabase;
+3. `pg_default_acl` global y de `public` contiene únicamente a `postgres`;
+4. el gate exige registro y permisos explícitos para cada función nueva.
