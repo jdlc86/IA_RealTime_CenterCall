@@ -1,7 +1,7 @@
 # IA_RealTime_CenterCall — estado operativo
 
-> Snapshot documental: 2026-09-12
-> Base remota auditada: `rebuild/v39-stable-baseline` @ `6b7d7a43e95aaf1b3fd1d3ea2261ea6a0ea544b2`
+> Snapshot documental: 2026-09-13
+> Base remota auditada: `rebuild/v39-stable-baseline` @ `d0e48b716d250c666e4873633809fe4699f98a28`
 > Seguridad viva: [guía de seguridad](../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx)
 
 Los datos remotos deben volver a verificarse antes de operar producción.
@@ -17,8 +17,9 @@ Los datos remotos deben volver a verificarse antes de operar producción.
 | Diagnóstico con allowlist | sí | verde | desplegado | sonda post-deploy PASS |
 | Reputación/decay Supabase | sí | verde | migración aplicada | prueba transaccional PASS |
 | Limpieza de legado | sí | verde | no aplica | no aplica |
-| Cierre semántico de alta confianza | sí | verde | desplegado por run `34690179596` | pendiente de llamada real |
-| Gate consolidado de regresión de seguridad | sí, local | 152/152 pruebas específicas y baterías completas locales PASS | no desplegado | activar mediante PR y validar CI |
+| Cierre semántico de alta confianza | sí | verde | desplegado | llamada real: cierre y drain confirmados |
+| Gate consolidado de regresión de seguridad | sí | verde tras PR `#101` | no aplica | ampliado localmente a 157/157 pruebas específicas PASS |
+| Retención y borrado `SEC-P1-04` | sí | PR `#102` con CI verde; contrato 5/5, PostgreSQL 17 y baterías 184/184 PASS | migración `20260913082816` aplicada; cron activo | no aplica al flujo de llamada |
 
 ## Arquitectura vigente
 
@@ -54,20 +55,26 @@ O(1), acotada y sin RPC; el único RPC nuevo ocurre en la ruta excepcional de
 ataque. Si ese control terminal falla, la sesión reanuda audio en vez de quedar
 muda. La reputación de alta confianza se registra sideband sin transcript bruto.
 
-`SEC-P1-03` dispone localmente de un runner común y del workflow
+`SEC-P1-03` dispone de un runner común y del workflow
 `Gemini Security Regression Gate`. Agrupa pruebas de Media Edge y Control Plane,
 exige ambas suites mediante un resultado final único y usa instalaciones cerradas
 por lockfile. El Control Plane conserva `--legacy-peer-deps` para evitar el fallo
 interno reproducido de npm `Cannot read properties of null (reading 'edgesOut')`.
 Este cambio sólo afecta a pruebas y CI; no entra en el runtime ni en el hot path.
 
+`SEC-P1-04` está desplegado mediante una función privada de Supabase y un cron
+diario. Conserva diagnósticos 7 días, intentos 7 días, señales
+ordinarias 30 días, señales HIGH/CRITICAL 90 días y auditorías administrativas
+365 días. Elimina estado inactivo sólo con riesgo cero y sin bloqueos. Los
+bloqueos permanentes y callbacks pendientes requieren revisión y nunca se borran
+automáticamente. El trabajo usa lotes de 1.000 filas, máximo 10.000 por ejecución
+y auditoría agregada sin identidad. No modifica Worker, Media Edge ni hot path.
+
 Backlog abierto:
 
 1. almacenamiento compartido y atómico antes de escalar horizontalmente;
-2. validar E2E la política de cierre semántico de alta confianza;
-3. publicar mediante PR la suite de regresión consolidada y demostrar el gate CI;
-4. retención y borrado de datos de seguridad;
-5. completar verticales mediante contratos Gemini-native.
+2. verificar la primera ejecución programada de `SEC-P1-04` y sus contadores;
+3. completar verticales mediante contratos Gemini-native.
 
 ## Coste y escalado
 
@@ -83,13 +90,9 @@ Seguridad y auditoría son sideband cuando la invariante lo permite.
 
 ## Siguiente validación
 
-Para cerrar el trabajo actual y después completar el bloque desplegado de cierre
-semántico:
+Para cerrar la validación operativa de `SEC-P1-04`:
 
-1. revisar el diff local de `SEC-P1-03`, crear PR sólo con autorización y obtener
-   `Gemini Security Regression Gate` verde;
-2. realizar una llamada E2E controlada sólo con autorización expresa;
-3. comprobar tres incidentes distintos, despedida completa, hangup posterior,
-   señal HIGH e inexistencia de transcript bruto;
-4. revisar diagnósticos terminales y confirmar que no existe silencio ante fallo
-   del control remoto.
+1. comprobar la primera ejecución del cron después de las 03:17 UTC;
+2. verificar `total_deleted <= max_rows` y ausencia de identidad en la auditoría;
+3. revisar los contadores de bloqueos permanentes y callbacks pendientes;
+4. volver a ejecutar los advisors sin realizar llamada.

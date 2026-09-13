@@ -28,6 +28,7 @@ posee la verdad durable.
 - transferencia humana;
 - autoridad temporal;
 - diagnóstico y privacidad;
+- retención y borrado seguro de evidencia;
 - comunicaciones externas.
 
 WhatsApp se separa en `message.whatsapp.transactional` y

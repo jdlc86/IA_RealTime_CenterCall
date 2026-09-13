@@ -34,6 +34,7 @@ ejecutables. El historial retirado no es fallback ni dependencia.
 - El modelo propone; kernel, dominio y backend autorizan/ejecutan.
 - Toda tool exige policy local y recibo opaco antes del efecto.
 - No persistir prompt, secreto, audio o transcript bruto.
+- Toda retención y purga se ejecuta por lotes en Supabase, fuera del hot path.
 - No crear un segundo workflow de despliegue.
 - `IMPLEMENTADO ≠ CI VERDE ≠ DESPLEGADO ≠ VALIDADO E2E`.
 

@@ -6,7 +6,7 @@ on:
     paths:
       - "apps/gemini-media-edge/**"
       - "apps/gemini-control-plane/**"
-      - "supabase/migrations/*caller_security*.sql"
+      - "supabase/migrations/*security*.sql"
       - "scripts/run-security-regression.mjs"
       - "Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx"
       - ".github/workflows/gemini-security-regression.yml"
@@ -14,7 +14,7 @@ on:
     paths:
       - "apps/gemini-media-edge/**"
       - "apps/gemini-control-plane/**"
-      - "supabase/migrations/*caller_security*.sql"
+      - "supabase/migrations/*security*.sql"
       - "scripts/run-security-regression.mjs"
       - "Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx"
       - ".github/workflows/gemini-security-regression.yml"
