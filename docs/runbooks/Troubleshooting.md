@@ -1,43 +1,19 @@
-# Runbook — Troubleshooting FASE 0
+# Troubleshooting
 
-Diagnosticar siempre por capas y no cambiar varias cosas a la vez.
+Diagnosticar una capa por vez:
 
-```text
-A. ¿/health funciona?
-   no → Cloudflare/build/deploy
-   sí
-   ↓
-B. ¿Twilio recibe la llamada?
-   no → número/cuenta
-   sí
-   ↓
-C. ¿Twilio envía SIP a OpenAI?
-   no → trunk/origination
-   sí
-   ↓
-D. ¿OpenAI genera realtime.call.incoming?
-   no → SIP/OpenAI Project
-   sí
-   ↓
-E. ¿Worker recibe/verifica webhook?
-   no → URL/signing secret
-   sí
-   ↓
-F. ¿/accept funciona?
-   no → API key/model/payload
-   sí
-   ↓
-G. ¿Audio bidireccional?
-   no → codec/SIP/media
-   sí
-   ↓
-FASE 0 funcional
-```
+1. Telnyx webhook y firma;
+2. tenant routing y caller-security;
+3. bootstrap/credencial;
+4. binding del Worker y tag Cloud Run;
+5. upgrade WSS y frame `start`;
+6. conexión Gemini Live;
+7. tool authorization y handler;
+8. persistencia/auditoría.
 
-## Reglas de diagnóstico
+No tocar audio, VAD, codecs, resampling o buffers para corregir un error de
+control sin evidencia causal. No crear un segundo deploy como workaround.
 
-- Registrar `call_id` y timestamps.
-- No imprimir secretos.
-- No desactivar la verificación de firma como solución permanente.
-- No introducir Cloudflare en el media path para “arreglar” audio sin ADR/benchmark.
-- Corregir primero el primer punto que falla en la cadena.
+Para llamadas mudas, correlacionar `call_id` en Worker, Cloud Run, Supabase y
+Telnyx. Distinguir siempre si el flujo llegó al Worker, al Media Edge, a Gemini,
+al handler y al efecto externo.
