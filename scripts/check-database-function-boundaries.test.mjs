@@ -53,4 +53,8 @@ test("manifest changes fail closed when activation policy drifts", () => {
   const forgottenLegacy = structuredClone(manifest);
   forgottenLegacy.legacyFunctionNames.pop();
   assert.throws(() => validateBoundaryManifest(forgottenLegacy), /pre-activation repository baseline/);
+
+  const missingSchemaDefaults = structuredClone(manifest);
+  missingSchemaDefaults.schemaDefaultsMigration = "missing.sql";
+  assert.throws(() => validateBoundaryManifest(missingSchemaDefaults), /missing schema defaults migration/);
 });

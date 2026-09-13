@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "activationMigration": "20260913131852_horizontal_database_function_boundaries.sql",
+  "schemaDefaultsMigration": "20260913192549_fix_horizontal_database_function_schema_defaults.sql",
   "policy": {
     "schema": "public",
     "ownerRole": "postgres",

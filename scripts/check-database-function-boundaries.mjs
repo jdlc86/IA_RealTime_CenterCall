@@ -125,6 +125,9 @@ export function validateBoundaryManifest(manifest, migrations = readMigrations()
   if (!manifest.activationMigration || typeof manifest.activationMigration !== "string") {
     fail("activationMigration is required");
   }
+  if (!manifest.schemaDefaultsMigration || typeof manifest.schemaDefaultsMigration !== "string") {
+    fail("schemaDefaultsMigration is required");
+  }
   const policy = manifest.policy;
   if (!policy || policy.schema !== "public" || policy.ownerRole !== "postgres") {
     fail("the first policy version supports the postgres-owned public schema");
@@ -161,6 +164,12 @@ export function validateBoundaryManifest(manifest, migrations = readMigrations()
     /alter\s+default\s+privileges\s+for\s+role\s+postgres\s+revoke\s+execute\s+on\s+functions\s+from\s+anon,\s*authenticated/i,
   ]) {
     if (!expected.test(activation.sql)) fail("activation migration must revoke default client execution");
+  }
+
+  const schemaDefaults = migrations.find(({ name }) => name === manifest.schemaDefaultsMigration);
+  if (!schemaDefaults) fail(`missing schema defaults migration ${manifest.schemaDefaultsMigration}`);
+  if (!/alter\s+default\s+privileges\s+for\s+role\s+postgres\s+in\s+schema\s+public\s+revoke\s+execute\s+on\s+functions\s+from\s+public,\s*anon,\s*authenticated,\s*service_role/i.test(schemaDefaults.sql)) {
+    fail("schema defaults migration must revoke every managed role in public");
   }
 
   const knownRoles = new Set(["service_role", "authenticated", "anon"]);

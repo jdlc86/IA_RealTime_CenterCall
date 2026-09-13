@@ -12,11 +12,13 @@ negocio. Las verticales declaran sus funciones y consumen la política común.
 ## Componentes
 
 `Security/database-function-boundaries.json` es la fuente única de perfiles y
-funciones administradas. La migración de activación retira a `PUBLIC`, `anon` y
-`authenticated` el permiso de ejecución que PostgreSQL concede por defecto a
-funciones futuras creadas por `postgres`. La revocación es global para el rol
-creador porque una revocación limitada por esquema no anula el grant global de
-`PUBLIC`. El manifiesto y el gate administran las funciones del esquema `public`.
+funciones administradas. Las migraciones de activación retiran el permiso de
+ejecución predeterminado de funciones futuras creadas por `postgres`. El cierre
+tiene dos capas necesarias: una revocación global para eliminar el grant implícito
+de PostgreSQL a `PUBLIC`, y otra limitada al esquema `public` para eliminar los
+grants directos que Supabase configura para `anon`, `authenticated` y
+`service_role`. El manifiesto y el gate exigen ambas capas, de modo que cada
+función nueva debe optar explícitamente por uno de los perfiles permitidos.
 
 El validador `scripts/check-database-function-boundaries.mjs` conserva una lista
 cerrada de nombres heredados y administra toda función pública que no pertenezca
@@ -60,7 +62,8 @@ local, pero CI no repite esas suites.
 
 ## Verificación posterior al despliegue
 
-1. consultar `pg_default_acl` y confirmar la revocación para las funciones nuevas;
+1. consultar `pg_default_acl` y confirmar las revocaciones global y del esquema
+   `public` para las funciones nuevas;
 2. ejecutar los advisors de seguridad;
 3. comprobar que no cambió el ACL efectivo de funciones ya existentes;
 4. no realizar una llamada real, porque la migración no toca el runtime de voz.
