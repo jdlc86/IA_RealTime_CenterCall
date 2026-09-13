@@ -1,6 +1,6 @@
 # Límite horizontal de funciones PostgreSQL
 
-> Estado: `SEC-P1-05` implementado localmente y pendiente de despliegue
+> Estado: `SEC-P1-05` desplegado y verificado en producción
 > Última revisión: 2026-09-13
 
 ## Propósito
@@ -61,6 +61,11 @@ completas. El runner de seguridad focalizado queda disponible para diagnóstico
 local, pero CI no repite esas suites.
 
 ## Verificación posterior al despliegue
+
+Despliegue completado el 2026-09-13 mediante las migraciones registradas
+`20260913193440` y `20260913193454`. `pg_default_acl` confirma que las capas
+global y `public` conservan únicamente a `postgres`; las funciones existentes
+no fueron alteradas.
 
 1. consultar `pg_default_acl` y confirmar las revocaciones global y del esquema
    `public` para las funciones nuevas;
