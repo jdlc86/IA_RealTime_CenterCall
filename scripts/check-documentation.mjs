@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,6 +16,7 @@ const canonicalDocuments = [
   "docs/architecture/DESIGN_RULES.md",
   "docs/architecture/SYSTEM_ARCHITECTURE.md",
   "docs/architecture/ADR-004-GEMINI-ULTRA-LOW-LATENCY-FAST-PATH.md",
+  "docs/runbooks/TEMPORAL_AUTHORITY.md",
   "Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx",
 ];
 
@@ -51,9 +52,19 @@ function validateLocalLinks(relativePath, content) {
   }
 }
 
+function discoverMarkdown(relativeDirectory) {
+  const directory = absolute(relativeDirectory);
+  return readdirSync(directory, { withFileTypes: true })
+    .flatMap((entry) => {
+      const relativePath = `${relativeDirectory}/${entry.name}`;
+      if (entry.isDirectory()) return discoverMarkdown(relativePath);
+      return entry.isFile() && entry.name.endsWith(".md") ? [relativePath] : [];
+    });
+}
+
 const markdownDocuments = canonicalDocuments.filter((path) => path.endsWith(".md"));
 const documents = new Map(markdownDocuments.map((path) => [path, read(path)]));
-for (const [path, content] of documents) validateLocalLinks(path, content);
+for (const path of discoverMarkdown("docs")) validateLocalLinks(path, readFileSync(absolute(path), "utf8"));
 
 for (const entry of ["docs/README.md", "docs/MASTER_PROJECT_GUIDE.md"]) {
   requireText(entry, documents.get(entry), "SESSION_HANDOFF.md");
@@ -77,9 +88,17 @@ for (const required of ["Implementado", "CI", "Producción", "E2E", "Siguiente v
 }
 
 const rules = documents.get("docs/architecture/DESIGN_RULES.md");
-for (const required of ["RA-021", "RA-026", "RA-028", "RA-035"]) {
+for (const required of ["RA-021", "RA-026", "RA-028", "RA-035", "RA-061", "RA-062"]) {
   requireText("docs/architecture/DESIGN_RULES.md", rules, required);
 }
+
+const temporalRunbook = documents.get("docs/runbooks/TEMPORAL_AUTHORITY.md");
+for (const required of [
+  "get_authoritative_datetime",
+  "time.authoritative",
+  "src/kernel/temporal-authority.ts",
+  "no añade trabajo por chunk",
+]) requireText("docs/runbooks/TEMPORAL_AUTHORITY.md", temporalRunbook, required);
 
 const packageJson = JSON.parse(readFileSync(absolute("apps/gemini-control-plane/package.json"), "utf8"));
 if (packageJson.scripts?.["docs:check"] !== "node ../../scripts/check-documentation.mjs") {

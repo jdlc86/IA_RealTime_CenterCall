@@ -33,6 +33,9 @@ ejecutables. El historial retirado no es fallback ni dependencia.
 - No escalar horizontalmente mientras credential/bootstrap/sesión sean in-memory.
 - El modelo propone; kernel, dominio y backend autorizan/ejecutan.
 - Toda tool exige policy local y recibo opaco antes del efecto.
+- El reloj, calendario y zona IANA del tenant pertenecen a la autoridad temporal
+  horizontal; el modelo no inventa el “ahora” y cada vertical conserva sólo sus
+  horarios, horizontes y reglas empresariales.
 - No persistir prompt, secreto, audio o transcript bruto.
 - Toda retención y purga se ejecuta por lotes en Supabase, fuera del hot path.
 - Toda función PostgreSQL nueva se registra en el manifiesto horizontal, fija
@@ -62,6 +65,10 @@ npm test
 cd ../..
 node --test scripts/check-database-function-boundaries.test.mjs
 ```
+
+Para cambios temporales, ejecutar además la suite focalizada
+`src/kernel/temporal-authority.test.ts` y revisar
+[`runbooks/TEMPORAL_AUTHORITY.md`](./runbooks/TEMPORAL_AUTHORITY.md).
 
 ### 6. Primera misión
 

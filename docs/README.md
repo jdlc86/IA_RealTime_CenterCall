@@ -16,6 +16,7 @@
 9. [`DOCUMENTATION_MAINTENANCE.md`](./DOCUMENTATION_MAINTENANCE.md) — mantenimiento documental.
 10. [`MASTER_PROJECT_GUIDE.md`](./MASTER_PROJECT_GUIDE.md) — visión funcional.
 11. [`runbooks/SECURITY_DATA_RETENTION.md`](./runbooks/SECURITY_DATA_RETENTION.md) — plazos, purga y revisión de datos de seguridad.
+12. [`runbooks/TEMPORAL_AUTHORITY.md`](./runbooks/TEMPORAL_AUTHORITY.md) — reloj/calendario autoritativo común y frontera con verticales.
 
 ## Arquitectura en una frase
 

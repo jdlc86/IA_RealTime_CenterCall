@@ -1,17 +1,17 @@
 import type { FastGeminiToolDeclaration } from "./admission/fast-media";
+import {
+  DEFAULT_TENANT_TIME_ZONE,
+  buildAuthoritativeDateTimeSnapshot,
+  canonicalTenantTimeZone,
+  resolveTenantTimeZone,
+  type AuthoritativeDateTimeSnapshot,
+} from "./kernel/temporal-authority";
 
-export const DEFAULT_FAST_TIME_ZONE = "Europe/Madrid";
-
-export type FastAuthoritativeDateTimeSnapshot = Readonly<{
-  version: 1;
-  source: "WORKER_CLOCK";
-  timezone: string;
-  captured_at_epoch_ms: number;
-  now_iso: string;
-  local_date: string;
-  local_time: string;
-  weekday: string;
-}>;
+export const DEFAULT_FAST_TIME_ZONE = DEFAULT_TENANT_TIME_ZONE;
+export type FastAuthoritativeDateTimeSnapshot = AuthoritativeDateTimeSnapshot;
+export const canonicalFastTimeZone = canonicalTenantTimeZone;
+export const resolveFastTenantTimeZone = resolveTenantTimeZone;
+export const buildFastAuthoritativeDateTimeSnapshot = buildAuthoritativeDateTimeSnapshot;
 
 type TenantKv = Readonly<{
   get(key: string): Promise<string | null>;
@@ -52,88 +52,6 @@ function parseJson(raw: string | null, field: string): unknown | null {
   if (!raw) return null;
   try { return JSON.parse(raw) as unknown; }
   catch { throw new Error(`${field} is invalid JSON`); }
-}
-
-function validEpoch(value: number): number {
-  if (!Number.isSafeInteger(value) || value < 1) throw new Error("Authoritative clock epoch is invalid");
-  return value;
-}
-
-export function canonicalFastTimeZone(value: unknown): string {
-  const timezone = value == null ? DEFAULT_FAST_TIME_ZONE : required(value, "Tenant business timezone", 128);
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(new Date(0));
-  } catch {
-    throw new Error("Tenant business timezone is invalid");
-  }
-  return timezone;
-}
-
-export function resolveFastTenantTimeZone(tenantConfigValue: unknown): string {
-  if (tenantConfigValue == null) return DEFAULT_FAST_TIME_ZONE;
-  const config = record(tenantConfigValue);
-  if (!config) throw new Error("Tenant config is invalid");
-  const business = record(config.business);
-  return canonicalFastTimeZone(business?.timezone ?? business?.time_zone ?? config.timezone);
-}
-
-function localParts(value: Date, timezone: string): Readonly<Record<string, string>> {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(value);
-  const result: Record<string, string> = {};
-  for (const part of parts) if (part.type !== "literal") result[part.type] = part.value;
-  return Object.freeze(result);
-}
-
-function offsetIso(value: Date, timezone: string): string {
-  const parts = localParts(value, timezone);
-  const year = Number(parts.year);
-  const month = Number(parts.month);
-  const day = Number(parts.day);
-  const hour = Number(parts.hour);
-  const minute = Number(parts.minute);
-  const second = Number(parts.second);
-  const localEpoch = Date.UTC(year, month - 1, day, hour, minute, second);
-  const sourceEpoch = Math.floor(value.getTime() / 1_000) * 1_000;
-  const offsetMinutes = Math.round((localEpoch - sourceEpoch) / 60_000);
-  const sign = offsetMinutes >= 0 ? "+" : "-";
-  const absolute = Math.abs(offsetMinutes);
-  const offsetHours = String(Math.floor(absolute / 60)).padStart(2, "0");
-  const offsetMins = String(absolute % 60).padStart(2, "0");
-  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${sign}${offsetHours}:${offsetMins}`;
-}
-
-export function buildFastAuthoritativeDateTimeSnapshot(
-  timezone: string,
-  nowEpochMs: number = Date.now(),
-): FastAuthoritativeDateTimeSnapshot {
-  const canonicalTimezone = canonicalFastTimeZone(timezone);
-  const epoch = validEpoch(nowEpochMs);
-  const now = new Date(epoch);
-  if (!Number.isFinite(now.getTime())) throw new Error("Authoritative clock is invalid");
-  const parts = localParts(now, canonicalTimezone);
-  const weekday = new Intl.DateTimeFormat("es-ES", {
-    timeZone: canonicalTimezone,
-    weekday: "long",
-  }).format(now);
-  return Object.freeze({
-    version: 1 as const,
-    source: "WORKER_CLOCK" as const,
-    timezone: canonicalTimezone,
-    captured_at_epoch_ms: epoch,
-    now_iso: offsetIso(now, canonicalTimezone),
-    local_date: `${parts.year}-${parts.month}-${parts.day}`,
-    local_time: `${parts.hour}:${parts.minute}:${parts.second}`,
-    weekday,
-  });
 }
 
 export function fastTemporalAuthorityInstruction(snapshot: FastAuthoritativeDateTimeSnapshot): string {

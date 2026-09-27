@@ -1,7 +1,7 @@
 # IA_RealTime_CenterCall — estado operativo
 
-> Snapshot documental: 2026-09-13
-> Base remota auditada: `rebuild/v39-stable-baseline` @ `8ca13cb415bc3596134f6245697b5ccaf5b0cf9e`
+> Snapshot documental: 2026-09-27
+> Base remota auditada: `rebuild/v39-stable-baseline` @ `dc45e5d0e5f27371d8081ef4c70e7d32a7e56b50`
 > Seguridad viva: [guía de seguridad](../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx)
 
 Los datos remotos deben volver a verificarse antes de operar producción.
@@ -21,6 +21,7 @@ Los datos remotos deben volver a verificarse antes de operar producción.
 | Gate consolidado de regresión de seguridad | sí | verde tras PR `#101` | no aplica | ampliado localmente a 157/157 pruebas específicas PASS |
 | Retención y borrado `SEC-P1-04` | sí | PR `#102`; contrato 6/6 y validación PostgreSQL 17 PASS; CI previo verde | migraciones `20260913082816` y `20260913091400` aplicadas; cron activo | no aplica al flujo de llamada |
 | Límite horizontal de funciones PostgreSQL `SEC-P1-05` | sí | contrato 3/3, PostgreSQL 17 y CI PASS; PR `#103`/`#104` | migraciones `20260913193440` y `20260913193454` aplicadas; ACL verificado | no aplica al flujo de llamada |
+| Autoridad temporal horizontal | capability productiva existente; extracción neutral implementada en rama local | 24/24 pruebas focalizadas y typecheck PASS local | el adapter Fast existente sigue desplegado; la extracción neutral aún no se ha publicado | no requiere llamada: contrato y wire no cambian |
 
 ## Arquitectura vigente
 
@@ -86,15 +87,21 @@ ninguna función de reservas en este bloque horizontal.
 
 Backlog abierto:
 
-1. verificar la primera ejecución programada de `SEC-P1-04` y sus contadores;
+1. verificar con una identidad administrativa la ejecución programada de `SEC-P1-04` y sus contadores; el conector de esta auditoría devolvió `permission denied` y no permite cerrarla;
 2. almacenamiento compartido y atómico antes de escalar horizontalmente;
 3. completar verticales mediante contratos Gemini-native.
 
 ## Coste y escalado
 
-Cloud Run está diseñado con `max-instances=1` mientras credential/bootstrap/sesión
-sean in-memory. `min-instances=0` puede usarse manualmente en etapa de pruebas;
-el workflow integral restablece su configuración declarada.
+La revisión efectiva auditada es `gemini-media-edge-00227-qub`, con 100 % del
+tráfico general, tag `fast-d0e48b716d25`, 1 vCPU, 512 MiB,
+`containerConcurrency=25`, `minScale=1` y `maxScale=1`. El Worker efectivo
+apunta a la URL etiquetada de esa revisión. La rama estable remota está en un SHA
+posterior; **repositorio y runtime desplegado no deben confundirse**. El límite
+`maxScale=1` sigue siendo obligatorio mientras credential/bootstrap/sesión sean
+in-memory. Reducir `minScale` durante pruebas es una operación de infraestructura,
+no un estado que pueda inferirse de este documento, y un despliegue integral
+puede restablecer la configuración declarada.
 
 ## Regla de latencia
 
@@ -104,7 +111,8 @@ Seguridad y auditoría son sideband cuando la invariante lo permite.
 
 ## Siguiente validación
 
-Para cerrar la validación operativa de `SEC-P1-04`:
+Para cerrar la validación operativa de `SEC-P1-04` con una identidad que tenga
+acceso a `cron` y al esquema `private`:
 
 1. comprobar la primera ejecución del cron después de las 03:17 UTC;
 2. verificar `total_deleted <= max_rows` y ausencia de identidad en la auditoría;

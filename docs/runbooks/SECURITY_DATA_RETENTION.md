@@ -1,7 +1,7 @@
 # Retención y borrado de datos de seguridad
 
-> Estado: desplegado en producción mediante `SEC-P1-04`; corrección de seguridad aplicada; primera ejecución programada pendiente
-> Última revisión: 2026-09-13
+> Estado: desplegado en producción mediante `SEC-P1-04`; corrección de seguridad aplicada; ejecución programada no verificable con la identidad de esta auditoría
+> Última revisión: 2026-09-27
 
 ## Propósito
 
@@ -118,8 +118,16 @@ retirada del cron histórico. Los roles `anon`, `authenticated` y `service_role`
 no tienen uso del esquema ni permiso de ejecución sobre la función. La función
 conserva cualquier estado con `security_strikes` o `rate_limit_blocks` distinto
 de cero. El comando programado establece `statement_timeout=30s` antes de
-invocar la función. La primera purga ordinaria se ejecutará por cron; no se
+invocar la función. La primera purga ordinaria se dejó a cargo del cron; no se
 forzó una purga manual durante el despliegue.
+
+La auditoría documental del 2026-09-27 intentó consultar `cron.job`,
+`cron.job_run_details` y `private.security_retention_runs`, pero el conector
+respondió que la identidad no tenía permiso. Por tanto, el cron configurado y
+las migraciones aplicadas siguen documentados, pero **la ejecución efectiva no
+se declara verificada** hasta repetir las consultas de “Comprobación posterior”
+con una identidad administrativa. No se amplían permisos sólo para satisfacer
+la documentación.
 
 ## Recuperación
 

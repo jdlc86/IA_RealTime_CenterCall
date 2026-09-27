@@ -1,8 +1,8 @@
 # IA_RealTime_CenterCall — Design Rules
 
-> **Versión:** 3.4
+> **Versión:** 3.5
 > **Estado:** vigente y normativo
-> **Última revisión:** 2026-09-13
+> **Última revisión:** 2026-09-27
 > **Aplicabilidad:** reglas transversales; un mecanismo específico de provider sólo es obligatorio cuando la regla o una ADR lo indiquen.
 
 Estas reglas son obligatorias salvo ADR posterior que las modifique explícitamente. **No se debe convertir una implementación histórica o previa al Fast Path en una regla universal por accidente.**
@@ -68,6 +68,7 @@ Estas reglas son obligatorias salvo ADR posterior que las modifique explícitame
 - **RA-059 — Cierre semántico por evidencia acumulada y autoridad terminal única.** Una única propuesta semántica del modelo nunca termina una llamada. El kernel sólo puede declarar alta confianza tras observaciones autorizadas, distintas, acotadas e idempotentes; replay no incrementa evidencia. La decisión se mantiene local y O(1), sin RPC en llamadas normales. La despedida precede al efecto terminal y el Fast Worker conserva la autoridad exclusiva para solicitar el hangup a Telnyx. La indisponibilidad de reputación no bloquea el efecto de seguridad, y la indisponibilidad del control terminal no puede dejar la sesión muda: debe degradar de forma explícita y observable. No se persiste transcript bruto.
 - **RA-060 — Retención acotada fuera del hot path.** Diagnóstico, reputación y auditorías especializadas tienen plazos explícitos y una autoridad de borrado única en la fuente durable. La purga es periódica, por lotes, no bloqueante y auditable mediante contadores sin identidad. Nunca borra un bloqueo activo o permanente ni un callback pendiente. No se ejecuta desde Worker, Media Edge, admission, tools, turnos o audio.
 - **RA-061 — Funciones PostgreSQL con resolución fija y ejecución mínima.** Toda función nueva del esquema expuesto se registra en `Security/database-function-boundaries.json`, declara `search_path=''`, califica sus objetos y recibe sólo los roles de su perfil. Los privilegios por defecto niegan ejecución a `PUBLIC`, `anon` y `authenticated`; cualquier RPC cliente requiere un perfil y modelo de autorización explícitos. El gate conserva una lista cerrada del legado y administra cualquier nombre nuevo, aunque una migración se feche antes de la activación. La adopción de funciones anteriores se realiza por bloques separados y no autoriza a mezclar cambios de negocio.
+- **RA-062 — Autoridad temporal horizontal única.** El reloj actual, el calendario y la zona IANA del tenant pertenecen al kernel transversal y se materializan desde una fuente autoritativa del sistema, nunca desde conocimiento del modelo. El Core temporal no contiene `businessType`, tenant IDs concretos ni reglas de reservas/citas. Horarios comerciales, horizontes de operación y disponibilidad son políticas verticales. Una adaptación de runtime puede exponer el contrato común, pero no crear un segundo owner ni añadir trabajo por chunk.
 
 ## Applicability notes del Fast Path Gemini
 

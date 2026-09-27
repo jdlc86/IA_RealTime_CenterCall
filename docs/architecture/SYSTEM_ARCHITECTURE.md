@@ -47,6 +47,20 @@ Caller ─ PSTN ─ Telnyx media WSS ◄──► Fast Media Edge ◄──► G
 - RPCs y constraints atómicos;
 - RLS/ACL y retención según política.
 
+### Autoridad temporal transversal
+
+El Core neutral `apps/gemini-control-plane/src/kernel/temporal-authority.ts`
+resuelve la zona IANA del tenant y materializa el snapshot del reloj. El adapter
+Fast lo usa durante bootstrap y detrás de `get_authoritative_datetime`
+(`time.authoritative`) cuando una referencia relativa necesita un “ahora” nuevo.
+La consulta on-demand viaja por control autenticado; no forma parte del
+forwarding continuo de audio. Si la autoridad falla, el runtime falla cerrado y
+no sustituye el dato con el reloj del modelo o del Media Edge.
+
+El contrato termina en fecha/hora/calendario. `business_hours`, horizontes de
+reserva o cita, capacidad y disponibilidad permanecen en sus dominios
+verticales. Detalle operativo: [runbook de autoridad temporal](../runbooks/TEMPORAL_AUTHORITY.md).
+
 ## 3. Contrato de tools
 
 Toda tool declara:
