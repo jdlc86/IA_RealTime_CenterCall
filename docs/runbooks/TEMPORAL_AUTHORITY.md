@@ -1,7 +1,7 @@
 # Autoridad temporal horizontal
 
-> Estado: capability Fast existente; Core neutral extraído y validado localmente
-> Última revisión: 2026-09-27
+> Estado: Core horizontal desplegado mediante PR `#106` y workflow `36356056366`
+> Última revisión: 2026-09-28
 
 ## Propósito
 

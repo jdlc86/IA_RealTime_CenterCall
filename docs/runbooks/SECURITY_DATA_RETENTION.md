@@ -1,7 +1,7 @@
 # Retención y borrado de datos de seguridad
 
 > Estado: desplegado en producción mediante `SEC-P1-04`; corrección de seguridad aplicada; ejecución programada no verificable con la identidad de esta auditoría
-> Última revisión: 2026-09-27
+> Última revisión: 2026-09-28
 
 ## Propósito
 
@@ -121,7 +121,7 @@ de cero. El comando programado establece `statement_timeout=30s` antes de
 invocar la función. La primera purga ordinaria se dejó a cargo del cron; no se
 forzó una purga manual durante el despliegue.
 
-La auditoría documental del 2026-09-27 intentó consultar `cron.job`,
+La auditoría documental del 2026-09-28 intentó consultar `cron.job`,
 `cron.job_run_details` y `private.security_retention_runs`, pero el conector
 respondió que la identidad no tenía permiso. Por tanto, el cron configurado y
 las migraciones aplicadas siguen documentados, pero **la ejecución efectiva no

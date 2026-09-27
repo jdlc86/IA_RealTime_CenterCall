@@ -1,7 +1,7 @@
 # IA_RealTime_CenterCall — estado operativo
 
-> Snapshot documental: 2026-09-27
-> Base remota auditada: `rebuild/v39-stable-baseline` @ `dc45e5d0e5f27371d8081ef4c70e7d32a7e56b50`
+> Snapshot documental: 2026-09-28
+> Base remota auditada: `rebuild/v39-stable-baseline` @ `19049d7d06260c9e9dfa6fa50fb0e8f4330a37c4`
 > Seguridad viva: [guía de seguridad](../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx)
 
 Los datos remotos deben volver a verificarse antes de operar producción.
@@ -21,7 +21,7 @@ Los datos remotos deben volver a verificarse antes de operar producción.
 | Gate consolidado de regresión de seguridad | sí | verde tras PR `#101` | no aplica | ampliado localmente a 157/157 pruebas específicas PASS |
 | Retención y borrado `SEC-P1-04` | sí | PR `#102`; contrato 6/6 y validación PostgreSQL 17 PASS; CI previo verde | migraciones `20260913082816` y `20260913091400` aplicadas; cron activo | no aplica al flujo de llamada |
 | Límite horizontal de funciones PostgreSQL `SEC-P1-05` | sí | contrato 3/3, PostgreSQL 17 y CI PASS; PR `#103`/`#104` | migraciones `20260913193440` y `20260913193454` aplicadas; ACL verificado | no aplica al flujo de llamada |
-| Autoridad temporal horizontal | capability productiva existente; extracción neutral implementada en rama local | 24/24 pruebas focalizadas y typecheck PASS local | el adapter Fast existente sigue desplegado; la extracción neutral aún no se ha publicado | no requiere llamada: contrato y wire no cambian |
+| Autoridad temporal horizontal | sí; Core neutral y adapter Fast compatible | 24/24 focalizadas, Control Plane 87/87, Media Edge 116/116 y PR `#106` verde | desplegado por run `36356056366` | preflights, bootstrap/HMAC y URL general PASS; no requiere llamada porque el wire no cambió |
 
 ## Arquitectura vigente
 
@@ -93,11 +93,12 @@ Backlog abierto:
 
 ## Coste y escalado
 
-La revisión efectiva auditada es `gemini-media-edge-00227-qub`, con 100 % del
-tráfico general, tag `fast-d0e48b716d25`, 1 vCPU, 512 MiB,
+La revisión efectiva auditada es `gemini-media-edge-00230-diw`, con 100 % del
+tráfico general, tag `fast-19049d7d0626`, 1 vCPU, 512 MiB,
 `containerConcurrency=25`, `minScale=1` y `maxScale=1`. El Worker efectivo
 apunta a la URL etiquetada de esa revisión. La rama estable remota está en un SHA
-posterior; **repositorio y runtime desplegado no deben confundirse**. El límite
+fusionado; el workflow `36356056366` comprobó el SHA exacto, readiness,
+bootstrap/HMAC, paridad del token de seguridad y la URL general. El límite
 `maxScale=1` sigue siendo obligatorio mientras credential/bootstrap/sesión sean
 in-memory. Reducir `minScale` durante pruebas es una operación de infraestructura,
 no un estado que pueda inferirse de este documento, y un despliegue integral
