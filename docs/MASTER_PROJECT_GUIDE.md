@@ -34,6 +34,14 @@ posee la verdad durable.
 WhatsApp se separa en `message.whatsapp.transactional` y
 `message.whatsapp.realtime_support`; ambas capacidades son opt-in por tenant.
 
+La autoridad temporal común vive en
+`apps/gemini-control-plane/src/kernel/temporal-authority.ts`. Resuelve una zona
+IANA por tenant y construye snapshots desde el reloj del Worker. El adapter Fast
+conserva `get_authoritative_datetime` y la capability `time.authoritative`; no
+existe una segunda tool por vertical o provider. Horarios comerciales,
+horizontes de reserva/cita y reglas de disponibilidad siguen perteneciendo al
+dominio vertical. Véase el [runbook temporal](./runbooks/TEMPORAL_AUTHORITY.md).
+
 ## Verticales
 
 Reservas, disponibilidad, horarios, mesas, citas y demás reglas empresariales

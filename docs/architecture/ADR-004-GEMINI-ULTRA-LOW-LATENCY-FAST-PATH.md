@@ -121,6 +121,13 @@ No introducir STT externo, base de datos o Worker como gate obligatorio para aud
 
 Gemini function calling es secuencial respecto a su `FunctionResponse`, por lo que el Fast runtime puede ejecutar una tool sin reconstruir una arquitectura de autorización conversacional por turnos completa.
 
+La tool read-only `get_authoritative_datetime` adapta la autoridad temporal
+horizontal (`time.authoritative`) al Fast Path. El snapshot inicial se entrega en
+bootstrap; sólo se realiza una consulta de control autenticada cuando el turno
+necesita refrescar el “ahora”. No añade persistencia, inferencia ni trabajo por
+chunk. El Core temporal es neutral a provider y vertical; el wire Fast permanece
+en su adapter.
+
 Aun así, toda tool sensible debe preservar:
 
 - tenant/call identity;

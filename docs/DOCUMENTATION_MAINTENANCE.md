@@ -40,6 +40,7 @@ el destino haya contestado.
 - Arquitectura: [`architecture/SYSTEM_ARCHITECTURE.md`](./architecture/SYSTEM_ARCHITECTURE.md)
 - Seguridad: [guía viva](../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx)
 - Despliegue: [`runbooks/Deployment.md`](./runbooks/Deployment.md)
+- Autoridad temporal: [`runbooks/TEMPORAL_AUTHORITY.md`](./runbooks/TEMPORAL_AUTHORITY.md)
 
 ## Flujo por cambio
 

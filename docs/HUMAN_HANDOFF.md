@@ -1,7 +1,7 @@
 # Human handoff — Gemini Fast
 
-> **Estado:** corrección de autoridad por turno implementada; pendiente de CI/canary/E2E
-> **Última revisión:** 2026-08-30
+> **Estado:** corrección de autoridad por turno desplegada y validada E2E; limitaciones acústicas documentadas abiertas
+> **Última revisión:** 2026-09-27
 > **Propietario documental:** contrato, lifecycle y limitaciones de transferencia humana Gemini Fast.
 
 Human handoff es una capacidad de control del producto de llamadas. En Gemini Fast, el modelo aporta comprensión semántica del lenguaje natural y el sistema determinista conserva la autoridad sobre tenant, configuración, capabilities, efectos telefónicos, auditoría y lifecycle terminal.
