@@ -41,6 +41,7 @@ el destino haya contestado.
 - Seguridad: [guía viva](../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx)
 - Despliegue: [`runbooks/Deployment.md`](./runbooks/Deployment.md)
 - Autoridad temporal: [`runbooks/TEMPORAL_AUTHORITY.md`](./runbooks/TEMPORAL_AUTHORITY.md)
+- WhatsApp transaccional: [`runbooks/WHATSAPP_TRANSACTIONAL.md`](./runbooks/WHATSAPP_TRANSACTIONAL.md)
 
 ## Flujo por cambio
 

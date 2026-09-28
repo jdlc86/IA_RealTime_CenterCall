@@ -18,6 +18,7 @@ test("Fast canary synchronizes the same shared-secret selectors before deploying
   assert.match(source, /wrangler secret put GEMINI_MEDIA_CONTROL_PLANE_TOKEN[\s\S]*--name "\$FAST_WORKER_NAME"/);
   assert.match(source, /wrangler secret put GEMINI_MEDIA_CREDENTIAL_HMAC_SECRET[\s\S]*--name "\$FAST_WORKER_NAME"/);
   assert.match(source, /wrangler secret put CALLER_SECURITY_HMAC_SECRET[\s\S]*--name "\$FAST_WORKER_NAME"/);
+  assert.match(source, /"META_WHATSAPP_ACCESS_TOKEN"/);
   assert.match(source, /ACTUAL_CALLER_SECURITY_HMAC_SHA256[\s\S]*EXPECTED_CALLER_SECURITY_HMAC_SHA256/);
   assert.match(source, /new Set\(rows\.map\(\(row\) => row\?\.name\)\)/);
   assert.match(source, /names\.has\(required\)/);
@@ -86,7 +87,7 @@ test("Manual Fast secret sync updates only Gemini-owned runtime secrets", async 
   assert.match(source, /FAST_WORKER_NAME: ia-realtime-centercall-gemini-fast/);
   assert.match(source, /wrangler secret put GEMINI_MEDIA_CONTROL_PLANE_TOKEN[\s\S]*--name "\$FAST_WORKER_NAME"/);
   assert.match(source, /wrangler secret put CALLER_SECURITY_HMAC_SECRET[\s\S]*--name "\$FAST_WORKER_NAME"/);
-  assert.match(source, /"CALLER_SECURITY_HMAC_SECRET",\s+"SUPABASE_SERVICE_ROLE_KEY"/);
+  assert.match(source, /"CALLER_SECURITY_HMAC_SECRET",\s+"SUPABASE_SERVICE_ROLE_KEY",\s+"META_WHATSAPP_ACCESS_TOKEN"/);
   assert.match(source, /names\.has\(name\)/);
   assert.doesNotMatch(source, /apps\/control-plane/);
   assert.doesNotMatch(source, /CONTROL_WORKER_NAME|MEDIA_EDGE_CONTROL_PLANE_TOKEN/);

@@ -46,7 +46,7 @@ const suites = Object.freeze({
     files: discoverTests(
       join(controlPlaneRoot, "src"),
       ".test.ts",
-      /(security|admission|identity|tenant|handoff|transfer|diagnostic|preflight|call-control|canary-route|bootstrap)/i,
+      /(security|admission|identity|tenant|handoff|transfer|diagnostic|preflight|call-control|canary-route|bootstrap|communication|whatsapp)/i,
     ),
     command(files) {
       return [

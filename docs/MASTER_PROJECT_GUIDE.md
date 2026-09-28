@@ -33,6 +33,10 @@ posee la verdad durable.
 
 WhatsApp se separa en `message.whatsapp.transactional` y
 `message.whatsapp.realtime_support`; ambas capacidades son opt-in por tenant.
+El primer adaptador transaccional y sus límites operativos se documentan en el
+[runbook de WhatsApp transaccional](./runbooks/WHATSAPP_TRANSACTIONAL.md). El
+canary no participa en audio y no equivale todavía a una confirmación de cita
+productiva: esa unión requiere commit vertical, outbox durable y webhooks.
 
 La autoridad temporal común vive en
 `apps/gemini-control-plane/src/kernel/temporal-authority.ts`. Resuelve una zona
