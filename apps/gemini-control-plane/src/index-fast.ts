@@ -2,6 +2,10 @@ import { routeFastDiagnosticIngest, type FastDiagnosticIngestEnv } from "./fast-
 import { routeFastGeminiPreflight, type FastGeminiPreflightEnv } from "./fast-preflight";
 import { routeFastAuthoritativeDateTime, type FastTemporalAuthorityEnv } from "./fast-temporal-authority";
 import {
+  routeFastWhatsAppTemplateCanary,
+  type FastWhatsAppTemplateEnv,
+} from "./communications/fast-whatsapp-template";
+import {
   isQueuedFastCallerSecuritySignal,
   persistFastCallerSecuritySignal,
   type FastCallerSecurityEnv,
@@ -16,7 +20,8 @@ import {
 } from "./telnyx/fast-semantic-security-termination";
 
 type FastWorkerEnv = FastGeminiPreflightEnv & FastDiagnosticIngestEnv & FastTemporalAuthorityEnv
-  & FastCallerSecurityEnv & FastSemanticSecuritySignalEnv & FastSemanticSecurityTerminationEnv;
+  & FastCallerSecurityEnv & FastSemanticSecuritySignalEnv & FastSemanticSecurityTerminationEnv
+  & FastWhatsAppTemplateEnv;
 
 async function consumeCallerSecuritySignals(
   batch: MessageBatch<QueuedFastCallerSecuritySignal>,
@@ -54,6 +59,7 @@ export default {
         ok: true,
         service: "gemini-control-plane-fast",
         diagnosticsConfigured: Boolean(env.SUPABASE_URL?.trim() && env.SUPABASE_SERVICE_ROLE_KEY?.trim()),
+        whatsappTransactionalConfigured: Boolean(env.META_WHATSAPP_ACCESS_TOKEN?.trim()),
       });
     }
     if (url.pathname === "/internal/preflight") return routeFastGeminiPreflight(request, env);
@@ -67,6 +73,9 @@ export default {
       });
     }
     if (url.pathname === "/internal/authoritative-datetime") return routeFastAuthoritativeDateTime(request, env);
+    if (url.pathname === "/internal/communications/whatsapp/template-canary") {
+      return routeFastWhatsAppTemplateCanary(request, env);
+    }
     if (url.pathname === "/internal/call-transfer/authorize") return routeFastTransferAuthorize(request, env, handoffAudit);
     if (url.pathname === "/internal/call-transfer/start") return routeFastTransferStart(request, env, handoffAudit);
     if (url.pathname === "/webhooks/telnyx/fast-canary") return routeFastGeminiCanaryWebhook(request, env, { handoffAudit });

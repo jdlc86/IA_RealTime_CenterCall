@@ -287,7 +287,7 @@ jobs:
           node -e '
             const rows = JSON.parse(process.argv[1]);
             const names = new Set(rows.map((row) => row?.name));
-            for (const required of ["CALLER_SECURITY_HMAC_SECRET", "SUPABASE_SERVICE_ROLE_KEY"]) {
+            for (const required of ["CALLER_SECURITY_HMAC_SECRET", "SUPABASE_SERVICE_ROLE_KEY", "META_WHATSAPP_ACCESS_TOKEN"]) {
               if (!names.has(required)) { console.error(`MISSING:${required}`); process.exitCode = 1; }
               else console.log(`PRESENT:${required}`);
             }
@@ -302,7 +302,7 @@ jobs:
         run: |
           set -euo pipefail
           BODY="$(curl --fail --silent --show-error --max-time 10 https://ia-realtime-centercall-gemini-fast.julopezcardona.workers.dev/health)"
-          echo "$BODY" | jq -e '.ok == true and .service == "gemini-control-plane-fast"' >/dev/null
+          echo "$BODY" | jq -e '.ok == true and .service == "gemini-control-plane-fast" and .whatsappTransactionalConfigured == true' >/dev/null
 
       - name: Verify Gemini semantic-security token parity without persistence
         shell: bash
