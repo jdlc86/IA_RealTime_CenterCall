@@ -57,12 +57,10 @@ La configuración preferida vive dentro de `tenant_config:<tenant_id>`:
 }
 ```
 
-Durante la transición de un único negocio se aceptan las claves KV existentes
-`whatsapp.phone_number_id`, `whatsapp.waba_id`,
-`whatsapp.default_language` y `whatsapp.allowed_templates`. La autorización
-continúa siendo tenant-bound: `tenant_capabilities:<tenant_id>` debe habilitar
-explícitamente `message.whatsapp.transactional`. La configuración global no es
-el esquema definitivo para varios tenants.
+La configuración WhatsApp sólo se acepta desde el documento del tenant. No
+existen fallbacks globales `whatsapp.*`. La autorización también es
+tenant-bound: `tenant_capabilities:<tenant_id>` debe habilitar explícitamente
+`message.whatsapp.transactional`.
 
 `phone_number_id` es el identificador numérico del recurso de Meta, no el
 número visible en formato E.164. El destinatario sí se suministra en E.164.

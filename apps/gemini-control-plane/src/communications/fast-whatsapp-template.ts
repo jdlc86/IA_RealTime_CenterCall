@@ -176,13 +176,9 @@ function nestedWhatsAppConfig(value: unknown, tenantId: string): Record<string, 
 }
 
 async function resolveWhatsAppConfig(kv: TenantKv, tenantId: string): Promise<WhatsAppConfig> {
-  const [tenantRaw, capabilitiesRaw, globalPhoneNumberId, globalWabaId, globalLanguage, globalTemplates] = await Promise.all([
+  const [tenantRaw, capabilitiesRaw] = await Promise.all([
     kv.get(`tenant_config:${tenantId}`),
     kv.get(`tenant_capabilities:${tenantId}`),
-    kv.get("whatsapp.phone_number_id"),
-    kv.get("whatsapp.waba_id"),
-    kv.get("whatsapp.default_language"),
-    kv.get("whatsapp.allowed_templates"),
   ]);
   const tenantValue = parseJson(tenantRaw, "Tenant config");
   const capabilities = parseJson(capabilitiesRaw, "Tenant capabilities");
@@ -191,10 +187,10 @@ async function resolveWhatsAppConfig(kv: TenantKv, tenantId: string): Promise<Wh
   }
   try {
     const nested = nestedWhatsAppConfig(tenantValue, tenantId);
-    const phoneNumberId = canonicalId(nested?.phone_number_id ?? nested?.phoneNumberId ?? globalPhoneNumberId, "WhatsApp phone number id");
-    const wabaId = canonicalId(nested?.waba_id ?? nested?.wabaId ?? globalWabaId, "WhatsApp business account id");
-    const languageCode = canonicalLanguage(nested?.default_language ?? nested?.defaultLanguage ?? globalLanguage);
-    const allowedTemplates = canonicalAllowedTemplates(nested?.allowed_templates ?? nested?.allowedTemplates ?? globalTemplates);
+    const phoneNumberId = canonicalId(nested?.phone_number_id ?? nested?.phoneNumberId, "WhatsApp phone number id");
+    const wabaId = canonicalId(nested?.waba_id ?? nested?.wabaId, "WhatsApp business account id");
+    const languageCode = canonicalLanguage(nested?.default_language ?? nested?.defaultLanguage);
+    const allowedTemplates = canonicalAllowedTemplates(nested?.allowed_templates ?? nested?.allowedTemplates);
     return Object.freeze({ phoneNumberId, wabaId, languageCode, allowedTemplates });
   } catch (error) {
     if (error instanceof WhatsAppPolicyError) throw error;
