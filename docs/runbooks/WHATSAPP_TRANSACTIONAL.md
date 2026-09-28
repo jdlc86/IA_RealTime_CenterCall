@@ -2,14 +2,13 @@
 
 > Estado: canary horizontal desplegado en producción; validaciones técnicas PASS, sin envío real
 
-Despliegue verificado el 2026-09-28 mediante `Gemini Fast Canary Deploy`, run
-`36373525339` (intento 2), sobre el merge SHA
-`11a1d7891fe51a56a4ca604659502502d4bfc1ec`. La revisión Cloud Run
-`gemini-media-edge-00234-quk` fue promovida al 100 % después de pasar health,
-paridad de token, bootstrap/HMAC y E2E de la URL general. El primer intento se
-detuvo antes de la promoción por propagación eventual del health de Cloudflare;
-la lectura posterior y la reejecución confirmaron
-`whatsappTransactionalConfigured: true`.
+Despliegue vigente verificado el 2026-09-28 mediante `Gemini Fast Canary Deploy`,
+run `36375878767`, sobre el merge SHA
+`98b62a4dbf0456b13219cb945b544b67f41a88e6`. La revisión Cloud Run
+`gemini-media-edge-00237-neb` fue promovida al 100 % después de pasar health,
+paridad de token, bootstrap/HMAC y E2E de la URL general. Esta versión elimina
+los fallbacks KV globales y usa exclusivamente la configuración WhatsApp del
+tenant.
 
 ## Alcance
 
