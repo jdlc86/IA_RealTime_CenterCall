@@ -29,15 +29,22 @@ function validBody(overrides: Record<string, unknown> = {}): Record<string, unkn
 
 function environment(overrides: Partial<FastWhatsAppTemplateEnv> = {}) {
   const values = new Map<string, string>([
-    [`tenant_config:${TENANT_ID}`, JSON.stringify({ tenant_id: TENANT_ID, status: "active" })],
+    [`tenant_config:${TENANT_ID}`, JSON.stringify({
+      tenant_id: TENANT_ID,
+      status: "active",
+      communications: {
+        whatsapp: {
+          phone_number_id: "1267454589790392",
+          waba_id: "1423142006344998",
+          default_language: "en_US",
+          allowed_templates: [
+            "jaspers_market_plain_text_v1",
+            "jaspers_market_order_confirmation_v1",
+          ],
+        },
+      },
+    })],
     [`tenant_capabilities:${TENANT_ID}`, JSON.stringify({ tenant_id: TENANT_ID, whatsapp: { transactional: true } })],
-    ["whatsapp.phone_number_id", "1267454589790392"],
-    ["whatsapp.waba_id", "1423142006344998"],
-    ["whatsapp.default_language", "en_US"],
-    ["whatsapp.allowed_templates", JSON.stringify([
-      "jaspers_market_plain_text_v1",
-      "jaspers_market_order_confirmation_v1",
-    ])],
   ]);
   const put = vi.fn(async (key: string, value: string) => { values.set(key, value); });
   return {
@@ -117,6 +124,39 @@ describe("routeFastWhatsAppTemplateCanary", () => {
     );
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toMatchObject({ status: "TEMPLATE_NOT_ALLOWED" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("requires tenant-owned WhatsApp configuration and never reads legacy global keys", async () => {
+    const legacyKeys = new Set([
+      "whatsapp.phone_number_id",
+      "whatsapp.waba_id",
+      "whatsapp.default_language",
+      "whatsapp.allowed_templates",
+    ]);
+    const get = vi.fn(async (key: string) => {
+      if (key === `tenant_config:${TENANT_ID}`) {
+        return JSON.stringify({ tenant_id: TENANT_ID, status: "active" });
+      }
+      if (key === `tenant_capabilities:${TENANT_ID}`) {
+        return JSON.stringify({ tenant_id: TENANT_ID, whatsapp: { transactional: true } });
+      }
+      if (legacyKeys.has(key)) throw new Error("legacy global WhatsApp key was read");
+      return null;
+    });
+    const fetcher = vi.fn();
+    const response = await routeFastWhatsAppTemplateCanary(request(validBody()), {
+      GEMINI_MEDIA_CONTROL_PLANE_TOKEN: CONTROL_TOKEN,
+      META_WHATSAPP_ACCESS_TOKEN: "meta-test-token",
+      TENANT_ROUTING_KV: { get, async put() {} },
+    }, { fetcher });
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({ status: "CONFIG_INVALID" });
+    expect([...get.mock.calls].map(([key]) => key)).toEqual([
+      `tenant_config:${TENANT_ID}`,
+      `tenant_capabilities:${TENANT_ID}`,
+    ]);
     expect(fetcher).not.toHaveBeenCalled();
   });
 
