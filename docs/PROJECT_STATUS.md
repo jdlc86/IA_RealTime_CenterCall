@@ -1,7 +1,7 @@
 # IA_RealTime_CenterCall — estado operativo
 
 > Snapshot documental: 2026-09-28
-> Base remota auditada: `rebuild/v39-stable-baseline` @ `19049d7d06260c9e9dfa6fa50fb0e8f4330a37c4`
+> Base remota auditada: `rebuild/v39-stable-baseline` @ `11a1d7891fe51a56a4ca604659502502d4bfc1ec`
 > Seguridad viva: [guía de seguridad](../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx)
 
 Los datos remotos deben volver a verificarse antes de operar producción.
@@ -22,7 +22,7 @@ Los datos remotos deben volver a verificarse antes de operar producción.
 | Retención y borrado `SEC-P1-04` | sí | PR `#102`; contrato 6/6 y validación PostgreSQL 17 PASS; CI previo verde | migraciones `20260913082816` y `20260913091400` aplicadas; cron activo | no aplica al flujo de llamada |
 | Límite horizontal de funciones PostgreSQL `SEC-P1-05` | sí | contrato 3/3, PostgreSQL 17 y CI PASS; PR `#103`/`#104` | migraciones `20260913193440` y `20260913193454` aplicadas; ACL verificado | no aplica al flujo de llamada |
 | Autoridad temporal horizontal | sí; Core neutral y adapter Fast compatible | 24/24 focalizadas, Control Plane 87/87, Media Edge 116/116 y PR `#106` verde | desplegado por run `36356056366` | preflights, bootstrap/HMAC y URL general PASS; no requiere llamada porque el wire no cambió |
-| WhatsApp transaccional Meta | canary horizontal local; adapter, capability y allowlist tenant | Control Plane 94/94 y Media Edge 116/116 local; CI pendiente | no desplegado | sin envío real; sin webhook ni prueba de entrega |
+| WhatsApp transaccional Meta | canary horizontal; adapter, capability y allowlist tenant | PR `#108` y run `36373525339` verdes; revisión de seguridad sin hallazgos reportables | Fast Worker desplegado; revisión Cloud Run `gemini-media-edge-00234-quk` promovida | health, secretos, bootstrap/HMAC y URL general PASS; sin envío real, webhook ni prueba de entrega |
 
 ## Arquitectura vigente
 
