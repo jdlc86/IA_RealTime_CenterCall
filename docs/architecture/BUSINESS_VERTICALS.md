@@ -1,6 +1,6 @@
 # IA_RealTime_CenterCall — Business Verticals
 
-> **Estado:** decisión arquitectónica vigente  
+> **Estado:** decisión arquitectónica vigente; base multi-vertical implementada, expansión funcional por vertical incremental
 > **Fecha:** 2026-08-11  
 > **Ámbito:** F4 multi-tenant y preparación de F5 persistencia/operaciones empresariales
 
@@ -76,9 +76,12 @@ Los siguientes conceptos permanecen comunes a todos los verticales:
 - políticas de secretos;
 - acceso a Supabase mediante adaptadores;
 - auditoría;
-- reglas comunes de fecha/hora cuando sean reutilizables.
+- autoridad común de reloj, calendario y zona horaria IANA por tenant.
 
-`business_hours` puede ser un concepto compartido, aunque su uso operacional sea diferente según el vertical.
+La autoridad temporal horizontal no decide disponibilidad empresarial. El Core
+común produce el “ahora” autoritativo sin leer `businessType`. Cada vertical
+posee `business_hours`, horizontes de cita/reserva, duración, capacidad y reglas
+de calendario que transforman ese anclaje en una decisión de negocio.
 
 ## 5. Vertical CLINIC
 
@@ -253,6 +256,11 @@ restaurant_capacity / availability cuando el diseño lo requiera
 No se fuerza una tabla genérica única de `bookings` si ello degrada reglas, constraints o auditoría de cada dominio. La reutilización se realizará en contratos y componentes realmente comunes.
 
 Todas las entidades persistentes multi-tenant deben incluir o derivar de forma confiable `tenant_id`, con aislamiento en aplicación y defensa adicional mediante controles de base de datos/RLS cuando proceda.
+
+La política de funciones PostgreSQL es horizontal. Cada función nueva, aunque
+pertenezca a una vertical, se registra en el manifiesto común y recibe un perfil
+de ejecución. El manifiesto identifica la capacidad propietaria, pero no traslada
+la lógica de reservas o citas al Core.
 
 ## 10. Tenant de prueba F4
 

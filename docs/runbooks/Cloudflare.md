@@ -1,50 +1,31 @@
-# Runbook — Cloudflare
+# Runbook de Cloudflare
 
-## Worker
-
-Nombre: `ia-realtime-centercall`
-
-URL actual:
+## Worker vigente
 
 ```text
-https://ia-realtime-centercall.julopezcardona.workers.dev
+name    ia-realtime-centercall-gemini-fast
+config  apps/gemini-control-plane/wrangler.fast.jsonc
+entry   apps/gemini-control-plane/src/index-fast.ts
 ```
 
-Health:
+Responsabilidades: webhook Telnyx, routing tenant, admission, caller-security,
+credenciales, bootstrap, tools/control, transferencia y diagnóstico sideband.
 
-```text
-GET /health
-```
+Cloudflare no transporta audio continuo.
 
-## Build/deploy
+## Despliegue
 
-Fuente: GitHub `main`.
+El Worker se despliega dentro de `Gemini Fast Canary Deploy`. No existe un
+workflow autónomo de deploy del Worker porque podría competir con la revisión
+Cloud Run verificada.
 
-Root directory:
+`Gemini Fast Worker Secret Sync` es manual y se limita a sincronización
+operativa de secretos; no sustituye el despliegue integral.
 
-```text
-apps/control-plane
-```
+## Verificación
 
-El despliegue normal se realiza mediante Cloudflare Workers Builds. No editar código directamente en Cloudflare salvo diagnóstico excepcional.
-
-## Configuración no secreta
-
-Definida en `apps/control-plane/wrangler.jsonc`.
-
-## Secretos F0
-
-Deben existir como Secrets en Cloudflare cuando se configure OpenAI:
-
-- `OPENAI_API_KEY`
-- `OPENAI_WEBHOOK_SECRET`
-
-Nunca se escriben en GitHub.
-
-## Verificación tras deploy
-
-1. Confirmar build `Success`.
-2. Confirmar ausencia de warning de nombre del Worker.
-3. Abrir `/health`.
-4. Confirmar `ok: true`, `phase: F0`, `environment: dev`.
-5. Revisar logs si el webhook falla.
+- `/health` devuelve `gemini-control-plane-fast`;
+- secrets requeridos existen por nombre, sin imprimir valores;
+- KV de routing está enlazado;
+- Queue/DLQ de caller-security existen;
+- binding de Media Edge apunta al tag del SHA desplegado.

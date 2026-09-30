@@ -1,5 +1,8 @@
 # Restaurant intent → tool coverage
 
+> **Estado:** contrato funcional RESTAURANT vigente
+> **Última revisión documental:** 2026-08-29
+
 This document is the contract for Lucia's public conversation surface. Every meaningful caller turn must be represented by one public tool before Lucia produces a freeform response.
 
 ## Invariant

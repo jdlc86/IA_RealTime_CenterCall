@@ -1,0 +1,32 @@
+name: Gemini Security Regression Gate
+
+on:
+  push:
+    branches: [rebuild/v39-stable-baseline]
+    paths:
+      - "supabase/migrations/**"
+      - "Security/database-function-boundaries.json"
+      - "scripts/check-database-function-boundaries.mjs"
+      - "scripts/check-database-function-boundaries.test.mjs"
+      - ".github/workflows/gemini-security-regression.yml"
+  pull_request:
+    paths:
+      - "supabase/migrations/**"
+      - "Security/database-function-boundaries.json"
+      - "scripts/check-database-function-boundaries.mjs"
+      - "scripts/check-database-function-boundaries.test.mjs"
+      - ".github/workflows/gemini-security-regression.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  security-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Validate horizontal database function policy
+        run: node --test scripts/check-database-function-boundaries.test.mjs

@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "activationMigration": "20260913193440_horizontal_database_function_boundaries.sql",
+  "schemaDefaultsMigration": "20260913193454_fix_horizontal_database_function_schema_defaults.sql",
+  "policy": {
+    "schema": "public",
+    "ownerRole": "postgres",
+    "deniedByDefaultRoles": ["public", "anon", "authenticated"],
+    "newFunctionSearchPath": [],
+    "profiles": {
+      "admin": {
+        "executeRoles": [],
+        "securityModes": ["definer"]
+      },
+      "internal_server": {
+        "executeRoles": ["service_role"],
+        "securityModes": ["invoker"]
+      },
+      "privileged_server": {
+        "executeRoles": ["service_role"],
+        "securityModes": ["definer"]
+      },
+      "public_rpc": {
+        "executeRoles": ["authenticated"],
+        "securityModes": ["invoker"]
+      },
+      "trigger": {
+        "executeRoles": [],
+        "securityModes": ["invoker"]
+      }
+    }
+  },
+  "legacyFunctionNames": [
+    "admin_reset_caller_security_state_v1",
+    "derive_reservation_table_allocation",
+    "evaluate_inbound_call_security",
+    "evaluate_inbound_call_security_v2",
+    "fill_call_diagnostic_cross_plane_defaults",
+    "modify_restaurant_reservation",
+    "normalize_reservation_customer_phone_before_write",
+    "normalize_reservation_phone_e164",
+    "preserve_human_handoff_failure_outcome",
+    "record_caller_security_signal",
+    "record_caller_security_signal_v2",
+    "sync_reservation_table_allocations"
+  ],
+  "functions": []
+}
