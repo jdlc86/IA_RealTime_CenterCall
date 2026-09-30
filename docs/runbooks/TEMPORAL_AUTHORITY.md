@@ -1,7 +1,7 @@
 # Autoridad temporal horizontal
 
-> Estado: Core horizontal desplegado mediante PR `#106` y workflow `36356056366`
-> Última revisión: 2026-09-28
+> Estado: Core horizontal originado en PR `#106`; incluido en la revisión de producción `gemini-media-edge-00237-neb`
+> Última revisión: 2026-09-30
 
 ## Propósito
 

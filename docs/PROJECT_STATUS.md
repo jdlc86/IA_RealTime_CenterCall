@@ -1,7 +1,8 @@
 # IA_RealTime_CenterCall — estado operativo
 
-> Snapshot documental: 2026-09-28
-> Base remota auditada: `rebuild/v39-stable-baseline` @ `11a1d7891fe51a56a4ca604659502502d4bfc1ec`
+> Snapshot documental: 2026-09-30
+> Base remota auditada: `rebuild/v39-stable-baseline` @ `734b3b4fda7ae84b35270c1c813ccafb7171f8d8`
+> Runtime de producción auditado: merge SHA `98b62a4dbf0456b13219cb945b544b67f41a88e6`, run `36375878767`, revisión `gemini-media-edge-00237-neb`
 > Seguridad viva: [guía de seguridad](../Security/IA_RealTime_CenterCall_Guia_Viva_Seguridad.docx)
 
 Los datos remotos deben volver a verificarse antes de operar producción.
@@ -10,19 +11,19 @@ Los datos remotos deben volver a verificarse antes de operar producción.
 
 | Área | Implementado | CI | Producción | E2E |
 |---|---:|---:|---:|---:|
-| Gemini Fast Worker | sí | verde en la base auditada | desplegado | PASS A–G previo |
-| Fast Media Edge | sí | verde en la base auditada | desplegado | PASS A–G previo |
+| Gemini Fast Worker | sí | runs `36376199946` y `36376202023` verdes en la base auditada | desplegado | PASS A–G previo; health del Worker no sustituye una llamada |
+| Fast Media Edge | sí | run `36376202014` verde en la base auditada | `gemini-media-edge-00237-neb`, ready y 100 % | PASS A–G previo; `/ready` verificado el 2026-09-30 |
 | Caller-security admission | sí | verde | desplegado | sonda y llamada verificadas |
 | Tool authorization receipts | sí | verde | desplegado | transferencia verificada |
 | Diagnóstico con allowlist | sí | verde | desplegado | sonda post-deploy PASS |
 | Reputación/decay Supabase | sí | verde | migración aplicada | prueba transaccional PASS |
 | Limpieza de legado | sí | verde | no aplica | no aplica |
 | Cierre semántico de alta confianza | sí | verde | desplegado | llamada real: cierre y drain confirmados |
-| Gate consolidado de regresión de seguridad | sí | verde tras PR `#101` | no aplica | ampliado localmente a 157/157 pruebas específicas PASS |
+| Regresión de seguridad | sí | gate transversal `36376202007` verde; suites propietarias verdes | no aplica | 103 Media Edge, 64 Control Plane y 3 contrato PostgreSQL PASS local el 2026-09-30 |
 | Retención y borrado `SEC-P1-04` | sí | PR `#102`; contrato 6/6 y validación PostgreSQL 17 PASS; CI previo verde | migraciones `20260913082816` y `20260913091400` aplicadas; cron activo | no aplica al flujo de llamada |
 | Límite horizontal de funciones PostgreSQL `SEC-P1-05` | sí | contrato 3/3, PostgreSQL 17 y CI PASS; PR `#103`/`#104` | migraciones `20260913193440` y `20260913193454` aplicadas; ACL verificado | no aplica al flujo de llamada |
-| Autoridad temporal horizontal | sí; Core neutral y adapter Fast compatible | 24/24 focalizadas, Control Plane 87/87, Media Edge 116/116 y PR `#106` verde | desplegado por run `36356056366` | preflights, bootstrap/HMAC y URL general PASS; no requiere llamada porque el wire no cambió |
-| WhatsApp transaccional Meta | canary horizontal; adapter, capability y allowlist tenant | PR `#108` y run `36373525339` verdes; revisión de seguridad sin hallazgos reportables | Fast Worker desplegado; revisión Cloud Run `gemini-media-edge-00234-quk` promovida | health, secretos, bootstrap/HMAC y URL general PASS; sin envío real, webhook ni prueba de entrega |
+| Autoridad temporal horizontal | sí; Core neutral y adapter Fast compatible | PR `#106`; suites actuales Control Plane 96/96 y Media Edge 116/116 | incluida en la revisión efectiva `00237-neb` | preflights previos PASS; no requiere llamada porque el wire no cambió |
+| WhatsApp transaccional Meta | canary horizontal; adapter, capability y allowlist tenant | PR `#108`; configuración exclusivamente tenant-owned en PR `#110`; Control Plane 96/96 | Worker desplegado por run `36375878767`; Media Edge `00237-neb` promovido | health/configuración/preflights PASS; sin envío real, webhook ni prueba de entrega |
 
 ## Arquitectura vigente
 
@@ -60,8 +61,9 @@ muda. La reputación de alta confianza se registra sideband sin transcript bruto
 
 `SEC-P1-03` dispone de un runner común para diagnósticos locales focalizados.
 Las suites completas pertenecen a los workflows de Media Edge y Control Plane.
-El workflow `Gemini Security Regression Gate` no vuelve a ejecutarlas: valida
-una sola vez los contratos transversales que no pertenecen a un ejecutable. Esta
+El workflow `Gemini Security Regression Gate` no vuelve a ejecutar las suites
+de los ejecutables: valida los contratos transversales que no pertenecen a uno.
+En el snapshot actual son 3 pruebas del límite de funciones PostgreSQL. Esta
 separación evita instalaciones y pruebas duplicadas sin reducir la cobertura.
 
 `SEC-P1-04` está desplegado mediante una función privada de Supabase y un cron
@@ -90,21 +92,28 @@ Backlog abierto:
 
 1. verificar con una identidad administrativa la ejecución programada de `SEC-P1-04` y sus contadores; el conector de esta auditoría devolvió `permission denied` y no permite cerrarla;
 2. almacenamiento compartido y atómico antes de escalar horizontalmente;
-3. completar verticales mediante contratos Gemini-native.
-4. convertir el canary WhatsApp en outbox durable con claim atómico y webhooks antes de conectarlo a citas reales.
+3. convertir el canary WhatsApp en outbox durable con claim atómico, reconciliación y webhooks antes de conectarlo a citas reales;
+4. ampliar el filtro `paths` del workflow integral para incluir el módulo `apps/gemini-control-plane/src/communications/**`; hasta entonces, un cambio aislado allí exige `workflow_dispatch` explícito;
+5. completar verticales mediante contratos Gemini-native.
 
 ## Coste y escalado
 
-La revisión efectiva auditada es `gemini-media-edge-00230-diw`, con 100 % del
-tráfico general, tag `fast-19049d7d0626`, 1 vCPU, 512 MiB,
+La revisión efectiva auditada es `gemini-media-edge-00237-neb`, con 100 % del
+tráfico general, tag `fast-98b62a4dbf04`, 1 vCPU, 512 MiB,
 `containerConcurrency=25`, `minScale=1` y `maxScale=1`. El Worker efectivo
-apunta a la URL etiquetada de esa revisión. La rama estable remota está en un SHA
-fusionado; el workflow `36356056366` comprobó el SHA exacto, readiness,
+apunta a la URL etiquetada de esa revisión. La rama estable contiene ese SHA de
+runtime y documentación posterior; el workflow `36375878767` comprobó el SHA exacto, readiness,
 bootstrap/HMAC, paridad del token de seguridad y la URL general. El límite
 `maxScale=1` sigue siendo obligatorio mientras credential/bootstrap/sesión sean
 in-memory. Reducir `minScale` durante pruebas es una operación de infraestructura,
 no un estado que pueda inferirse de este documento, y un despliegue integral
 puede restablecer la configuración declarada.
+
+El 2026-09-30, `/health` del Worker respondió con diagnóstico y WhatsApp
+configurados, y `/ready` del Media Edge respondió con modelo
+`gemini-3.1-flash-live-preview`, revisión `00237-neb` y cero sesiones activas.
+Estas sondas prueban readiness/configuración, no una conversación ni entrega
+WhatsApp E2E.
 
 ## Regla de latencia
 
