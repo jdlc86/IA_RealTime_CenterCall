@@ -30,6 +30,8 @@ Caller ─ PSTN ─ Telnyx media WSS ◄──► Fast Media Edge ◄──► G
 - registrar bootstrap/capabilities;
 - autorizar tools y transferencia;
 - ejecutar reloj/contexto autoritativo;
+- ejecutar adaptadores de comunicación externa fuera del audio, con capability,
+  configuración tenant-owned e idempotencia proporcional;
 - persistir diagnóstico seguro y señales sideband.
 
 ### Fast Media Edge
@@ -97,6 +99,9 @@ esa autoridad a almacenamiento compartido atómico:
 7. E2E sintético sobre la URL general.
 
 No existe workflow o script alternativo de producción.
+El trigger automático debe cubrir cada módulo desplegable. Mientras
+`src/communications/**` no esté incluido en el filtro `paths`, los cambios
+aislados de ese módulo requieren `workflow_dispatch` del mismo workflow.
 
 ## 6. Retiradas
 

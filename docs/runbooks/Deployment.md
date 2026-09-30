@@ -13,6 +13,14 @@ rama: rebuild/v39-stable-baseline
 No ejecutar scripts alternativos ni crear revisiones manuales para atender
 llamadas. Una revisión sin tag/binding no es usada automáticamente por el Worker.
 
+## Cobertura del trigger
+
+El workflow también admite `workflow_dispatch`. El filtro `push.paths` actual
+no incluye `apps/gemini-control-plane/src/communications/**`; por tanto, un
+cambio aislado del adaptador WhatsApp no dispara automáticamente el despliegue.
+Hasta ampliar ese filtro, se debe ejecutar manualmente **este mismo workflow**
+desde la rama estable después de CI. No se crea un deploy paralelo.
+
 ## Secuencia
 
 1. checkout del SHA exacto;
@@ -47,5 +55,5 @@ explícitamente reducir el mínimo durante pruebas, puede ajustarse Cloud Run a
 ## Verificación
 
 Comprobar SHA, revisión, tag, tráfico general, binding
-`GEMINI_FAST_CANARY_EDGE_URL`, health del Worker y `/ready`. No hacer una
+`GEMINI_FAST_CANARY_EDGE_URL`, `/health` del Worker y `/ready` del Media Edge. No hacer una
 llamada real sin autorización.

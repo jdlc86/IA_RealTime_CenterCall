@@ -1,6 +1,6 @@
 # WhatsApp transaccional mediante Meta
 
-> Estado: canary horizontal desplegado en producción; validaciones técnicas PASS, sin envío real
+> Estado: canary horizontal desplegado; configuración tenant-owned verificada, sin envío real ni evidencia de entrega
 
 Despliegue vigente verificado el 2026-09-28 mediante `Gemini Fast Canary Deploy`,
 run `36375878767`, sobre el merge SHA
@@ -36,7 +36,7 @@ El secreto `META_WHATSAPP_ACCESS_TOKEN` vive sólo como Worker Secret. Nunca se
 guarda en Git, KV, documentación, logs o payloads. Un token publicado debe
 revocarse antes de cualquier prueba.
 
-La configuración preferida vive dentro de `tenant_config:<tenant_id>`:
+La única configuración aceptada vive dentro de `tenant_config:<tenant_id>`:
 
 ```json
 {
@@ -100,9 +100,10 @@ contenido vertical fuera del Core.
 
 ## Siguiente fase
 
-1. Rotar cualquier token previamente expuesto y verificar sólo su presencia.
-2. Desplegar el adaptador mediante el workflow integral existente.
-3. Ejecutar una única prueba autorizada con un destinatario de prueba.
-4. Añadir verificación de firma y estados de entrega mediante webhooks de Meta.
-5. Crear una outbox durable y enlazarla al commit real de la futura tool de
+1. Ejecutar una única prueba autorizada con un destinatario de prueba y una
+   plantilla permitida por el tenant.
+2. Añadir verificación de firma y estados de entrega mediante webhooks de Meta.
+3. Crear una outbox durable y enlazarla al commit real de la futura tool de
    citas. El envío ocurrirá después del commit y fuera del hot path de voz.
+4. Ampliar el `push.paths` del workflow integral para que cambios aislados en
+   `src/communications/**` no dependan de un dispatch manual.

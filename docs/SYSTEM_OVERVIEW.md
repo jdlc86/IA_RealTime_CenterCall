@@ -14,7 +14,9 @@ Telnyx
 
 El Worker resuelve tenant, valida Telnyx, ejecuta admission y caller-security,
 emite credenciales, registra bootstrap, autoriza tools, inicia transferencias y
-persiste diagnóstico mínimo. El Media Edge conserva únicamente el hot path de
+persiste diagnóstico mínimo. También posee la frontera de comunicaciones
+externas: el canary WhatsApp transaccional valida capability y configuración del
+tenant antes de llamar a Meta. El Media Edge conserva únicamente el hot path de
 audio y el lifecycle inmediato de Gemini.
 
 ## Componentes activos
@@ -42,3 +44,5 @@ retirados del árbol. No son fallbacks. Su contenido permanece en el historial G
 - La telemetría nunca guarda prompt, secreto, audio o transcript bruto.
 - La retención y el borrado se ejecutan por lotes en Supabase, nunca en el hot path.
 - El estado call-scoped en memoria obliga a `max-instances=1` hasta migración atómica.
+- Las comunicaciones externas son opt-in y tenant-bound; una aceptación del
+  proveedor no equivale a entrega sin webhook/reconciliación.

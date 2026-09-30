@@ -60,6 +60,11 @@ npm run check
 6. Ejecutar además la suite del Media Edge cuando cambie runtime, workflow o
    documentación del hot path.
 
+Los identificadores de SHA, run, revisión, tag, tráfico y escalado sólo se
+mantienen en `PROJECT_STATUS.md` y en el runbook propietario cuando sean
+evidencia específica de ese procedimiento. Las guías normativas enlazan el
+snapshot y evitan duplicar una fotografía que envejece.
+
 ## Código existente no equivale a arquitectura activa
 
 Los entrypoints vigentes son:

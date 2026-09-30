@@ -14,6 +14,12 @@ Antes de afirmar estado actual, verifica:
 - URL/tag/revisión efectiva de Cloud Run;
 - migraciones/evidencia Supabase cuando aplique.
 
+El último snapshot documental auditado es `2026-09-30`: stable
+`734b3b4fda7ae84b35270c1c813ccafb7171f8d8`, runtime de producción
+`98b62a4dbf0456b13219cb945b544b67f41a88e6`, run `36375878767` y revisión
+`gemini-media-edge-00237-neb`. Son evidencia de partida, no sustituyen una nueva
+consulta remota si la sesión va a operar producción.
+
 No hagas llamadas reales, despliegues o cambios de infraestructura sin autorización.
 
 ### 2. Arquitectura vigente
@@ -40,6 +46,10 @@ ejecutables. El historial retirado no es fallback ni dependencia.
 - Toda retención y purga se ejecuta por lotes en Supabase, fuera del hot path.
 - Toda función PostgreSQL nueva se registra en el manifiesto horizontal, fija
   `search_path=''` y recibe sólo los roles de su perfil.
+- WhatsApp transaccional lee exclusivamente
+  `tenant_config:<tenantId>.communications.whatsapp`; no se restauran claves KV
+  globales `whatsapp.*`. El canary no es aún una outbox ni una confirmación de
+  cita productiva.
 - No crear un segundo workflow de despliegue.
 - `IMPLEMENTADO ≠ CI VERDE ≠ DESPLEGADO ≠ VALIDADO E2E`.
 
@@ -48,6 +58,11 @@ ejecutables. El historial retirado no es fallback ni dependencia.
 El único workflow integral es `Gemini Fast Canary Deploy`. Construye y verifica
 la revisión Fast, sincroniza el Worker, ejecuta preflights, retira tags antiguos y
 promociona la revisión exacta.
+
+El filtro automático actual no incluye
+`apps/gemini-control-plane/src/communications/**`. Si un cambio sólo toca ese
+módulo, el despliegue integral debe lanzarse mediante `workflow_dispatch` hasta
+que se amplíe el filtro; no se crea un workflow alternativo.
 
 ### 5. Validación local
 
